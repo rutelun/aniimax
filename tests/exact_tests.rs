@@ -42,6 +42,62 @@ fn exact_picks_the_best_crop_on_its_own() {
     assert_eq!(plan.units.get("potato"), Some(&6));
 }
 
+fn solve_crop_variety(items: &[ProductionItem], counts: &FacilityCounts, modules: &ModuleLevels, expected: u32) -> ExactPlan {
+    let solve = |goal| solve_exact(items, "coins", counts, modules, goal, Some(Duration::from_secs(10)), None).unwrap();
+    let coverage = solve(Goal::CropVariety { seasonal_only: false });
+    assert!(coverage.proven_optimal);
+    assert_eq!(coverage.objective, expected as f64);
+    let plan = solve(Goal::EarnWithCropVariety { minimum: expected, seasonal_only: false, floors: &[] });
+    assert!(plan.proven_optimal);
+    check_plan(&plan, items, "coins", counts, modules, None).unwrap();
+    plan
+}
+
+#[test]
+fn test_crop_variety_grows_available_level_six_resources() {
+    let Some(items) = load_items() else { return };
+    let mut counts = FacilityCounts::only(&[("Farmland", 4, 6), ("Woodland", 2, 6)]);
+    let modules = ModuleLevels { ecological_module: 5, ..Default::default() };
+    let uncovered = solve_crop_variety(&items, &counts, &modules, 4);
+    assert!(!uncovered.units.contains_key("grape"));
+    assert!(!uncovered.units.contains_key("orange_flower"));
+
+    counts.set("Sunlamp", 1, 1);
+    let plan = solve_crop_variety(&items, &counts, &modules, 6);
+    let planted: std::collections::BTreeSet<_> = plan.units.keys().map(|name| aniimax::models::base_item_name(name)).collect();
+    assert_eq!(planted, ["ginseng", "grape", "premium_wheat", "quick_rice", "cocoa", "orange_flower"].into());
+}
+
+#[test]
+fn test_crop_variety_counts_quick_and_regular_wheat_once_across_tiers() {
+    let Some(items) = load_items() else { return };
+    let mut counts = FacilityCounts::only(&[("Farmland", 1, 1)]);
+    counts.add_tier("Farmland", 1, 2);
+    let modules = ModuleLevels { ecological_module: 1, ..Default::default() };
+    let plan = solve_crop_variety(&items, &counts, &modules, 2);
+    assert_eq!(plan.units.get("wheat"), Some(&1));
+    assert_eq!(plan.units.get("potato"), Some(&1));
+    assert!(!plan.units.contains_key("quick_wheat"));
+}
+
+#[test]
+fn test_crop_variety_uses_a_lower_level_crop_for_a_more_profitable_chain() {
+    let Some(mut items) = load_items() else { return };
+    let counts = FacilityCounts::only(&[("Farmland", 2, 2), ("Carousel Mill", 1, 1)]);
+    let modules = ModuleLevels::default();
+    let wheatmeal = items.iter().position(|item| item.name == "wheatmeal").unwrap();
+    items[wheatmeal].sell_value = 56.25; // The same profit per plot as potatoes.
+    let baseline = solve_crop_variety(&items, &counts, &modules, 1);
+    assert_eq!(baseline.units.get("potato"), Some(&2));
+
+    items[wheatmeal].sell_value = 500.0;
+    let plan = solve_crop_variety(&items, &counts, &modules, 1);
+    assert_eq!(plan.units.get("potato"), Some(&1));
+    assert_eq!(plan.units.get("wheat"), Some(&1));
+    assert_eq!(plan.units.get("wheatmeal"), Some(&1));
+    assert!(plan.rate_per_second > baseline.rate_per_second);
+}
+
 // rice_drink (Carousel Mill) needs milled_rice made at a Carousel Mill too; with two Mills, one
 // makes each. 3 rice plots, watered, make a rice drink every 1200s: 0.000833/sec x (1860 - 2 x 12
 // seed) = 1.53; 4 Wells with level-1 Aniimo make 0.014222 fresh_water/sec, the drinks use 16 each
@@ -151,6 +207,121 @@ fn exact_grows_crops_without_their_environment() {
 fn level_up(cost: &[(&str, f64)], stock: &[(&str, f64)]) -> LevelUp {
     let list = |l: &[(&str, f64)]| l.iter().map(|(n, a)| (n.to_string(), *a)).collect();
     LevelUp { cost: list(cost), stock: list(stock) }
+}
+
+#[test]
+fn test_material_work_fills_both_facilities_up_to_their_supply() {
+    let Some(mut items) = load_items() else { return };
+    items.retain(|i| ["bamboo", "rock", "rough_lumber", "coarse_sifted_ore"].contains(&i.name.as_str()));
+    for item in &mut items {
+        if let Some((_, amount)) = item.byproduct.as_mut() {
+            *amount = 2_000;
+        }
+    }
+    let counts = FacilityCounts::only(&[
+        ("Woodland", 1, 2), ("Mine", 1, 1), ("Woodworking Bench", 2, 1), ("Chimney Kiln", 2, 1),
+    ]);
+    let modules = ModuleLevels::default();
+    let income = solve_exact(&items, "coins", &counts, &modules, Goal::Earn { floors: &[] }, None, None).unwrap();
+    let floors = [("coins".into(), income.rate_per_second)];
+    let base = Goal::Earn { floors: &floors };
+    let work = Goal::MaterialWork { base: &base, minimum: None };
+    let full = solve_exact(&items, "coins", &counts, &modules, work, None, None).unwrap();
+    assert!((full.objective - 4.0).abs() < 1e-6);
+    assert_eq!(full.units.get("rough_lumber"), Some(&2));
+    assert_eq!(full.units.get("coarse_sifted_ore"), Some(&2));
+    assert!(full.rate_per_second >= income.rate_per_second * 0.9999 - 1e-9);
+    check_plan(&full, &items, "coins", &counts, &modules, None).unwrap();
+
+    let bamboo = items.iter_mut().find(|item| item.name == "bamboo").unwrap();
+    let bamboo_time = bamboo.production_time;
+    bamboo.byproduct.as_mut().unwrap().1 = 1;
+    let limited = solve_exact(&items, "coins", &counts, &modules, work, None, None).unwrap();
+    let lumber_rate = limited.recipe_rates["rough_lumber"];
+    assert!((lumber_rate - 1.0 / (bamboo_time * 8.0)).abs() < 1e-9);
+    assert_eq!(limited.units.get("coarse_sifted_ore"), Some(&2));
+    check_plan(&limited, &items, "coins", &counts, &modules, None).unwrap();
+}
+
+#[test]
+fn test_electricity_uses_the_actual_building_level_and_keeps_faster_workers() {
+    use aniimax::models::{AniimoLevels, GrowerSteps};
+    use aniimax::power::{add_electric_variants, Electricity, PowerPlan};
+    let Some(mut originals) = load_items() else { return };
+    originals.retain(|item| matches!(item.name.as_str(), "rock" | "clay"));
+    let requirements = load_aniimo_requirements(Path::new("data")).unwrap();
+    let mut counts = FacilityCounts::only(&[("Mine", 1, 1)]);
+    counts.add_tier("Mine", 1, 2);
+    let grid = Electricity { watts: 36, percent: 120, max_aniimo: None };
+    counts.set_power(PowerPlan { grid: grid.clone(), grower_steps: GrowerSteps::default() });
+    let mut items = originals.clone();
+    requirements.apply(&AniimoSetup::Minimum, &mut items);
+    add_electric_variants(&mut items, originals.clone(), &counts, &requirements, &grid);
+    let modules = ModuleLevels::default();
+    let plan = solve_exact(&items, "coins", &counts, &modules, Goal::Earn { floors: &[] }, None, None).unwrap();
+    assert_eq!(plan.units.get("rock__electric1"), Some(&1));
+    assert_eq!(plan.units.get("clay"), Some(&1));
+    assert_eq!(aniimax::exact::rated_power_draw(&plan, &items), 30.0);
+    check_plan(&plan, &items, "coins", &counts, &modules, None).unwrap();
+
+    let mut faster = originals.clone();
+    requirements.apply(&AniimoSetup::Best(AniimoLevels::all(4)), &mut faster);
+    add_electric_variants(&mut faster, originals, &counts, &requirements, &grid);
+    assert!(faster.iter().all(|item| aniimax::power::electric_level(&item.name).is_none()));
+}
+
+#[test]
+fn test_electricity_counts_lightning_workers_toward_the_roster_limit() {
+    use aniimax::models::{Crew, GrowerSteps, RosterAniimo};
+    use aniimax::power::{add_electric_variants, Electricity, PowerPlan, GENERATOR};
+    let Some(mut originals) = load_items() else { return };
+    originals.retain(|item| item.name == "rock");
+    let requirements = load_aniimo_requirements(Path::new("data")).unwrap();
+    let crew = Crew {
+        members: vec![RosterAniimo { count: 2, abilities: [("Lightning".into(), 1)].into(), ..Default::default() }],
+        ..Default::default()
+    };
+    let steps = GrowerSteps::default();
+    let mut counts = FacilityCounts::only(&[("Mine", 21, 1)]);
+    counts.set_crew(crew.clone());
+    let modules = ModuleLevels::default();
+    for (limit, mines, watts) in [(1, 20, 600.0), (2, 21, 630.0)] {
+        let grid = Electricity { watts: 650, percent: 100, max_aniimo: Some(limit) };
+        let mut items = aniimax::models::crew_variants(originals.clone(), &crew, &requirements, &steps);
+        add_electric_variants(&mut items, originals.clone(), &counts, &requirements, &grid);
+        counts.set_power(PowerPlan { grid, grower_steps: steps.clone() });
+        let plan = solve_exact(&items, "coins", &counts, &modules, Goal::Earn { floors: &[] }, None, None).unwrap();
+        assert_eq!(plan.units.get("rock__electric1"), Some(&mines));
+        assert_eq!(aniimax::exact::rated_power_draw(&plan, &items), watts);
+        assert_eq!(plan.staffing, vec![(GENERATOR.into(), 0, limit as f64)]);
+        check_plan(&plan, &items, "coins", &counts, &modules, None).unwrap();
+    }
+}
+
+#[test]
+fn test_roster_uses_electricity_when_its_faster_worker_is_already_busy() {
+    use aniimax::models::{crew_variants, GrowerSteps};
+    use aniimax::power::{add_electric_variants, Electricity, PowerPlan, GENERATOR};
+    let Some(mut originals) = load_items() else { return };
+    originals.retain(|item| item.name == "rock");
+    let requirements = load_aniimo_requirements(Path::new("data")).unwrap();
+    let crew = crew_of(&[(1, &[("Earth", 4)]), (1, &[("Lightning", 1)])]);
+    let steps = GrowerSteps::default();
+    let grid = Electricity { watts: 60, percent: 100, max_aniimo: None };
+    let modules = ModuleLevels::default();
+    for mine_count in [1, 3] {
+        let mut counts = FacilityCounts::only(&[("Mine", mine_count, 1)]);
+        counts.set_crew(crew.clone());
+        let mut items = crew_variants(originals.clone(), &crew, &requirements, &steps);
+        add_electric_variants(&mut items, originals.clone(), &counts, &requirements, &grid);
+        counts.set_power(PowerPlan { grid: grid.clone(), grower_steps: steps.clone() });
+        let plan = solve_exact(&items, "coins", &counts, &modules, Goal::Earn { floors: &[] }, None, None).unwrap();
+        assert_eq!(plan.units.get("rock__by0"), Some(&1));
+        assert_eq!(plan.units.get("rock__electric1").copied().unwrap_or(0), mine_count - 1);
+        let staffing = if mine_count > 1 { vec![(GENERATOR.into(), 1, 1.0)] } else { vec![] };
+        assert_eq!(plan.staffing, staffing);
+        check_plan(&plan, &items, "coins", &counts, &modules, None).unwrap();
+    }
 }
 
 /// Solves a level-up in both stages and checks the plan: the soonest level-up, then the most
@@ -352,6 +523,66 @@ fn load_items_with_wonder_night() -> Option<Vec<ProductionItem>> {
     Some(items)
 }
 
+#[test]
+fn test_crop_variety_keeps_season_crops_and_priority_on_higher_level_plots() {
+    let Some(mut items) = load_items_with_wonder_night() else { return };
+    items.iter_mut().filter(|item| item.season.is_some()).for_each(|item| item.sell_value = 1.0);
+    let counts = FacilityCounts::only(&[("Farmland", 6, 6), ("Sunlamp", 1, 1)]);
+    let modules = ModuleLevels::default();
+    let solve = |currency, goal| solve_exact(&items, currency, &counts, &modules, goal, None, None).unwrap();
+    let coverage = solve("coins", Goal::CropVariety { seasonal_only: false });
+    let earn = |floors| Goal::EarnWithCropVariety {
+        minimum: coverage.objective as u32,
+        seasonal_only: false,
+        floors,
+    };
+    let points = aniimax::models::SEASON_POINTS;
+    let most_points = solve(points, earn(&[]));
+    let floors = [(points.to_owned(), most_points.objective)];
+    let plan = solve("coins", earn(&floors));
+    check_plan(&plan, &items, "coins", &counts, &modules, None).unwrap();
+    for name in ["magic_pumpkin", "memory_lanternfruit", "ginseng", "grape", "premium_wheat"] {
+        assert!(plan.recipe_rates.keys().any(|recipe| aniimax::models::base_item_name(recipe) == name));
+    }
+    let points_kept = aniimax::exact::target_rate(&plan, &items, points);
+    let coins_only = solve("coins", earn(&[]));
+    assert!(points_kept >= most_points.objective * (1.0 - 1.01e-4));
+    assert!(points_kept > aniimax::exact::target_rate(&coins_only, &items, points));
+}
+
+#[test]
+fn test_season_planting_respects_the_seed_budget() {
+    let Some(mut items) = load_items_with_wonder_night() else { return };
+    for season in items.iter_mut().filter_map(|item| item.season.as_mut()) {
+        season.currency_per_day = Some(4.0); // One batch of either event crop.
+    }
+    let counts = FacilityCounts::only(&[("Farmland", 4, 6), ("Sunlamp", 1, 1)]);
+    let coverage = solve_exact(&items, "coins", &counts, &ModuleLevels::default(),
+        Goal::CropVariety { seasonal_only: true }, None, None).unwrap();
+    assert_eq!(coverage.objective, 1.0);
+}
+
+#[test]
+fn test_season_crop_minimums_reserve_plots_even_when_budget_slows_harvest() {
+    let Some(mut items) = load_items_with_wonder_night() else { return };
+    let mut counts = FacilityCounts::only(&[("Farmland", 8, 6), ("Sunlamp", 1, 1)]);
+    counts.set_season_crop_minimums([("magic_pumpkin".into(), 4), ("memory_lanternfruit".into(), 4)].into());
+    for season in items.iter_mut().filter_map(|item| item.season.as_mut()) {
+        season.currency_per_day = Some(1800.0); // Eight plots at full speed would cost 2048.
+    }
+    let modules = ModuleLevels::default();
+    let goal = Goal::Earn { floors: &[] };
+    let plan = solve_exact(&items, "coins", &counts, &modules, goal, None, None).unwrap();
+    assert_eq!(plan.units.get("magic_pumpkin"), Some(&4));
+    assert_eq!(plan.units.get("memory_lanternfruit"), Some(&4));
+    check_plan(&plan, &items, "coins", &counts, &modules, None).unwrap();
+
+    for season in items.iter_mut().filter_map(|item| item.season.as_mut()) {
+        season.currency_per_day = Some(4.0);
+    }
+    assert!(solve_exact(&items, "coins", &counts, &modules, goal, None, None).is_none());
+}
+
 // Magic Pumpkin and Memory Lanternfruit are Adequate, so they grow only under a Sunlamp: without
 // one the plan can't touch them, and with one it grows them (8 a batch at 61 coins, seeds paid in
 // Weird Jelly Beans, beating lavender, the other Adequate crop at that level).
@@ -466,6 +697,7 @@ fn crew_items(crew: &aniimax::models::Crew) -> Option<Vec<ProductionItem>> {
 /// personality bonuses.
 fn crew_of(members: &[(u32, &[(&str, u32)])]) -> aniimax::models::Crew {
     aniimax::models::Crew {
+        assumed_from: None,
         members: members
             .iter()
             .map(|(count, abilities)| aniimax::models::RosterAniimo {
@@ -510,6 +742,26 @@ fn crew_one_aniimo_works_one_day() {
     let (four, _) = solve_with_crew(&counts, crew_of(&[(4, &[("Earth", 4)])]));
     assert!(four.rate_per_second > 0.0);
     assert!((one.rate_per_second * 4.0 - four.rate_per_second).abs() < 1e-9, "one {} vs four {}", one.rate_per_second, four.rate_per_second);
+}
+
+#[test]
+fn reserve_crew_fills_open_shifts_and_prefers_equally_fast_owned_aniimo() {
+    let mut crew = crew_of(&[(1, &[("Earth", 3)])]);
+    crew.add_reserve_workers([("Earth", 1), ("Earth", 2), ("Fire", 4), ("Lightning", 1)], 4);
+    assert_eq!(crew.assumed_from, Some(1));
+    assert_eq!(crew.members.len(), 3);
+    assert!(crew.can_work(0, "Earth", 1));
+    assert!(crew.can_work(1, "Earth", 1));
+    assert!(crew.can_work(1, "Earth", 2));
+    assert!(!crew.can_work(1, "Earth", 4));
+    assert!(crew.can_work(2, "Lightning", 1));
+    assert_eq!(crew.members[1].level("Earth"), 3);
+    assert_eq!(crew.members[1].count, 4);
+    assert!(crew.members[1].personalities.is_empty());
+    let counts = FacilityCounts::only(&[("Mine", 4, 1)]);
+    let (plan, _) = solve_with_crew(&counts, crew);
+    assert_eq!(plan.units.get("rock__by0"), Some(&1));
+    assert_eq!(plan.units.get("rock__by1"), Some(&3));
 }
 
 // A Heat Furnace needs a Fire Aniimo on it all day. Without one, Sugarcane (which wants Scorching)

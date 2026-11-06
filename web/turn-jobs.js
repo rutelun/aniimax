@@ -66,7 +66,20 @@ export function allocateTurnFacilities(steps, ownedFor, takesTurns) {
     steps.filter(step => facilities.has(step.facility)).forEach(step => {
         rowsByFacility.set(step.facility, [...(rowsByFacility.get(step.facility) || []), step]);
     });
-    return new Map([...rowsByFacility].map(([facility, rows]) => [facility, allocateTurnJobs(rows, ownedFor(facility))]));
+    return new Map([...rowsByFacility].map(([facility, rows]) => {
+        const powered = new Map();
+        const normal = rows.filter(row => {
+            if (row.electric_level == null) return true;
+            if (!powered.has(row.electric_level)) powered.set(row.electric_level, []);
+            powered.get(row.electric_level).push(row);
+            return false;
+        });
+        const poweredJobs = [...powered.values()].flatMap(group => {
+            const busy = group.reduce((sum, row) => sum + (row.busy_units ?? row.facility_count), 0);
+            return allocateTurnJobs(group, Math.max(0, Math.ceil(busy - 1e-6)));
+        });
+        return [facility, [...poweredJobs, ...allocateTurnJobs(normal, ownedFor(facility) - poweredJobs.length)]];
+    }));
 }
 
 // Match the facility-plan table to the redistributed physical units. Producing recipe rows remain

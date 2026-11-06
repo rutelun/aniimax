@@ -3,8 +3,6 @@
 // browser offer to kill the tab; every wasm call is dispatched through here instead, so the main
 // thread stays free to paint a progress indicator while a solve is in flight. See `web/app.js`'s
 // `callWorker` for the request/response contract this expects.
-import highsModule from './vendor/highs/highs.mjs';
-
 // The page starts this worker as `worker.js?load=<page load time>` (see app.js), and the wasm
 // module is loaded with the same query and a revalidated fetch, so a page never pairs new page
 // code with an older cached solver.
@@ -30,6 +28,7 @@ async function newHighs() {
             return r.arrayBuffer();
         });
     }
+    const { default: highsModule } = await import('./vendor/highs/highs.mjs' + load);
     return highsModule({ wasmBinary: await highsBytes, print: () => {}, printErr: line => console.warn(line) });
 }
 
@@ -52,7 +51,7 @@ const STRICT_OPTIONS = { ...SOLVE_OPTIONS, mip_feasibility_tolerance: 1e-9 };
 // Solves one exact-planner model with HiGHS: `{ values, proven, objective }`, or null if HiGHS
 // found no plan at all. `objective` leaves out the model's tie-break (see `BUILDING_TIE_BREAK` in
 // exact.rs), so it's what the plan really makes and can be a floor for a later solve.
-async function solveModel(problem, options = SOLVE_OPTIONS) {
+async function solveModel(problem, options = SOLVE_OPTIONS, infeasibleMessage) {
     let result = (await newHighs()).solve(problem.lp, options);
     if (result.Status === 'Infeasible') {
         // HiGHS's presolve can call a tightly constrained model infeasible when it isn't (seen on
@@ -60,12 +59,22 @@ async function solveModel(problem, options = SOLVE_OPTIONS) {
         // settles it.
         result = (await newHighs()).solve(problem.lp, { ...options, presolve: 'off' });
     }
+    if (result.Status === 'Infeasible' && infeasibleMessage) throw new Error(infeasibleMessage);
     const proven = result.Status === 'Optimal';
     if (!proven && result.Status !== 'Time limit reached') return null;
     // Out of time before finding any plan at all.
     if (!Number.isFinite(result.ObjectiveValue) || !result.Columns) return null;
     const values = columnValues(problem, result);
     return { values, proven, objective: result.ObjectiveValue + tiebreakOf(problem, values) };
+}
+
+function hasSeasonCropMinimums(input) {
+    return Boolean(input.season && Object.values(input.season_crop_minimums || {}).some(count => count > 0));
+}
+
+function hasMaterialProcessors(input) {
+    return ['Woodworking Bench', 'Chimney Kiln'].some(facility =>
+        (input.facilities?.[facility] ?? [{ count: 1 }]).some(tier => tier.count > 0));
 }
 
 function columnValues(problem, result) {
@@ -95,22 +104,36 @@ function tiebreakOf(problem, values) {
 // as it stands, so they take it from here.
 async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}) {
     const { exact_byproduct_problems, exact_priority_problem, exact_level_up_problem, exact_problem, exact_plan } = pkg;
+    const input = JSON.parse(payload);
     const stage = { floors: [] };
+    const solve = problem => solveModel(problem, SOLVE_OPTIONS,
+        hasSeasonCropMinimums(input) && !stage.floors.length && !stage.pace
+            ? 'The minimum event crop plots cannot be met. Check plot levels, growing conditions, and the seed budget.'
+            : undefined);
     let allProven = true;
+    if (!input.level_up_strategy && (input.crop_variety || input.season)) {
+        step('crop_variety', 'start');
+        const model = JSON.parse(pkg.exact_crop_variety_problem(payload));
+        const most = model.lp ? await solve(model) : { objective: 0, proven: true };
+        if (!most) throw new Error('no plan found for crop and tree variety');
+        stage.crop_variety = Math.round(most.objective);
+        allProven &&= most.proven;
+        step('crop_variety', 'done', most.proven);
+    }
     for (const problem of JSON.parse(exact_byproduct_problems(payload))) {
-        const most = await solveModel(problem);
+        const most = await solve(problem);
         if (!most) throw new Error(`no plan found for the most ${problem.resource}`);
         allProven &&= most.proven;
         stage.floors.push([problem.resource, most.objective]);
     }
     // The player's priorities, in order: each is made as much as the ones before it allow, and
     // the coin solve after them has to keep all of it up.
-    for (const target of JSON.parse(payload).priorities || []) {
+    for (const target of input.priorities || []) {
         step(`priority:${target}`, 'start');
         const alone = stage.floors.length === 0;
         const priority = JSON.parse(exact_priority_problem(payload, JSON.stringify(stage), target));
         if (!priority.lp) throw new Error('this setup isn\'t covered by the exact planner');
-        const most = await solveModel(priority);
+        const most = await solve(priority);
         step(`priority:${target}`, 'done', most?.proven);
         if (!most) throw new Error(`no plan found for the most ${target}`);
         if (alone) first({ measure: target, objective: most.objective, proven: most.proven });
@@ -122,7 +145,7 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}) {
     const levelUp = JSON.parse(exact_level_up_problem(payload));
     if (levelUp.lp) {
         step('level_up', 'start');
-        const fastest = await solveModel(levelUp);
+        const fastest = await solve(levelUp);
         step('level_up', 'done', fastest?.proven);
         if (!fastest) throw new Error('no plan found for the level-up');
         if (stage.floors.length === 0) first({ measure: 'level_up', objective: fastest.objective, proven: fastest.proven });
@@ -140,10 +163,9 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}) {
     // 20); the Priorities strategy ranks the points itself instead. Without this, season items only made it into a level-up
     // plan when they happened to pay the most coins: the Harvest Moon Festival's did, Magical
     // Wonder Night's (behind a Sunlamp, worth less) never do.
-    const input = JSON.parse(payload);
     if (input.level_up_strategy && input.season) {
         step('season', 'start');
-        const most = await solveModel(JSON.parse(exact_priority_problem(payload, JSON.stringify(stage), SEASON_POINTS)));
+        const most = await solve(JSON.parse(exact_priority_problem(payload, JSON.stringify(stage), SEASON_POINTS)));
         step('season', 'done', most?.proven);
         if (!most) throw new Error('no plan found for the most season points');
         allProven &&= most.proven;
@@ -154,7 +176,7 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}) {
     if (!problem.lp) throw new Error('this setup isn\'t covered by the exact planner');
     step('final', 'start');
     const alone = stage.floors.length === 0 && !stage.pace;
-    let solved = await solveModel(problem);
+    let solved = await solve(problem);
     if (!solved) throw new Error('the solver found no plan');
     if (alone) first({ measure: 'coins', objective: solved.objective, proven: solved.proven });
     let proven = solved.proven && allProven;
@@ -167,10 +189,28 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}) {
         }
     }
     step('final', 'done', solved.proven);
+    const coins = solved.objective;
+    let materialWork;
+    if (hasMaterialProcessors(input)) {
+        const workStage = stage.pace ? { ...stage, coins } : { ...stage, floors: [...stage.floors, [input.currency || 'coins', coins]] };
+        const workJson = JSON.stringify({ ...workStage, maximize_material_work: true });
+        const workProblem = JSON.parse(exact_problem(payload, workJson));
+        if (workProblem.lp) {
+            step('materials', 'start');
+            const worked = await solveModel(workProblem);
+            step('materials', 'done', worked?.proven);
+            if (!worked) throw new Error('no plan found for the Woodworking Bench and Chimney Kiln workload');
+            allProven &&= solved.proven;
+            materialWork = worked.objective;
+            stageJson = workJson;
+            problem = workProblem;
+            solved = worked;
+            proven &&= worked.proven;
+        }
+    }
     if (stage.pace) {
-        // Keeping that pace and those coins, spare Bench and Kiln time goes to the level-up. If
-        // that solve fails, the plan above already has the pace and coins, so it stands.
-        const stockStage = { ...stage, coins: solved.objective };
+        // Prefer the materials the level-up needs while keeping the maximum workload.
+        const stockStage = { ...stage, coins, material_work: materialWork };
         const stockJson = JSON.stringify(stockStage);
         step('stock_up', 'start');
         const stocked = await solveModel(JSON.parse(exact_problem(payload, stockJson)));
@@ -287,7 +327,10 @@ self.onmessage = async (event) => {
             } catch (error) {
                 fallbackReason = error && error.message ? error.message : String(error);
                 // The backup planner doesn't know the player's roster, so a roster plan stops here.
-                if (JSON.parse(payload).aniimo?.startsWith('roster')) {
+                const input = JSON.parse(payload);
+                if (input.electricity || hasSeasonCropMinimums(input) || hasMaterialProcessors(input) || (!input.level_up_strategy && (input.crop_variety || input.season))) {
+                    result = JSON.stringify({ success: false, error: fallbackReason });
+                } else if (input.aniimo?.startsWith('roster')) {
                     console.warn('Exact planner failed on a roster:', error);
                     result = JSON.stringify({ success: false, error: `No plan found with these Aniimo: ${fallbackReason}.` });
                 } else {

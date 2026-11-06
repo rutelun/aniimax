@@ -118,12 +118,15 @@
                     </div>
 
                     <div id="priorities-config" style="display: none;">
+                        <label><input type="checkbox" id="crop-variety"> Crop and Tree Variety</label>
+                        <p id="crop-variety-config" class="hint" hidden>Grow as many different resources as possible at each owned Farmland and Woodland level, then apply your priorities. An active season gets space for its crops first.</p>
                         <p class="hint">Switch on what you want and drag to rank it. The plan makes as much of the first as it can, then as much of the next as that allows, and so on. Whatever's left always goes to Home Coins.</p>
                         <ol class="priority-list" id="priority-list"></ol>
                     </div>
 
                     <div id="level-up-config">
-                        <p class="hint">Gets everything your next RV level costs as soon as possible, then earns as many Home Coins as that leaves room for.</p>
+                        <p class="hint" id="level-up-strategy-hint">Gets everything your next RV level costs as soon as possible, then earns as many Home Coins as that leaves room for.</p>
+                        <p class="hint" id="level-up-preview-hint" hidden>Estimates the RV level-up from this plan's production rates and your stock.</p>
                         <div class="input-row" id="level-up-target-row">
                             <div class="input-field">
                                 <label for="level-up-target">Level up to RV</label>
@@ -133,7 +136,7 @@
                         <div id="level-up-cost"></div>
                         <details class="explain" id="level-up-stock">
                             <summary>What you already have</summary>
-                            <p class="hint small">Counts toward the level-up. Wood Blocks, Mineral Sand and lower tiers get processed up.</p>
+                            <p class="hint small" id="level-up-stock-hint">Counts toward the level-up. Wood Blocks, Mineral Sand and lower tiers get processed up.</p>
                             <div class="stock-grid" id="level-up-stock-grid"></div>
                         </details>
                     </div>
@@ -155,6 +158,11 @@
                             <label for="season-currency-per-day" id="season-currency-label"></label>
                             <input type="number" id="season-currency-per-day" min="0" placeholder="No limit">
                         </div>
+                        <div id="season-crop-minimums" hidden>
+                            <p class="assume-title">Minimum Plots per Event Crop</p>
+                            <p class="hint small">The plan reserves at least this many plots. A tight seed budget can reduce the harvest rate.</p>
+                            <div class="stock-grid" id="season-crop-minimum-fields"></div>
+                        </div>
                         <p class="assume-title">Recipe Notes</p>
                         <div class="special-grid" id="season-notes"></div>
                     </div>
@@ -174,6 +182,27 @@
                     <datalist id="skip-options"></datalist>
                     <div class="skip-chips" id="skip-chips"></div>
                 </details>
+                <div class="season" id="electricity-section">
+                    <label><input type="checkbox" id="electricity-on"> E-mode</label>
+                    <div id="electricity-config" hidden>
+                        <p class="hint small">Use the power available on your connected grid. Each 600 W of load needs one Lightning Aniimo. Hauling is counted separately.</p>
+                        <div class="stock-grid">
+                            <div class="input-field">
+                                <label for="electricity-watts">Available power (W)</label>
+                                <input type="number" id="electricity-watts" min="0" max="4294967295" step="1" value="0">
+                            </div>
+                            <div class="input-field">
+                                <label for="electricity-percent">Grid supply (%)</label>
+                                <input type="number" id="electricity-percent" min="1" max="120" step="1" value="120" required>
+                            </div>
+                            <div class="input-field">
+                                <label for="electricity-aniimo-limit">Max working Aniimo (My Aniimo)</label>
+                                <input type="number" id="electricity-aniimo-limit" min="0" max="4294967295" step="1" placeholder="No limit">
+                            </div>
+                        </div>
+                        <p class="hint small">My Aniimo compares normal work and E-mode across the whole plan. Best and Minimum use E-mode when it matches or beats normal recipe speed.</p>
+                    </div>
+                </div>
                 <button id="optimize-btn" class="optimize-btn">
                     <span class="btn-text">Find the best plan</span>
                     <span class="btn-loading" style="display: none;">Solving...</span>
@@ -189,6 +218,7 @@
                 <div id="error-message" class="card error-message" style="display: none;"></div>
 
                 <div id="results-content">
+                    <p class="hint small" id="power-used" hidden></p>
                     <div class="card aniimo-card" id="aniimo-card">
                         <div class="card-head">
                             <button type="button" class="collapse-toggle" id="aniimo-toggle" aria-expanded="false" aria-controls="aniimo-body">
@@ -201,6 +231,7 @@
                                 <label title="Plan with the Aniimo you actually have"><input type="radio" name="aniimo-setup" id="aniimo-custom" value="custom"> My Aniimo</label>
                             </div>
                         </div>
+                        <div id="roster-summary" hidden></div>
                         <div class="aniimo-setup-panel" id="aniimo-setup-panel">
                             <p class="hint small" id="aniimo-setup-hint"></p>
                             <div class="ability-levels" id="ability-levels"></div>
@@ -221,8 +252,7 @@
                     </div>
 
                     <div class="card rate-card">
-                        <!-- A level-up plan leads with the level-up, and its table's rate column
-                             takes over the unit select and the coin rate below. -->
+                        <!-- Shows the upgrade estimate. In Level up mode the table replaces the coin rate below. -->
                         <div class="level-up-card" id="level-up-card" style="display: none;">
                             <span class="summary-label" id="level-up-label">Level-Up</span>
                             <div class="summary-value" id="level-up-time">-</div>
@@ -542,6 +572,6 @@
             }
         });
     </script>
-    <script type="module" src="app.js?v=magical-wonder-night"></script>
+    <script type="module" src="app.js?v=my-aniimo-reserves"></script>
 </body>
 </html>

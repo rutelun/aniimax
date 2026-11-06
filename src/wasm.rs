@@ -749,6 +749,9 @@ pub struct JsPlanInput {
     /// planner then finds the soonest level-up, earning as much as it leaves room for.
     #[serde(default)]
     pub level_up: Option<crate::exact::LevelUp>,
+    /// Report this RV target against a finished plan, without adding it to the solver's goals.
+    #[serde(default)]
+    pub level_up_preview: Option<crate::exact::LevelUp>,
     /// Recipes the plan may not use, for comparing against a plan someone suggests. Not on the page.
     #[serde(default)]
     pub exclude: Vec<String>,
@@ -757,6 +760,8 @@ pub struct JsPlanInput {
     /// before it allow.
     #[serde(default)]
     pub priorities: Vec<String>,
+    #[serde(default)]
+    pub crop_variety: bool,
     /// The season whose recipes plans may use, by id (e.g. `"magical_wonder_night"`; see
     /// [`crate::data::SEASON_FILES`]), or `None` outside one. Its points are the priority
     /// `"season_points"` (see [`crate::models::SEASON_POINTS`]).
@@ -766,6 +771,11 @@ pub struct JsPlanInput {
     /// spend on seeds; `None` for no limit.
     #[serde(default)]
     pub season_currency_per_day: Option<f64>,
+    /// Minimum active plots by crop name, for the active season.
+    #[serde(default)]
+    pub season_crop_minimums: std::collections::BTreeMap<String, u32>,
+    #[serde(default)]
+    pub electricity: Option<crate::power::Electricity>,
 }
 
 /// The player's Aniimo, and what the page knows of the facilities they work (see
@@ -806,6 +816,7 @@ impl JsRoster {
                     personalities: m.personalities.clone(),
                 })
                 .collect(),
+            assumed_from: None,
             residents: self.residents.iter().cloned().collect(),
             environment: self.environment.clone(),
             personalities: self.personalities.clone(),
@@ -858,6 +869,8 @@ pub struct JsPlanStep {
     /// roster sent in [`JsPlanInput::roster`]).
     #[serde(default)]
     pub crew: Option<usize>,
+    #[serde(default)]
+    pub electric_level: Option<u32>,
 }
 
 /// Aniimo work a plan row creates for one ability: how many Aniimo of that ability and level it
@@ -908,6 +921,9 @@ fn aniimo_tasks_for(
         return Vec::new();
     };
     if step.status != PlanStepStatus::Producing {
+        return Vec::new();
+    }
+    if step.electric_level.is_some() {
         return Vec::new();
     }
     if let Some((ability, _)) = requirements.get(item) {
@@ -1019,6 +1035,7 @@ impl From<crate::models::PlanStep> for JsPlanStep {
             busy_units: s.busy_units,
             aniimo_tasks: Vec::new(),
             crew: s.crew,
+            electric_level: s.electric_level,
         }
     }
 }
@@ -1036,6 +1053,7 @@ impl From<JsPlanStep> for crate::models::PlanStep {
             environment: s.environment,
             busy_units: s.busy_units,
             crew: s.crew,
+            electric_level: s.electric_level,
         }
     }
 }
@@ -1220,6 +1238,8 @@ pub struct JsProductionPlan {
     /// Set for a level-up plan: how long the level-up takes.
     #[serde(default)]
     pub level_up: Option<JsLevelUpReport>,
+    #[serde(default)]
+    pub level_up_preview: Option<JsLevelUpReport>,
     /// What the plan makes of each priority it was asked for, in order.
     #[serde(default)]
     pub priorities: Vec<JsPriority>,
@@ -1230,6 +1250,15 @@ pub struct JsProductionPlan {
     /// building kind a member staffs.
     #[serde(default)]
     pub staffing: Vec<(String, usize, f64)>,
+    /// Assumed roster pools, as `[member index, ability, level, capacity]`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub assumed_aniimo: Vec<(usize, String, u32, u32)>,
+    #[serde(default)]
+    pub power_used: Option<f64>,
+    #[serde(default)]
+    pub power_generators: u32,
+    #[serde(default)]
+    pub crop_staffing: bool,
 }
 
 /// What a plan makes of one priority.
@@ -1250,8 +1279,8 @@ pub struct JsPriority {
 /// How long a level-up plan takes to cover the level-up's cost.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsLevelUpReport {
-    /// Seconds until everything the level-up costs is in stock.
-    pub seconds: f64,
+    /// Seconds until everything is in stock, or `None` if this plan cannot cover a cost.
+    pub seconds: Option<f64>,
     /// One entry per thing the level-up costs.
     pub requirements: Vec<JsLevelUpRequirement>,
     /// Anything else left over when it's ready (unprocessed Wood Blocks or Mineral Sand, a lower
@@ -1289,9 +1318,14 @@ fn empty_production_plan(success: bool, error: Option<String>) -> JsProductionPl
         upper_bound: None,
         unverified: vec![],
         level_up: None,
+        level_up_preview: None,
         priorities: vec![],
         season_points: None,
         staffing: Vec::new(),
+        assumed_aniimo: Vec::new(),
+        power_used: None,
+        power_generators: 0,
+        crop_staffing: false,
     }
 }
 
@@ -1330,6 +1364,10 @@ pub fn find_plan(input_json: &str, on_progress: Option<js_sys::Function>) -> Str
         Ok(p) => p,
         Err(error) => return error,
     };
+    if prepared.facility_counts.power().is_some() || !prepared.facility_counts.season_crop_minimums().is_empty() {
+        return serde_json::to_string(&empty_production_plan(false, Some("This setup requires the exact planner.".into())))
+            .unwrap_or_default();
+    }
 
     // `js_sys::Function::call1` takes `&JsValue` for both the `this` receiver and the argument;
     // errors (e.g. the JS callback itself throwing) are deliberately swallowed with `let _ =`,
@@ -1349,7 +1387,28 @@ pub fn find_plan(input_json: &str, on_progress: Option<js_sys::Function>) -> Str
         prepared.input.prioritize_byproducts,
         report_ref,
     ) {
-        Some(plan) => serde_json::to_string(&prepared.to_js(plan, None)).unwrap_or_default(),
+        Some(plan) => {
+            // The backup planner tracks raw byproducts. Processed material rates need the exact planner.
+            let preview = prepared.input.level_up_preview.as_ref()
+                .filter(|_| {
+                    plan.currency == "coins"
+                        && prepared.facility_counts.get_count("Woodworking Bench") == 0
+                        && prepared.facility_counts.get_count("Chimney Kiln") == 0
+                })
+                .map(|target| {
+                    let net = crate::models::BYPRODUCT_ITEMS.into_iter().map(|(resource, item)| {
+                        let rate = plan.byproduct_rates.iter()
+                            .filter(|(name, _, _)| name == resource)
+                            .map(|(_, rate, _)| rate)
+                            .sum();
+                        (item.to_string(), rate)
+                    }).collect();
+                    level_up_report(plan.rate_per_second, &net, &prepared.items, target, None)
+                });
+            let mut js = prepared.to_js(plan, None);
+            js.level_up_preview = preview;
+            serde_json::to_string(&js).unwrap_or_default()
+        }
         None => no_plan(),
     }
 }
@@ -1404,7 +1463,7 @@ pub fn exact_priority_problem(input_json: &str, stage_json: &str, target: &str) 
                 target,
                 &prepared.facility_counts,
                 &prepared.module_levels,
-                crate::exact::Goal::Earn { floors: &stage.floors },
+                stage.goal(&prepared.input),
             ),
         },
         Err(_) => Default::default(),
@@ -1437,6 +1496,8 @@ pub fn exact_level_up_problem(input_json: &str) -> String {
 /// What the earlier solves settled, for [`exact_problem`] and [`exact_plan`].
 #[derive(Debug, Clone, Default, Deserialize)]
 struct JsStage {
+    /// Planting coverage score to preserve through all subsequent solves.
+    crop_variety: Option<u32>,
     /// `[[byproduct or currency, per second], ...]` from [`exact_byproduct_problems`], the
     /// priorities, or during a level-up the season's points.
     #[serde(default)]
@@ -1449,16 +1510,51 @@ struct JsStage {
     /// [`crate::exact::Goal::StockUp`]).
     #[serde(default)]
     coins: Option<f64>,
+    /// Fill the Woodworking Bench and Chimney Kiln after the main plan goals are met.
+    #[serde(default)]
+    maximize_material_work: bool,
+    /// Keep the workload found by that solve while stocking the level-up's materials.
+    #[serde(default)]
+    material_work: Option<f64>,
 }
 
 impl JsStage {
+    fn with_material_work<'a>(&self, base: &'a crate::exact::Goal<'a>) -> crate::exact::Goal<'a> {
+        if self.maximize_material_work || self.material_work.is_some() {
+            crate::exact::Goal::MaterialWork { base, minimum: self.material_work }
+        } else {
+            *base
+        }
+    }
+
     fn goal<'a>(&'a self, input: &'a JsPlanInput) -> crate::exact::Goal<'a> {
+        if let Some(minimum) = self.crop_variety {
+            return crate::exact::Goal::EarnWithCropVariety {
+                minimum,
+                seasonal_only: !input.crop_variety,
+                floors: &self.floors,
+            };
+        }
         match (&input.level_up, self.pace, self.coins) {
             (Some(level_up), Some(pace), Some(coins)) => crate::exact::Goal::StockUp(level_up, pace, coins, &self.floors),
             (Some(level_up), Some(pace), None) => crate::exact::Goal::EarnWhileLevelingUp(level_up, pace, &self.floors),
             _ => crate::exact::Goal::Earn { floors: &self.floors },
         }
     }
+}
+
+/// The first crop variety solve. The caller passes the number found to `exact_problem` as
+/// `crop_variety` to earn as much as possible while keeping that coverage.
+#[wasm_bindgen]
+pub fn exact_crop_variety_problem(input_json: &str) -> String {
+    let Ok(prepared) = PreparedInput::from_json(input_json) else { return lp_json(&Default::default()) };
+    lp_json(&crate::exact::write_lp(
+        &prepared.items,
+        &prepared.input.currency,
+        &prepared.facility_counts,
+        &prepared.module_levels,
+        crate::exact::Goal::CropVariety { seasonal_only: !prepared.input.crop_variety },
+    ))
 }
 
 /// The exact planner's model for this input (see [`crate::exact`]), for the caller to solve with
@@ -1479,7 +1575,7 @@ pub fn exact_problem(input_json: &str, stage_json: &str) -> String {
             &prepared.input.currency,
             &prepared.facility_counts,
             &prepared.module_levels,
-            stage.goal(&prepared.input),
+            stage.with_material_work(&stage.goal(&prepared.input)),
         ),
         _ => Default::default(),
     };
@@ -1523,7 +1619,7 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
         &currency,
         &prepared.facility_counts,
         &prepared.module_levels,
-        goal,
+        stage.with_material_work(&goal),
         &result.values,
         result.proven,
         result.bound,
@@ -1542,11 +1638,27 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
             .unwrap_or_default();
     }
     let proof = (exact.proven_optimal, exact.upper_bound);
-    let report = level_up.and_then(|level_up| level_up_report(&exact, &prepared.items, level_up, &currency));
+    let report_at = |target, seconds| {
+        let net = crate::exact::net_rates(&exact, &prepared.items);
+        level_up_report(exact.rate_per_second, &net, &prepared.items, target, seconds)
+    };
+    let report = level_up.and_then(|target| {
+        let pace = exact.pace.filter(|p| *p > 0.0)?;
+        Some(report_at(target, Some(crate::exact::PACE_UNIT / pace)))
+    });
+    let preview = prepared.input.level_up_preview.as_ref().filter(|_| currency == "coins")
+        .map(|target| report_at(target, None));
     let plan = crate::exact::to_production_plan(&exact, &prepared.items, &currency, &prepared.facility_counts);
     let mut js = prepared.to_js(plan, Some(proof));
     js.level_up = report;
+    js.level_up_preview = preview;
     js.staffing = exact.staffing.clone();
+    if let Some(power) = prepared.facility_counts.power() {
+        js.power_used = Some(crate::exact::rated_power_draw(&exact, &prepared.items) * power.grid.percent as f64 / 100.0);
+        js.power_generators = crate::power::generator_workers(js.power_used.unwrap_or(0.0));
+        js.crop_staffing = power.grid.max_aniimo.is_some();
+        js.staffing.extend(exact.crop_staffing.iter().map(|(ability, _, member, share)| (format!("Crops ({ability})"), *member, *share)));
+    }
     if prepared.input.season.is_some() {
         js.season_points = Some(crate::exact::target_rate(&exact, &prepared.items, crate::models::SEASON_POINTS));
     }
@@ -1564,32 +1676,34 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
     serde_json::to_string(&js).unwrap_or_default()
 }
 
-/// How long `exact`, a level-up plan, takes to cover each of the level-up's costs.
+/// How long the plan takes to cover each cost. An optimized level-up uses its solved pace,
+/// which can account for lower-tier stock. A preview uses the finished plan's net rates.
 fn level_up_report(
-    exact: &crate::exact::ExactPlan,
+    coin_rate: f64,
+    net: &std::collections::BTreeMap<String, f64>,
     items: &[ProductionItem],
     level_up: &crate::exact::LevelUp,
-    currency: &str,
-) -> Option<JsLevelUpReport> {
-    let pace = exact.pace.filter(|p| *p > 0.0)?;
-    let net = crate::exact::net_rates(exact, items);
-    let requirements = level_up
+    seconds_at_pace: Option<f64>,
+) -> JsLevelUpReport {
+    let requirements: Vec<_> = level_up
         .cost
         .iter()
         .map(|(name, need)| {
             let have = level_up.stock.iter().filter(|(n, _)| n == name).fold(0.0, |sum, (_, a)| sum + a);
             let per_second =
-                if name == currency { exact.rate_per_second } else { net.get(name).copied().unwrap_or(0.0).max(0.0) };
+                if name == "coins" { coin_rate } else { net.get(name).copied().unwrap_or(0.0).max(0.0) };
             let short = (need - have).max(0.0);
             let seconds = if short <= 0.0 {
                 Some(0.0)
             } else {
-                (per_second > 0.0).then(|| short / per_second)
+                (per_second > 1e-9).then(|| short / per_second)
             };
             JsLevelUpRequirement { name: name.clone(), need: *need, have, per_second, seconds }
         })
         .collect();
-    let seconds = crate::exact::PACE_UNIT / pace;
+    let seconds = seconds_at_pace.or_else(|| {
+        requirements.iter().try_fold(0.0_f64, |slowest, item| Some(slowest.max(item.seconds?)))
+    });
     let level_up_item = |name: &str| {
         crate::models::BYPRODUCT_ITEMS.iter().any(|(_, item)| *item == name)
             || items.iter().any(|i| i.name == name && crate::exact::takes_turns(i))
@@ -1602,11 +1716,11 @@ fn level_up_report(
         .filter(|name| level_up_item(name) && !level_up.cost.iter().any(|(n, _)| n == name))
         .filter_map(|name| {
             let have = level_up.stock.iter().filter(|(n, _)| n == name).fold(0.0, |sum, (_, a)| sum + a);
-            let left = have + net.get(name).copied().unwrap_or(0.0) * seconds;
+            let left = have + net.get(name).copied().unwrap_or(0.0) * seconds?;
             (left >= 1.0).then(|| (name.to_string(), left))
         })
         .collect();
-    Some(JsLevelUpReport { seconds, requirements, leftovers })
+    JsLevelUpReport { seconds, requirements, leftovers }
 }
 
 fn no_plan() -> String {
@@ -1660,8 +1774,44 @@ impl PreparedInput {
         let requirements = embedded_aniimo_requirements();
         let grower_steps = embedded_grower_steps();
         let mut facility_counts = facility_counts;
+        let mut grid = input.electricity.clone().filter(|grid| grid.watts > 0 || grid.max_aniimo.is_some());
+        if let Some(grid) = &mut grid {
+            grid.percent = grid.percent.clamp(1, 120);
+            if !input.aniimo.as_deref().is_some_and(|setup| setup.starts_with("roster")) {
+                grid.max_aniimo = None;
+            }
+        }
+        let power_originals = grid.as_ref().map(|_| items.clone());
+        if input.season.is_some() {
+            facility_counts.set_season_crop_minimums(input.season_crop_minimums.clone());
+        }
         let crew = match (input.aniimo.as_deref(), &input.roster) {
-            (Some(name), Some(roster)) if name.starts_with("roster") => Some(roster.crew()),
+            (Some(name), Some(roster)) if name.starts_with("roster") => {
+                let mut crew = roster.crew();
+                let available = items.iter().filter(|item| {
+                    facility_counts.get_count(&item.facility) > 0
+                        && facility_counts.can_produce(&item.facility, item.facility_level)
+                        && item.module_requirement.as_ref().is_none_or(|(m, l)| module_levels.can_use(m, *l))
+                });
+                let environment = roster.environment.iter()
+                    .filter(|(building, _)| building.as_str() != crate::power::GENERATOR);
+                let generators = grid.as_ref().map_or(0, |power| crate::power::generator_workers(power.watts as f64));
+                let workplaces: std::collections::BTreeSet<_> = available.clone()
+                    .map(|item| item.facility.as_str())
+                    .chain(environment.clone().map(|(building, _)| building.as_str()))
+                    .collect();
+                let capacity = workplaces.into_iter().fold(generators, |sum, facility| {
+                    sum.saturating_add(facility_counts.get_count(facility))
+                });
+                let jobs = available.clone().filter_map(|item| requirements.get(&item.name))
+                    .chain(available.flat_map(|item| grower_steps.get(&item.name).iter()
+                        .map(|job| (job.ability.as_str(), job.min_level))))
+                    .chain(environment.filter(|(building, _)| facility_counts.get_count(building) > 0)
+                        .map(|(_, ability)| (ability.as_str(), 1)))
+                    .chain((generators > 0).then_some(("Lightning", 1)));
+                crew.add_reserve_workers(jobs, capacity);
+                Some(crew)
+            }
             _ => None,
         };
         match (&crew, &setup) {
@@ -1671,6 +1821,10 @@ impl PreparedInput {
             }
             (None, Some(setup)) => requirements.apply(setup, &mut items),
             (None, None) => workers_from(&input.workers).apply(&requirements, &mut items),
+        }
+        if let Some(grid) = grid {
+            crate::power::add_electric_variants(&mut items, power_originals.unwrap_or_default(), &facility_counts, &requirements, &grid);
+            facility_counts.set_power(crate::power::PowerPlan { grid, grower_steps: grower_steps.clone() });
         }
         Ok(PreparedInput { input, facility_counts, module_levels, items, setup, crew, requirements, grower_steps })
     }
@@ -1708,6 +1862,7 @@ impl PreparedInput {
                     _ => None,
                 };
                 let aniimo = from_crew.or_else(|| match (&self.setup, &step.item_name) {
+                    _ if step.electric_level.is_some() => None,
                     (Some(setup), Some(item)) if step.status == crate::models::PlanStepStatus::Producing => {
                         self.requirements.get(item).map(|(ability, _)| {
                             let worker = self.requirements.worker_for_at(item, &step.facility, setup);
@@ -1738,6 +1893,13 @@ impl PreparedInput {
             .collect();
         // The exact planner sets its own (see `exact_plan`); this is for the backup planner's.
         let season_points = self.input.season.is_some().then(|| income_streams.iter().map(|s| s.units_per_second * s.points).sum());
+        let assumed_aniimo = self.crew.as_ref().and_then(|crew| {
+            let first = crew.assumed_from?;
+            Some(crew.members.iter().enumerate().skip(first).filter_map(|(index, member)| {
+                let (ability, level) = member.abilities.iter().next()?;
+                Some((index, ability.clone(), *level, member.count))
+            }).collect())
+        }).unwrap_or_default();
         JsProductionPlan {
             success: true,
             error: None,
@@ -1753,9 +1915,14 @@ impl PreparedInput {
             upper_bound: proof.map(|(_, bound)| bound),
             unverified,
             level_up: None,
+            level_up_preview: None,
             priorities: vec![],
             season_points,
             staffing: Vec::new(),
+            assumed_aniimo,
+            power_used: None,
+            power_generators: 0,
+            crop_staffing: false,
         }
     }
 }

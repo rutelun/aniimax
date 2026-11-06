@@ -73,6 +73,7 @@ pub mod display;
 pub mod exact;
 pub mod models;
 pub mod optimizer;
+pub mod power;
 pub mod wasm;
 
 use serde::{Deserialize, Deserializer};

@@ -44,6 +44,7 @@ use crate::coverage::{
     building_size, pair_options_over_offsets, Offset, PairOption, PairSizes, Zone, ENVIRONMENT_GATED_FACILITIES,
 };
 use crate::models::{byproduct_item, FacilityCounts, ModuleLevels, ProductionItem};
+use crate::power::{electric_level, generator_workers, watts_per_level, GENERATOR, WATTS_PER_GENERATOR_ANIIMO};
 
 /// Whether plans may place two environment buildings to overlap, for the zone their temperatures
 /// make together. Confirmed in game: a plot reached by Scorching and Cool reads Warm and grows a
@@ -136,6 +137,8 @@ pub struct ExactPlan {
     /// When planning with the player's roster, `(building, member, share of its day)` for each
     /// environment building kind a member staffs (see [`crate::models::Crew`]).
     pub staffing: Vec<(String, usize, f64)>,
+    /// Crop work assigned to each roster member under a headcount limit.
+    pub crop_staffing: Vec<(String, u32, usize, f64)>,
 }
 
 /// What a plan optimizes.
@@ -144,6 +147,10 @@ pub enum Goal<'a> {
     /// The most currency per second while making at least each `(byproduct, per second)` floor
     /// (e.g. `("Wood Blocks", 1.2)`), for "prioritize byproducts".
     Earn { floors: &'a [(String, f64)] },
+    /// Grow as many seasonal crops as possible, then diversify ordinary crops at the owned levels.
+    CropVariety { seasonal_only: bool },
+    /// Maximize a currency or byproduct while preserving planting coverage and earlier priorities.
+    EarnWithCropVariety { minimum: u32, seasonal_only: bool, floors: &'a [(String, f64)] },
     /// The most of one byproduct per second (e.g. `"Wood Blocks"`), ignoring currency: how high
     /// that byproduct's floor can go.
     MostOf(&'a str),
@@ -161,14 +168,18 @@ pub enum Goal<'a> {
     /// costs (each as a share of its cost): spare Bench and Kiln time processes whatever the
     /// level-up doesn't need yet, instead of leaving it raw.
     StockUp(&'a LevelUp, f64, f64, &'a [(String, f64)]),
+    /// Maximize time spent processing materials, or keep its maximum while optimizing `base`.
+    MaterialWork { base: &'a Goal<'a>, minimum: Option<f64> },
 }
 
 impl Goal<'_> {
     /// The `(byproduct or currency, per second)` floors a plan for this goal has to keep.
     fn floors(&self) -> &[(String, f64)] {
         match self {
-            Goal::Earn { floors } | Goal::EarnWhileLevelingUp(.., floors) | Goal::StockUp(.., floors) => floors,
-            Goal::MostOf(_) | Goal::LevelUp(_) | Goal::MostWhileLevelingUp(..) => &[],
+            Goal::Earn { floors } | Goal::EarnWithCropVariety { floors, .. } | Goal::EarnWhileLevelingUp(.., floors)
+            | Goal::StockUp(.., floors) => floors,
+            Goal::MaterialWork { base, .. } => base.floors(),
+            Goal::CropVariety { .. } | Goal::MostOf(_) | Goal::LevelUp(_) | Goal::MostWhileLevelingUp(..) => &[],
         }
     }
 }
@@ -222,6 +233,10 @@ pub fn takes_turns(recipe: &ProductionItem) -> bool {
     recipe.sell_currency == "none"
 }
 
+fn processes_upgrade_materials(recipe: &ProductionItem) -> bool {
+    takes_turns(recipe) && matches!(recipe.facility.as_str(), "Woodworking Bench" | "Chimney Kiln")
+}
+
 /// The item a recipe makes: a quick variant makes the regular item, and an uncovered crop (see
 /// [`crate::models::add_uncovered_variants`]) makes the same crop, just slower.
 fn made_item<'a>(name: &'a str, all: &HashMap<&str, &ProductionItem>) -> &'a str {
@@ -238,6 +253,11 @@ enum VarKind<'a> {
     Units(&'a ProductionItem),
     Sold(&'a str),
     Pace,
+    CropVariety,
+    LowerLevelPlots,
+    UnavailableCrop,
+    PoweredUnits,
+    PowerGenerators,
     /// Made beyond what the level-up needs, of one of its costs.
     Extra,
     Environment { building: &'a str, mode: &'a str, types: Vec<&'a str>, option: CoverageOption },
@@ -251,6 +271,8 @@ enum VarKind<'a> {
     /// How much of a roster member's day goes to staffing environment buildings of one kind
     /// (see [`crate::models::Crew`]).
     Staff { building: String, member: usize },
+    CropStaff { ability: String, level: u32, member: usize },
+    ActiveAniimo,
 }
 
 /// One linear constraint: `(variable, coefficient)` terms, comparison, right-hand side.
@@ -279,6 +301,7 @@ struct Model<'a> {
 /// the one with the fewest buildings wins. Each building in use needs an Aniimo, and otherwise
 /// the solver is free to spread three plots over two Heat Furnaces that one would cover.
 const BUILDING_TIE_BREAK: f64 = 1e-5;
+const LOWER_LEVEL_PLOT_TIE_BREAK: f64 = 1e-6;
 
 impl<'a> Model<'a> {
     fn add(&mut self, objective: f64, bounds: (f64, f64), integer: bool, kind: VarKind<'a>) -> usize {
@@ -334,6 +357,31 @@ fn season_budget<T: Copy>(rates: &[(&ProductionItem, T)]) -> Option<(f64, Vec<(T
     budget.map(|b| (b, spent))
 }
 
+fn is_season_crop(recipe: &ProductionItem, crop: &str) -> bool {
+    recipe.season.is_some()
+        && matches!(recipe.facility.as_str(), "Farmland" | "Woodland")
+        && crate::models::base_item_name(&recipe.name) == crop
+}
+
+fn crop_work<'a, T: Copy>(
+    rates: &[(&ProductionItem, T)],
+    steps: &'a crate::models::GrowerSteps,
+    crew: &crate::models::Crew,
+) -> BTreeMap<(&'a str, u32), Vec<(T, f64)>> {
+    let waters = crew.members.iter().any(|m| m.count > 0 && m.level("Water") > 0);
+    let mut work = BTreeMap::<_, Vec<_>>::new();
+    for &(recipe, rate) in rates {
+        for job in steps.get(&recipe.name) {
+            if job.step == "Watering" && !waters {
+                continue;
+            }
+            let time = crate::models::Worker::new(job.min_level, false).seconds_for(job.workload, job.min_level, true);
+            work.entry((job.ability.as_str(), job.min_level)).or_default().push((rate, time));
+        }
+    }
+    work
+}
+
 /// Builds the model for `items` (production times already set for the Aniimo working them).
 fn build_model<'a>(
     items: &'a [ProductionItem],
@@ -342,6 +390,10 @@ fn build_model<'a>(
     module_levels: &ModuleLevels,
     goal: Goal,
 ) -> Model<'a> {
+    let (goal, material_work) = match goal {
+        Goal::MaterialWork { base, minimum } => (*base, Some(minimum)),
+        _ => (goal, None),
+    };
     let all: HashMap<&str, &ProductionItem> = items.iter().map(|i| (i.name.as_str(), i)).collect();
     let recipes: Vec<&ProductionItem> = items
         .iter()
@@ -380,6 +432,22 @@ fn build_model<'a>(
     // The season currency the player can spend on seeds a day.
     if let Some((budget, spent)) = season_budget(&rate_of) {
         model.constrain(spent.into_iter().map(|(v, cost)| (v, cost * PACE_UNIT)).collect(), ComparisonOp::Le, budget);
+    }
+    for (crop, &minimum) in facility_counts.season_crop_minimums() {
+        let mut growing = Vec::new();
+        for (&(recipe, rate), &(_, units)) in rate_of.iter().zip(&units_of) {
+            if is_season_crop(recipe, crop) {
+                // A tight seed budget can slow a crop down. Each assigned plot still has to
+                // grow at least one batch a day, or one natural cycle if that takes longer.
+                model.constrain(vec![(rate, recipe.production_time.max(PACE_UNIT)), (units, -1.0)], ComparisonOp::Ge, 0.0);
+                growing.push((units, 1.0));
+            }
+        }
+        if growing.is_empty() {
+            let unavailable = model.add(0.0, (0.0, 0.0), false, VarKind::UnavailableCrop);
+            growing.push((unavailable, 1.0));
+        }
+        model.constrain(growing, ComparisonOp::Ge, minimum as f64);
     }
 
     // Item balances: made >= used + sold.
@@ -486,8 +554,42 @@ fn build_model<'a>(
     // Owned units per facility, by level: a recipe needing level L can only use units at L or
     // above, and higher-level units can run lower-level recipes too.
     let mut by_facility: BTreeMap<&str, Vec<(u32, usize)>> = BTreeMap::new();
+    let mut powered: BTreeMap<(&str, u32), Vec<(usize, bool)>> = BTreeMap::new();
+    let mut generator_count = None;
     for &(recipe, units) in &units_of {
+        if let Some(level) = electric_level(&recipe.name) {
+            powered.entry((recipe.facility.as_str(), level)).or_default().push((units, takes_turns(recipe)));
+            if takes_turns(recipe) {
+                continue;
+            }
+        }
         by_facility.entry(recipe.facility.as_str()).or_default().push((recipe.facility_level, units));
+    }
+    if let Some(power) = facility_counts.power() {
+        let mut draw = Vec::new();
+        for ((facility, level), vars) in powered {
+            let owned: u32 = facility_counts.tiers(facility).iter().filter(|(_, l)| *l == level).map(|(n, _)| n).sum();
+            let mut exact_tier: Vec<_> = vars.iter().filter(|(_, turns)| !turns).map(|&(v, _)| (v, 1.0)).collect();
+            let mut shared: Vec<_> = vars.iter().filter(|(_, turns)| *turns).map(|&(v, _)| (v, 1.0)).collect();
+            if !shared.is_empty() {
+                // An electric unit can take turns between electric formulas only.
+                let reserved = model.add(0.0, (0.0, owned as f64), true, VarKind::PoweredUnits);
+                shared.push((reserved, -1.0));
+                model.constrain(shared, ComparisonOp::Le, 0.0);
+                by_facility.entry(facility).or_default().push((level, reserved));
+                exact_tier.push((reserved, 1.0));
+            }
+            let watts = watts_per_level(facility) as f64 * level as f64 * power.grid.percent as f64 / 100.0;
+            draw.extend(exact_tier.iter().map(|&(v, _)| (v, watts)));
+            model.constrain(exact_tier, ComparisonOp::Le, owned as f64);
+        }
+        if !draw.is_empty() {
+            model.constrain(draw.clone(), ComparisonOp::Le, power.grid.watts as f64);
+            let generators = model.add(0.0, (0.0, generator_workers(power.grid.watts as f64) as f64), true, VarKind::PowerGenerators);
+            draw.push((generators, -WATTS_PER_GENERATOR_ANIIMO));
+            model.constrain(draw, ComparisonOp::Le, 0.0);
+            generator_count = Some(generators);
+        }
     }
     for (&facility, entries) in &by_facility {
         let mut levels: Vec<u32> = entries.iter().map(|(l, _)| *l).collect();
@@ -646,7 +748,7 @@ fn build_model<'a>(
         }
     }
     match goal {
-        Goal::Earn { .. } => {
+        Goal::Earn { .. } | Goal::EarnWithCropVariety { .. } => {
             // Maximizing a byproduct (Wood Blocks, Mineral Sand) rather than a currency.
             let byproduct = byproduct_terms(currency);
             if !byproduct.is_empty() {
@@ -662,11 +764,13 @@ fn build_model<'a>(
                 model.objective[v] += amount;
             }
         }
-        Goal::LevelUp(_) | Goal::MostWhileLevelingUp(..) | Goal::EarnWhileLevelingUp(..) | Goal::StockUp(..) => {}
+        Goal::CropVariety { .. } | Goal::LevelUp(_) | Goal::MostWhileLevelingUp(..) | Goal::EarnWhileLevelingUp(..)
+        | Goal::StockUp(..) | Goal::MaterialWork { .. } => {}
     }
     // With the player's own Aniimo (see `Crew`), each member's day covers everything it works:
     // a recipe's time per batch at its rate, or at a facility it lives in, the whole day per unit.
     // Every environment building in use is staffed all day by a member with its ability.
+    let mut reserve_work = Vec::new();
     if let Some(crew) = facility_counts.crew() {
         let mut busy: Vec<Vec<(usize, f64)>> = vec![Vec::new(); crew.members.len()];
         for (&(recipe, rate), &(_, units)) in rate_of.iter().zip(&units_of) {
@@ -689,37 +793,199 @@ fn build_model<'a>(
                 *set_up.entry(building.to_string()).or_default().entry(v).or_default() += 1.0;
             }
         }
+        if let Some(generators) = generator_count {
+            set_up.entry(GENERATOR.into()).or_default().insert(generators, 1.0);
+        }
         for (building, used) in set_up {
             // A building with no ability listed needs no Aniimo (as `check_plan` takes it).
-            let Some(ability) = crew.environment.get(&building) else { continue };
+            let ability = if building == GENERATOR { Some("Lightning") } else { crew.environment.get(&building).map(String::as_str) };
+            let Some(ability) = ability else { continue };
             let mut staffed: Vec<(usize, f64)> = used.into_iter().map(|(v, n)| (v, -n)).collect();
             for (member, aniimo) in crew.members.iter().enumerate() {
-                if aniimo.count == 0 || aniimo.level(ability) == 0 {
+                if !crew.can_work(member, ability, 1) {
                     continue;
                 }
-                let staff = model.add(0.0, (0.0, aniimo.count as f64), false, VarKind::Staff { building: building.clone(), member });
+                let staff = model.add(0.0, (0.0, aniimo.count as f64), building == GENERATOR, VarKind::Staff { building: building.clone(), member });
                 staffed.push((staff, 1.0));
                 busy[member].push((staff, 1.0));
             }
             model.constrain(staffed, ComparisonOp::Ge, 0.0);
         }
-        for (member, terms) in busy.into_iter().enumerate() {
-            if !terms.is_empty() {
-                model.constrain(terms, ComparisonOp::Le, crew.members[member].count as f64);
+        let team_limit = facility_counts.power().and_then(|power| power.grid.max_aniimo.map(|n| (power, n)));
+        if let Some((power, _)) = team_limit {
+            for ((ability, level), mut needs) in crop_work(&rate_of, &power.grower_steps, crew) {
+                for (member, aniimo) in crew.members.iter().enumerate().filter(|(member, _)| crew.can_work(*member, ability, level)) {
+                    let staff = model.add(0.0, (0.0, aniimo.count as f64), false,
+                        VarKind::CropStaff { ability: ability.to_string(), level, member });
+                    needs.push((staff, -1.0));
+                    busy[member].push((staff, 1.0));
+                }
+                model.constrain(needs, ComparisonOp::Eq, 0.0);
             }
+        }
+        if let Some(first) = crew.assumed_from {
+            reserve_work.extend(busy.iter().skip(first).flatten().copied());
+        }
+        if let Some((_, limit)) = team_limit {
+            let mut active = Vec::new();
+            for (member, mut terms) in busy.into_iter().enumerate().filter(|(_, terms)| !terms.is_empty()) {
+                let count = model.add(0.0, (0.0, crew.members[member].count as f64), true, VarKind::ActiveAniimo);
+                terms.push((count, -1.0));
+                model.constrain(terms, ComparisonOp::Le, 0.0);
+                active.push((count, 1.0));
+            }
+            if !active.is_empty() {
+                model.constrain(active, ComparisonOp::Le, limit as f64);
+            }
+        } else {
+            for (member, terms) in busy.into_iter().enumerate() {
+                if !terms.is_empty() {
+                    model.constrain(terms, ComparisonOp::Le, crew.members[member].count as f64);
+                }
+            }
+        }
+    }
+    match goal {
+        Goal::CropVariety { seasonal_only } => {
+            add_crop_variety(&mut model, &all, facility_counts, &rate_of, &units_of, seasonal_only, None);
+            return model;
+        }
+        Goal::EarnWithCropVariety { minimum, seasonal_only, .. } => {
+            add_crop_variety(&mut model, &all, facility_counts, &rate_of, &units_of, seasonal_only, Some(minimum));
+        }
+        _ => {}
+    }
+    if let Some(minimum) = material_work {
+        let work = rate_of.iter().filter(|(recipe, _)| processes_upgrade_materials(recipe))
+            .map(|(recipe, rate)| (*rate, recipe.production_time));
+        if let Some(minimum) = minimum {
+            model.constrain(work.collect(), ComparisonOp::Ge, (minimum - 1e-6).max(0.0));
+        } else {
+            model.objective.fill(0.0);
+            for (rate, time) in work {
+                model.objective[rate] = time;
+            }
+        }
+    }
+    // Prefer the listed crew when it can sustain the same output.
+    for (variable, time) in reserve_work {
+        let weight = 1e-6 * time;
+        model.objective[variable] -= weight;
+        model.tiebreak.push((variable, weight));
+    }
+    for &(recipe, rate) in &rate_of {
+        if electric_level(&recipe.name).is_some() {
+            // Prefer the worker-free alternative when the production objective is tied.
+            let weight = 1e-6 * recipe.production_time;
+            model.objective[rate] += weight;
+            model.tiebreak.push((rate, -weight));
         }
     }
     // Of plans otherwise equal, the fewest environment buildings: a pair is two.
     for v in 0..model.kinds.len() {
-        let buildings = match model.kinds[v] {
-            VarKind::Environment { .. } => 1.0,
-            VarKind::EnvironmentPair { .. } => 2.0,
+        let weight = match model.kinds[v] {
+            VarKind::Environment { .. } => BUILDING_TIE_BREAK,
+            VarKind::EnvironmentPair { .. } => 2.0 * BUILDING_TIE_BREAK,
+            VarKind::LowerLevelPlots => LOWER_LEVEL_PLOT_TIE_BREAK,
+            VarKind::PowerGenerators => 1e-7,
             _ => continue,
         };
-        model.objective[v] -= BUILDING_TIE_BREAK * buildings;
-        model.tiebreak.push((v, BUILDING_TIE_BREAK * buildings));
+        model.objective[v] -= weight;
+        model.tiebreak.push((v, weight));
     }
     model
+}
+
+fn count_crop(model: &mut Model, mut harvest: Vec<(usize, f64)>) -> usize {
+    let present = model.add(0.0, (0.0, 1.0), true, VarKind::CropVariety);
+    // Count only crops producing at least a batch per day (or per natural cycle if slower).
+    harvest.push((present, -1.0));
+    model.constrain(harvest, ComparisonOp::Ge, 0.0);
+    present
+}
+
+fn add_crop_variety(
+    model: &mut Model,
+    all: &HashMap<&str, &ProductionItem>,
+    counts: &FacilityCounts,
+    rates: &[(&ProductionItem, usize)],
+    units: &[(&ProductionItem, usize)],
+    seasonal_only: bool,
+    minimum: Option<u32>,
+) {
+    let maximize = minimum.is_none();
+    if maximize {
+        model.objective.fill(0.0);
+    }
+    let mut by_resource = BTreeMap::<&str, Vec<(usize, f64)>>::new();
+    for facility in ["Farmland", "Woodland"].into_iter().filter(|_| !seasonal_only) {
+        let tiers = counts.tiers(facility);
+        let mut plots_by_level = BTreeMap::<u32, Vec<(usize, f64)>>::new();
+        for &(recipe, unit) in units {
+            if recipe.facility == facility && recipe.season.is_none() {
+                plots_by_level.entry(recipe.facility_level).or_default().push((unit, 1.0));
+            }
+        }
+        for (level, mut plots) in plots_by_level {
+            let owned: u32 = tiers.iter().filter(|(_, l)| *l == level).map(|(count, _)| count).sum();
+            if !maximize && tiers.iter().any(|&(count, l)| l > level && count > 0) {
+                // Prefer matching plots when the net earnings tie. A lower-level crop can
+                // still win with a better sale price or by feeding a profitable recipe.
+                let lower = model.add(0.0, (0.0, counts.get_count(facility) as f64), false, VarKind::LowerLevelPlots);
+                plots.push((lower, -1.0));
+                model.constrain(plots, ComparisonOp::Le, owned as f64);
+            }
+            if owned == 0 {
+                continue;
+            }
+            let mut resources = BTreeMap::<&str, Vec<(usize, f64)>>::new();
+            for &(recipe, rate) in rates.iter().filter(|(r, _)| r.facility == facility && r.facility_level == level && r.season.is_none()) {
+                // Quick, uncovered and crew variants of the same resource count once.
+                resources.entry(made_item(&recipe.name, all)).or_default().push((rate, recipe.production_time.max(PACE_UNIT)));
+            }
+            let mut matching_plots = Vec::new();
+            for (resource, harvest) in resources {
+                let present = count_crop(model, harvest);
+                matching_plots.push((present, 1.0));
+                by_resource.entry(resource).or_default().push((present, 1.0));
+            }
+            model.constrain(matching_plots, ComparisonOp::Le, owned as f64);
+        }
+    }
+    // Seasonal crop levels are minimums. Prefer one more event crop over any number of
+    // ordinary crops when land, the required environment, or the seed budget is limited.
+    let seasonal_weight = (by_resource.len() + 1) as f64;
+    let mut seasonal = BTreeMap::<&str, Vec<(usize, f64)>>::new();
+    for &(recipe, rate) in rates {
+        if recipe.season.is_some() && matches!(recipe.facility.as_str(), "Farmland" | "Woodland") {
+            seasonal.entry(made_item(&recipe.name, all)).or_default().push((rate, recipe.production_time.max(PACE_UNIT)));
+        }
+    }
+    let mut covered = Vec::new();
+    for harvest in seasonal.into_values() {
+        covered.push((count_crop(model, harvest), seasonal_weight));
+    }
+    for mut matches in by_resource.into_values() {
+        let resource = if matches.len() == 1 {
+            matches[0].0
+        } else {
+            // A regular crop and its quick variant may be unlocked at different owned levels.
+            let resource = model.add(0.0, (0.0, 1.0), true, VarKind::CropVariety);
+            matches.push((resource, -1.0));
+            model.constrain(matches, ComparisonOp::Ge, 0.0);
+            resource
+        };
+        covered.push((resource, 1.0));
+    }
+    match minimum {
+        None => {
+            for (resource, weight) in covered {
+                model.objective[resource] = weight;
+            }
+        }
+        Some(minimum) if minimum > 0 => model.constrain(covered, ComparisonOp::Ge, minimum as f64),
+        Some(_) => {}
+    }
 }
 
 impl Model<'_> {
@@ -977,10 +1243,12 @@ fn plan_from(model: &Model, value: f64, upper_bound: f64, proven_optimal: bool, 
     let mut pairs: Vec<ExactPair> = Vec::new();
     let mut pace = None;
     let mut staffing = Vec::new();
+    let mut crop_staffing = Vec::new();
     for (kind, &v) in model.kinds.iter().zip(values) {
         match kind {
             VarKind::Pace => pace = Some(v),
             VarKind::Staff { building, member } if v > 1e-9 => staffing.push((building.clone(), *member, v)),
+            VarKind::CropStaff { ability, level, member } if v > 1e-9 => crop_staffing.push((ability.clone(), *level, *member, v)),
             VarKind::Rate(recipe) if v > 1e-9 => {
                 recipe_rates.insert(recipe.name.clone(), v);
             }
@@ -1045,6 +1313,7 @@ fn plan_from(model: &Model, value: f64, upper_bound: f64, proven_optimal: bool, 
         pairs,
         pace,
         staffing,
+        crop_staffing,
     }
 }
 
@@ -1081,7 +1350,9 @@ pub fn check_plan(
             return Err(format!("{name} runs {rate}/s but has {units} units at {}s each", recipe.production_time));
         }
         let in_use = if takes_turns(recipe) { rate * recipe.production_time } else { units as f64 };
-        units_at.entry(recipe.facility.as_str()).or_default().push((recipe.facility_level, in_use));
+        if electric_level(name).is_none() {
+            units_at.entry(recipe.facility.as_str()).or_default().push((recipe.facility_level, in_use));
+        }
         if let Some(environment) = recipe.environment.as_deref() {
             *plots_needing.entry((recipe.facility.as_str(), environment)).or_default() += units;
         }
@@ -1099,6 +1370,38 @@ pub fn check_plan(
         }
     }
     let rates: Vec<(&ProductionItem, f64)> = plan.recipe_rates.iter().filter_map(|(n, &r)| Some((*all.get(n.as_str())?, r))).collect();
+    let electric = electric_usage(plan, &all);
+    let mut required_generators = 0;
+    if !electric.is_empty() {
+        let power = facility_counts.power().ok_or("E-mode requires a power grid")?;
+        let mut rated = 0.0;
+        for ((facility, level), units) in electric {
+            let owned: u32 = facility_counts.tiers(facility).iter().filter(|(_, l)| *l == level).map(|(n, _)| n).sum();
+            if units > owned {
+                return Err(format!("{units} powered {facility} Lv.{level} but only {owned} owned"));
+            }
+            units_at.entry(facility).or_default().push((level, units as f64));
+            rated += watts_per_level(facility) as f64 * level as f64 * units as f64;
+        }
+        let watts = rated * power.grid.percent as f64 / 100.0;
+        if watts > power.grid.watts as f64 + TOLERANCE {
+            return Err("E-mode demand exceeds available power".to_string());
+        }
+        required_generators = generator_workers(watts);
+    }
+    for (crop, &minimum) in facility_counts.season_crop_minimums() {
+        let mut growing = 0;
+        for &(recipe, rate) in rates.iter().filter(|(recipe, _)| is_season_crop(recipe, crop)) {
+            let units = plan.units.get(&recipe.name).copied().unwrap_or(0);
+            if rate * recipe.production_time.max(PACE_UNIT) + TOLERANCE < units as f64 {
+                return Err(format!("{crop} grows too slowly for its {units} assigned plots"));
+            }
+            growing += units;
+        }
+        if growing < minimum {
+            return Err(format!("{crop} requires at least {minimum} growing plots"));
+        }
+    }
     if let Some((budget, spent)) = season_budget(&rates) {
         let per_day: f64 = spent.iter().map(|(rate, cost)| rate * cost).sum::<f64>() * PACE_UNIT;
         if per_day > budget * (1.0 + TOLERANCE) + TOLERANCE {
@@ -1188,10 +1491,10 @@ pub fn check_plan(
         }
         let mut staffed: HashMap<&str, f64> = HashMap::new();
         for (building, member, share) in &plan.staffing {
-            let aniimo = crew.members.get(*member).ok_or(format!("{building} staffed by roster member {member}, who isn't there"))?;
-            let ability = crew.environment.get(building).ok_or(format!("{building} needs no Aniimo"))?;
-            if aniimo.level(ability) == 0 {
-                return Err(format!("{building} staffed by roster member {member}, who has no {ability}"));
+            let ability = if building == GENERATOR { Some("Lightning") } else { crew.environment.get(building).map(String::as_str) };
+            let ability = ability.ok_or(format!("{building} needs no Aniimo"))?;
+            if !crew.can_work(*member, ability, 1) {
+                return Err(format!("{building} staffed by roster member {member}, who can't do the {ability} job"));
             }
             busy[*member] += share;
             *staffed.entry(building.as_str()).or_default() += share;
@@ -1200,6 +1503,29 @@ pub fn check_plan(
             let have = staffed.get(building).copied().unwrap_or(0.0);
             if used as f64 > have + TOLERANCE {
                 return Err(format!("{used} {building} set up but only {have} staffed"));
+            }
+        }
+        if staffed.get(GENERATOR).copied().unwrap_or(0.0) + TOLERANCE < required_generators as f64 {
+            return Err(format!("{required_generators} Lightning Aniimo required for power"));
+        }
+        if let Some((power, limit)) = facility_counts.power().and_then(|power| power.grid.max_aniimo.map(|n| (power, n))) {
+            let mut assigned: BTreeMap<(&str, u32), f64> = BTreeMap::new();
+            for (ability, level, member, share) in &plan.crop_staffing {
+                if !crew.can_work(*member, ability, *level) {
+                    return Err(format!("crop work assigned to Aniimo without {ability} Lv.{level}"));
+                }
+                busy[*member] += share;
+                *assigned.entry((ability, *level)).or_default() += share;
+            }
+            for (job, needs) in crop_work(&rates, &power.grower_steps, crew) {
+                let required: f64 = needs.iter().map(|(rate, time)| rate * time).sum();
+                if assigned.get(&job).copied().unwrap_or(0.0) + TOLERANCE < required {
+                    return Err(format!("unassigned crop work for {}", job.0));
+                }
+            }
+            let active: f64 = busy.iter().map(|n| (n - TOLERANCE).ceil().max(0.0)).sum();
+            if active > limit as f64 {
+                return Err(format!("{active} Aniimo working but limit is {limit}"));
             }
         }
         for (member, (&used, aniimo)) in busy.iter().zip(&crew.members).enumerate() {
@@ -1244,6 +1570,14 @@ pub fn write_lp(
     goal: Goal,
 ) -> LpProblem {
     let model = build_model(items, currency, facility_counts, module_levels, goal);
+    if matches!(goal, Goal::CropVariety { .. }) && !model.kinds.iter().any(|kind| matches!(kind, VarKind::CropVariety)) {
+        return LpProblem::default();
+    }
+    if matches!(goal, Goal::MaterialWork { minimum: None, .. })
+        && !model.kinds.iter().any(|kind| matches!(kind, VarKind::Rate(recipe) if processes_upgrade_materials(recipe)))
+    {
+        return LpProblem::default();
+    }
     let term = |c: f64, v: usize| format!("{} {} x{v}", if c < 0.0 { "-" } else { "+" }, c.abs());
     let mut out = String::from("Maximize\n obj:");
     for (v, &c) in model.objective.iter().enumerate() {
@@ -1251,6 +1585,9 @@ pub fn write_lp(
             out.push(' ');
             out.push_str(&term(c, v));
         }
+    }
+    if !model.objective.is_empty() && model.objective.iter().all(|&c| c == 0.0) {
+        out.push_str(" + 0 x0");
     }
     out.push_str("\nSubject To\n");
     for (k, (terms, op, rhs)) in model.constraints.iter().enumerate() {
@@ -1314,7 +1651,8 @@ pub fn plan_from_values(
         })
         .collect();
     let (value, solved) = model.relax(&fixed)?;
-    Some(plan_from(&model, value, upper_bound.max(value), proven_optimal, 0, &solved, value))
+    let earnings: f64 = model.earnings.iter().zip(&solved).map(|(c, v)| c * v).sum();
+    Some(plan_from(&model, value, upper_bound.max(earnings), proven_optimal, 0, &solved, value))
 }
 
 /// What `exact` makes per second of `currency`, at its items' sell values: the Aniimo EXP or
@@ -1348,7 +1686,8 @@ pub fn target_streams(exact: &ExactPlan, items: &[ProductionItem], target: &str)
         return Vec::new();
     }
     let all: HashMap<&str, &ProductionItem> = items.iter().map(|i| (i.name.as_str(), i)).collect();
-    let lead = |name: &str| crate::optimizer::item_lead_time(name, &all, 0);
+    let times = with_active_electric_times(exact, &all);
+    let lead = |name: &str| crate::optimizer::item_lead_time(name, &times, 0);
     let byproduct: Vec<(f64, f64)> = exact
         .recipe_rates
         .iter()
@@ -1469,9 +1808,52 @@ fn seed_costs_by_item<'a>(exact: &'a ExactPlan, all: &HashMap<&str, &'a Producti
     (per_unit, total)
 }
 
-/// Turns an [`ExactPlan`] into the [`crate::models::ProductionPlan`] the rest of the app shows:
-/// one row per facility and recipe, what each is used for, income per item sold, byproducts, and
-/// environment building layouts.
+fn electric_usage<'a>(plan: &ExactPlan, all: &HashMap<&str, &'a ProductionItem>) -> BTreeMap<(&'a str, u32), u32> {
+    let mut units = BTreeMap::new();
+    let mut shared = BTreeMap::<_, f64>::new();
+    for (name, &rate) in &plan.recipe_rates {
+        let Some(level) = electric_level(name) else { continue };
+        let Some(recipe) = all.get(name.as_str()) else { continue };
+        let key = (recipe.facility.as_str(), level);
+        if takes_turns(recipe) {
+            *shared.entry(key).or_default() += rate * recipe.production_time;
+        } else {
+            *units.entry(key).or_default() += plan.units.get(name).copied().unwrap_or(0);
+        }
+    }
+    for (key, time) in shared {
+        *units.entry(key).or_default() += (time - 1e-6).ceil().max(0.0) as u32;
+    }
+    units
+}
+
+fn with_active_electric_times<'a>(plan: &ExactPlan, all: &HashMap<&'a str, &'a ProductionItem>) -> HashMap<&'a str, &'a ProductionItem> {
+    let mut times = all.clone();
+    let active: Vec<_> = plan.recipe_rates.keys().filter_map(|name| all.get(name.as_str()).copied()).collect();
+    let mut earliest = BTreeMap::<&str, &ProductionItem>::new();
+    for recipe in active.iter().filter(|item| electric_level(&item.name).is_some()) {
+        earliest.insert(made_item(&recipe.name, all), recipe);
+    }
+    for recipe in active {
+        if let Some(current) = earliest.get_mut(made_item(&recipe.name, all)) {
+            if recipe.production_time < current.production_time {
+                *current = recipe;
+            }
+        }
+    }
+    times.extend(earliest);
+    times
+}
+
+/// Rated watts drawn by the selected E-mode buildings at 100% supply.
+pub fn rated_power_draw(plan: &ExactPlan, items: &[ProductionItem]) -> f64 {
+    let all = items.iter().map(|i| (i.name.as_str(), i)).collect();
+    electric_usage(plan, &all).into_iter()
+        .map(|((facility, level), units)| watts_per_level(facility) as f64 * level as f64 * units as f64)
+        .sum()
+}
+
+/// Turn the solution into facility rows, income streams, byproducts and building layouts.
 pub fn to_production_plan(
     exact: &ExactPlan,
     items: &[ProductionItem],
@@ -1483,6 +1865,8 @@ pub fn to_production_plan(
     let is_grower = |facility: &str| !items.iter().any(|i| i.facility == facility && i.raw_materials.is_some());
 
     // What each made item goes to: the recipes using it, and whether the rest sells.
+    let net = net_rates(exact, items);
+    let electric = electric_usage(exact, &all);
     let uses_of = |recipe: &ProductionItem| -> String {
         let made = made_item(&recipe.name, &all);
         let mut uses: Vec<&str> = exact
@@ -1497,12 +1881,14 @@ pub fn to_production_plan(
         let sells = exact.sold.get(made).is_some_and(|&s| s > 1e-9);
         // Made, not sold, not all used up and not sellable: kept for the level-up.
         let sellable = all.get(made).is_some_and(|item| item.sell_currency != "none" && item.sell_value > 0.0);
-        let kept = exact.pace.is_some() && !sells && !sellable && net_rates(exact, items).get(made).is_some_and(|&n| n > 1e-9);
+        let kept = !sells && !sellable && net.get(made).is_some_and(|&n| n > 1e-9);
         match (uses.is_empty(), sells || kept) {
-            (true, _) if kept => "For the level-up".to_string(),
+            (true, _) if kept && exact.pace.is_some() => "For the level-up".to_string(),
+            (true, _) if kept => "Stored for later".to_string(),
             (true, _) => "Sells directly".to_string(),
             (false, false) => format!("Used for {}", uses.join(", ")),
-            (false, true) if kept => format!("Used for {}; the rest goes to the level-up", uses.join(", ")),
+            (false, true) if kept && exact.pace.is_some() => format!("Used for {}; the rest goes to the level-up", uses.join(", ")),
+            (false, true) if kept => format!("Used for {}; the rest is stored", uses.join(", ")),
             (false, true) => format!("Used for {}; the rest sells directly", uses.join(", ")),
         }
     };
@@ -1537,19 +1923,24 @@ pub fn to_production_plan(
                 environment: None,
                 busy_units: None,
                 crew: None,
+                electric_level: None,
             });
             continue;
         }
         // Recipes taking turns share units, so what's in use is their combined time.
         let shared: Vec<&str> = rows.iter().filter(|(r, _, _)| takes_turns(r)).map(|(r, _, _)| r.name.as_str()).collect();
-        let shared_time: f64 = rows.iter().filter(|(r, _, _)| takes_turns(r)).map(|(r, _, rate)| rate * r.production_time).sum();
-        let used: u32 = rows.iter().filter(|(r, _, _)| !takes_turns(r)).map(|(_, u, _)| u).sum::<u32>()
-            + ((shared_time - 1e-6).ceil().max(0.0) as u32);
+        let shared_time: f64 = rows.iter().filter(|(r, _, _)| takes_turns(r) && electric_level(&r.name).is_none())
+            .map(|(r, _, rate)| rate * r.production_time).sum();
+        let powered: u32 = electric.iter().filter(|((name, _), _)| *name == facility).map(|(_, n)| n).sum();
+        let used: u32 = rows.iter().filter(|(r, _, _)| !takes_turns(r) && electric_level(&r.name).is_none()).map(|(_, u, _)| u).sum::<u32>()
+            + ((shared_time - 1e-6).ceil().max(0.0) as u32) + powered;
         let used = used.min(owned);
         for (recipe, units, rate) in rows {
             let mut reason = uses_of(recipe);
             if takes_turns(recipe) {
-                let others: Vec<&str> = shared.iter().copied().filter(|n| *n != recipe.name).collect();
+                let others: Vec<&str> = shared.iter().copied()
+                    .filter(|n| *n != recipe.name && electric_level(n) == electric_level(&recipe.name))
+                    .map(crate::models::base_item_name).collect();
                 if !others.is_empty() {
                     reason = format!("{reason}; takes turns with {}", others.join(", "));
                 }
@@ -1573,6 +1964,7 @@ pub fn to_production_plan(
                 busy_units: (!grower || recipe.crew.is_some() || recipe.season.is_some_and(|s| s.currency_per_day.is_some()))
                     .then(|| (rate * recipe.production_time).min(units as f64)),
                 crew: recipe.crew,
+                electric_level: electric_level(&recipe.name),
             });
         }
         if owned > used {
@@ -1587,12 +1979,14 @@ pub fn to_production_plan(
                 environment: None,
                 busy_units: None,
                 crew: None,
+                electric_level: None,
             });
         }
     }
 
     // One income stream per item sold, less the seed costs that went into it (see
     // `seed_costs_by_item`).
+    let times = with_active_electric_times(exact, &all);
     let mut income_streams: Vec<PlanProduct> = exact
         .sold
         .iter()
@@ -1609,7 +2003,7 @@ pub fn to_production_plan(
                 sell_value: item.sell_value,
                 rate_per_second: units * item.sell_value,
                 units_per_second: units,
-                lead_time: crate::optimizer::item_lead_time(name, &all, 0),
+                lead_time: crate::optimizer::item_lead_time(name, &times, 0),
                 total_units: 0.0,
                 total_value: 0.0,
             })
@@ -1636,11 +2030,11 @@ pub fn to_production_plan(
     }
 
     let mut byproduct_rates: Vec<(String, f64, f64)> = Vec::new();
-    for (name, &units) in &exact.units {
+    for (name, &batches) in &exact.recipe_rates {
         let Some(recipe) = all.get(name.as_str()) else { continue };
         if let Some((resource, amount)) = &recipe.byproduct {
-            let rate = units as f64 * *amount as f64 / recipe.production_time;
-            byproduct_rates.push((resource.clone(), rate, crate::optimizer::item_lead_time(name, &all, 0)));
+            let rate = batches * *amount as f64;
+            byproduct_rates.push((resource.clone(), rate, crate::optimizer::item_lead_time(name, &times, 0)));
         }
     }
 

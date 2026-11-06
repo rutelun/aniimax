@@ -236,6 +236,7 @@ pub const UNCOVERED_SUFFIX: &str = "__uncovered";
 /// The recipe or crop behind an item name: the name without a roster copy's `__by<member>` (see
 /// [`crew_variants`]) or an uncovered variant's suffix.
 pub fn base_item_name(name: &str) -> &str {
+    let name = crate::power::without_electric_suffix(name);
     let name = match name.rsplit_once(CREW_SUFFIX) {
         Some((base, member)) if !member.is_empty() && member.bytes().all(|b| b.is_ascii_digit()) => base,
         _ => name,
@@ -264,12 +265,13 @@ impl RosterAniimo {
     }
 }
 
-/// The Aniimo a player actually has, for planning with them rather than with as many of each as
-/// a plan wants. Each works any job its abilities allow, for as many hours as it has; the plan
-/// shares those out (see `crate::exact`).
+/// The player's roster and any assumed workers. The plan shares their available hours across
+/// eligible jobs (see `crate::exact`).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Crew {
     pub members: Vec<RosterAniimo>,
+    /// The first assumed worker, after all the Aniimo entered by the player.
+    pub assumed_from: Option<usize>,
     /// Facilities whose Aniimo lives there and works nothing else (the Tidewhisper Sandcastle
     /// and the like), so each unit in use takes one Aniimo's whole day.
     pub residents: std::collections::BTreeSet<String>,
@@ -281,6 +283,27 @@ pub struct Crew {
 }
 
 impl Crew {
+    /// Offer Lv.3 workers with no personality bonus for jobs at or below that level.
+    /// `capacity` bounds the pool by the number of workplaces it could staff.
+    pub fn add_reserve_workers<'a>(&mut self, jobs: impl IntoIterator<Item = (&'a str, u32)>, capacity: u32) {
+        const ASSUMED_LEVEL: u32 = 3;
+        let abilities: std::collections::BTreeSet<_> = jobs.into_iter()
+            .filter_map(|(ability, level)| (level <= ASSUMED_LEVEL).then_some(ability))
+            .collect();
+        if capacity > 0 && !abilities.is_empty() {
+            self.assumed_from = Some(self.members.len());
+            self.members.extend(abilities.into_iter().map(|ability| RosterAniimo {
+                count: capacity,
+                abilities: [(ability.to_string(), ASSUMED_LEVEL)].into(),
+                personalities: Vec::new(),
+            }));
+        }
+    }
+
+    pub fn can_work(&self, member: usize, ability: &str, level: u32) -> bool {
+        self.members.get(member).is_some_and(|m| m.count > 0 && m.level(ability) >= level)
+    }
+
     /// The Aniimo `member` works `item` as: its level at the recipe's ability, and whether it has
     /// the facility's personality.
     pub fn worker(&self, member: usize, item: &ProductionItem, requirements: &AniimoRequirements) -> Option<Worker> {
@@ -305,7 +328,7 @@ pub fn crew_variants(
     requirements: &AniimoRequirements,
     grower_steps: &GrowerSteps,
 ) -> Vec<ProductionItem> {
-    let can = |ability: &str, level: u32| crew.members.iter().any(|m| m.count > 0 && m.level(ability) >= level);
+    let can = |ability: &str, level: u32| (0..crew.members.len()).any(|member| crew.can_work(member, ability, level));
     let waters = can("Water", 1);
     // Each crop's own watered grow time, which watering is measured against.
     let watered: std::collections::HashMap<String, f64> = items
@@ -318,8 +341,8 @@ pub fn crew_variants(
         match (item.workload, requirements.get(base_item_name(&item.name))) {
             (Some(workload), Some((ability, required))) => {
                 let mut fastest = f64::INFINITY;
-                for (member, aniimo) in crew.members.iter().enumerate() {
-                    if aniimo.count == 0 || aniimo.level(ability) < required {
+                for member in 0..crew.members.len() {
+                    if !crew.can_work(member, ability, required) {
                         continue;
                     }
                     let mut variant = ProductionItem {
@@ -894,6 +917,8 @@ pub struct PlanStep {
     pub busy_units: Option<f64>,
     /// When planning with the player's roster, which member works this row (see [`Crew`]).
     pub crew: Option<usize>,
+    /// Physical building level when this row runs in E-mode.
+    pub electric_level: Option<u32>,
 }
 
 /// How many times a Farmland/Woodland plot needs to be (re-)planted with a fresh seed over the
@@ -1178,6 +1203,9 @@ pub struct FacilityCounts {
     default_tier: (u32, u32),
     /// The Aniimo the player has, when planning with them (see [`Crew`]).
     crew: Option<Crew>,
+    /// The minimum number of active plots assigned to each seasonal crop.
+    season_crop_minimums: std::collections::BTreeMap<String, u32>,
+    power: Option<crate::power::PowerPlan>,
 }
 
 impl Default for FacilityCounts {
@@ -1186,11 +1214,28 @@ impl Default for FacilityCounts {
             facilities: std::collections::HashMap::new(),
             default_tier: (1, 1),
             crew: None,
+            season_crop_minimums: Default::default(),
+            power: None,
         }
     }
 }
 
 impl FacilityCounts {
+    pub fn set_power(&mut self, power: crate::power::PowerPlan) {
+        self.power = Some(power);
+    }
+
+    pub fn power(&self) -> Option<&crate::power::PowerPlan> {
+        self.power.as_ref()
+    }
+    pub fn set_season_crop_minimums(&mut self, minimums: std::collections::BTreeMap<String, u32>) {
+        self.season_crop_minimums = minimums.into_iter().filter(|(_, count)| *count > 0).collect();
+    }
+
+    pub fn season_crop_minimums(&self) -> &std::collections::BTreeMap<String, u32> {
+        &self.season_crop_minimums
+    }
+
     /// Plans with the Aniimo in `crew` (see [`Crew`]), with items from [`crew_variants`].
     pub fn set_crew(&mut self, crew: Crew) -> &mut Self {
         self.crew = Some(crew);
@@ -1233,9 +1278,8 @@ impl FacilityCounts {
     /// ```
     pub fn only(pairs: &[(&str, u32, u32)]) -> Self {
         let mut fc = Self {
-            facilities: std::collections::HashMap::new(),
             default_tier: (0, 1),
-            crew: None,
+            ..Self::default()
         };
         for (name, count, level) in pairs {
             fc.set(name, *count, *level);
@@ -1247,9 +1291,8 @@ impl FacilityCounts {
     /// count 1; used to list all possible items regardless of facility-level gating.
     pub fn show_all_levels() -> Self {
         Self {
-            facilities: std::collections::HashMap::new(),
             default_tier: (1, 99),
-            crew: None,
+            ..Self::default()
         }
     }
 
