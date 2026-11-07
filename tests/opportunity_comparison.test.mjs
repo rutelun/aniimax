@@ -2,6 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {changeOneMember,personalityInput,reserveLevelFourInputs,workerUsage,comparePlans} from '../web/opportunity-comparison.js';
+import {createComparisonSearch} from '../web/comparison-search.js';
 
 const input = () => ({priorities:['season_points','Wood Blocks','coins'],roster:{members:[
     {count:2,abilities:{Artisanship:3,Water:3},personalities:['Instinctive','Nimble'],family:'1017'},
@@ -101,17 +102,35 @@ test('comparison worker runs the complete planner per change and reports progres
     const source=await readFile(new URL('../web/worker.js',import.meta.url),'utf8');
     const code=source.slice(source.indexOf('async function rankImprovements('),source.indexOf('self.onmessage ='));
     const calls=[],reports=[];
-    const run=new Function('exactPlanJson',`${code};return rankImprovements;`)(async(_,payload,step)=>{
+    const run=new Function('exactPlanJson','comparisonSearch','solveModel',`${code};return rankImprovements;`)(async(_,payload,step)=>{
         const p=JSON.parse(payload);calls.push(p);
         step('priority:coins','start');
         if(p.fail)throw Error('Cannot check this change');
         return JSON.stringify(plan(p.coins));
-    });
+    },Promise.resolve({createComparisonSearch}),()=>{});
     await run({},JSON.stringify({base:input(),basePlan:plan(),candidates:[{coins:12},{fail:true},{coins:15}]}),r=>reports.push(r));
     assert.equal(calls.length,3);
     assert.ok(reports.some(r=>r.index===0&&r.step==='priority:coins'));
     assert.ok(reports.some(r=>r.index===1&&r.error));
     assert.equal(reports.find(r=>r.index===2&&r.plan).plan.rate_per_second,15);
+});
+
+test('detailed comparison retries without baseline floors when an integer-feasible alternative needs lower goals',async()=>{
+    const source=await readFile(new URL('../web/worker.js',import.meta.url),'utf8');
+    const code=source.slice(source.indexOf('async function rankImprovements('),source.indexOf('self.onmessage ='));
+    const original={...plan(),comparison_goals:{floors:[['Wood Blocks',10]]}};
+    let calls=0;const reports=[];
+    const run=new Function('exactPlanJson','comparisonSearch','solveModel',`${code};return rankImprovements;`)(
+        async(_,payload,step,first,comparison)=>{
+            calls++;
+            const certified=await comparison.bound({variables:1,tiebreak:[],primary_objective:[[0,1]],
+                lp:'Maximize\n obj: + 1 x0\nSubject To\n c0: + 1 x0 <= 10\nBounds\n x0 >= 0\nGeneral\n x0\nEnd'},'Wood Blocks');
+            if(certified)throw Error('The baseline floor is integer-infeasible for this trait replacement');
+            return JSON.stringify(plan(12));
+        },Promise.resolve({createComparisonSearch}),async()=>({objective:10,values:[10],proven:true}));
+    await run({},JSON.stringify({base:input(),basePlan:original,candidates:[input()],detailed:true}),r=>reports.push(r));
+    assert.equal(calls,2);
+    assert.equal(reports.find(r=>r.index===0).plan.rate_per_second,12);
 });
 
 test('suggestions do not launch searches automatically, and cancelled comparisons ignore late replies', async () => {

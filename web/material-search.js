@@ -9,14 +9,14 @@ export async function searchMaterials(problem, incumbent, solve, options) {
     if (incumbent?.length === problem.variables && problem.material_fixed?.length) {
         const fixed = problem.material_fixed.map(v => ` material_fix_${v}: x${v} = ${Math.round(incumbent[v])}`).join('\n');
         const local = { ...problem, lp: problem.lp.replace('\nBounds\n', `\n${fixed}\nBounds\n`) };
-        seed = await solve(local, { ...options, time_limit: 2 }, undefined, incumbent);
+        seed = await solve(local, { ...options, time_limit: Math.min(2, options.time_limit ?? 2) }, undefined, incumbent);
     }
     if (seed && problem.primary_objective?.length) {
         // Keep the same objective in this upper bound. Proving only the raw output could
         // accept a reserve-heavy seed before comparing an equally productive owned team.
         const relaxed = { ...problem, tiebreak: [], lp: problem.lp
             .replace(/\nGeneral\n[\s\S]*\nEnd/, '\nEnd') };
-        const bound = await solve(relaxed, { ...options, time_limit: 2 });
+        const bound = await solve(relaxed, { ...options, time_limit: Math.min(2, options.time_limit ?? 2) });
         if (bound?.proven && score(seed) >= bound.objective - 1e-9) {
             return { ...seed, proven: true };
         }

@@ -15,6 +15,45 @@ export function personalityInput(input, index, personality, pairs) {
     return changeOneMember(input, index, { personalities: [...personalities, personality] });
 }
 
+// Conservative reachability: remove only recipes blocked by a missing building, level,
+// module, season, unlock, or an ingredient with no available producer. Never prune a job
+// merely because it is idle in the current solution: an upgrade can make it worthwhile.
+export function availableRecipes(input, recipes) {
+    let available = recipes.filter(r => {
+        if (r.season && r.season !== input.season || input.exclude?.includes(r.name)) return false;
+        if (!(input.facilities[r.facility] || []).some(t=>t.count>0 && t.level >= (r.facility_level || 1))) return false;
+        if (r.module_requirement && (input.modules?.[r.module_requirement[0]] || 0) < r.module_requirement[1]) return false;
+        return true;
+    });
+    let previous;
+    const stock = [...(input.level_up?.stock || []), ...(input.level_up_preview?.stock || [])]
+        .filter(([,amount])=>amount>0).map(([name])=>name);
+    do {
+        previous = available.length;
+        const made = new Set(available.flatMap(r=>[r.name,
+            r.name.startsWith('quick_') ? r.name.slice(6) : r.name,
+            r.byproduct_item || r.byproduct]).filter(x=>typeof x==='string'));
+        stock.forEach(name=>made.add(name));
+        available = available.filter(r=>(r.raw_materials || r.ingredients || []).every(name=>made.has(name)));
+    } while (available.length !== previous);
+    return available;
+}
+
+export function usefulUpgrade(input, change, recipes) {
+    if (!change || !recipes.length) return true;
+    const available = availableRecipes(input,recipes);
+    if (change.kind === 'recipe') return available.some(r=>r.name === change.name);
+    const member = input.roster?.members[change.member];
+    if (!member) return true;
+    const compatible = r => (!r.family || r.family === member.family)
+        && r.aniimo && (member.abilities[r.aniimo[0]] || 0) >= r.aniimo[1];
+    if (change.kind === 'personality') return available.some(r=>r.workload != null && compatible(r)
+        && input.roster.personalities?.[r.facility] === change.trait);
+    if (change.kind === 'ability') return available.some(r=>(r.workload != null && compatible(r) && r.aniimo[0] === change.ability)
+        || (r.jobs || []).some(([,ability,level])=>ability===change.ability && member.abilities[ability]>=level));
+    return true;
+}
+
 export function workerUsage(plan, input) {
     if (!input.roster) return null;
     const busy = new Map();

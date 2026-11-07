@@ -13,7 +13,7 @@ import { createShareUrl, readShareHash, urlWithoutShare } from './share-config.j
 import { nearestStorage } from './layout.js?v=storage-power';
 import { ANIIMO_WALK_SPEED, workerTravelDistances } from './worker-travel.js?v=auto-worker-travel';
 import { haulingWorkload, allocateHauling, haulingBatchTrips } from './hauling.js?v=hauling-workload';
-import { changeOneMember, personalityInput, reserveLevelFourInputs, comparePlans } from './opportunity-comparison.js?v=full-plan-comparison';
+import { changeOneMember, personalityInput, reserveLevelFourInputs, comparePlans, usefulUpgrade } from './opportunity-comparison.js?v=fast-comparisons';
 
 let wasmReady = false;
 
@@ -828,6 +828,7 @@ function improvementCandidates(base, setup) {
         if (recipe.facility && !owns(recipe.facility)) continue;
         candidates.push({
             kind: 'Recipes',
+            change: {kind:'recipe',name:recipe.name},
             label: recipe.note ? `Recipe Note: ${prettyItem(recipe.name)}` : `Unlock ${prettyItem(recipe.name)}`,
             input: { ...base, exclude: base.exclude.filter(name => name !== recipe.name) },
         });
@@ -837,6 +838,7 @@ function improvementCandidates(base, setup) {
         if (!base.exclude.includes(name)) continue;
         candidates.push({
             kind: 'Recipes',
+            change: {kind:'recipe',name},
             label: `Unskip ${prettyItem(name)}`,
             input: { ...base, exclude: base.exclude.filter(n => n !== name) },
         });
@@ -859,6 +861,7 @@ function improvementCandidates(base, setup) {
                     const family = `${member.count > 1 ? 'One ' : ''}${who}: ${ability}`;
                     candidates.push({
                         kind: 'Aniimo', group: `roster:${i}:${ability}`, family, level: next,
+                        change: {kind:'ability',member:member.count>1?base.roster.members.length:i,ability},
                         label: `${family} Lv.${next}`,
                         input: changeOneMember(base, i, { abilities: { ...member.abilities, [ability]: next } }),
                     });
@@ -873,6 +876,7 @@ function improvementCandidates(base, setup) {
             for (const [trait, places] of traits) {
                 if ((member.personalities || []).includes(trait)) continue;
                 candidates.push({ kind: 'Personalities', group: `personality:${i}:${trait}`,
+                    change: {kind:'personality',member:member.count>1?base.roster.members.length:i,trait},
                     label: `${member.count > 1 ? 'One ' : ''}${who}: ${translate(trait)} (${personalityLetter(trait)})`,
                     description: places.join(', '), input: personalityInput(base, i, trait, PERSONALITY_PAIRS) });
             }
@@ -940,12 +944,12 @@ function improvementCandidates(base, setup) {
             }
         }
     }
-    return candidates;
+    return candidates.filter(candidate=>usefulUpgrade(candidate.input,candidate.change,recipeIndex));
 }
 
 // Prepare suggestions after planning. Full comparisons run only when the player requests
 // a row or the batch, in one cancellable background worker; the current plan stays intact.
-function rankImprovementsFor(setup, requested = null) {
+function rankImprovementsFor(setup, requested = null, detailed = false) {
     if (requested != null && (mainSolve || setupSolve || layoutWorker)) return;
     stopRanking();
     const plan = plansBySetup[setup] || lastPlan;
@@ -1002,7 +1006,7 @@ function rankImprovementsFor(setup, requested = null) {
     };
     solver.onerror = solver.onmessageerror = () => finish(true);
     solver.postMessage({id:1,type:'rank_improvements',payload:JSON.stringify({
-        base:current.input,basePlan:plan,candidates:indices.map(i=>current.candidates[i].input),
+        base:current.input,basePlan:plan,candidates:indices.map(i=>current.candidates[i].input),detailed,
     })});
     renderImprovements();
 }
@@ -1113,12 +1117,13 @@ function renderImprovements() {
         const error = group.indices.map(i=>ranking.results[i]?.error).find(Boolean);
         const status = found ? `<span class="improve-gain">${found.gain.text}</span>`
             : `<span class="improve-none">${translate(active?'Checking…':comparison
-                ? comparison.direction<0?'An earlier goal decreases':'No production gain found':error?'Could not compare':'Not checked')}</span>`;
+                ? comparison.approximate?'Search inconclusive — use Detailed search':comparison.direction<0?'An earlier goal decreases':'No production gain found':error?'Could not compare':'Not checked')}</span>`;
         const resultKey = `result:${key}`;
         const detail = comparison ? `<details class="comparison-result" data-open-key="${escapeText(resultKey)}"${open.has(resultKey)?' open':''}>
             <summary>${translate('Before / after')}${found?` · ${translate(found.candidate.label)}`:''}</summary>${comparisonTable(comparison)}</details>`
-            : error ? `<p class="hint small">${escapeText(error)}</p>` : '';
-        const button = `<button type="button" class="skip-add-btn" data-compare-group="${escapeText(key)}"${ranking.running?' disabled':''}>${translate('Compare')}</button>`;
+            : error ? `<p class="hint small">${translate('Search inconclusive — use Detailed search')}<br>${escapeText(translate(error))}</p>` : '';
+        const button = `<span class="opportunity-actions"><button type="button" class="skip-add-btn" data-compare-group="${escapeText(key)}"${ranking.running?' disabled':''}>${translate('Quick compare')}</button>
+            <button type="button" class="skip-add-btn" data-compare-detailed="${escapeText(key)}"${ranking.running?' disabled':''}>${translate('Detailed search')}</button></span>`;
         const row = `<li class="opportunity-row"><div class="opportunity-heading"><span>${name}</span>${button}</div>
             ${first.description?`<p class="hint small">${first.description}</p>`:''}${status}${detail}</li>`;
         if (!kinds.has(group.kind)) kinds.set(group.kind,[]);
@@ -2620,7 +2625,8 @@ document.addEventListener('aniimax-language-change', () => {
 async function loadRecipeIndex() {
     try {
         recipeIndex = JSON.parse(await callWorker('get_all_items'))
-            .map(r => ({ name: r.name, facility: r.facility, aniimo: r.aniimo, season: r.season, cost: r.cost || 0, seasonSeedCost: r.season_seed_cost || 0, environment: r.environment || null, jobs: r.jobs || [], ingredients: r.raw_materials || [], amounts: r.required_amount || [], yieldAmount: r.yield_amount || 1, byproduct: r.byproduct_item || null, byproductAmount: r.byproduct?.[1] || 0, turns: false }))
+            .map(r => ({ name: r.name, facility: r.facility, facility_level:r.facility_level, module_requirement:r.module_requirement,
+                workload:r.workload, family:r.family, aniimo: r.aniimo, season: r.season, cost: r.cost || 0, seasonSeedCost: r.season_seed_cost || 0, environment: r.environment || null, jobs: r.jobs || [], ingredients: r.raw_materials || [], amounts: r.required_amount || [], yieldAmount: r.yield_amount || 1, byproduct: r.byproduct_item || null, byproductAmount: r.byproduct?.[1] || 0, turns: false }))
             .sort((a, b) => a.facility.localeCompare(b.facility) || a.name.localeCompare(b.name));
         renderRecipeOptions();
         renderSkippedRecipes();
@@ -4932,10 +4938,11 @@ async function initApp() {
     document.getElementById('improve-check-btn').addEventListener('click', () => rankImprovementsFor(selectedAniimoSetup(),'all'));
     document.getElementById('improve-stop-btn').addEventListener('click', () => { stopRanking(); renderImprovements(); });
     document.getElementById('improve-list').addEventListener('click', event => {
-        const button = event.target.closest('[data-compare-group]');
+        const button = event.target.closest('[data-compare-group], [data-compare-detailed]');
         if (!button || !ranking) return;
-        const indices = ranking.candidates.map((c,i)=>(c.group || `#${i}`) === button.dataset.compareGroup ? i : -1).filter(i=>i>=0);
-        rankImprovementsFor(selectedAniimoSetup(),indices);
+        const group = button.dataset.compareGroup ?? button.dataset.compareDetailed;
+        const indices = ranking.candidates.map((c,i)=>(c.group || `#${i}`) === group ? i : -1).filter(i=>i>=0);
+        rankImprovementsFor(selectedAniimoSetup(),indices,button.dataset.compareDetailed != null);
     });
     if (sharedData) document.getElementById('share-config-status').textContent = 'Shared setup loaded. Your saved setup is kept until you edit this one.';
     document.getElementById('rate-unit').addEventListener('change', () => {

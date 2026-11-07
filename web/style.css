@@ -2537,7 +2537,8 @@ tr:hover .skip-row,
 .improve-checked-list .opportunity-row { display: block; padding: .7rem 0; border-bottom: 1px solid var(--border); }
 .opportunity-row .hint { margin: .25rem 0; }
 .opportunity-heading > span { min-width: 0; overflow-wrap: anywhere; flex: 1; }
-.opportunity-heading button { flex: none; }
+.opportunity-actions { display: flex; flex-wrap: wrap; gap: .4rem; }
+.opportunity-actions button { flex: none; }
 .comparison-result { margin-top: .45rem; }
 .comparison-result > summary { cursor: pointer; font-size: .85rem; }
 .comparison-table { width: 100%; font-size: .85rem; }
