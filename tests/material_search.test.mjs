@@ -50,3 +50,19 @@ test('an infeasible restricted layout still searches the full model', async () =
     assert.equal(best.objective,2);
     assert.equal(best.proven,true);
 });
+
+test('equal output cannot hide a reserve-heavy seed from the owned-worker preference', async () => {
+    const problem = {variables:2,material_fixed:[0],primary_objective:[[0,1]],tiebreak:[[1,.01]],
+        lp:'Maximize\n obj: x0 - 0.01 x1\nSubject To\n cap: x0 <= 1\nBounds\n 0 <= x0 <= 1\n 0 <= x1 <= 1\nGeneral\n x0\n x1\nEnd'};
+    const calls = [];
+    const results = [
+        {objective:1,values:[1,1],proven:true},
+        {objective:1,values:[1,0],proven:true},
+        {objective:1-1e-8,values:[1-1e-8,0],proven:true},
+    ];
+    const best = await searchMaterials(problem,[1,1],async p=>{calls.push(p);return results.shift();},{time_limit:30});
+    assert.equal(calls.length,3);
+    assert.match(calls[1].lp,/obj: x0 - 0.01 x1/);
+    assert.equal(best.values[1],0);
+    assert.equal(best.proven,true);
+});

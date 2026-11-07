@@ -183,7 +183,7 @@ pub enum Goal<'a> {
     /// costs (each as a share of its cost): spare Bench and Kiln time processes whatever the
     /// level-up doesn't need yet, instead of leaving it raw.
     StockUp(&'a LevelUp, f64, f64, &'a [(String, f64)]),
-    /// Maximize time spent processing materials, or keep its maximum while optimizing `base`.
+    /// Maximize productive material work, independent of the worker's speed, or keep its maximum.
     MaterialWork { base: &'a Goal<'a>, minimum: Option<f64> },
     /// Balanced net production of the outstanding RV materials, keeping the main priorities.
     UpgradeMaterials { base: &'a Goal<'a>, level_up: &'a LevelUp, minimum: Option<f64> },
@@ -1072,7 +1072,9 @@ fn build_model<'a>(
     }
     if let Some(minimum) = material_work {
         let work = rate_of.iter().filter(|(recipe, _)| processes_upgrade_materials(recipe))
-            .map(|(recipe, rate)| (*rate, recipe.production_time));
+            // The same batch must earn the same score for a fast owned worker, a slow
+            // reserve or E-mode. Busy seconds would reward deliberately slower staffing.
+            .map(|(recipe, rate)| (*rate, recipe.workload.unwrap_or(recipe.production_time)));
         if let Some(minimum) = minimum {
             model.constrain(work.collect(), ComparisonOp::Ge, (minimum - 1e-6).max(0.0));
         } else {
@@ -1084,7 +1086,9 @@ fn build_model<'a>(
     }
     // Prefer the listed crew when it can sustain the same output.
     for (variable, time) in reserve_work {
-        let weight = 1e-6 * time;
+        // At this final stage all main priorities and the RV material pace are already
+        // constrained. Keep the preference above the external solver's absolute MIP gap.
+        let weight = if material_work.is_some() { 1e-4 } else { 1e-6 } * time;
         model.objective[variable] -= weight;
         model.tiebreak.push((variable, weight));
     }

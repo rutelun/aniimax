@@ -1037,6 +1037,44 @@ fn idle_dedicated_posts_are_removed_together_with_idle_machines() {
 }
 
 #[test]
+fn material_work_uses_spare_owned_artisans_before_slower_reserves() {
+    use aniimax::models::{crew_variants, AniimoRequirements, GrowerSteps};
+    let mut source = walking_item("artisan_wood", "Woodland", 1_000.0, "none");
+    source.workload = None; source.byproduct = Some(("Wood Blocks".into(), 80));
+    let mut income = walking_item("artisan_income", "Crafting Table", 100.0, "coins");
+    income.raw_materials = Some(vec![]); income.required_amount = Some(vec![]);
+    let mut lumber = walking_item("artisan_lumber", "Woodworking Bench", 34.0, "none");
+    lumber.raw_materials = Some(vec!["wood_block".into()]); lumber.required_amount = Some(vec![8]);
+    let mut planks = walking_item("artisan_planks", "Woodworking Bench", 34.0, "none");
+    planks.raw_materials = Some(vec![lumber.name.clone()]); planks.required_amount = Some(vec![8]);
+    let mut requirements = AniimoRequirements::default();
+    requirements.insert(&income.name, "Artisanship", 4)
+        .insert(&lumber.name, "Artisanship", 2).insert(&planks.name, "Artisanship", 2);
+    let floors = [("coins".into(), 0.01)]; // One owned copy is fully occupied by its other job.
+    let base = Goal::Earn { floors: &floors };
+    let goal = Goal::MaterialWork { base: &base, minimum: None };
+    let modules = ModuleLevels::default();
+    for walking in [0.0, 5.0] {
+        for owned in [1, 2] {
+            let mut crew = crew_of(&[(owned, &[("Artisanship", 4), ("Water", 3)])]);
+            crew.add_reserve_workers([("Artisanship", 2)], 4);
+            let items = crew_variants(vec![source.clone(), income.clone(), lumber.clone(), planks.clone()],
+                &crew, &requirements, &GrowerSteps::default());
+            let mut counts = FacilityCounts::only(&[("Woodland", 1, 1), ("Crafting Table", 1, 1), ("Woodworking Bench", 2, 1)]);
+            counts.set_crew(crew); counts.set_movement_seconds(walking);
+            let plan = solve_exact(&items, "coins", &counts, &modules, goal, None, None).unwrap();
+            check_plan(&plan, &items, "coins", &counts, &modules, None).unwrap();
+            for recipe in [&lumber.name, &planks.name] {
+                let assigned = format!("{recipe}__by{}", if owned == 2 { 0 } else { 1 });
+                assert!(plan.recipe_rates.get(&assigned).copied().unwrap_or(0.0) > 0.0,
+                    "owned={owned}, walking={walking}: {recipe} allocated to {:?}", plan.recipe_rates);
+            }
+            assert!((plan.objective - 0.3825).abs() < 1e-6);
+        }
+    }
+}
+
+#[test]
 fn walking_costs_shared_jobs_but_not_a_dedicated_station() {
     use aniimax::models::{crew_variants, AniimoRequirements, GrowerSteps};
     let mut requirements = AniimoRequirements::default();
