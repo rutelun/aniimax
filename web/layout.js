@@ -48,9 +48,17 @@ export function layOut(pieces, options = {}) {
     const { storage = { w: 2, h: 2 }, passes = 6, cells = null } = options;
     const storageRect = { x: -storage.w / 2, y: -storage.h / 2, w: storage.w, h: storage.h };
     const storages = options.storages ?? [storageRect];
-    const distanceToStorage = (x, y) => storages.length
-        ? Math.min(...storages.map(s => Math.hypot(x - s.x - s.w / 2, y - s.y - s.h / 2)))
-        : Math.hypot(x, y);
+    const storageCenters = storages.map(s => [s.x + s.w / 2, s.y + s.h / 2]);
+    const distanceToStorage = (x, y) => {
+        if (!storageCenters.length) return Math.hypot(x, y);
+        let nearest = Infinity;
+        for (const center of storageCenters) {
+            const dx = x - center[0], dy = y - center[1];
+            const squared = dx * dx + dy * dy;
+            if (squared < nearest) nearest = squared;
+        }
+        return Math.sqrt(nearest);
+    };
     let tried = 0;
     // Within the open cells: the parts of it inside each cell add up to all of it.
     const inside = r => !cells || cells.reduce((sum, c) => sum + overlapArea(r, c), 0) >= r.w * r.h - EPSILON;
@@ -120,10 +128,11 @@ export function layOut(pieces, options = {}) {
     const placeRigid = i => {
         let best = null;
         for (const shape of shapes[i]) {
+            const travelRadius = hasWorkerRoutes && shape.members.some(m => m.workers?.length) ? 6 : 0;
             let firstFit = null;
             for (const [ox, oy, distance] of offsets) {
                 if (firstFit !== null && distance > firstFit + shape.spread + STEP
-                    + (shape.members.some(m => m.workers?.length) ? 6 : 0)) break;
+                    + travelRadius) break;
                 const x = snap(ox - shape.cx);
                 const y = snap(oy - shape.cy);
                 tried++;
@@ -133,7 +142,7 @@ export function layOut(pieces, options = {}) {
                 if (touchy.some(r => inOtherSquare(r, i))) continue;
                 if (firstFit === null) firstFit = distance;
                 const cost = shape.members.reduce((sum, m) => sum + m.weight * distanceToStorage(m.x + x + m.w / 2, m.y + y + m.h / 2), 0)
-                    + workerPlacementCost(shape.members, rects, activeWorkerHubs)
+                    + (hasWorkerRoutes ? workerPlacementCost(shape.members, rects, activeWorkerHubs) : 0)
                     // Pieces nobody visits still go as close as they can, to keep the homeland tight.
                     + EPSILON * distanceToStorage(shape.cx + x, shape.cy + y);
                 if (!best || cost < best.cost - EPSILON) best = { cost, x, y, shape, rects, sensitive: touchy };
@@ -156,7 +165,7 @@ export function layOut(pieces, options = {}) {
             return inside.every(k => overlaps(r, own[k])) && outside.every(k => !overlaps(r, own[k])) && !inOtherSquare(r, i);
         };
         const costOf = rects => shape.plots.reduce((sum, p, j) => sum + p.weight * distanceToStorage(rects[j].x + p.w / 2, rects[j].y + p.h / 2), 0)
-            + workerPlacementCost(shape.plots, rects, activeWorkerHubs);
+            + (hasWorkerRoutes ? workerPlacementCost(shape.plots, rects, activeWorkerHubs) : 0);
         let plots = null;
         const slots = shape.plots.map((p, j) => ({ x: shape.planned[j].x + x, y: shape.planned[j].y + y, w: p.w, h: p.h }));
         if (slots.every(r => free(r, i) && !buildings.some(b => overlaps(r, b)))) {
@@ -235,14 +244,16 @@ export function layOut(pieces, options = {}) {
             vacate(i);
             const previous = placed.get(i);
             const spot = place(i);
-            const oldCost = previous.cost;
+            let oldCost = previous.cost;
             // Re-evaluate the old position against the current worker hubs too: neighboring
             // workplaces may have moved since this piece was last scored.
-            const metadata = previous.shape.members || [...previous.shape.buildings, ...previous.shape.plots];
-            const previousWorkerCost = workerPlacementCost(metadata, previous.rects, activeWorkerHubs);
-            const previousHaulCost = metadata.reduce((sum, m, j) => sum + (m.weight || 0)
-                * distanceToStorage(previous.rects[j].x + previous.rects[j].w / 2, previous.rects[j].y + previous.rects[j].h / 2), 0);
-            if (spot && spot.cost < (hasWorkerRoutes ? previousHaulCost + previousWorkerCost : oldCost) - 1e-9) {
+            if (hasWorkerRoutes) {
+                const metadata = previous.shape.members || [...previous.shape.buildings, ...previous.shape.plots];
+                oldCost = workerPlacementCost(metadata, previous.rects, activeWorkerHubs)
+                    + metadata.reduce((sum, m, j) => sum + (m.weight || 0)
+                        * distanceToStorage(previous.rects[j].x + previous.rects[j].w / 2, previous.rects[j].y + previous.rects[j].h / 2), 0);
+            }
+            if (spot && spot.cost < oldCost - 1e-9) {
                 placed.set(i, spot);
                 moved = true;
             }
@@ -323,10 +334,13 @@ export function layOutHomeland(pieces, cells, storage = { w: 2, h: 2 }, storageC
 export function nearestStorage(member, storages) {
     const x = member.x + member.w / 2;
     const y = member.y + member.h / 2;
-    return storages.reduce((best, s) => {
-        const distance = Math.hypot(x - s.x - s.w / 2, y - s.y - s.h / 2);
-        return !best || distance < best.distance ? { storage: s, distance } : best;
-    }, null)?.storage ?? null;
+    let nearest = null, distance = Infinity;
+    for (const s of storages) {
+        const dx = x - s.x - s.w / 2, dy = y - s.y - s.h / 2;
+        const squared = dx * dx + dy * dy;
+        if (squared < distance) { nearest = s; distance = squared; }
+    }
+    return nearest;
 }
 
 // Add useful storage locations, then alternate relocating storage and laying facilities out.

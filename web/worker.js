@@ -18,9 +18,11 @@ const ready = import('./pkg/aniimax.js' + load).then(async (pkg) => {
 // `rank_improvements` are handled separately below since they report progress.
 const HANDLER_NAMES = ['time_to_reach', 'get_version', 'get_all_items'];
 
-// HiGHS (https://highs.dev), compiled to WebAssembly. A fresh instance per solve, from bytes
-// fetched once, so one failed solve can't leave a broken instance behind for the next.
+// Reuse the WASM runtime within a worker. The bundled solve() creates/destroys its native
+// model and frees its LP file and allocations in finally, so consecutive solves stay isolated
+// without repeatedly instantiating WASM and allocating another linear memory.
 let highsBytes = null;
+let highsRuntime = null;
 async function newHighs() {
     if (!highsBytes) {
         highsBytes = fetch(new URL('./vendor/highs/highs.wasm', import.meta.url)).then(r => {
@@ -28,8 +30,13 @@ async function newHighs() {
             return r.arrayBuffer();
         });
     }
-    const { default: highsModule } = await import('./vendor/highs/highs.mjs' + load);
-    return highsModule({ wasmBinary: await highsBytes, print: () => {}, printErr: line => console.warn(line) });
+    if (!highsRuntime) {
+        highsRuntime = (async () => {
+            const { default: highsModule } = await import('./vendor/highs/highs.mjs' + load);
+            return highsModule({ wasmBinary: await highsBytes, print: () => {}, printErr: line => console.warn(line) });
+        })().catch(error => { highsRuntime = null; throw error; });
+    }
+    return highsRuntime;
 }
 
 // Seconds HiGHS may search before settling for the best plan found so far.
@@ -52,12 +59,18 @@ const STRICT_OPTIONS = { ...SOLVE_OPTIONS, mip_feasibility_tolerance: 1e-9 };
 // found no plan at all. `objective` leaves out the model's tie-break (see `BUILDING_TIE_BREAK` in
 // exact.rs), so it's what the plan really makes and can be a floor for a later solve.
 async function solveModel(problem, options = SOLVE_OPTIONS, infeasibleMessage) {
-    let result = (await newHighs()).solve(problem.lp, options);
-    if (result.Status === 'Infeasible') {
-        // HiGHS's presolve can call a tightly constrained model infeasible when it isn't (seen on
-        // the level-up stock solve, whose floors come from earlier solves); solving without it
-        // settles it.
-        result = (await newHighs()).solve(problem.lp, { ...options, presolve: 'off' });
+    let result;
+    try {
+        const highs = await newHighs();
+        result = highs.solve(problem.lp, options);
+        if (result.Status === 'Infeasible') {
+            // Presolve can call a tightly constrained model infeasible when it isn't.
+            result = highs.solve(problem.lp, { ...options, presolve: 'off' });
+        }
+    } catch (error) {
+        // A WASM trap must not poison subsequent requests handled by this worker.
+        highsRuntime = null;
+        throw error;
     }
     if (result.Status === 'Infeasible' && infeasibleMessage) throw new Error(infeasibleMessage);
     const proven = result.Status === 'Optimal';

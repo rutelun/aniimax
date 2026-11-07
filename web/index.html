@@ -235,6 +235,9 @@
                         <div class="aniimo-setup-panel" id="aniimo-setup-panel">
                             <p class="hint small" id="aniimo-setup-hint"></p>
                             <div class="ability-levels" id="ability-levels"></div>
+                            <div id="worker-travel-option" class="checkbox-field" hidden>
+                                <label><input type="checkbox" id="worker-travel-on"> <span>Account for Aniimo travel</span> <span class="hint small">(very slow)</span></label>
+                            </div>
                             <div class="roster-editor" id="roster-editor" hidden></div>
                         </div>
                         <p class="aniimo-count" id="aniimo-count" hidden><span id="aniimo-count-have">0</span><span class="aniimo-count-of" id="aniimo-count-of"></span></p>
@@ -245,7 +248,7 @@
                             <details class="explain">
                                 <summary>How the team is worked out</summary>
                                 <p><strong>Best</strong>: the best Aniimo you have of each ability (pick its level above), with each facility's personality. <strong>My Aniimo</strong>: the Aniimo you list; each works what its abilities allow, for the hours it has. <strong>Minimum</strong>: the lowest ability level each recipe accepts, with no personality bonus. The plan below follows whichever is picked.</p>
-                                <p>An Aniimo can take any job needing its ability at or below its level while it has hours to spare, as long as no two of its facilities want opposite personalities. It has four personalities, one from each pair, shown as letters over its portrait: Instinctive or Energetic (I/E), Nimble or Practical (N/S), Faithful or Tenacious (F/T), Playful or Judicious (P/J). Facilities with a resident Aniimo (Sandcastle, Dewy House and the like) need one each, and so does each Heat Furnace (Fire), Cooling Unit (Ice) and Sunlamp (Light) in use. With My Aniimo, crop jobs and walking between workplaces share the workers' available time. Not yet checked in game: each recipe's minimum ability level, the Farmland and Woodland jobs, and whether an environment building's Aniimo level or personality matters.</p>
+                                <p>An Aniimo can take any job needing its ability at or below its level while it has hours to spare, as long as no two of its facilities want opposite personalities. It has four personalities, one from each pair, shown as letters over its portrait: Instinctive or Energetic (I/E), Nimble or Practical (N/S), Faithful or Tenacious (F/T), Playful or Judicious (P/J). Facilities with a resident Aniimo (Sandcastle, Dewy House and the like) need one each, and so does each Heat Furnace (Fire), Cooling Unit (Ice) and Sunlamp (Light) in use. With My Aniimo, crop jobs share the workers' available time; optional travel accounting also includes walking between workplaces. Not yet checked in game: each recipe's minimum ability level, the Farmland and Woodland jobs, and whether an environment building's Aniimo level or personality matters.</p>
                             </details>
                             <div id="aniimo-summary"></div>
                         </div>
@@ -584,6 +587,6 @@
             }
         });
     </script>
-    <script type="module" src="app.js?v=auto-worker-travel"></script>
+    <script type="module" src="app.js?v=optional-worker-travel"></script>
 </body>
 </html>

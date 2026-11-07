@@ -41,6 +41,7 @@ function initWorker() {
             return;
         }
         pendingWorkerRequests.delete(id);
+        clearTimeout(pending.timer);
         if (ok) {
             pending.resolve(result);
         } else {
@@ -49,7 +50,10 @@ function initWorker() {
     };
     worker.onerror = (event) => {
         console.error('Worker error:', event.message || event);
-        pendingWorkerRequests.forEach(pending => pending.reject(new Error(event.message || 'The planner stopped')));
+        pendingWorkerRequests.forEach(pending => {
+            clearTimeout(pending.timer);
+            pending.reject(new Error(event.message || 'The planner stopped'));
+        });
         pendingWorkerRequests.clear();
     };
 }
@@ -58,7 +62,10 @@ function initWorker() {
 // older Calculate click that would otherwise hold up the new one, and starts a fresh worker.
 function restartWorker() {
     worker.terminate();
-    pendingWorkerRequests.forEach(pending => pending.reject(new Error('Cancelled by a newer calculation')));
+    pendingWorkerRequests.forEach(pending => {
+        clearTimeout(pending.timer);
+        pending.reject(new Error('Cancelled by a newer calculation'));
+    });
     pendingWorkerRequests.clear();
     initWorker();
 }
@@ -71,7 +78,12 @@ function restartWorker() {
 function callWorker(type, payload, onProgress) {
     return new Promise((resolve, reject) => {
         const id = ++nextRequestId;
-        pendingWorkerRequests.set(id, { resolve, reject, onProgress });
+        const timer = setTimeout(() => {
+            pendingWorkerRequests.delete(id);
+            reject(new Error('The planner took too long. Try turning off Aniimo travel or simplifying the priorities.'));
+            restartWorker();
+        }, type === 'find_plan' ? SETUP_TIMEOUT : 30_000);
+        pendingWorkerRequests.set(id, { resolve, reject, onProgress, timer });
         worker.postMessage({ id, type, payload });
     });
 }
@@ -117,9 +129,8 @@ function trialCountToPercent(count) {
 // change, since those invalidate the plan.
 let lastPlan = null;
 
-// Plans for both Aniimo setups from the latest Calculate: `{ best, minimum }`. Best is solved and
-// shown first; Minimum follows in the background (see `runFindPlan`). `planRunId` lets a newer
-// Calculate click discard an older run's late Minimum result.
+// Cache only the setups requested since the latest Calculate. A newer calculation invalidates
+// in-flight results; unselected teams aren't solved speculatively.
 let plansBySetup = {};
 let planRunId = 0;
 
@@ -128,7 +139,7 @@ let planRunId = 0;
 function selectedAniimoSetup() {
     const tab = selectedSetupTab();
     if (tab === 'minimum') return 'minimum';
-    if (tab === 'custom') return `roster:${JSON.stringify({ members: roster.map(({ name, ...aniimo }) => aniimo), movementDistances })}`;
+    if (tab === 'custom') return `roster:${JSON.stringify({ members: roster.map(({ name, ...aniimo }) => aniimo), travel: workerTravelEnabled(), movementDistances: workerTravelEnabled() ? movementDistances : {} })}`;
     return bestAniimoSetup();
 }
 
@@ -144,13 +155,19 @@ let lastPlanInput = null;
 // what's selected. It runs in a worker of its own, which a newer pick stops, so quick roster
 // edits don't queue a solve each. A run id guards against a newer Find the best plan click.
 let setupSolve = null;
+let mainSolve = null;
+const SETUP_TIMEOUT = 300_000;
+const workerTravelEnabled = () => document.getElementById('worker-travel-on').checked;
 function ensurePlanFor(setup) {
-    if (plansBySetup[setup] || !lastPlanInput || setupSolve?.setup === setup) return;
+    if (plansBySetup[setup] || !lastPlanInput || setupSolve?.setup === setup
+        || (mainSolve?.runId === planRunId && mainSolve.setup === setup)) return;
     stopSetupSolve();
     const runId = planRunId;
     const solver = new Worker(WORKER_URL, { type: 'module' });
-    setupSolve = { setup, worker: solver };
+    const timer = setTimeout(() => done({ success: false, error: 'This setup took too long. Try turning off Aniimo travel or simplifying the priorities.' }), SETUP_TIMEOUT);
+    setupSolve = { setup, worker: solver, timer };
     const done = (plan) => {
+        clearTimeout(timer);
         solver.terminate();
         if (setupSolve?.worker === solver) setupSolve = null;
         if (runId !== planRunId) return;
@@ -160,21 +177,34 @@ function ensurePlanFor(setup) {
     solver.onmessage = (event) => {
         const { type, ok, result, error } = event.data;
         if (type === 'progress') return;
-        done(ok ? JSON.parse(result) : { success: false, error });
+        let plan;
+        try {
+            plan = ok ? JSON.parse(result) : { success: false, error };
+        } catch (error) {
+            plan = { success: false, error: error.message };
+        }
+        done(plan);
     };
     solver.onerror = (event) => done({ success: false, error: event.message || 'The planner stopped' });
+    solver.onmessageerror = () => done({ success: false, error: 'The planner returned an unreadable response.' });
     // The levels are read afresh: the player may have changed which abilities they have since
     // the plan this input came from.
     solver.postMessage({ id: 1, type: 'find_plan', payload: JSON.stringify({ ...lastPlanInput, ...aniimoInput(setup) }) });
 }
 
 function stopSetupSolve() {
+    clearTimeout(setupSolve?.timer);
     setupSolve?.worker.terminate();
     setupSolve = null;
 }
 
 // Shows the selected setup, and works it out first if this is the first time it's been asked for.
 function switchAniimoSetup() {
+    if (setupSolve && setupSolve.setup !== selectedAniimoSetup()) stopSetupSolve();
+    if (mainSolve?.runId === planRunId && mainSolve.setup !== selectedAniimoSetup()) {
+        mainSolve = null;
+        restartWorker();
+    }
     showSelectedPlan();
     ensurePlanFor(selectedAniimoSetup());
 }
@@ -191,7 +221,10 @@ function showSelectedPlan() {
     document.getElementById('roster-summary').hidden = true;
     content.classList.toggle('stale', !plan);
     if (!plan) {
-        pending.style.display = 'block';
+        pending.style.display = lastPlanInput ? 'block' : 'none';
+        stopRanking();
+        stopLayout();
+        ensurePlanFor(setup);
         return;
     }
     pending.style.display = 'none';
@@ -199,7 +232,7 @@ function showSelectedPlan() {
     displayPlan(plan);
     if (plan.success) {
         runTimeToGoal();
-        rankImprovementsFor(setup);
+        // Opportunities wait until the layout and any travel refinements have finished.
     } else {
         stopRanking();
         ranking = null;
@@ -373,7 +406,7 @@ function getPersistedFieldIds() {
         'ecological-module-level', 'kitchen-module-level',
         'resource-detector-level', 'crafting-module-level',
         'rate-unit', 'season-on', 'season-event', 'layout-sim-on', 'layout-recipes', 'layout-storage-count', 'layout-rv-level',
-        'aniimo-best', 'aniimo-minimum', 'aniimo-custom'
+        'aniimo-best', 'aniimo-minimum', 'aniimo-custom', 'worker-travel-on'
     ];
 }
 
@@ -735,9 +768,8 @@ function stopRanking() {
     rankWorkers = [];
 }
 
-// How many workers share the ranking: up to six, leaving cores for the page, the plan's own worker
-// and the layout's.
-const RANK_WORKERS = Math.max(1, Math.min(6, (navigator.hardwareConcurrency || 2) - 3));
+// Leave CPU and memory available for the page and the foreground solver.
+const RANK_WORKERS = 1;
 
 // What a change is measured by: level-up time for a level-up plan that can be worked toward,
 // else the first ranked priority, else Home Coins.
@@ -1214,7 +1246,7 @@ function homelandPieces(plan, input) {
     for (let i = 0; i < generators; i++) pieces.push({ members: [{ x: 0, y: 0, w: 2, h: 2,
         weight: 0, facility: 'Crackle Generator', generator: true }] });
     const physical = pieces.flatMap(p => p.cluster ? p.plots : p.members);
-    for (const [item, facility, worker, visits, cropWork] of plan.mobile_work || []) {
+    for (const [item, facility, worker, visits, cropWork] of (workerTravelEnabled() ? plan.mobile_work || [] : [])) {
         const targets = physical.filter(m => m.facility === facility && (m.jobs
             ? m.jobs.some(j => j.item === item && (cropWork || j.crew === worker))
             : m.crop === item && (cropWork || m.crew === worker)));
@@ -1242,6 +1274,7 @@ const initialsOf = name => name.split(/[\s-]+/).map(w => w[0]).join('').toUpperC
 
 let layoutRunId = 0;
 let layoutWorker = null;
+const layoutsByPlan = new WeakMap();
 let layoutStorageTimer = null;
 
 // Every plot of the homeland, `{ number, x, y, w, h }` in tiles, with the top left at the origin.
@@ -1410,13 +1443,11 @@ function renderHomelandLayout(plan) {
         .replace('{level}', homeLevel).replace('{n}', storageLimit);
     const cells = homelandPlots().filter(p => p.number <= homeLevel);
     if (layoutWorker) layoutWorker.terminate();
-    const solver = new Worker(WORKER_URL.replace('worker.js', 'layout-worker.js'), { type: 'module' });
-    layoutWorker = solver;
-    solver.onmessage = (event) => {
-        solver.terminate();
-        if (layoutWorker === solver) layoutWorker = null;
+    layoutWorker = null;
+    const layoutKey = `${homeLevel}:${storageCount}`;
+    const applyLayout = layout => {
         if (runId !== layoutRunId) return;
-        const layout = event.data;
+        layoutsByPlan.set(plan, { key: layoutKey, layout });
         const storages = layout.storages;
         // Buildings carry nothing themselves.
         const members = layout.pieces.flatMap(p => p.members).map(m => ({ ...m, weight: m.weight || 0 }));
@@ -1452,7 +1483,20 @@ function renderHomelandLayout(plan) {
         lastLayout = { layout, homeLevel };
         drawLayout(lastLayout);
         setStep('layout', 'done');
-        refineWorkerMovement(layout, plan);
+        if (!refineWorkerMovement(layout, plan)) rankImprovementsFor(selectedAniimoSetup());
+    };
+    const cached = layoutsByPlan.get(plan);
+    if (cached?.key === layoutKey) {
+        // Keep the same asynchronous boundary as a worker response while displayPlan renders.
+        queueMicrotask(() => applyLayout(cached.layout));
+        return;
+    }
+    const solver = new Worker(WORKER_URL.replace('worker.js', 'layout-worker.js'), { type: 'module' });
+    layoutWorker = solver;
+    solver.onmessage = (event) => {
+        solver.terminate();
+        if (layoutWorker === solver) layoutWorker = null;
+        applyLayout(event.data);
     };
     solver.onerror = (event) => {
         console.error('Homeland layout failed:', event.message || event);
@@ -1460,6 +1504,7 @@ function renderHomelandLayout(plan) {
         stopLayout();
         document.getElementById('layout-summary').textContent = 'The layout couldn\'t be worked out.';
         setStep('layout', 'fail');
+        rankImprovementsFor(selectedAniimoSetup());
     };
     solver.postMessage({ pieces, cells: cells.map(({ x, y, w, h }) => ({ x, y, w, h })), storageCount, poleLimit: powerPoleLimit(homeLevel) });
 }
@@ -1812,7 +1857,12 @@ function tickLayoutSim(sim, now) {
     const dt = sim.last == null ? 0 : Math.min(now - sim.last, 100) / 1000;
     sim.last = now;
     const until = sim.game + dt * sim.speed;
-    while (sim.game < until - 1e-9) stepLayoutSim(sim, Math.min(SIM_STEP, until - sim.game));
+    // Animation is illustrative: slow it under load instead of monopolising a frame.
+    const frameBudget = performance.now() + 5;
+    let steps = 0;
+    while (sim.game < until - 1e-9 && steps++ < 32 && performance.now() < frameBudget) {
+        stepLayoutSim(sim, Math.min(SIM_STEP, until - sim.game));
+    }
     sim.real += dt;
     sim.units.forEach(unit => {
         const busy = unit.until != null;
@@ -1849,7 +1899,7 @@ function showSimClock(seconds) {
 // --- Progress card ---------------------------------------------------------------------
 // Under the button, every step of working out a plan in the order it runs, each with a spinner
 // while it runs and its time once done: the solves in the worker (see `exactPlanJson` in
-// worker.js), then the layout, the opportunities and the Minimum team.
+// worker.js), then the layout and the opportunities.
 
 let progress = null;
 
@@ -1872,7 +1922,6 @@ function startProgress(input, runId) {
         ...(levelUp ? season : []),
         { key: 'layout', label: 'Homeland Layout' },
         ...(planting ? [] : [{ key: 'improve', label: 'Opportunities' }]),
-        { key: 'minimum', label: 'Minimum Team Plan' },
     ];
     progress = { runId, steps: steps.map(step => ({ ...step, state: 'pending' })) };
     renderProgress();
@@ -1970,13 +2019,13 @@ let movementDistances = {};
 let travelRefinements = 0;
 
 function refineWorkerMovement(layout, plan) {
-    if (selectedSetupTab() !== 'custom' || !plan.mobile_work?.length || travelRefinements >= 4) return;
+    if (!workerTravelEnabled() || selectedSetupTab() !== 'custom' || !plan.mobile_work?.length || travelRefinements >= 4) return false;
     const measured = workerTravelDistances(layout.pieces.flatMap(p => p.members));
     // After the initial measured pass, keep a conservative envelope as allocation/layout change.
     const next = { ...movementDistances };
     for (const [member, distance] of measured) next[member] = Math.ceil((travelRefinements
         ? Math.max(movementDistances[member] || 0, distance) : distance) * 10) / 10;
-    if (JSON.stringify(next) === JSON.stringify(movementDistances)) return;
+    if (JSON.stringify(next) === JSON.stringify(movementDistances)) return false;
     if (travelRefinements === 3) {
         // A bounded final pass: any pair of jobs inside the open homeland fits this diagonal.
         const open = homelandPlots().filter(p => p.number <= layoutHomeLevel());
@@ -1988,6 +2037,7 @@ function refineWorkerMovement(layout, plan) {
     travelRefinements++;
     stopRanking();
     switchAniimoSetup();
+    return true;
 }
 let rosterFillVersion = 0;
 
@@ -2003,8 +2053,8 @@ const RESIDENT_FACILITIES = new Set(FACILITIES.filter(f => f.category === 'Aniim
 // The roster for the solver (see `JsRoster` in wasm.rs).
 function rosterPayload() {
     return {
-        movement_seconds: 20 / ANIIMO_WALK_SPEED,
-        movement_by_member: Object.fromEntries(Object.entries(movementDistances).map(([member, distance]) => [member, distance / ANIIMO_WALK_SPEED])),
+        movement_seconds: workerTravelEnabled() ? 20 / ANIIMO_WALK_SPEED : 0,
+        movement_by_member: workerTravelEnabled() ? Object.fromEntries(Object.entries(movementDistances).map(([member, distance]) => [member, distance / ANIIMO_WALK_SPEED])) : {},
         members: roster.map(a => ({ count: a.count, abilities: a.abilities, personalities: a.personalities.filter(Boolean), family: a.family })),
         residents: [...RESIDENT_FACILITIES],
         environment: ENVIRONMENT_BUILDING_ABILITY,
@@ -2050,7 +2100,7 @@ function renderRoster() {
             </div>`;
     }).join('');
     editor.innerHTML = `${cards || '<p class="hint small">No Aniimo yet. Add the ones you have, or copy a planned team.</p>'}
-        <p class="hint small">${translate('Travel is calculated automatically from the workplace layout at the delivery speed ({speed} tiles/s). Walking time is included in Aniimo workload.').replace('{speed}', ANIIMO_WALK_SPEED)}</p>
+        ${workerTravelEnabled() ? `<p class="hint small">${translate('Travel is calculated automatically from the workplace layout at the delivery speed ({speed} tiles/s). Walking time is included in Aniimo workload.').replace('{speed}', ANIIMO_WALK_SPEED)}</p>` : ''}
         <p class="hint small">The plan can add Lv.3 Aniimo without a personality bonus wherever more workers improve production.</p>
         <div class="roster-actions">
             <button type="button" class="skip-add-btn" data-roster="add">+ Add Aniimo</button>
@@ -2622,6 +2672,7 @@ function showAniimoSetup() {
     document.getElementById('aniimo-setup-panel').hidden = tab === 'minimum';
     document.getElementById('ability-levels').hidden = tab !== 'best';
     document.getElementById('roster-editor').hidden = tab !== 'custom';
+    document.getElementById('worker-travel-option').hidden = tab !== 'custom';
     document.getElementById('aniimo-setup-hint').textContent = tab === 'custom'
         ? 'The plan shares your Aniimo’s available hours between jobs.'
         : 'The best Aniimo you have of each ability.';
@@ -4226,6 +4277,8 @@ function displayPlan(plan) {
         goalSection.style.display = 'none';
         if (selectedSetupTab() === 'custom') {
             showRosterShortfall();
+            errorEl.textContent = plan.error || 'No plan found with these Aniimo.';
+            errorEl.style.display = 'block';
             return;
         }
         showError(plan.error || 'An unknown error occurred.');
@@ -4337,6 +4390,7 @@ async function runFindPlan() {
     progressFill.style.width = '';
 
     const runId = ++planRunId;
+    let requestedSetup = null;
     plansBySetup = {};
     rankingsBySetup = {};
     stopRanking();
@@ -4367,8 +4421,10 @@ async function runFindPlan() {
         // the solver's own real, running trial-solve count after every trial solve; converted to
         // a fill percentage by `trialCountToPercent` below.
         // Only the backup planner reports progress (see worker.js); the exact planner is quick.
-        // Whichever Best the player has asked for; the other one waits until they switch to it.
-        const bestSetup = selectedAniimoSetup() === 'minimum' ? bestAniimoSetup() : selectedAniimoSetup();
+        // Solve the selected team first; other teams wait until requested.
+        const bestSetup = selectedAniimoSetup();
+        requestedSetup = bestSetup;
+        mainSolve = { setup: bestSetup, runId };
         Object.assign(input, aniimoInput(bestSetup));
         const bestJson = await callWorker('find_plan', JSON.stringify({ ...input, aniimo: bestSetup }), (count) => {
             // The exact planner reports each solve; the backup planner counts its trials.
@@ -4384,6 +4440,7 @@ async function runFindPlan() {
         if (runId !== planRunId) return;
         finishSolveSteps();
         plansBySetup[bestSetup] = JSON.parse(bestJson);
+        mainSolve = null;
         showSelectedPlan();
         // With no plan there's nothing to lay out or improve on.
         if (!plansBySetup[bestSetup].success && progress) {
@@ -4391,34 +4448,21 @@ async function runFindPlan() {
             renderProgress();
         }
 
-        // The Minimum setup solves after Best is already on screen; switching to it before it's
-        // done shows a short "still working" note until it arrives.
-        setStep('minimum', 'start');
-        callWorker('find_plan', JSON.stringify({ ...input, aniimo: 'minimum' }))
-            .then(json => {
-                if (runId !== planRunId) return;
-                setStep('minimum', 'done');
-                plansBySetup.minimum = JSON.parse(json);
-                if (selectedAniimoSetup() === 'minimum') showSelectedPlan();
-            })
-            .catch(error => {
-                if (runId !== planRunId) return;
-                setStep('minimum', 'fail');
-                console.error('Minimum Aniimo plan failed:', error);
-                plansBySetup.minimum = { success: false, error: `The Minimum team plan failed: ${error.message}` };
-                if (selectedAniimoSetup() === 'minimum') showSelectedPlan();
-            });
+        // Other teams are solved on demand when selected or copied into My Aniimo.
     } catch (error) {
         // A run a newer one cancelled leaves the screen to it.
         if (runId !== planRunId) return;
+        if (requestedSetup && requestedSetup !== selectedAniimoSetup()) return;
         if (progress) {
             progress.steps.forEach(s => { if (s.state === 'running') s.state = 'fail'; else if (s.state === 'pending') s.state = 'skipped'; });
             renderProgress();
         }
         console.error('Plan calculation error:', error);
         lastPlan = null;
+        document.getElementById('aniimo-pending').style.display = 'none';
         showError(`Plan calculation failed: ${error.message}`);
     } finally {
+        if (mainSolve?.runId === runId) mainSolve = null;
         if (runId === planRunId) resetPlanButton();
     }
 }
@@ -4774,6 +4818,14 @@ async function initApp() {
     });
     ['aniimo-best', 'aniimo-minimum', 'aniimo-custom'].forEach(id =>
         document.getElementById(id).addEventListener('change', showAniimoSetup));
+    document.getElementById('worker-travel-on').addEventListener('change', () => {
+        travelRefinements = 0;
+        movementDistances = {};
+        stopSetupSolve();
+        renderRoster();
+        saveInputsToStorage();
+        switchAniimoSetup();
+    });
     document.getElementById('aniimo-toggle').addEventListener('click', () => {
         const toggle = document.getElementById('aniimo-toggle');
         const expanded = toggle.getAttribute('aria-expanded') !== 'true';
