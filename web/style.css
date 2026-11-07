@@ -78,6 +78,10 @@ header h1 {
 
 .header-buttons {
     display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    min-width: 0;
+    max-width: 100%;
     gap: 1rem;
 }
 
@@ -1756,6 +1760,14 @@ details.explain p {
     grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
     gap: 0.6rem 1rem;
     margin-top: 0.6rem;
+}
+
+#electricity-config .stock-grid {
+    align-items: end;
+}
+
+#electricity-config .input-field {
+    min-width: 0;
 }
 
 #level-up-config .stock-grid .input-field {
