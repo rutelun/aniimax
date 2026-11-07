@@ -9,6 +9,26 @@ use aniimax::optimizer::find_production_plan;
 use std::path::Path;
 use std::time::Duration;
 
+#[test]
+fn external_values_are_checked_before_skipping_continuous_reoptimization() {
+    use aniimax::exact::{plan_from_values, write_lp};
+    let items = vec![walking_item("checked_external", "Mine", 10.0, "coins")];
+    let counts = FacilityCounts::only(&[("Mine", 1, 1)]);
+    let modules = ModuleLevels::default();
+    let goal = Goal::Earn { floors: &[] };
+    assert_eq!(write_lp(&items, "coins", &counts, &modules, goal).variables, 3);
+    let direct = plan_from_values(&items, "coins", &counts, &modules, goal, &[0.05, 1.0, 0.05], false, 0.1).unwrap();
+    assert!((direct.rate_per_second - 0.05).abs() < 1e-9);
+    check_plan(&direct, &items, "coins", &counts, &modules, None).unwrap();
+    // An infeasible flow still takes the repair path, rather than bypassing validation.
+    let repaired = plan_from_values(&items, "coins", &counts, &modules, goal, &[1.0, 1.0, 1.0], false, 0.1).unwrap();
+    assert!((repaired.rate_per_second - 0.1).abs() < 1e-9);
+    let floors = [("coins".into(), 0.09)];
+    let floor_goal = Goal::Earn { floors: &floors };
+    let repaired = plan_from_values(&items, "coins", &counts, &modules, floor_goal, &[0.05, 1.0, 0.05], false, 0.1).unwrap();
+    assert!(repaired.rate_per_second >= 0.09);
+}
+
 fn load_items() -> Option<Vec<ProductionItem>> {
     let data_dir = Path::new("data");
     data_dir.exists().then(|| load_all_data(data_dir).expect("Failed to load data"))

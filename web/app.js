@@ -1942,7 +1942,8 @@ function startProgress(input, runId) {
         ...(planting ? [{ key: 'crop_variety', label: input.crop_variety ? 'Crop and Tree Variety' : 'Season Crops' }] : []),
         ...priorities.map(target => ({ key: `priority:${target}`, label: `Most ${priorityLabel(target, planContext.aniipod)}` })),
         ...(levelUp ? [] : season),
-        { key: 'plan', label: levelUp ? 'Fastest Level-Up' : priorities.length || seasonFirst || planting ? "Home Coins with What's Left" : 'Most Home Coins' },
+        { key: 'plan', label: levelUp ? 'Fastest Level-Up' : priorities.at(-1) === 'coins' && !input.level_up_strategy
+            ? 'Finish Production Plan' : priorities.length || seasonFirst || planting ? "Home Coins with What's Left" : 'Most Home Coins' },
         ...(levelUp ? season : []),
         { key: 'layout', label: 'Homeland Layout' },
         ...(planting ? [] : [{ key: 'improve', label: 'Opportunities' }]),
@@ -4400,6 +4401,11 @@ function displayPlan(plan) {
     // Said only when the plan might not be the best: the solver ran out of time, or the backup
     // planner made it.
     const explored = document.getElementById('plan-explored-hint');
+    const materialHint = document.getElementById('material-work-hint');
+    materialHint.hidden = !plan.material_work_note;
+    materialHint.textContent = !plan.material_work_note ? '' : translate(plan.material_work_note === 'kept'
+        ? 'The production plan is valid. The extra Bench and Kiln workload could not be optimized in time.'
+        : 'Bench and Kiln workload is the best found in the time allowed; its maximum is not proven.');
     explored.style.display = plan.proven_optimal === true ? 'none' : '';
     if (plan.proven_optimal === true) {
         explored.textContent = '';

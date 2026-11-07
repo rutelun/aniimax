@@ -1868,9 +1868,9 @@ pub fn write_lp(
     LpProblem { lp: out, variables: model.objective.len(), tiebreak: model.tiebreak.clone() }
 }
 
-/// Builds an [`ExactPlan`] from an external solver's variable values (in [`write_lp`]'s `x0`,
-/// `x1`, ... order): rounds every whole-unit variable, then re-solves the rates for exactly those
-/// units, so the plan is consistent even if the solver's own values carry rounding noise.
+/// Builds an [`ExactPlan`] from an external solver's variable values. Accepts the complete
+/// solution after checking every bound, integrality and model constraint. Rounding noise
+/// that violates a constraint falls back to fixing whole units and re-solving the rates.
 /// `proven_optimal` and `upper_bound` are what the solver reported.
 #[allow(clippy::too_many_arguments)]
 pub fn plan_from_values(
@@ -1886,6 +1886,27 @@ pub fn plan_from_values(
     let model = build_model(items, currency, facility_counts, module_levels, goal);
     if values.len() != model.objective.len() {
         return None;
+    }
+    let rounded: Vec<f64> = values.iter().zip(&model.integer).map(|(&v, &int)| if int { v.round() } else { v }).collect();
+    let within_bounds = values.iter().zip(&rounded).zip(&model.bounds).zip(&model.integer)
+        .all(|(((&original, &value), &(lo, hi)), &int)| value.is_finite()
+            && (!int || (original - value).abs() <= 1e-7) && value >= lo && value <= hi);
+    let feasible = within_bounds && model.constraints.iter().all(|(terms, op, rhs)| {
+        let lhs: f64 = terms.iter().map(|&(v, coefficient)| coefficient * rounded[v]).sum();
+        let magnitude: f64 = terms.iter().map(|&(v, coefficient)| (coefficient * rounded[v]).abs()).sum();
+        // Tight absolute tolerance for item flow; only cancellation in large sums gets a
+        // small relative allowance. The public WASM entry point also runs check_plan.
+        let tolerance = 1e-9 + magnitude * 1e-12;
+        lhs.is_finite() && match op {
+            ComparisonOp::Le => lhs <= rhs + tolerance,
+            ComparisonOp::Ge => lhs >= rhs - tolerance,
+            ComparisonOp::Eq => (lhs - rhs).abs() <= tolerance,
+        }
+    });
+    if feasible {
+        let value: f64 = model.objective.iter().zip(&rounded).map(|(c, v)| c * v).sum();
+        let earnings: f64 = model.earnings.iter().zip(&rounded).map(|(c, v)| c * v).sum();
+        return Some(plan_from(&model, value, upper_bound.max(earnings), proven_optimal, 0, &rounded, value));
     }
     let fixed: Vec<(f64, f64)> = model
         .bounds

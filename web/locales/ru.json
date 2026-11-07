@@ -918,5 +918,8 @@
   "Worker travel is off: workload excludes travel between work buildings. Delivery routes are included.": "Учёт переходов работников выключен: загрузка не включает дорогу между рабочими зданиями. Маршруты доставки учитываются.",
   "The planned deliveries do not fit the Aniimo limit. Increase the limit or add Storage Units.": "Доставка не укладывается в лимит Анимо. Увеличьте лимит или добавьте склады.",
   "Use the power available on your connected grid. Each 600 W of load needs one Lightning Aniimo. In My Aniimo, the worker limit includes delivery.": "Используйте доступную мощность подключённой электросети. На каждые 600 Вт нагрузки нужен один Анимо со стихией Молния. В режиме «Мои Анимо» лимит работников включает доставку.",
-  "Delivery is estimated per production batch and carrying capacity. Storage buffering and dispatch delays are not simulated; Hauling Lv.4 uses Lv.3 capacity.": "Доставка оценивается по партиям продукции и грузоподъёмности. Накопление на складе здания и задержки диспетчеризации не моделируются; для Hauling 4 используется грузоподъёмность уровня 3."
+  "Delivery is estimated per production batch and carrying capacity. Storage buffering and dispatch delays are not simulated; Hauling Lv.4 uses Lv.3 capacity.": "Доставка оценивается по партиям продукции и грузоподъёмности. Накопление на складе здания и задержки диспетчеризации не моделируются; для Hauling 4 используется грузоподъёмность уровня 3.",
+  "Finish Production Plan": "Завершение плана производства",
+  "The production plan is valid. The extra Bench and Kiln workload could not be optimized in time.": "План производства корректен. Дополнительную загрузку верстаков и печей не удалось оптимизировать за отведённое время.",
+  "Bench and Kiln workload is the best found in the time allowed; its maximum is not proven.": "Показана лучшая найденная загрузка верстаков и печей; её максимальность не доказана."
 }
