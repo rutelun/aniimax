@@ -903,5 +903,8 @@
   "Connected to power": "Подключено к электросети",
   "No power connection": "Нет подключения к электросети",
   "⚡ marks E-mode buildings. Yellow lines show the power grid; G marks a generator and numbered bolts mark poles. Generator coverage is 11×11 tiles and pole coverage is 7×7. Red badges mean a connection was not found. Pole placement follows the RV limit.": "⚡ отмечает здания в E-mode. Жёлтые линии показывают электросеть, G — генератор, пронумерованные молнии — столбы. Зона генератора — 11×11 клеток, столба — 7×7. Красный значок означает, что подключение не найдено. Число столбов ограничено уровнем автодома.",
-  "Layout RV level": "Уровень автодома для карты"
+  "Layout RV level": "Уровень автодома для карты",
+  "Leisure family": "Семейство для Leisure",
+  "Choose a family": "Выбрать семейство",
+  "Choose a family to use this Aniimo for Leisure recipes.": "Выбери семейство, чтобы использовать этого Анимо для Leisure-рецептов."
 }

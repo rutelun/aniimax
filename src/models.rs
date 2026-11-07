@@ -256,6 +256,7 @@ pub struct RosterAniimo {
     pub count: u32,
     pub abilities: std::collections::BTreeMap<String, u32>,
     pub personalities: Vec<String>,
+    pub family: Option<String>,
 }
 
 impl RosterAniimo {
@@ -288,7 +289,7 @@ impl Crew {
     pub fn add_reserve_workers<'a>(&mut self, jobs: impl IntoIterator<Item = (&'a str, u32)>, capacity: u32) {
         const ASSUMED_LEVEL: u32 = 3;
         let abilities: std::collections::BTreeSet<_> = jobs.into_iter()
-            .filter_map(|(ability, level)| (level <= ASSUMED_LEVEL).then_some(ability))
+            .filter_map(|(ability, level)| (level <= ASSUMED_LEVEL && ability != "Leisure").then_some(ability))
             .collect();
         if capacity > 0 && !abilities.is_empty() {
             self.assumed_from = Some(self.members.len());
@@ -296,7 +297,18 @@ impl Crew {
                 count: capacity,
                 abilities: [(ability.to_string(), ASSUMED_LEVEL)].into(),
                 personalities: Vec::new(),
+                family: None,
             }));
+        }
+    }
+
+    /// Leisure recipes require their own family, including assumed workers.
+    pub fn add_reserve_families<'a>(&mut self, families: impl IntoIterator<Item = &'a str>, capacity: u32) {
+        for family in families.into_iter().collect::<std::collections::BTreeSet<_>>() {
+            if capacity == 0 { continue; }
+            self.assumed_from.get_or_insert(self.members.len());
+            self.members.push(RosterAniimo { count: capacity, abilities: [("Leisure".into(), 3)].into(),
+                personalities: Vec::new(), family: Some(family.into()) });
         }
     }
 
@@ -308,6 +320,9 @@ impl Crew {
     /// the facility's personality.
     pub fn worker(&self, member: usize, item: &ProductionItem, requirements: &AniimoRequirements) -> Option<Worker> {
         let aniimo = self.members.get(member)?;
+        if requirements.family(&item.name).is_some_and(|family| aniimo.family.as_deref() != Some(family)) {
+            return None;
+        }
         let (ability, _) = requirements.get(base_item_name(&item.name))?;
         let bonus = has_personality_bonus(&item.facility)
             && self.personalities.get(&item.facility).is_some_and(|p| aniimo.personalities.contains(p));
@@ -350,7 +365,7 @@ pub fn crew_variants(
                         crew: Some(member),
                         ..item.clone()
                     };
-                    let worker = crew.worker(member, &variant, requirements).expect("a member that can work it");
+                    let Some(worker) = crew.worker(member, &variant, requirements) else { continue };
                     variant.production_time = worker.seconds_for_item(&variant, workload, required);
                     fastest = fastest.min(variant.production_time);
                     out.push(variant);
@@ -663,9 +678,18 @@ pub enum AniimoSetup {
 #[derive(Debug, Clone, Default)]
 pub struct AniimoRequirements {
     by_item: std::collections::HashMap<String, (String, u32)>,
+    families: std::collections::HashMap<String, String>,
 }
 
 impl AniimoRequirements {
+    pub fn set_family(&mut self, item: &str, family: &str) {
+        self.families.insert(item.into(), family.into());
+    }
+
+    pub fn family(&self, item: &str) -> Option<&str> {
+        self.families.get(base_item_name(item)).map(String::as_str)
+    }
+
     pub fn insert(&mut self, item: &str, ability: &str, min_level: u32) -> &mut Self {
         self.by_item.insert(item.to_string(), (ability.to_string(), min_level));
         self
@@ -1206,6 +1230,8 @@ pub struct FacilityCounts {
     /// The minimum number of active plots assigned to each seasonal crop.
     season_crop_minimums: std::collections::BTreeMap<String, u32>,
     power: Option<crate::power::PowerPlan>,
+    /// Per-harvest work, independent of whether electricity or a team limit is enabled.
+    grower_steps: Option<GrowerSteps>,
 }
 
 impl Default for FacilityCounts {
@@ -1216,11 +1242,20 @@ impl Default for FacilityCounts {
             crew: None,
             season_crop_minimums: Default::default(),
             power: None,
+            grower_steps: None,
         }
     }
 }
 
 impl FacilityCounts {
+    pub fn set_grower_steps(&mut self, steps: GrowerSteps) {
+        self.grower_steps = Some(steps);
+    }
+
+    pub fn grower_steps(&self) -> Option<&GrowerSteps> {
+        self.grower_steps.as_ref().or_else(|| self.power.as_ref().map(|p| &p.grower_steps))
+    }
+
     pub fn set_power(&mut self, power: crate::power::PowerPlan) {
         self.power = Some(power);
     }

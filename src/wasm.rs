@@ -802,6 +802,8 @@ pub struct JsRosterAniimo {
     pub abilities: std::collections::BTreeMap<String, u32>,
     #[serde(default)]
     pub personalities: Vec<String>,
+    #[serde(default)]
+    pub family: Option<String>,
 }
 
 impl JsRoster {
@@ -814,6 +816,7 @@ impl JsRoster {
                     count: m.count,
                     abilities: m.abilities.clone(),
                     personalities: m.personalities.clone(),
+                    family: m.family.clone(),
                 })
                 .collect(),
             assumed_from: None,
@@ -1252,13 +1255,16 @@ pub struct JsProductionPlan {
     pub staffing: Vec<(String, usize, f64)>,
     /// Assumed roster pools, as `[member index, ability, level, capacity]`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub assumed_aniimo: Vec<(usize, String, u32, u32)>,
+    pub assumed_aniimo: Vec<(usize, String, u32, u32, Option<String>)>,
     #[serde(default)]
     pub power_used: Option<f64>,
     #[serde(default)]
     pub power_generators: u32,
     #[serde(default)]
     pub crop_staffing: bool,
+    /// Crop task capacity actually reserved by the solver: ability, required level, member, days/day.
+    #[serde(default)]
+    pub crop_assignments: Vec<(String, u32, usize, f64)>,
 }
 
 /// What a plan makes of one priority.
@@ -1326,6 +1332,7 @@ fn empty_production_plan(success: bool, error: Option<String>) -> JsProductionPl
         power_used: None,
         power_generators: 0,
         crop_staffing: false,
+        crop_assignments: Vec::new(),
     }
 }
 
@@ -1364,7 +1371,7 @@ pub fn find_plan(input_json: &str, on_progress: Option<js_sys::Function>) -> Str
         Ok(p) => p,
         Err(error) => return error,
     };
-    if prepared.facility_counts.power().is_some() || !prepared.facility_counts.season_crop_minimums().is_empty() {
+    if prepared.crew.is_some() || prepared.facility_counts.power().is_some() || !prepared.facility_counts.season_crop_minimums().is_empty() {
         return serde_json::to_string(&empty_production_plan(false, Some("This setup requires the exact planner.".into())))
             .unwrap_or_default();
     }
@@ -1653,11 +1660,11 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
     js.level_up = report;
     js.level_up_preview = preview;
     js.staffing = exact.staffing.clone();
+    js.crop_staffing = prepared.crew.is_some();
+    js.crop_assignments = exact.crop_staffing.clone();
     if let Some(power) = prepared.facility_counts.power() {
         js.power_used = Some(crate::exact::rated_power_draw(&exact, &prepared.items) * power.grid.percent as f64 / 100.0);
         js.power_generators = crate::power::generator_workers(js.power_used.unwrap_or(0.0));
-        js.crop_staffing = power.grid.max_aniimo.is_some();
-        js.staffing.extend(exact.crop_staffing.iter().map(|(ability, _, member, share)| (format!("Crops ({ability})"), *member, *share)));
     }
     if prepared.input.season.is_some() {
         js.season_points = Some(crate::exact::target_rate(&exact, &prepared.items, crate::models::SEASON_POINTS));
@@ -1774,6 +1781,7 @@ impl PreparedInput {
         let requirements = embedded_aniimo_requirements();
         let grower_steps = embedded_grower_steps();
         let mut facility_counts = facility_counts;
+        facility_counts.set_grower_steps(grower_steps.clone());
         let mut grid = input.electricity.clone().filter(|grid| grid.watts > 0 || grid.max_aniimo.is_some());
         if let Some(grid) = &mut grid {
             grid.percent = grid.percent.clamp(1, 120);
@@ -1804,12 +1812,13 @@ impl PreparedInput {
                     sum.saturating_add(facility_counts.get_count(facility))
                 });
                 let jobs = available.clone().filter_map(|item| requirements.get(&item.name))
-                    .chain(available.flat_map(|item| grower_steps.get(&item.name).iter()
+                    .chain(available.clone().flat_map(|item| grower_steps.get(&item.name).iter()
                         .map(|job| (job.ability.as_str(), job.min_level))))
                     .chain(environment.filter(|(building, _)| facility_counts.get_count(building) > 0)
                         .map(|(_, ability)| (ability.as_str(), 1)))
                     .chain((generators > 0).then_some(("Lightning", 1)));
                 crew.add_reserve_workers(jobs, capacity);
+                crew.add_reserve_families(available.filter_map(|item| requirements.family(&item.name)), capacity);
                 Some(crew)
             }
             _ => None,
@@ -1897,7 +1906,7 @@ impl PreparedInput {
             let first = crew.assumed_from?;
             Some(crew.members.iter().enumerate().skip(first).filter_map(|(index, member)| {
                 let (ability, level) = member.abilities.iter().next()?;
-                Some((index, ability.clone(), *level, member.count))
+                Some((index, ability.clone(), *level, member.count, member.family.clone()))
             }).collect())
         }).unwrap_or_default();
         JsProductionPlan {
@@ -1923,6 +1932,7 @@ impl PreparedInput {
             power_used: None,
             power_generators: 0,
             crop_staffing: false,
+            crop_assignments: Vec::new(),
         }
     }
 }
@@ -2111,6 +2121,7 @@ struct RecipeInfo {
     /// The Aniimo ability this recipe uses and the lowest ability level that can run it; `None`
     /// for crops and trees.
     aniimo: Option<(String, u32)>,
+    family: Option<String>,
     /// `false` if the recipe's numbers haven't been checked in game yet (see
     /// `data/unverified.csv`).
     verified: bool,
@@ -2160,6 +2171,7 @@ pub fn get_all_items() -> String {
             module_requirement: item.module_requirement.clone(),
             byproduct: item.byproduct.clone(),
             aniimo: requirements.get(&item.name).map(|(ability, level)| (ability.to_string(), level)),
+            family: requirements.family(&item.name).map(str::to_string),
             verified: !unverified.iter().any(|(name, facility)| *name == item.name && *facility == item.facility),
             jobs: grower_steps.get(&item.name).iter().map(|s| (s.step.clone(), s.ability.clone(), s.min_level)).collect(),
             environment: item.environment.clone(),

@@ -20,6 +20,8 @@ struct AniimoRequirementRow {
     name: String,
     ability: String,
     min_level: u32,
+    #[serde(default)]
+    family: Option<String>,
 }
 
 /// Parses the contents of `aniimo_requirements.csv` (columns `name, facility, ability,
@@ -30,6 +32,7 @@ pub fn parse_aniimo_requirements(csv_text: &str) -> Result<AniimoRequirements, B
     for row in rdr.deserialize::<AniimoRequirementRow>() {
         let row = row?;
         reqs.insert(&row.name, &row.ability, row.min_level);
+        if let Some(family) = row.family { reqs.set_family(&row.name, &family); }
     }
     Ok(reqs)
 }

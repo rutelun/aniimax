@@ -903,5 +903,8 @@
   "Connected to power",
   "No power connection",
   "⚡ marks E-mode buildings. Yellow lines show the power grid; G marks a generator and numbered bolts mark poles. Generator coverage is 11×11 tiles and pole coverage is 7×7. Red badges mean a connection was not found. Pole placement follows the RV limit.",
-  "Layout RV level"
+  "Layout RV level",
+  "Leisure family",
+  "Choose a family",
+  "Choose a family to use this Aniimo for Leisure recipes."
 ]

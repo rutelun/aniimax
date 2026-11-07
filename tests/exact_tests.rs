@@ -704,6 +704,7 @@ fn crew_of(members: &[(u32, &[(&str, u32)])]) -> aniimax::models::Crew {
                 count: *count,
                 abilities: abilities.iter().map(|(a, l)| (a.to_string(), *l)).collect(),
                 personalities: Vec::new(),
+                family: abilities.iter().any(|(a, _)| *a == "Leisure").then(|| "1017".to_string()),
             })
             .collect(),
         residents: ["Tidewhisper Sandcastle", "Dewy House", "Nimbus Bed", "Starfall Hammock", "Floral Windmill"]
@@ -722,6 +723,7 @@ fn solve_with_crew(counts: &FacilityCounts, crew: aniimax::models::Crew) -> (Exa
     let items = crew_items(&crew).expect("data");
     let mut counts = counts.clone();
     counts.set_crew(crew);
+    counts.set_grower_steps(aniimax::data::load_grower_steps(Path::new("data")).unwrap());
     let modules = ModuleLevels::default();
     let plan = solve_exact(&items, "coins", &counts, &modules, Goal::Earn { floors: &[] }, Some(Duration::from_secs(60)), None)
         .expect("exact plan");
@@ -812,6 +814,61 @@ fn crew_without_water_grows_unwatered() {
     assert!((wet.rate_per_second - 6.0 * 15.0 / 480.0).abs() < 1e-9, "watered {}", wet.rate_per_second);
 }
 
+// A full production shift leaves no free time for even short per-harvest work.
+// This holds without electricity and with electricity enabled but no team cap.
+#[test]
+fn crop_jobs_share_roster_time_without_a_team_limit() {
+    use aniimax::models::{crew_variants, AniimoRequirements, GrowerStep, GrowerSteps};
+    use aniimax::power::{Electricity, PowerPlan};
+    let originals = load_items().unwrap();
+    for (ability, job) in [("Water", "Watering"), ("Grass", "Collecting"), ("Earth", "Reclaiming"), ("Dark", "Reaping")] {
+        let mut crop = originals.iter().find(|i| i.name == "potato").unwrap().clone();
+        crop.production_time = 10.0;
+        crop.facility_level = 1;
+        crop.yield_amount = 1;
+        crop.sell_currency = "aniimo_exp".into();
+        crop.sell_value = 1.0;
+        crop.cost = None;
+        let mut production = originals.iter().find(|i| i.name == "fresh_water").unwrap().clone();
+        production.facility_level = 1;
+        production.workload = Some(10.0);
+        production.yield_amount = 1;
+        production.sell_value = 20.0;
+        let mut requirements = AniimoRequirements::default();
+        requirements.insert("fresh_water", ability, 1);
+        let mut steps = GrowerSteps::default();
+        steps.insert("potato", GrowerStep { step: job.into(), ability: ability.into(), min_level: 1, workload: 3.0 });
+        let crew = crew_of(&[(2, &[(ability, 3), ("Water", 3)])]);
+        let items = crew_variants(vec![crop, production], &crew, &requirements, &steps);
+        for electricity in [false, true] {
+            let mut counts = FacilityCounts::only(&[("Farmland", 1, 1), ("Well", 2, 1)]);
+            counts.set_crew(crew.clone());
+            counts.set_grower_steps(steps.clone());
+            if electricity { counts.set_power(PowerPlan {
+                grid: Electricity { watts: 600, percent: 100, max_aniimo: None }, grower_steps: steps.clone(),
+            }); }
+            let modules = ModuleLevels::default();
+            let floors = [("aniimo_exp".to_string(), 0.1)];
+            let plan = solve_exact(&items, "coins", &counts, &modules, Goal::Earn { floors: &floors }, None, None).unwrap();
+            check_plan(&plan, &items, "coins", &counts, &modules, None).unwrap();
+            let crop_busy: f64 = plan.crop_staffing.iter().map(|(_, _, _, busy)| busy).sum();
+            let production_busy: f64 = plan.recipe_rates.iter().filter_map(|(name, rate)| {
+                let recipe = items.iter().find(|i| &i.name == name)?;
+                recipe.crew.map(|_| rate * recipe.production_time)
+            }).sum();
+            assert!(crop_busy > 0.0, "{job} was free");
+            let harvests = plan.recipe_rates.get("potato").copied().unwrap_or(0.0);
+            let job_seconds = aniimax::models::Worker::new(3, false).seconds_for(3.0, 1, true);
+            assert!((crop_busy - harvests * job_seconds).abs() < 1e-6, "{job} ignores ability level");
+            assert!(production_busy < 2.0 - 1e-5, "{job} added to two full production shifts");
+            assert!((production_busy + crop_busy - 2.0).abs() < 1e-6);
+            let mut unchecked = plan.clone();
+            unchecked.crop_staffing.clear();
+            assert!(check_plan(&unchecked, &items, "coins", &counts, &modules, None).is_err(), "missing {job} staffing passed re-check");
+        }
+    }
+}
+
 // Each roster member able to work a recipe gets a copy of it, timed for that member; the recipe
 // itself stays for its price, can't be made as it is, and takes the fastest member's time.
 #[test]
@@ -845,4 +902,43 @@ fn crew_residents_take_a_whole_aniimo() {
     assert_eq!(sandcastles(&one, &items), 1);
     let (two, items) = solve_with_crew(&counts, crew_of(&[(2, &[("Leisure", 2)])]));
     assert_eq!(sandcastles(&two, &items), 2);
+}
+
+#[test]
+fn leisure_work_requires_the_recipes_family_even_at_level_four() {
+    use aniimax::models::{crew_variants, GrowerSteps};
+    let originals = load_items().unwrap();
+    let requirements = load_aniimo_requirements(Path::new("data")).unwrap();
+    let mut crew = crew_of(&[(1, &[("Leisure", 4)]), (1, &[("Leisure", 4)]), (2, &[("Leisure", 4)])]);
+    crew.members[0].family = Some("1035".into()); // Dewy
+    crew.members[1].family = Some("1026".into()); // Nimbi
+    crew.members[2].family = None;
+    let steps = GrowerSteps::default();
+    let items = crew_variants(originals.clone(), &crew, &requirements, &steps);
+    let workers = |item: &str| items.iter().filter(|r| aniimax::models::base_item_name(&r.name) == item)
+        .filter_map(|r| r.crew).collect::<Vec<_>>();
+    assert_eq!(workers("aromathyst"), vec![0]);
+    assert_eq!(workers("quick_aromathyst"), vec![0]);
+    assert_eq!(workers("wool"), vec![1]);
+    assert!(workers("petals").is_empty(), "Iris is required even in the same Nimbus Bed");
+    assert!(workers("pearl").is_empty());
+    let mut counts = FacilityCounts::only(&[("Nimbus Bed", 1, 3), ("Tidewhisper Sandcastle", 1, 3)]);
+    counts.set_crew(crew.clone());
+    let modules = ModuleLevels::default();
+    let plan = solve_exact(&items, "coins", &counts, &modules, Goal::Earn { floors: &[] }, None, None).unwrap();
+    check_plan(&plan, &items, "coins", &counts, &modules, None).unwrap();
+    assert!(plan.recipe_rates.keys().all(|name| name == "wool__by1" || name == "quick_wool__by1"));
+    assert!(!plan.recipe_rates.is_empty());
+
+    crew.add_reserve_workers([("Leisure", 1)], 2);
+    assert_eq!(crew.members.len(), 3, "no universal Leisure reserve");
+    crew.add_reserve_families(originals.iter().filter_map(|r| requirements.family(&r.name)), 2);
+    assert_eq!(crew.members.len(), 10);
+    assert_eq!(crew.assumed_from, Some(3));
+    let assumed = crew_variants(originals, &crew, &requirements, &steps);
+    for r in assumed.iter().filter(|r| r.crew.is_some()) {
+        if let Some(family) = requirements.family(&r.name) {
+            assert_eq!(crew.members[r.crew.unwrap()].family.as_deref(), Some(family));
+        }
+    }
 }

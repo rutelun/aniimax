@@ -2875,6 +2875,10 @@ tr:hover .skip-row,
     flex-wrap: wrap;
 }
 
+.roster-family { margin: 0.65rem 0; max-width: 100%; }
+.roster-family select { max-width: 100%; min-width: 0; font-size: 0.8rem; }
+.roster-family .hint { margin: 0.3rem 0; }
+
 .roster-personalities .skip-add-btn:disabled {
     opacity: 0.6;
     cursor: default;

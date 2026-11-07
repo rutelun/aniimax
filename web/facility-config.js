@@ -379,6 +379,17 @@ export function opposedPersonality(name) {
 // buildings) are deliberately excluded here: they don't produce items.
 export const FACILITY_CATEGORIES = ['Materials', 'Environment', 'Aniimo Materials', 'Materials Processing'];
 
+// Game family IDs (ops.eg / species.eg), aniimocamp.com/aniimotools/homefarm.json.
+export const LEISURE_FAMILIES = [
+    { id: '1035', name: 'Dewy / Fragrancier', product: 'Aromathyst' },
+    { id: '1026', name: 'Nimbi / Turbo / Dreaple', product: 'Wool' },
+    { id: '1021', name: 'Iris / Irisal / Irisalis', product: 'Petals' },
+    { id: '1001', name: 'Celestis / Stellarys', product: 'Star' },
+    { id: '1017', name: 'Susuta / Popota / Piopiota / Panpanta', product: 'Sea Salt' },
+    { id: '1019', name: 'Shelly / Sheldon / Sherro', product: 'Pearl' },
+    { id: '1023', name: 'Flutternym / Gracewing / Somniwing', product: 'Scales' },
+];
+
 // Facility name -> category, so other pages can group by the same categories as the facility
 // input cards (Materials/Aniimo Materials are grower facilities, Materials Processing is processor
 // facilities).

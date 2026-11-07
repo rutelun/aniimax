@@ -980,5 +980,8 @@
   "Connected to power": "已連接電網",
   "No power connection": "未連接電網",
   "⚡ marks E-mode buildings. Yellow lines show the power grid; G marks a generator and numbered bolts mark poles. Generator coverage is 11×11 tiles and pole coverage is 7×7. Red badges mean a connection was not found. Pole placement follows the RV limit.": "⚡ 表示電力模式建築。黃色線條代表電網；G 代表發電機，帶編號的閃電代表電線桿。發電機覆蓋 11×11 格，電線桿覆蓋 7×7 格。紅色標記代表未找到連接。電線桿數量遵守房車等級上限。",
-  "Layout RV level": "配置圖房車等級"
+  "Layout RV level": "配置圖房車等級",
+  "Leisure family": "休閒家族",
+  "Choose a family": "選擇家族",
+  "Choose a family to use this Aniimo for Leisure recipes.": "請選擇家族，才能安排此伊莫製作休閒配方。"
 }

@@ -5,9 +5,9 @@ import './math-translation.js';
 
 import {
     FACILITIES, FACILITY_CATEGORIES, FACILITY_CATEGORY_BY_NAME, FACILITY_FOOTPRINTS, HOMELAND_PLOTS, HOMELAND_PLOT_SIZE,
-    MAX_HOME_LEVEL, ANIIMO_MAX, simpleSetup, storageUnitLimit, powerPoleLimit, generatorLimit,
+    MAX_HOME_LEVEL, ANIIMO_MAX, simpleSetup, storageUnitLimit, powerPoleLimit, generatorLimit, LEISURE_FAMILIES,
     LEVEL_UP_COSTS, LEVEL_UP_CHAINS, SPECIAL_RECIPES, SEASONS, RUNNING_SEASONS, seasonById, runningSeason, ANIIPOD_TIERS, PERSONALITY_PAIRS, personalityLetter, opposedPersonality,
-} from './facility-config.js?v=storage-power';
+} from './facility-config.js?v=leisure-families';
 import { allocateTurnFacilities, redistributeTurnFacilityRows } from './turn-jobs.js?v=storage-power';
 import { createShareUrl, readShareHash, urlWithoutShare } from './share-config.js';
 import { nearestStorage } from './layout.js?v=storage-power';
@@ -522,6 +522,7 @@ function loadInputsFromStorage(data) {
             .map(a => ({
                 name: typeof a.name === 'string' ? a.name : '',
                 count: Math.max(1, Math.round(Number(a.count)) || 1),
+                family: LEISURE_FAMILIES.some(f => f.id === a.family) ? a.family : null,
                 abilities: Object.fromEntries(Object.entries(a.abilities)
                     .filter(([ability, level]) => ABILITY_BY_NAME.has(ability) && Number.isInteger(Number(level)) && level >= 1 && level <= 4)
                     .map(([ability, level]) => [ability, Number(level)])),
@@ -1954,8 +1955,10 @@ let roster = [];
 let rosterFillVersion = 0;
 
 function newRosterAniimo(abilities = {}, personalities = PERSONALITY_PAIRS.map(() => null)) {
-    return { name: '', count: 1, abilities, personalities };
+    return { name: '', count: 1, abilities, personalities, family: null };
 }
+
+const leisureFamilyName = family => LEISURE_FAMILIES.find(f => f.id === family)?.name || '';
 
 // Facilities whose Aniimo lives there: every Aniimo Materials facility.
 const RESIDENT_FACILITIES = new Set(FACILITIES.filter(f => f.category === 'Aniimo Materials').map(f => f.name));
@@ -1963,7 +1966,7 @@ const RESIDENT_FACILITIES = new Set(FACILITIES.filter(f => f.category === 'Aniim
 // The roster for the solver (see `JsRoster` in wasm.rs).
 function rosterPayload() {
     return {
-        members: roster.map(a => ({ count: a.count, abilities: a.abilities, personalities: a.personalities.filter(Boolean) })),
+        members: roster.map(a => ({ count: a.count, abilities: a.abilities, personalities: a.personalities.filter(Boolean), family: a.family })),
         residents: [...RESIDENT_FACILITIES],
         environment: ENVIRONMENT_BUILDING_ABILITY,
         personalities: Object.fromEntries(FACILITIES.filter(f => f.personality).map(f => [f.name, f.personality])),
@@ -1999,6 +2002,9 @@ function renderRoster() {
                     <button type="button" class="roster-x" data-remove="${i}" aria-label="Remove this Aniimo" title="Remove">✕</button>
                 </div>
                 <div class="roster-abilities">${abilities}${add}</div>
+                ${aniimo.abilities.Leisure ? `<div class="input-field roster-family"><label for="roster-family-${i}">Leisure family</label>
+                    <select id="roster-family-${i}" data-family="${i}"><option value="">Choose a family</option>${LEISURE_FAMILIES.map(f => `<option value="${f.id}"${aniimo.family === f.id ? ' selected' : ''}>${f.name} — ${translate(f.product)}</option>`).join('')}</select>
+                    ${aniimo.family ? '' : '<p class="hint small">Choose a family to use this Aniimo for Leisure recipes.</p>'}</div>` : ''}
                 <div class="roster-personalities">${personalities}
                     <button type="button" class="skip-add-btn" data-clear-personality="${i}"${aniimo.personalities.some(Boolean) ? '' : ' disabled'}>No personality</button>
                 </div>
@@ -2066,9 +2072,9 @@ async function fillRosterFrom(setup) {
         const cards = new Map();
         kept.forEach(g => {
             const personalities = PERSONALITY_PAIRS.map(pair => pair.names.find(name => g.personalities.has(name)) ?? null);
-            const key = `${g.ability}|${g.level}|${personalities.join()}`;
+            const key = `${g.ability}|${g.level}|${personalities.join()}|${g.family || ''}`;
             if (cards.has(key)) cards.get(key).count += g.count;
-            else cards.set(key, { ...newRosterAniimo({ [g.ability]: g.level }, personalities), count: g.count });
+            else cards.set(key, { ...newRosterAniimo({ [g.ability]: g.level }, personalities), count: g.count, family: g.family || null });
         });
         roster = [...cards.values()];
         rosterChanged();
@@ -2105,7 +2111,7 @@ function attachRosterHandlers() {
         rosterChanged();
     });
     editor.addEventListener('change', (e) => {
-        const { level, personality, add, name } = e.target.dataset;
+        const { level, personality, add, name, family } = e.target.dataset;
         if (level) {
             const [i, ability] = level.split('|');
             roster[Number(i)].abilities[ability] = Number(e.target.value);
@@ -2115,6 +2121,8 @@ function attachRosterHandlers() {
         } else if (add) {
             if (!e.target.value) return;
             roster[Number(add)].abilities[e.target.value] = 1;
+        } else if (family !== undefined) {
+            roster[Number(family)].family = e.target.value || null;
         } else if (name !== undefined) {
             roster[Number(name)].name = e.target.value;
             saveInputsToStorage();
@@ -2132,8 +2140,8 @@ function attachRosterHandlers() {
 // facility keeps its Aniimo all day; environment buildings too (see `staffing`).
 function renderRosterSummary(plan) {
     const members = [...roster];
-    (plan.assumed_aniimo || []).forEach(([index, ability, level, capacity = 1]) => {
-        members[index] = { count: capacity, abilities: { [ability]: level }, personalities: [], assumed: true };
+    (plan.assumed_aniimo || []).forEach(([index, ability, level, capacity = 1, family = null]) => {
+        members[index] = { count: capacity, abilities: { [ability]: level }, personalities: [], assumed: true, family };
     });
     const busy = members.map(() => 0);
     const where = members.map(() => new Map());
@@ -2148,8 +2156,8 @@ function renderRosterSummary(plan) {
         busy[member] += share;
         where[member].set(building, (where[member].get(building) || 0) + share);
     });
-    // The growing jobs (sowing, reaping and the like) take seconds a harvest, so they don't count
-    // as busy time, but someone has to do them: each goes to the least busy Aniimo able to.
+    // Growing jobs are assigned by the same solver capacity constraints as production.
+    // Keep their names for the locations column, but never invent a free assignment here.
     const jobs = new Map();
     (plan.coin_items || []).forEach(step => {
         if (step.status !== 'producing' || !(step.facility === 'Farmland' || step.facility === 'Woodland')) return;
@@ -2157,13 +2165,14 @@ function renderRosterSummary(plan) {
             jobs.set(`${job}|${ability}|${level}|${step.facility}`, { job, ability, level, facility: step.facility });
         });
     });
-    if (!plan.crop_staffing) jobs.forEach(({ job, ability, level, facility }) => {
-        const able = members.map((_, i) => i).filter(i => (members[i].abilities[ability] || 0) >= level);
-        if (!able.length) return;
-        const owned = able.filter(i => !members[i].assumed);
-        const pick = (owned.length ? owned : able).reduce((a, b) => (busy[b] / members[b].count < busy[a] / members[a].count ? b : a));
-        const place = `${job} on ${facility}`;
-        if (!where[pick].has(place)) where[pick].set(place, 1);
+    (plan.crop_assignments || []).forEach(([ability, level, member, share]) => {
+        if (!members[member] || share <= 0) return;
+        busy[member] += share;
+        jobs.forEach(task => {
+            if (task.ability !== ability || task.level !== level) return;
+            const place = `${task.job} on ${task.facility}`;
+            if (!where[member].has(place)) where[member].set(place, 1);
+        });
     });
     const have = roster.reduce((sum, a) => sum + a.count, 0);
     const assigned = members.map((a, i) => {
@@ -2179,24 +2188,20 @@ function renderRosterSummary(plan) {
         const letters = aniimo.personalities.map(personalityLetter).join('');
         const label = aniimo.assumed ? 'Assumed Aniimo' : rosterLabel(aniimo, i);
         return `<tr>
-            <td data-label="Aniimo">${label}<div class="hint small">${abilities} · <span>${letters || 'No personality'}</span></div></td>
+            <td data-label="Aniimo">${label}<div class="hint small">${abilities} · <span>${letters || 'No personality'}</span>${aniimo.family ? `<br>${leisureFamilyName(aniimo.family)}` : ''}</div></td>
             <td data-label="Assigned">${assigned[i]}</td>
             <td data-label="In roster">${aniimo.assumed ? '—' : aniimo.count}</td>
-            <td data-label="Busy on average">${busy[i].toFixed(1)}</td>
+            <td data-label="Busy on average">${busy[i].toFixed(3)}</td>
             <td data-label="Where">${places || '<span class="hint small">idle</span>'}</td>
         </tr>`;
     }).join('');
     const summary = document.getElementById('roster-summary');
-    const cropNote = !plan.crop_staffing && jobs.size > 0
-        ? '<p class="hint small">Crop job assignments are suggestions when there is no team limit.</p>'
-        : '';
     const reserveNote = reserves > 0 ? `<p class="hint small">Additional Aniimo needed for this plan: ${reserves}</p>` : '';
     summary.innerHTML = rows
         ? `<h3>Aniimo assignments</h3>
            <p class="hint small">${working} of your ${have} Aniimo have work in this plan.</p>
            ${reserveNote}
-           <table class="aniimo-table roster-assignment-table"><thead><tr><th>Aniimo</th><th>Assigned</th><th>In roster</th><th>Busy on average</th><th>Where</th></tr></thead><tbody>${rows}</tbody></table>
-           ${cropNote}`
+           <table class="aniimo-table roster-assignment-table"><thead><tr><th>Aniimo</th><th>Assigned</th><th>In roster</th><th>Busy on average</th><th>Where</th></tr></thead><tbody>${rows}</tbody></table>`
         : '<p class="hint">No Aniimo needed.</p>';
     summary.hidden = false;
     document.getElementById('aniimo-collapsed-summary').textContent = '';
@@ -3412,7 +3417,7 @@ function aniimoNeeds(g) {
         .sort()
         .map(name => `${name} (${personalityLetter(name)})`)
         .join(', ');
-    return `Lv.${g.level}${personalities ? ` · ${personalities}` : ''}`;
+    return `Lv.${g.level}${g.family ? ` · ${leisureFamilyName(g.family)}` : ''}${personalities ? ` · ${personalities}` : ''}`;
 }
 
 // The Aniimo team the shown plan needs, one row per distinct ability / level / personality.
@@ -3423,12 +3428,13 @@ function aniimoTeam(plan) {
     const groups = new Map();
     (plan.coin_items || []).forEach(step => {
         (step.aniimo_tasks || []).forEach(task => {
-            const key = taskLabel(task, step.facility);
+            const family = recipeIndex.find(r => r.name === step.item_name)?.family || null;
+            const key = `${taskLabel(task, step.facility)}${family ? ` · ${leisureFamilyName(family)}` : ''}`;
             if (!groups.has(key)) {
                 const personality = task.personality_bonus
                     ? FACILITIES.find(f => f.name === step.facility)?.personality ?? null
                     : null;
-                groups.set(key, { label: key, ability: task.ability, level: task.level, bonus: task.personality_bonus, personality, busy: 0, where: new Map(), jobs: new Map() });
+                groups.set(key, { label: key, ability: task.ability, level: task.level, bonus: task.personality_bonus, personality, family, busy: 0, where: new Map(), jobs: new Map() });
             }
             const g = groups.get(key);
             g.busy += task.busy;
@@ -3492,7 +3498,7 @@ function aniimoTeam(plan) {
         const kept = [];
         // One Aniimo can take another row's work when it has the ability at a high enough level,
         // hours to spare, and nothing on it already wanting the opposite personality.
-        const holds = (host, g) => host.ability === g.ability && host.level >= g.level && host.spare >= g.busy - 1e-6
+        const holds = (host, g) => host.ability === g.ability && (host.family || null) === (g.family || null) && host.level >= g.level && host.spare >= g.busy - 1e-6
             && (!g.personality || !host.personalities.has(opposedPersonality(g.personality)));
         rows.forEach(g => {
             // A facility with a resident Aniimo keeps it to itself.

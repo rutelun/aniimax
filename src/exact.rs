@@ -812,12 +812,13 @@ fn build_model<'a>(
             model.constrain(staffed, ComparisonOp::Ge, 0.0);
         }
         let team_limit = facility_counts.power().and_then(|power| power.grid.max_aniimo.map(|n| (power, n)));
-        if let Some((power, _)) = team_limit {
-            for ((ability, level), mut needs) in crop_work(&rate_of, &power.grower_steps, crew) {
+        if let Some(steps) = facility_counts.grower_steps() {
+            for ((ability, level), mut needs) in crop_work(&rate_of, steps, crew) {
                 for (member, aniimo) in crew.members.iter().enumerate().filter(|(member, _)| crew.can_work(*member, ability, level)) {
                     let staff = model.add(0.0, (0.0, aniimo.count as f64), false,
                         VarKind::CropStaff { ability: ability.to_string(), level, member });
-                    needs.push((staff, -1.0));
+                    let speed = crate::models::Worker::new(aniimo.level(ability), false).speed(level, true);
+                    needs.push((staff, -speed));
                     busy[member].push((staff, 1.0));
                 }
                 model.constrain(needs, ComparisonOp::Eq, 0.0);
@@ -1508,21 +1509,24 @@ pub fn check_plan(
         if staffed.get(GENERATOR).copied().unwrap_or(0.0) + TOLERANCE < required_generators as f64 {
             return Err(format!("{required_generators} Lightning Aniimo required for power"));
         }
-        if let Some((power, limit)) = facility_counts.power().and_then(|power| power.grid.max_aniimo.map(|n| (power, n))) {
+        if let Some(steps) = facility_counts.grower_steps() {
             let mut assigned: BTreeMap<(&str, u32), f64> = BTreeMap::new();
             for (ability, level, member, share) in &plan.crop_staffing {
                 if !crew.can_work(*member, ability, *level) {
                     return Err(format!("crop work assigned to Aniimo without {ability} Lv.{level}"));
                 }
                 busy[*member] += share;
-                *assigned.entry((ability, *level)).or_default() += share;
+                let speed = crate::models::Worker::new(crew.members[*member].level(ability), false).speed(*level, true);
+                *assigned.entry((ability, *level)).or_default() += share * speed;
             }
-            for (job, needs) in crop_work(&rates, &power.grower_steps, crew) {
+            for (job, needs) in crop_work(&rates, steps, crew) {
                 let required: f64 = needs.iter().map(|(rate, time)| rate * time).sum();
                 if assigned.get(&job).copied().unwrap_or(0.0) + TOLERANCE < required {
                     return Err(format!("unassigned crop work for {}", job.0));
                 }
             }
+        }
+        if let Some(limit) = facility_counts.power().and_then(|power| power.grid.max_aniimo) {
             let active: f64 = busy.iter().map(|n| (n - TOLERANCE).ceil().max(0.0)).sum();
             if active > limit as f64 {
                 return Err(format!("{active} Aniimo working but limit is {limit}"));
