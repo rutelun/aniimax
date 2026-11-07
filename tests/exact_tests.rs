@@ -1008,6 +1008,35 @@ fn walking_item(name: &str, facility: &str, seconds: f64, currency: &str) -> Pro
 }
 
 #[test]
+fn idle_dedicated_posts_are_removed_together_with_idle_machines() {
+    use aniimax::models::{crew_variants, AniimoRequirements, GrowerSteps};
+    let first = walking_item("active_post", "Mine", 10.0, "coins");
+    let second = walking_item("idle_post", "Well", 10.0, "none");
+    let mut requirements = AniimoRequirements::default();
+    requirements.insert(&first.name, "Fire", 1).insert(&second.name, "Fire", 1);
+    let crew = crew_of(&[(2, &[("Fire", 1)])]);
+    let items = crew_variants(vec![first, second], &crew, &requirements, &GrowerSteps::default());
+    let mut counts = FacilityCounts::only(&[("Mine", 1, 1), ("Well", 1, 1)]);
+    counts.set_crew(crew); counts.set_movement_seconds(5.0);
+    let modules = ModuleLevels::default();
+    let goal = Goal::Earn { floors: &[] };
+    let problem = aniimax::exact::write_lp(&items, "coins", &counts, &modules, goal);
+    assert_eq!(problem.variables, 11);
+    // Rate/unit pairs, sold, then dedicated/local/mobile for each workplace. The idle
+    // machine and its dedicated post are feasible allocations, but perform no actual work.
+    let values = [0.1, 1.0, 0.0, 1.0, 0.1, 1.0, 0.1, 0.0, 1.0, 0.0, 0.0];
+    let plan = aniimax::exact::plan_from_values(&items, "coins", &counts, &modules, goal, &values, false, 0.1).unwrap();
+    assert_eq!(plan.work_posts.len(), 1);
+    assert!(plan.work_posts[0].0.contains("active_post"));
+    assert!(!plan.units.keys().any(|name| name.contains("idle_post")));
+    check_plan(&plan, &items, "coins", &counts, &modules, None).unwrap();
+    let mut invalid = plan.clone();
+    invalid.work_posts[0].2 = 2.0;
+    assert!(check_plan(&invalid, &items, "coins", &counts, &modules, None)
+        .unwrap_err().contains("dedicated workers exceed physical workplaces"));
+}
+
+#[test]
 fn walking_costs_shared_jobs_but_not_a_dedicated_station() {
     use aniimax::models::{crew_variants, AniimoRequirements, GrowerSteps};
     let mut requirements = AniimoRequirements::default();

@@ -1531,6 +1531,10 @@ fn plan_from(model: &Model, value: f64, upper_bound: f64, proven_optimal: bool, 
     }
     // Units set to a recipe that doesn't run are just idle.
     units.retain(|name, _| recipe_rates.contains_key(name));
+    // A feasible external solution may reserve an unused dedicated post, especially when
+    // a later objective replaces its staffing tie-break. Idle machines are omitted above;
+    // omit posts with no local work too, rather than inventing a worker at a missing machine.
+    work_posts.retain(|(station, member, _)| local_used.get(&(station.clone(), *member)).copied().unwrap_or(0.0) > 0.0);
     let rate_per_second = model.earnings.iter().zip(values).map(|(c, v)| c * v).sum();
     let mut idle = BTreeMap::<usize, f64>::new();
     for (station, member, count) in &work_posts {

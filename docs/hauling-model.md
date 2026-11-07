@@ -40,6 +40,13 @@ headcount limit does not fit, linear route variables let the optimizer reassign 
 production, including differences between couriers' Hauling levels. Rechecks independently
 validate delivery coverage and each member's capacity. Geometry refinement is bounded.
 
+Worker travel initially reserves 20 tiles per workplace change. A shorter measured route
+does not restart optimization. If that allowance is exceeded, one correction uses the open
+homeland's diagonal for every worker, including reserves introduced by the new plan. This
+is conservative rather than an exact simulation of the next placement. A delivery headcount
+shortage similarly triggers one correction using a whole-map route bound for every recipe;
+the model's checked courier assignment is retained when a greedy reallocation misses it.
+
 Each active recipe occupies a separate building. Recipe switching is not used to share one
 Bench or Kiln between different material recipes. Optional worker travel treats them as
 different workplaces.

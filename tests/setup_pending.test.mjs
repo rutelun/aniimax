@@ -13,7 +13,7 @@ function page() {
         if (!elements.has(id)) elements.set(id, { style: {}, checked: false, classList: { toggle() {} } });
         return elements.get(id);
     };
-    const workers = [], timers = new Map(), shown = [];
+    const workers = [], timers = new Map(), shown = [], steps = [];
     const state = { tab: 'custom' };
     const context = {
         document: { getElementById: element, querySelectorAll: () => [] },
@@ -26,16 +26,17 @@ function page() {
         setTimeout(callback) { const id = timers.size + 1; timers.set(id, callback); return id; },
         clearTimeout(id) { timers.delete(id); },
         displayPlan: plan => shown.push(plan), runTimeToGoal() {},
+        startProgress() {}, setStep: (...args) => steps.push(args), translate: s => s,
         stopRanking() {}, stopLayout() {}, renderImprovements() {}, restartWorker() {},
         ENVIRONMENT_BUILDING_ABILITY: {}, RESIDENT_FACILITIES: [], FACILITIES: [], ANIIMO_WALK_SPEED: 4,
     };
     const run = code => runInNewContext(code, context);
     run(`let roster = [{count:1, abilities:{Water:3}, personalities:[], family:null}];
-        let haulingSeconds = {}, haulingDefaultSeconds = 0; let movementDistances = {0:40}, lastPlan = null, plansBySetup = {}, planRunId = 1, ranking;
+        let haulingSeconds = {}, haulingDefaultSeconds = 0; let movementDistances = {0:40}, movementDefaultDistance = 20, lastPlan = null, plansBySetup = {}, planRunId = 1, ranking;
         const WORKER_URL = 'worker.js';` + setupCode + payloadCode + `
         function aniimoInput(setup) { return {aniimo:'roster', roster:rosterPayload()}; }
         lastPlanInput = {facilities:{Well:[{count:2,level:1}]}};`);
-    return { run, element, workers, timers, shown, state };
+    return { run, element, workers, timers, shown, state, steps };
 }
 
 test('a missing selected plan starts exactly one solve and clears pending on completion', () => {
@@ -53,6 +54,17 @@ test('showing an in-flight primary setup does not duplicate its solve', () => {
     const p = page();
     p.run('mainSolve = {setup:selectedAniimoSetup(), runId:planRunId}; showSelectedPlan();');
     assert.equal(p.workers.length, 0);
+});
+
+test('a correction reports real solver progress instead of silently waiting behind the old results', () => {
+    const p = page();
+    p.run('showSelectedPlan();');
+    p.workers[0].onmessage({data:{type:'progress',count:{step:'priority:coins',state:'start'}}});
+    assert.deepEqual(p.steps[0],['priority:coins','start',undefined,undefined]);
+    assert.equal(p.element('aniimo-pending').textContent,'Updating Aniimo setup...');
+    assert.equal(p.timers.size,1);
+    p.workers[0].onmessage({data:{ok:true,result:'{"success":true}'}});
+    assert.equal(p.element('aniimo-pending').style.display,'none');
 });
 
 test('an invalid or timed-out response settles as an error instead of waiting forever', () => {

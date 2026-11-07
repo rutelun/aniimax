@@ -140,7 +140,7 @@ let planRunId = 0;
 function selectedAniimoSetup() {
     const tab = selectedSetupTab();
     if (tab === 'minimum') return 'minimum';
-    if (tab === 'custom') return `roster:${JSON.stringify({ members: roster.map(({ name, ...aniimo }) => aniimo), travel: workerTravelEnabled(), movementDistances: workerTravelEnabled() ? movementDistances : {}, haulingSeconds, haulingDefaultSeconds })}`;
+    if (tab === 'custom') return `roster:${JSON.stringify({ members: roster.map(({ name, ...aniimo }) => aniimo), travel: workerTravelEnabled(), movementDistance: workerTravelEnabled() ? movementDefaultDistance : 0, movementDistances: workerTravelEnabled() ? movementDistances : {}, haulingSeconds, haulingDefaultSeconds })}`;
     return bestAniimoSetup();
 }
 
@@ -167,6 +167,8 @@ function ensurePlanFor(setup) {
     const solver = new Worker(WORKER_URL, { type: 'module' });
     const timer = setTimeout(() => done({ success: false, error: 'This setup took too long. Try turning off Aniimo travel or simplifying the priorities.' }), SETUP_TIMEOUT);
     setupSolve = { setup, worker: solver, timer };
+    startProgress({ ...lastPlanInput, ...aniimoInput(setup) }, runId);
+    document.getElementById('aniimo-pending').textContent = translate('Updating Aniimo setup...');
     const done = (plan) => {
         clearTimeout(timer);
         solver.terminate();
@@ -176,8 +178,13 @@ function ensurePlanFor(setup) {
         if (selectedAniimoSetup() === setup) showSelectedPlan();
     };
     solver.onmessage = (event) => {
-        const { type, ok, result, error } = event.data;
-        if (type === 'progress') return;
+        const { type, ok, result, error, count } = event.data;
+        if (type === 'progress') {
+            if (setupSolve?.worker === solver && runId === planRunId && count && typeof count === 'object') {
+                setStep(count.step, count.state, undefined, count.proven);
+            }
+            return;
+        }
         let plan;
         try {
             plan = ok ? JSON.parse(result) : { success: false, error };
@@ -2041,6 +2048,7 @@ function renderProgress() {
 
 let roster = [];
 let movementDistances = {};
+let movementDefaultDistance = 20;
 let travelRefinements = 0;
 let haulingSeconds = {};
 let haulingDefaultSeconds = 0;
@@ -2067,21 +2075,18 @@ function assignLayoutHauling(layout, plan) {
     const limit = lastPlanInput?.electricity?.max_aniimo ?? Infinity;
     const allocation = allocateHauling(members, busy, work, limit);
     if (allocation.unassigned > 1e-6) {
-        if (haulingRefinements >= 3 && plan.hauling_staffing?.length) {
+        if (haulingDefaultSeconds >= bound && plan.hauling_staffing?.length) {
             // The final model used a whole-homeland route bound. Its independently checked
             // assignment remains feasible when the fast greedy allocator misses a packing.
             plan.delivery_assignments = plan.hauling_staffing;
             return false;
         }
-        // Only a real shortage triggers another solve. Unseen recipes receive a bounded route
-        // estimate; after two measured passes use the homeland diagonal to end refinement.
+        // Only a real shortage triggers a solve. A full-map route bound covers every recipe
+        // in the next layout as well, avoiding repeated optimization as its positions change.
         haulingRefinements++;
         haulingDefaultSeconds = bound;
-        const upper = haulingRefinements >= 3
-            ? haulingWorkload({pieces:[], storages:[]}, plan.coin_items || [], bound, recipeIndex).seconds : {};
-        haulingSeconds = Object.fromEntries(Object.entries(work.seconds).map(([key, seconds]) =>
-            [key, haulingRefinements >= 3 ? Math.max(upper[key] || bound, seconds) : Math.max(seconds, haulingSeconds[key] || 0)]));
-        if (haulingRefinements > 3) {
+        haulingSeconds = {};
+        if (haulingRefinements > 1) {
             showError('The planned deliveries do not fit the Aniimo limit. Increase the limit or add Storage Units.');
             return true;
         }
@@ -2098,21 +2103,18 @@ function assignLayoutHauling(layout, plan) {
 }
 
 function refineWorkerMovement(layout, plan) {
-    if (!workerTravelEnabled() || selectedSetupTab() !== 'custom' || !plan.mobile_work?.length || travelRefinements >= 4) return false;
+    if (!workerTravelEnabled() || selectedSetupTab() !== 'custom' || !plan.mobile_work?.length) return false;
     const measured = workerTravelDistances(layout.pieces.flatMap(p => p.members));
-    // After the initial measured pass, keep a conservative envelope as allocation/layout change.
-    const next = { ...movementDistances };
-    for (const [member, distance] of measured) next[member] = Math.ceil((travelRefinements
-        ? Math.max(movementDistances[member] || 0, distance) : distance) * 10) / 10;
-    if (JSON.stringify(next) === JSON.stringify(movementDistances)) return false;
-    if (travelRefinements === 3) {
-        // A bounded final pass: any pair of jobs inside the open homeland fits this diagonal.
-        const open = homelandPlots().filter(p => p.number <= layoutHomeLevel());
-        const bound = Math.hypot(Math.max(...open.map(p => p.x + p.w)) - Math.min(...open.map(p => p.x)),
-            Math.max(...open.map(p => p.y + p.h)) - Math.min(...open.map(p => p.y)));
-        for (const member of Object.keys(next)) next[member] = bound;
-    }
-    movementDistances = next;
+    // A shorter measured route is already covered by the model's walking allowance. It
+    // must not restart every priority and material solve just to save a few walking seconds.
+    if (![...measured].some(([member, distance]) => distance > (movementDistances[member] ?? movementDefaultDistance) + 1e-6)) return false;
+    const open = homelandPlots().filter(p => p.number <= layoutHomeLevel());
+    const bound = Math.hypot(Math.max(...open.map(p => p.x + p.w)) - Math.min(...open.map(p => p.x)),
+        Math.max(...open.map(p => p.y + p.h)) - Math.min(...open.map(p => p.y)));
+    // Use the bound for all workers, including reserves a corrected plan may start using.
+    // Any next placement fits it, so one correction is sufficient.
+    movementDefaultDistance = Math.ceil(Math.max(bound, ...measured.values()) * 10) / 10;
+    movementDistances = {};
     travelRefinements++;
     stopRanking();
     switchAniimoSetup();
@@ -2134,7 +2136,7 @@ function rosterPayload() {
     return {
         hauling_seconds: haulingSeconds,
         hauling_default_seconds: haulingDefaultSeconds,
-        movement_seconds: workerTravelEnabled() ? 20 / ANIIMO_WALK_SPEED : 0,
+        movement_seconds: workerTravelEnabled() ? movementDefaultDistance / ANIIMO_WALK_SPEED : 0,
         movement_by_member: workerTravelEnabled() ? Object.fromEntries(Object.entries(movementDistances).map(([member, distance]) => [member, distance / ANIIMO_WALK_SPEED])) : {},
         members: roster.map(a => ({ count: a.count, abilities: a.abilities, personalities: a.personalities.filter(Boolean), family: a.family })),
         residents: [...RESIDENT_FACILITIES],
@@ -2181,7 +2183,7 @@ function renderRoster() {
             </div>`;
     }).join('');
     editor.innerHTML = `${cards || '<p class="hint small">No Aniimo yet. Add the ones you have, or copy a planned team.</p>'}
-        ${workerTravelEnabled() ? `<p class="hint small">${translate('Travel is calculated automatically from the workplace layout at the delivery speed ({speed} tiles/s). Walking time is included in Aniimo workload.').replace('{speed}', ANIIMO_WALK_SPEED)}</p>` : ''}
+        ${workerTravelEnabled() ? `<p class="hint small">${translate('Walking time uses a conservative distance estimate, checked against the layout, at {speed} tiles/s.').replace('{speed}', ANIIMO_WALK_SPEED)}</p>` : ''}
         <p class="hint small">The plan can add Lv.3 Aniimo without a personality bonus wherever more workers improve production.</p>
         <div class="roster-actions">
             <button type="button" class="skip-add-btn" data-roster="add">+ Add Aniimo</button>
@@ -2218,6 +2220,7 @@ let rosterReplan = null;
 function rosterChanged(rerender = true) {
     travelRefinements = 0;
     movementDistances = {};
+    movementDefaultDistance = 20;
     haulingSeconds = {};
     haulingDefaultSeconds = 0;
     haulingRefinements = 0;
@@ -4465,6 +4468,7 @@ function displayGoal(goalResult) {
 async function runFindPlan() {
     travelRefinements = 0;
     movementDistances = {};
+    movementDefaultDistance = 20;
     haulingSeconds = {};
     haulingDefaultSeconds = 0;
     haulingRefinements = 0;
@@ -4927,6 +4931,7 @@ async function initApp() {
     document.getElementById('worker-travel-on').addEventListener('change', () => {
         travelRefinements = 0;
         movementDistances = {};
+        movementDefaultDistance = 20;
         stopSetupSolve();
         renderRoster();
         saveInputsToStorage();
