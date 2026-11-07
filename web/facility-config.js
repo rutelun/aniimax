@@ -330,7 +330,18 @@ export const FACILITY_FOOTPRINTS = {
     'Dance Pad Polisher': [2.5, 2.5],
     'Aniipod Maker': [4.5, 4.5],
     'Storage Unit': [2, 2],
+    'Crackle Generator': [2, 2],
+    'Crackle Power Pole': [1.5, 1.5],
 };
+
+// Imported Home data: aniimocamp.com/aniimotools/homefarm.json, facilities 1040001/2.
+export function powerPoleLimit(rv) {
+    return rv < 12 ? 0 : Math.min(30, 6 * (1 + Math.floor((rv - 12) / 2)));
+}
+
+export function generatorLimit(rv) {
+    return rv < 12 ? 0 : rv < 15 ? 1 : rv < 18 ? 2 : 3;
+}
 
 // The homeland: a 4x4 grid of plots, each 20 tiles wide and 15 tall, plot n opening at RV n (and
 // all of them from RV 16). Rows from the top, by plot number; the first opens bottom middle.
@@ -392,6 +403,14 @@ function atHomeLevel(list, homeLevel) {
 // How many Aniimo can live on the homeland at each RV level (index = RV level - 1; `null` where
 // unknown).
 export const ANIIMO_MAX = [null, 8, 11, 14, 17, 20, 22, 24, 26, 28, 30, 32, 34, 36, 38, 40, 42, 43, 44, 45];
+
+// RV 1–20 placement caps, from Aniimo Camp's published level table.
+// https://aniimocamp.com/assets/entries/pages_index.Duqq9yLj.js
+export const STORAGE_UNIT_MAX = [0, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5, 5, 6, 6, 6, 7, 8];
+
+export function storageUnitLimit(homeLevel) {
+    return STORAGE_UNIT_MAX[Math.max(0, Math.min(STORAGE_UNIT_MAX.length - 1, homeLevel - 1))];
+}
 
 // Everything a player at `homeLevel` could have: each facility at its highest unlocked level, as
 // many as that RV level allows (see `counts`), and every module at its cap for that RV level. Returns the same shapes simple

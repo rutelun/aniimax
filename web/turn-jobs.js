@@ -74,9 +74,10 @@ export function allocateTurnFacilities(steps, ownedFor, takesTurns) {
             powered.get(row.electric_level).push(row);
             return false;
         });
-        const poweredJobs = [...powered.values()].flatMap(group => {
+        const poweredJobs = [...powered.entries()].flatMap(([level, group]) => {
             const busy = group.reduce((sum, row) => sum + (row.busy_units ?? row.facility_count), 0);
-            return allocateTurnJobs(group, Math.max(0, Math.ceil(busy - 1e-6)));
+            return allocateTurnJobs(group, Math.max(0, Math.ceil(busy - 1e-6)))
+                .map(jobs => jobs.map(job => ({ ...job, electric_level: level })));
         });
         return [facility, [...poweredJobs, ...allocateTurnJobs(normal, ownedFor(facility) - poweredJobs.length)]];
     }));

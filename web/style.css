@@ -2829,6 +2829,113 @@ tr:hover .skip-row,
     gap: 0.5rem;
 }
 
+#roster-summary {
+    min-width: 0;
+    margin: 0.9rem 0 1.25rem;
+}
+
+#roster-summary > h3 {
+    margin: 0 0 0.4rem;
+}
+
+#roster-summary > .hint {
+    margin: 0.4rem 0;
+}
+
+.roster-assignment-table {
+    table-layout: fixed;
+}
+
+.roster-assignment-table th,
+.roster-assignment-table td {
+    overflow-wrap: anywhere;
+    vertical-align: top;
+}
+
+.roster-assignment-table th:first-child { width: 28%; }
+.roster-assignment-table th:nth-child(2),
+.roster-assignment-table th:nth-child(3) { width: 12%; }
+.roster-assignment-table th:nth-child(4) { width: 16%; }
+.roster-assignment-table th:last-child { width: 32%; }
+
+.roster-ability {
+    max-width: 100%;
+    flex-wrap: wrap;
+}
+
+.roster-personalities .skip-add-btn:disabled {
+    opacity: 0.6;
+    cursor: default;
+}
+
+.layout-storage-config {
+    flex: 0 1 13rem;
+    margin: 0;
+}
+
+.layout-storage-config .hint {
+    display: block;
+    margin-top: 0.25rem;
+}
+
+#level-up-lines,
+#priority-rates {
+    overflow-x: auto;
+}
+
+@media (max-width: 600px) {
+    .roster-assignment-table thead {
+        display: none;
+    }
+
+    .roster-assignment-table,
+    .roster-assignment-table tbody,
+    .roster-assignment-table tr {
+        display: block;
+        width: 100%;
+    }
+
+    .roster-assignment-table tr {
+        padding: 0.65rem 0;
+        border-bottom: 1px solid var(--border);
+    }
+
+    .card .roster-assignment-table td {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr);
+        gap: 0.6rem;
+        padding: 0.2rem 0;
+        border: none;
+        text-align: right;
+    }
+
+    .roster-assignment-table td::before {
+        content: attr(data-label);
+        text-align: left;
+        color: var(--text-muted);
+        font-size: 0.75rem;
+    }
+
+    .card .roster-assignment-table td:first-child {
+        display: block;
+        margin-bottom: 0.35rem;
+        text-align: left;
+    }
+
+    .roster-assignment-table td:first-child::before {
+        display: none;
+    }
+
+    #level-up-lines > table {
+        min-width: 25rem;
+    }
+
+    .aniimo-card .tabs.compact {
+        flex-wrap: wrap;
+        max-width: 100%;
+    }
+}
+
 /* A plan that failed shows only the Aniimo card, whose setup may be what to change. */
 #results-content.setup-only > :not(#aniimo-card) {
     display: none !important;
@@ -2837,10 +2944,20 @@ tr:hover .skip-row,
 /* While another Aniimo setup is worked out, the last one's results are dimmed. */
 #results-content.stale > :not(#aniimo-card),
 #results-content.stale #aniimo-body,
+#results-content.stale #roster-summary,
 #results-content.stale #aniimo-abilities {
     opacity: 0.45;
     pointer-events: none;
 }
+
+.layout-power-zones rect { fill: #f6cd58; fill-opacity: 0.035; stroke: #e2ba43; stroke-opacity: 0.45; stroke-width: 0.06; stroke-dasharray: 0.3 0.2; }
+.layout-power-links line { stroke: #f6cd58; stroke-opacity: 0.85; stroke-width: 0.11; stroke-dasharray: 0.35 0.18; }
+.layout-power-pole rect { fill: #77602b; stroke: #f6cd58; stroke-width: 0.1; }
+.layout-power-pole text, .layout-generator text { fill: #fff0b0; }
+.layout-emode-badge { pointer-events: none; }
+.layout-emode-badge circle { fill: #594500; stroke: #ffd75c; stroke-width: 0.08; }
+.layout-emode-badge text { fill: #fff0aa; }
+.layout-emode-badge.disconnected circle { fill: #842d2d; stroke: #ff7777; }
 
 /* Hover tips (see "Hover tips" in app.js). */
 .tip-card {

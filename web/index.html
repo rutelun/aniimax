@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Aniimax - Aniimo Production Optimizer</title>
-    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="style.css?v=storage-power">
     <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
 </head>
 <body>
@@ -312,9 +312,21 @@
                         <p class="hint" id="layout-summary"></p>
                         <details class="explain">
                             <summary>How it's laid out</summary>
-                            <p>Every finished batch is carried to the Storage Unit (SU), so each facility is placed by its trips per hour times its straight-line distance to it: the busiest sit closest, idle ones go to the edge. Each environment building's plots can go anywhere its coverage still reaches them, so they sit on its Storage Unit side. No covered plot reaches another building's coverage, and a crop that needs an environment but is grown without one stays out of all of it, so every crop keeps the temperature the plan gave it. Crops that need no environment can go anywhere. Everything stays within the plots your RV level has open (each 20 by 15 tiles; in Advanced mode, the lowest RV level that allows what you entered), and the Storage Unit goes wherever the walking comes out least. Hover or tap a facility for its trips and distance. The diagram plays the homeland out in sped-up game time from when everything is set up: each finished batch goes to the Storage Unit (carrying takes no time here), and a recipe starts only once what it takes is there. A ring on each facility shows its batch, amber while it waits for materials. This is a close-packed arrangement worked out step by step, not a proven shortest one.</p>
+                            <p>Facilities deliver to their nearest Storage Unit (SU). The layout places facilities and storage together to reduce trips per hour multiplied by straight-line distance.</p>
+                            <p>Leave the storage count empty to use up to your RV level's placement limit, or enter how many you own. All facilities stay inside the open plots and keep their planned growing environments.</p>
+                            <p>Storage Units share the Home warehouse. The animation shows deliveries to the nearest unit and recipes waiting for ingredients. Carrying time is illustrative. The layout is a heuristic arrangement.</p>
+                            <p>⚡ marks E-mode buildings. Yellow lines show the power grid; G marks a generator and numbered bolts mark poles. Generator coverage is 11×11 tiles and pole coverage is 7×7. Red badges mean a connection was not found. Pole placement follows the RV limit.</p>
                         </details>
                         <div class="layout-controls">
+                            <div class="input-field layout-storage-config" hidden>
+                                <label for="layout-rv-level">Layout RV level</label>
+                                <input type="number" id="layout-rv-level" min="1" max="20" step="1">
+                            </div>
+                            <div class="input-field layout-storage-config">
+                                <label for="layout-storage-count">Storage Units available</label>
+                                <input type="number" id="layout-storage-count" min="0" step="1" aria-describedby="layout-storage-limit">
+                                <span class="hint small" id="layout-storage-limit"></span>
+                            </div>
                             <span class="layout-toggles">
                                 <label class="layout-whole"><input type="checkbox" id="layout-whole"> Show the whole homeland</label>
                                 <label class="layout-whole"><input type="checkbox" id="layout-sim-on" checked> Simulate</label>
@@ -572,6 +584,6 @@
             }
         });
     </script>
-    <script type="module" src="app.js?v=my-aniimo-reserves"></script>
+    <script type="module" src="app.js?v=storage-power"></script>
 </body>
 </html>
