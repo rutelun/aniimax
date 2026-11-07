@@ -9,6 +9,26 @@ use aniimax::optimizer::find_production_plan;
 use std::path::Path;
 use std::time::Duration;
 
+#[test]
+fn external_values_are_checked_before_skipping_continuous_reoptimization() {
+    use aniimax::exact::{plan_from_values, write_lp};
+    let items = vec![walking_item("checked_external", "Mine", 10.0, "coins")];
+    let counts = FacilityCounts::only(&[("Mine", 1, 1)]);
+    let modules = ModuleLevels::default();
+    let goal = Goal::Earn { floors: &[] };
+    assert_eq!(write_lp(&items, "coins", &counts, &modules, goal).variables, 3);
+    let direct = plan_from_values(&items, "coins", &counts, &modules, goal, &[0.05, 1.0, 0.05], false, 0.1).unwrap();
+    assert!((direct.rate_per_second - 0.05).abs() < 1e-9);
+    check_plan(&direct, &items, "coins", &counts, &modules, None).unwrap();
+    // An infeasible flow still takes the repair path, rather than bypassing validation.
+    let repaired = plan_from_values(&items, "coins", &counts, &modules, goal, &[1.0, 1.0, 1.0], false, 0.1).unwrap();
+    assert!((repaired.rate_per_second - 0.1).abs() < 1e-9);
+    let floors = [("coins".into(), 0.09)];
+    let floor_goal = Goal::Earn { floors: &floors };
+    let repaired = plan_from_values(&items, "coins", &counts, &modules, floor_goal, &[0.05, 1.0, 0.05], false, 0.1).unwrap();
+    assert!(repaired.rate_per_second >= 0.09);
+}
+
 fn load_items() -> Option<Vec<ProductionItem>> {
     let data_dir = Path::new("data");
     data_dir.exists().then(|| load_all_data(data_dir).expect("Failed to load data"))
@@ -226,6 +246,12 @@ fn test_material_work_fills_both_facilities_up_to_their_supply() {
     let floors = [("coins".into(), income.rate_per_second)];
     let base = Goal::Earn { floors: &floors };
     let work = Goal::MaterialWork { base: &base, minimum: None };
+    let problem = aniimax::exact::write_lp(&items, "coins", &counts, &modules, work);
+    for (index, item) in items.iter().enumerate() {
+        let material = aniimax::exact::is_upgrade_material(item);
+        assert_eq!(problem.material_fixed.contains(&(index * 2 + 1)), !material);
+        assert_eq!(problem.primary_objective.iter().any(|&(v, _)| v == index * 2), material);
+    }
     let full = solve_exact(&items, "coins", &counts, &modules, work, None, None).unwrap();
     assert!((full.objective - 4.0).abs() < 1e-6);
     assert_eq!(full.units.get("rough_lumber"), Some(&2));
@@ -241,6 +267,38 @@ fn test_material_work_fills_both_facilities_up_to_their_supply() {
     assert!((lumber_rate - 1.0 / (bamboo_time * 8.0)).abs() < 1e-9);
     assert_eq!(limited.units.get("coarse_sifted_ore"), Some(&2));
     check_plan(&limited, &items, "coins", &counts, &modules, None).unwrap();
+}
+
+#[test]
+fn test_rv_materials_cannot_be_replaced_by_intermediate_workload() {
+    let Some(mut items) = load_items() else { return };
+    items.retain(|i| ["bamboo", "rock", "rough_lumber", "standard_planks", "coarse_sifted_ore", "sintered_ore_brick"].contains(&i.name.as_str()));
+    for item in &mut items {
+        if let Some((_, amount)) = item.byproduct.as_mut() { *amount = 2_000; }
+    }
+    let counts = FacilityCounts::only(&[("Woodland", 1, 2), ("Mine", 1, 1),
+        ("Woodworking Bench", 2, 2), ("Chimney Kiln", 2, 2)]);
+    let modules = ModuleLevels::default();
+    let income = solve_exact(&items, "coins", &counts, &modules, Goal::Earn { floors: &[] }, None, None).unwrap();
+    let floors = [("coins".into(), income.rate_per_second)];
+    let base = Goal::Earn { floors: &floors };
+    let target = level_up(&[("standard_planks", 100.0), ("sintered_ore_brick", 100.0)], &[]);
+    let reserve = Goal::UpgradeMaterials { base: &base, level_up: &target, minimum: None };
+    let stocked = solve_exact(&items, "coins", &counts, &modules, reserve, None, None).unwrap();
+    assert!(stocked.objective > 0.0);
+    let reserve = Goal::UpgradeMaterials { base: &base, level_up: &target, minimum: Some(stocked.objective) };
+    let full = solve_exact(&items, "coins", &counts, &modules,
+        Goal::MaterialWork { base: &reserve, minimum: None }, None, None).unwrap();
+    let net = net_rates(&full, &items);
+    for name in ["standard_planks", "sintered_ore_brick"] {
+        assert!(net[name] * PACE_UNIT >= 100.0 * stocked.objective * 0.9998);
+        assert_eq!(full.units[name], 1);
+    }
+    assert!(full.rate_per_second >= income.rate_per_second * 0.9999);
+    check_plan(&full, &items, "coins", &counts, &modules, None).unwrap();
+    let ordinary = aniimax::exact::write_lp(&items, "coins", &counts, &modules, base);
+    let reserved = aniimax::exact::write_lp(&items, "coins", &counts, &modules, reserve);
+    assert_eq!(reserved.variables, ordinary.variables + 1);
 }
 
 #[test]
@@ -401,29 +459,26 @@ fn exact_level_up_makes_its_items_from_byproducts() {
     assert!(fastest.objective < 1e-9, "pace {} without a Bench", fastest.objective);
 }
 
-// Standard Planks are made from Rough Lumber on the same Woodworking Bench, so with one Bench the
-// two recipes take turns on it.
+// Each material recipe needs its own building, including ingredients of another recipe.
 #[test]
-fn exact_level_up_takes_turns_on_one_bench() {
+fn exact_upgrade_chains_require_separate_recipe_buildings() {
     let Some(items) = load_items() else { return };
-    let counts = FacilityCounts::only(&[
-        ("Farmland", 6, 2),
-        ("Woodland", 3, 2),
-        ("Mine", 2, 2),
-        ("Woodworking Bench", 1, 2),
-        ("Chimney Kiln", 1, 2),
+    let mut counts = FacilityCounts::only(&[
+        ("Farmland", 6, 2), ("Woodland", 3, 2), ("Mine", 2, 2),
+        ("Woodworking Bench", 1, 2), ("Chimney Kiln", 1, 2),
     ]);
     let cost = level_up(&[("coins", 680000.0), ("standard_planks", 320.0), ("sintered_ore_brick", 350.0)], &[]);
+    let blocked = solve_exact(&items, "coins", &counts, &ModuleLevels::default(), Goal::LevelUp(&cost), None, None).unwrap();
+    assert!(blocked.objective < 1e-9, "one building cannot run two recipes simultaneously");
+    counts.set("Woodworking Bench", 2, 2); counts.set("Chimney Kiln", 2, 2);
     let (plan, _) = solve_level_up(&items, &counts, &cost);
     for name in ["rough_lumber", "standard_planks", "coarse_sifted_ore", "sintered_ore_brick"] {
-        assert_eq!(plan.units.get(name), Some(&1), "{name}: {plan:?}");
+        assert_eq!(plan.units.get(name), Some(&1));
     }
     let shown = to_production_plan(&plan, &items, "coins", &counts);
-    let planks = shown.coin_items.iter().find(|s| s.item_name.as_deref() == Some("standard_planks")).unwrap();
-    assert!(planks.reason.contains("takes turns with rough_lumber"), "{}", planks.reason);
-    let bench_busy: f64 =
-        shown.coin_items.iter().filter(|s| s.facility == "Woodworking Bench").filter_map(|s| s.busy_units).sum();
-    assert!(bench_busy <= 1.0 + 1e-6, "Bench busy {bench_busy}");
+    for facility in ["Woodworking Bench", "Chimney Kiln"] {
+        assert_eq!(shown.coin_items.iter().filter(|row| row.facility == facility).map(|row| row.facility_count).sum::<u32>(), 2);
+    }
 }
 
 // Mineral Sand is plentiful here while Wood Blocks set the pace, so the Kiln turns the spare sand
@@ -985,7 +1040,7 @@ fn walking_costs_shared_jobs_but_not_a_dedicated_station() {
 }
 
 #[test]
-fn changing_recipes_on_one_bench_does_not_require_walking() {
+fn two_bench_recipes_use_separate_buildings_and_require_walking() {
     use aniimax::models::{crew_variants, AniimoRequirements, GrowerSteps};
     let first = walking_item("walking_first", "Woodworking Bench", 10.0, "none");
     let mut second = walking_item("walking_second", "Woodworking Bench", 10.0, "none");
@@ -996,13 +1051,85 @@ fn changing_recipes_on_one_bench_does_not_require_walking() {
     requirements.insert(&first.name, "Artisanship", 1).insert(&second.name, "Artisanship", 1).insert(&sold.name, "Fire", 1);
     let crew = crew_of(&[(1, &[("Artisanship", 1)]), (1, &[("Fire", 1)])]);
     let items = crew_variants(vec![first, second, sold], &crew, &requirements, &GrowerSteps::default());
-    let mut counts = FacilityCounts::only(&[("Woodworking Bench", 1, 1), ("Crafting Table", 1, 1)]);
-    counts.set_crew(crew); counts.set_movement_seconds(20.0);
+    let mut counts = FacilityCounts::only(&[("Woodworking Bench", 2, 1), ("Crafting Table", 1, 1)]);
+    counts.set_crew(crew);
+    let modules = ModuleLevels::default();
+    let free = solve_exact(&items, "coins", &counts, &modules, Goal::Earn { floors: &[] }, None, None).unwrap();
+    counts.set_movement_seconds(20.0);
+    let plan = solve_exact(&items, "coins", &counts, &modules, Goal::Earn { floors: &[] }, None, None).unwrap();
+    check_plan(&plan, &items, "coins", &counts, &modules, None).unwrap();
+    assert!((free.rate_per_second - 0.05).abs() < 1e-6);
+    assert!(plan.rate_per_second < free.rate_per_second - 1e-6);
+    assert!(plan.work_routes.iter().any(|r| r.member == 0 && r.mobile));
+    assert!(plan.movement_staffing.iter().any(|(member, seconds, _)| *member == 0 && *seconds > 0.0));
+}
+
+#[test]
+fn hauling_shares_the_couriers_production_time_and_is_checked() {
+    use aniimax::models::{crew_variants, AniimoRequirements, GrowerSteps};
+    let recipe = walking_item("courier_output", "Mine", 10.0, "coins");
+    let mut requirements = AniimoRequirements::default();
+    requirements.insert(&recipe.name, "Earth", 1);
+    let crew = crew_of(&[(1, &[("Earth", 1), ("Hauling", 1)])]);
+    let items = crew_variants(vec![recipe], &crew, &requirements, &GrowerSteps::default());
+    let mut counts = FacilityCounts::only(&[("Mine", 1, 1)]);
+    counts.set_crew(crew);
+    let modules = ModuleLevels::default();
+    let free = solve_exact(&items, "coins", &counts, &modules, Goal::Earn { floors: &[] }, None, None).unwrap();
+    counts.set_hauling(0.0, [("Mine|courier_output".into(), 10.0)].into());
+    let delivered = solve_exact(&items, "coins", &counts, &modules, Goal::Earn { floors: &[] }, None, None).unwrap();
+    check_plan(&delivered, &items, "coins", &counts, &modules, None).unwrap();
+    assert!((delivered.rate_per_second - free.rate_per_second / 2.0).abs() < 1e-6);
+    assert!((delivered.hauling_staffing[0].1 - 0.5).abs() < 1e-6);
+    let mut invalid = delivered.clone(); invalid.hauling_staffing.clear();
+    assert!(check_plan(&invalid, &items, "coins", &counts, &modules, None).is_err());
+}
+
+#[test]
+fn delivery_work_is_assigned_to_hauling_aniimo_only() {
+    use aniimax::models::{crew_variants, AniimoRequirements, GrowerSteps};
+    let recipe = walking_item("courier_only", "Mine", 10.0, "coins");
+    let mut requirements = AniimoRequirements::default(); requirements.insert(&recipe.name, "Earth", 1);
+    let crew = crew_of(&[(1, &[("Earth", 1)]), (1, &[("Hauling", 3)])]);
+    let items = crew_variants(vec![recipe], &crew, &requirements, &GrowerSteps::default());
+    let mut counts = FacilityCounts::only(&[("Mine", 1, 1)]); counts.set_crew(crew);
+    counts.set_hauling(10.0, Default::default());
     let modules = ModuleLevels::default();
     let plan = solve_exact(&items, "coins", &counts, &modules, Goal::Earn { floors: &[] }, None, None).unwrap();
     check_plan(&plan, &items, "coins", &counts, &modules, None).unwrap();
-    assert!((plan.rate_per_second - 0.05).abs() < 1e-6);
-    assert!(plan.work_routes.iter().filter(|r| r.member == 0).all(|r| !r.mobile));
+    assert!(plan.hauling_staffing.iter().all(|(member, _)| *member == 1));
+    let mut invalid = plan.clone(); invalid.hauling_staffing[0].0 = 0;
+    assert!(check_plan(&invalid, &items, "coins", &counts, &modules, None).is_err());
+    for limit in [1, 2] {
+        counts.set_power(aniimax::power::PowerPlan {
+            grid: aniimax::power::Electricity { watts: 0, percent: 100, max_aniimo: Some(limit) },
+            grower_steps: GrowerSteps::default(),
+        });
+        let limited = solve_exact(&items, "coins", &counts, &modules, Goal::Earn { floors: &[] }, None, None).unwrap();
+        check_plan(&limited, &items, "coins", &counts, &modules, None).unwrap();
+        assert!((limited.rate_per_second - if limit == 1 { 0.0 } else { 0.1 }).abs() < 1e-6);
+    }
+}
+
+#[test]
+fn hauling_level_changes_delivery_capacity_under_a_shared_headcount_limit() {
+    use aniimax::models::{crew_variants, AniimoRequirements, GrowerSteps};
+    let recipe = walking_item("courier_levels", "Mine", 10.0, "coins");
+    let mut requirements = AniimoRequirements::default(); requirements.insert(&recipe.name, "Earth", 1);
+    let crew = crew_of(&[(1, &[("Earth", 1)]), (1, &[("Hauling", 1)]), (1, &[("Hauling", 3)])]);
+    let items = crew_variants(vec![recipe], &crew, &requirements, &GrowerSteps::default());
+    let mut counts = FacilityCounts::only(&[("Mine", 1, 1)]); counts.set_crew(crew);
+    counts.set_hauling(0.0, [("Mine|courier_levels".into(), 10.0),
+        ("Mine|courier_levels|1".into(), 20.0), ("Mine|courier_levels|3".into(), 10.0)].into());
+    counts.set_power(aniimax::power::PowerPlan {
+        grid: aniimax::power::Electricity { watts: 0, percent: 100, max_aniimo: Some(2) },
+        grower_steps: GrowerSteps::default(),
+    });
+    let modules = ModuleLevels::default();
+    let plan = solve_exact(&items, "coins", &counts, &modules, Goal::Earn { floors: &[] }, None, None).unwrap();
+    check_plan(&plan, &items, "coins", &counts, &modules, None).unwrap();
+    assert!((plan.rate_per_second - 0.1).abs() < 1e-6);
+    assert!(plan.hauling_staffing.iter().all(|(member, _)| *member == 2));
 }
 
 #[test]

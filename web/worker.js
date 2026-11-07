@@ -9,6 +9,8 @@
 // The message handler below is installed right away and waits on this, so no request can arrive
 // before there's a handler for it.
 const load = new URL(import.meta.url).search;
+const incumbentSolver = import('./highs-solve.js' + load);
+const materialSearch = import('./material-search.js' + load);
 const ready = import('./pkg/aniimax.js' + load).then(async (pkg) => {
     await pkg.default({ module_or_path: fetch(new URL('./pkg/aniimax_bg.wasm', import.meta.url), { cache: 'no-cache' }) });
     return pkg;
@@ -58,14 +60,16 @@ const STRICT_OPTIONS = { ...SOLVE_OPTIONS, mip_feasibility_tolerance: 1e-9 };
 // Solves one exact-planner model with HiGHS: `{ values, proven, objective }`, or null if HiGHS
 // found no plan at all. `objective` leaves out the model's tie-break (see `BUILDING_TIE_BREAK` in
 // exact.rs), so it's what the plan really makes and can be a floor for a later solve.
-async function solveModel(problem, options = SOLVE_OPTIONS, infeasibleMessage) {
+async function solveModel(problem, options = SOLVE_OPTIONS, infeasibleMessage, incumbent) {
     let result;
     try {
         const highs = await newHighs();
-        result = highs.solve(problem.lp, options);
+        const run = incumbent ? (await incumbentSolver).solveWithIncumbent : null;
+        result = run ? run(highs, problem, options, incumbent) : highs.solve(problem.lp, options);
         if (result.Status === 'Infeasible') {
             // Presolve can call a tightly constrained model infeasible when it isn't.
-            result = highs.solve(problem.lp, { ...options, presolve: 'off' });
+            result = run ? run(highs, problem, { ...options, presolve: 'off' }, incumbent)
+                : highs.solve(problem.lp, { ...options, presolve: 'off' });
         }
     } catch (error) {
         // A WASM trap must not poison subsequent requests handled by this worker.
@@ -119,10 +123,17 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}) {
     const { exact_byproduct_problems, exact_priority_problem, exact_level_up_problem, exact_problem, exact_plan } = pkg;
     const input = JSON.parse(payload);
     const stage = { floors: [] };
-    const solve = problem => solveModel(problem, SOLVE_OPTIONS,
+    let incumbent = null;
+    let lastCurrencySolve = null;
+    let materialWorkNote = null;
+    const solve = async problem => {
+        const result = await solveModel(problem, SOLVE_OPTIONS,
         hasSeasonCropMinimums(input) && !stage.floors.length && !stage.pace
             ? 'The minimum event crop plots cannot be met. Check plot levels, growing conditions, and the seed budget.'
-            : undefined);
+            : undefined, incumbent?.values);
+        if (result) incumbent = result;
+        return result;
+    };
     let allProven = true;
     if (!input.level_up_strategy && (input.crop_variety || input.season)) {
         step('crop_variety', 'start');
@@ -147,6 +158,7 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}) {
         const priority = JSON.parse(exact_priority_problem(payload, JSON.stringify(stage), target));
         if (!priority.lp) throw new Error('this setup isn\'t covered by the exact planner');
         const most = await solve(priority);
+        lastCurrencySolve = target === (input.currency || 'coins') ? most : null;
         step(`priority:${target}`, 'done', most?.proven);
         if (!most) throw new Error(`no plan found for the most ${target}`);
         if (alone) first({ measure: target, objective: most.objective, proven: most.proven });
@@ -187,9 +199,16 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}) {
     let stageJson = JSON.stringify(stage);
     let problem = JSON.parse(exact_problem(payload, stageJson));
     if (!problem.lp) throw new Error('this setup isn\'t covered by the exact planner');
-    step('final', 'start');
     const alone = stage.floors.length === 0 && !stage.pace;
-    let solved = await solve(problem);
+    let solved = null;
+    if (lastCurrencySolve && !stage.pace && !input.level_up_strategy) {
+        // The last priority already optimized this currency with every preceding floor.
+        // Adding its own achieved floor cannot improve the result. Validate the completed
+        // plan once, after material allocation, rather than rebuilding this intermediate one.
+        solved = lastCurrencySolve;
+    }
+    step('final', solved ? 'skip' : 'start');
+    solved ||= await solve(problem);
     if (!solved) throw new Error('the solver found no plan');
     if (alone) first({ measure: 'coins', objective: solved.objective, proven: solved.proven });
     let proven = solved.proven && allProven;
@@ -201,24 +220,49 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}) {
             bound = Math.max(bound, relaxed.ObjectiveValue + tiebreakOf(problem, columnValues(problem, relaxed)));
         }
     }
-    step('final', 'done', solved.proven);
+    if (!lastCurrencySolve || solved !== lastCurrencySolve) step('final', 'done', solved.proven);
     const coins = solved.objective;
     let materialWork;
     if (hasMaterialProcessors(input)) {
-        const workStage = stage.pace ? { ...stage, coins } : { ...stage, floors: [...stage.floors, [input.currency || 'coins', coins]] };
+        const currency = input.currency || 'coins';
+        const coinFloor = Math.max(coins, ...stage.floors.filter(([name]) => name === currency).map(([, amount]) => amount));
+        const workStage = stage.pace ? { ...stage, coins } : {
+            ...stage, floors: [...stage.floors.filter(([name]) => name !== currency), [currency, coinFloor]],
+        };
+        // A workload maximum alone can fill both Benches with Rough Lumber and make no
+        // Standard Planks. First reserve balanced net production of the RV's actual costs.
+        const preview = input.level_up_preview;
+        if (!stage.pace && preview?.cost.some(([name, amount]) => name !== currency
+            && amount > (preview.stock || []).filter(([item]) => item === name).reduce((n, [, value]) => n + value, 0))) {
+            step('materials', 'start');
+            const stockJson = JSON.stringify({ ...workStage, maximize_upgrade_materials: true });
+            const stockProblem = JSON.parse(exact_problem(payload, stockJson));
+            const seed = stockProblem.variables === solved.values.length + 1 ? [...solved.values, 0] : undefined;
+            const stocked = await (await materialSearch).searchMaterials(stockProblem, seed, solveModel, SOLVE_OPTIONS);
+            if (!stocked) throw new Error('no plan found for the RV upgrade materials');
+            workStage.material_pace = stocked.objective;
+            allProven &&= stocked.proven;
+            proven &&= stocked.proven;
+            if (!stocked.proven) materialWorkNote = 'unproven';
+            solved = stocked;
+        }
         const workJson = JSON.stringify({ ...workStage, maximize_material_work: true });
         const workProblem = JSON.parse(exact_problem(payload, workJson));
         if (workProblem.lp) {
             step('materials', 'start');
-            const worked = await solveModel(workProblem);
-            step('materials', 'done', worked?.proven);
-            if (!worked) throw new Error('no plan found for the Woodworking Bench and Chimney Kiln workload');
-            allProven &&= solved.proven;
-            materialWork = worked.objective;
-            stageJson = workJson;
-            problem = workProblem;
-            solved = worked;
-            proven &&= worked.proven;
+            const worked = await (await materialSearch).searchMaterials(workProblem, solved.values, solveModel, SOLVE_OPTIONS);
+            step('materials', worked ? 'done' : 'fail', worked?.proven);
+            if (worked) {
+                allProven &&= solved.proven;
+                materialWork = worked.objective;
+                stageJson = workJson;
+                problem = workProblem;
+                solved = worked;
+                proven &&= worked.proven;
+                if (!worked.proven) materialWorkNote = 'unproven';
+            } else {
+                throw new Error('no plan found for the Woodworking Bench and Chimney Kiln workload');
+            }
         }
     }
     if (stage.pace) {
@@ -234,6 +278,7 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}) {
         if (stockedPlan && stockedPlan.success) {
             step('check', 'done');
             stockedPlan.level_up_note = levelUpNote;
+            stockedPlan.material_work_note = materialWorkNote;
             return JSON.stringify(stockedPlan);
         }
         console.warn('Level-up stock solve found no usable plan; keeping the plan without it.');
@@ -244,7 +289,7 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}) {
     if (!plan.success) {
         // The answer didn't survive being rebuilt exactly; solve again, this time refusing the
         // rounding noise it may have leaned on.
-        const strict = await solveModel(problem, STRICT_OPTIONS);
+        const strict = await solveModel(problem, STRICT_OPTIONS, undefined, solved.values);
         if (strict) {
             json = exact_plan(payload, stageJson, JSON.stringify({ values: strict.values, proven: strict.proven && allProven, bound }));
             plan = JSON.parse(json);
@@ -252,8 +297,9 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}) {
     }
     if (!plan.success) throw new Error(plan.error || 'the plan failed its check');
     step('check', 'done');
-    if (!levelUpNote) return json;
+    if (!levelUpNote && !materialWorkNote) return json;
     plan.level_up_note = levelUpNote;
+    plan.material_work_note = materialWorkNote;
     return JSON.stringify(plan);
 }
 
@@ -264,13 +310,14 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}) {
 // Reports one `{ index, top, coins, proven }` per input as it goes, the base first (index -1).
 async function rankImprovements(pkg, payload, report) {
     const { measure, base, candidates, baseTop: given } = JSON.parse(payload);
+    const options = { ...SOLVE_OPTIONS, time_limit: 5 };
     const topOf = async (input) => {
         const json = JSON.stringify(input);
         const problem = JSON.parse(measure === 'level_up'
             ? pkg.exact_level_up_problem(json)
             : pkg.exact_priority_problem(json, JSON.stringify({ floors: [] }), measure));
         if (!problem.lp) return null;
-        return solveModel(problem);
+        return solveModel(problem, options);
     };
     // Home Coins while keeping `top` of the measure; the same solve the plan itself runs next.
     const coinsAt = async (input, top) => {
@@ -280,7 +327,7 @@ async function rankImprovements(pkg, payload, report) {
             ? pkg.exact_problem(json, JSON.stringify({ floors: [], pace: top }))
             : pkg.exact_priority_problem(json, JSON.stringify({ floors: [[measure, Math.max(0, top)]] }), 'coins'));
         if (!problem.lp) return null;
-        return solveModel(problem);
+        return solveModel(problem, options);
     };
     // The plan as it stands was solved just now; the page passes that on when it can.
     const baseTop = given?.measure === measure ? given : await topOf(base);

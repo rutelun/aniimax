@@ -14,10 +14,10 @@ test('reused solver memory keeps consecutive independent models isolated', async
         const bytes = await readFile(url);
         return { ok: true, arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) };
     };
-    const create = new Function('workerUrl', 'highsUrl', 'fetch', 'columnValues', 'tiebreakOf',
+    const create = new Function('workerUrl', 'highsUrl', 'fetch', 'columnValues', 'tiebreakOf', 'incumbentSolver',
         `const load = ''; ${runtimeCode}; return {newHighs, solveModel};`);
     const { newHighs, solveModel } = create(workerUrl, new URL('../web/vendor/highs/highs.mjs', import.meta.url).href,
-        localFetch, (_, result) => [result.Columns.x0.Primal], () => 0);
+        localFetch, (_, result) => [result.Columns.x0.Primal], () => 0, import('../web/highs-solve.js'));
     const problem = (objective, bound) => ({ variables: 1, lp:
         `${objective}\n obj: x0\nSubject To\n cap: x0 <= ${bound}\nBounds\n x0 >= 0\nEnd` });
     const runtime = await newHighs();

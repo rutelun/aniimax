@@ -185,7 +185,7 @@
                 <div class="season" id="electricity-section">
                     <label><input type="checkbox" id="electricity-on"> E-mode</label>
                     <div id="electricity-config" hidden>
-                        <p class="hint small">Use the power available on your connected grid. Each 600 W of load needs one Lightning Aniimo. Hauling is counted separately.</p>
+                        <p class="hint small">Use the power available on your connected grid. Each 600 W of load needs one Lightning Aniimo. In My Aniimo, the worker limit includes delivery.</p>
                         <div class="stock-grid">
                             <div class="input-field">
                                 <label for="electricity-watts">Available power (W)</label>
@@ -275,6 +275,7 @@
                         <div id="priority-rates"></div>
                         </div>
                         <p class="plan-proof" id="plan-explored-hint"></p>
+                        <p class="hint small" id="material-work-hint" hidden></p>
                         <p class="plan-unverified" id="plan-unverified" style="display: none;"></p>
                         <p class="plan-skipped" id="plan-skipped" style="display: none;"></p>
                     </div>
@@ -587,6 +588,6 @@
             }
         });
     </script>
-    <script type="module" src="app.js?v=optional-worker-travel"></script>
+    <script type="module" src="app.js?v=material-search-fix"></script>
 </body>
 </html>
