@@ -16,6 +16,8 @@
 // and put back wherever is cheapest with the rest in place, until nothing moves. This is a
 // heuristic: it finds a good layout, not a proven best one.
 
+import { workerHubs, workerPlacementCost, workerLayoutCost } from './worker-travel.js?v=auto-worker-travel';
+
 const STEP = 0.25;
 const EPSILON = 1e-6;
 const CELL = 4;
@@ -78,6 +80,8 @@ export function layOut(pieces, options = {}) {
     // and the rectangles that must stay out of every square.
     const grid = new Map();
     const placedRects = new Map();
+    let activeWorkerHubs = new Map();
+    const hasWorkerRoutes = pieces.some(p => membersOf(p).some(m => m.workers?.length));
     const squares = new Map();
     const sensitive = new Map();
     const occupy = (key, spot) => {
@@ -118,7 +122,8 @@ export function layOut(pieces, options = {}) {
         for (const shape of shapes[i]) {
             let firstFit = null;
             for (const [ox, oy, distance] of offsets) {
-                if (firstFit !== null && distance > firstFit + shape.spread + STEP) break;
+                if (firstFit !== null && distance > firstFit + shape.spread + STEP
+                    + (shape.members.some(m => m.workers?.length) ? 6 : 0)) break;
                 const x = snap(ox - shape.cx);
                 const y = snap(oy - shape.cy);
                 tried++;
@@ -128,6 +133,7 @@ export function layOut(pieces, options = {}) {
                 if (touchy.some(r => inOtherSquare(r, i))) continue;
                 if (firstFit === null) firstFit = distance;
                 const cost = shape.members.reduce((sum, m) => sum + m.weight * distanceToStorage(m.x + x + m.w / 2, m.y + y + m.h / 2), 0)
+                    + workerPlacementCost(shape.members, rects, activeWorkerHubs)
                     // Pieces nobody visits still go as close as they can, to keep the homeland tight.
                     + EPSILON * distanceToStorage(shape.cx + x, shape.cy + y);
                 if (!best || cost < best.cost - EPSILON) best = { cost, x, y, shape, rects, sensitive: touchy };
@@ -149,7 +155,8 @@ export function layOut(pieces, options = {}) {
             const outside = shape.pair ? [[1], [], [0]][zone] : [];
             return inside.every(k => overlaps(r, own[k])) && outside.every(k => !overlaps(r, own[k])) && !inOtherSquare(r, i);
         };
-        const costOf = rects => shape.plots.reduce((sum, p, j) => sum + p.weight * distanceToStorage(rects[j].x + p.w / 2, rects[j].y + p.h / 2), 0);
+        const costOf = rects => shape.plots.reduce((sum, p, j) => sum + p.weight * distanceToStorage(rects[j].x + p.w / 2, rects[j].y + p.h / 2), 0)
+            + workerPlacementCost(shape.plots, rects, activeWorkerHubs);
         let plots = null;
         const slots = shape.plots.map((p, j) => ({ x: shape.planned[j].x + x, y: shape.planned[j].y + y, w: p.w, h: p.h }));
         if (slots.every(r => free(r, i) && !buildings.some(b => overlaps(r, b)))) {
@@ -195,7 +202,14 @@ export function layOut(pieces, options = {}) {
         return best;
     };
 
-    const place = i => (pieces[i].cluster ? placeCluster(i) : placeRigid(i));
+    const place = i => {
+        if (hasWorkerRoutes) {
+            const others = [...placedRects].filter(([key]) => typeof key === 'number' && key !== i)
+                .flatMap(([key, rects]) => rects.map((r, j) => ({ ...membersOf(pieces[key])[j], ...r })));
+            activeWorkerHubs = workerHubs(others);
+        }
+        return pieces[i].cluster ? placeCluster(i) : placeRigid(i);
+    };
     const placed = new Map();
     const unplaced = [];
     // Nothing moves out while pieces are first put down, so once a piece of some shape finds no
@@ -219,8 +233,16 @@ export function layOut(pieces, options = {}) {
         for (const i of order) {
             if (!placed.has(i)) continue;
             vacate(i);
+            const previous = placed.get(i);
             const spot = place(i);
-            if (spot && spot.cost < placed.get(i).cost - 1e-9) {
+            const oldCost = previous.cost;
+            // Re-evaluate the old position against the current worker hubs too: neighboring
+            // workplaces may have moved since this piece was last scored.
+            const metadata = previous.shape.members || [...previous.shape.buildings, ...previous.shape.plots];
+            const previousWorkerCost = workerPlacementCost(metadata, previous.rects, activeWorkerHubs);
+            const previousHaulCost = metadata.reduce((sum, m, j) => sum + (m.weight || 0)
+                * distanceToStorage(previous.rects[j].x + previous.rects[j].w / 2, previous.rects[j].y + previous.rects[j].h / 2), 0);
+            if (spot && spot.cost < (hasWorkerRoutes ? previousHaulCost + previousWorkerCost : oldCost) - 1e-9) {
                 placed.set(i, spot);
                 moved = true;
             }
@@ -275,7 +297,7 @@ export function layOutHomeland(pieces, cells, storage = { w: 2, h: 2 }, storageC
         const relative = cells.map(c => ({ x: c.x - at.x, y: c.y - at.y, w: c.w, h: c.h }));
         const out = layOut(pieces, { storage, cells: relative, ...(storageCount === 0 ? { storages: [] } : {}) });
         tried += out.tried;
-        const cost = out.pieces.reduce((sum, p) => sum + p.cost, 0);
+        const cost = out.pieces.reduce((sum, p) => sum + p.cost, 0) + workerLayoutCost(out.pieces.flatMap(p => p.members));
         const better = !best || out.unplaced.length < best.out.unplaced.length
             || (out.unplaced.length === best.out.unplaced.length && cost < best.cost - EPSILON);
         if (better) best = { out, cost, at };
@@ -332,7 +354,8 @@ function improveStorageLayout(layout, pieces, cells, storage, maximum) {
     }, 0);
     const better = (candidate, current) => candidate.unplaced.length < current.unplaced.length
         || (candidate.unplaced.length === current.unplaced.length
-            && costOf(membersOf(candidate), candidate.storages) < costOf(membersOf(current), current.storages) - EPSILON);
+            && costOf(membersOf(candidate), candidate.storages) + workerLayoutCost(membersOf(candidate))
+                < costOf(membersOf(current), current.storages) + workerLayoutCost(membersOf(current)) - EPSILON);
     const findSpot = (members, others) => {
         const occupied = [...members, ...others];
         let best = null;

@@ -1232,6 +1232,8 @@ pub struct FacilityCounts {
     power: Option<crate::power::PowerPlan>,
     /// Per-harvest work, independent of whether electricity or a team limit is enabled.
     grower_steps: Option<GrowerSteps>,
+    movement_seconds: f64,
+    member_movement: std::collections::BTreeMap<usize, f64>,
 }
 
 impl Default for FacilityCounts {
@@ -1243,11 +1245,28 @@ impl Default for FacilityCounts {
             season_crop_minimums: Default::default(),
             power: None,
             grower_steps: None,
+            movement_seconds: 0.0,
+            member_movement: Default::default(),
         }
     }
 }
 
 impl FacilityCounts {
+    pub fn set_movement_seconds(&mut self, seconds: f64) {
+        self.movement_seconds = if seconds.is_finite() { seconds.clamp(0.0, 300.0) } else { 0.0 };
+    }
+
+    pub fn movement_seconds(&self) -> f64 { self.movement_seconds }
+
+    pub fn set_member_movement(&mut self, values: std::collections::BTreeMap<usize, f64>) {
+        self.member_movement = values.into_iter().filter(|(_, s)| s.is_finite() && *s >= 0.0)
+            .map(|(m, s)| (m, s.min(300.0))).collect();
+    }
+
+    pub fn member_movement_seconds(&self, member: usize) -> f64 {
+        self.member_movement.get(&member).copied().unwrap_or(self.movement_seconds)
+    }
+
     pub fn set_grower_steps(&mut self, steps: GrowerSteps) {
         self.grower_steps = Some(steps);
     }

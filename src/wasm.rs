@@ -783,6 +783,10 @@ pub struct JsPlanInput {
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct JsRoster {
     pub members: Vec<JsRosterAniimo>,
+    #[serde(default)]
+    pub movement_seconds: f64,
+    #[serde(default)]
+    pub movement_by_member: std::collections::BTreeMap<usize, f64>,
     /// Facilities whose Aniimo lives there, e.g. the Tidewhisper Sandcastle.
     #[serde(default)]
     pub residents: Vec<String>,
@@ -1265,6 +1269,11 @@ pub struct JsProductionPlan {
     /// Crop task capacity actually reserved by the solver: ability, required level, member, days/day.
     #[serde(default)]
     pub crop_assignments: Vec<(String, u32, usize, f64)>,
+    #[serde(default)]
+    pub movement_staffing: Vec<(usize, f64, f64)>,
+    /// Item, facility, member, visits/hour, whether this is crop work.
+    #[serde(default)]
+    pub mobile_work: Vec<(String, String, usize, f64, bool)>,
 }
 
 /// What a plan makes of one priority.
@@ -1333,6 +1342,8 @@ fn empty_production_plan(success: bool, error: Option<String>) -> JsProductionPl
         power_generators: 0,
         crop_staffing: false,
         crop_assignments: Vec::new(),
+        movement_staffing: Vec::new(),
+        mobile_work: Vec::new(),
     }
 }
 
@@ -1662,6 +1673,14 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
     js.staffing = exact.staffing.clone();
     js.crop_staffing = prepared.crew.is_some();
     js.crop_assignments = exact.crop_staffing.clone();
+    js.movement_staffing = exact.movement_staffing.clone();
+    js.mobile_work = exact.work_routes.iter().filter(|route| route.mobile).filter_map(|route| {
+        let item = prepared.items.iter().find(|item| item.name == route.recipe)?;
+        let visits = route.crop.as_ref().map_or(1, |(ability, level)| prepared.grower_steps.get(&item.name).iter()
+            .filter(|job| job.ability == *ability && job.min_level == *level).count());
+        Some((crate::models::base_item_name(&item.name).to_string(), item.facility.clone(), route.member,
+            route.rate * visits as f64 * 3600.0, route.crop.is_some()))
+    }).collect();
     if let Some(power) = prepared.facility_counts.power() {
         js.power_used = Some(crate::exact::rated_power_draw(&exact, &prepared.items) * power.grid.percent as f64 / 100.0);
         js.power_generators = crate::power::generator_workers(js.power_used.unwrap_or(0.0));
@@ -1796,6 +1815,8 @@ impl PreparedInput {
         let crew = match (input.aniimo.as_deref(), &input.roster) {
             (Some(name), Some(roster)) if name.starts_with("roster") => {
                 let mut crew = roster.crew();
+                facility_counts.set_movement_seconds(roster.movement_seconds);
+                facility_counts.set_member_movement(roster.movement_by_member.clone());
                 let available = items.iter().filter(|item| {
                     facility_counts.get_count(&item.facility) > 0
                         && facility_counts.can_produce(&item.facility, item.facility_level)
@@ -1933,6 +1954,8 @@ impl PreparedInput {
             power_generators: 0,
             crop_staffing: false,
             crop_assignments: Vec::new(),
+            movement_staffing: Vec::new(),
+            mobile_work: Vec::new(),
         }
     }
 }

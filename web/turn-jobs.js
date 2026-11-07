@@ -8,6 +8,7 @@ export function allocateTurnJobs(rows, owned) {
             cycle: row.cycle_time,
             busy: Math.max(0, row.busy_units ?? row.facility_count),
             units: Math.max(0, row.facility_count || 0),
+            crew: row.crew,
         }))
         .filter(row => row.busy > 1e-9);
     if (owned <= 0) return [];
@@ -27,7 +28,7 @@ export function allocateTurnJobs(rows, owned) {
         let remaining = row.busy;
         while (remaining >= 1 - 1e-6 && nextEmpty < machines.length) {
             machines[nextEmpty].busy = 1;
-            machines[nextEmpty].jobs.push({ item: row.item, cycle: row.cycle, rate: 1 / row.cycle });
+            machines[nextEmpty].jobs.push({ item: row.item, cycle: row.cycle, rate: 1 / row.cycle, ...(row.crew != null ? { crew: row.crew } : {}) });
             nextEmpty++;
             remaining -= 1;
         }
@@ -37,7 +38,7 @@ export function allocateTurnJobs(rows, owned) {
         let remaining = row.busy;
         if (nextEmpty < machines.length) {
             machines[nextEmpty].busy = remaining;
-            machines[nextEmpty].jobs.push({ item: row.item, cycle: row.cycle, rate: remaining / row.cycle });
+            machines[nextEmpty].jobs.push({ item: row.item, cycle: row.cycle, rate: remaining / row.cycle, ...(row.crew != null ? { crew: row.crew } : {}) });
             nextEmpty++;
             return;
         }
@@ -45,7 +46,7 @@ export function allocateTurnJobs(rows, owned) {
             const share = Math.min(remaining, 1 - machine.busy);
             if (share <= 1e-6) continue;
             machine.busy += share;
-            machine.jobs.push({ item: row.item, cycle: row.cycle, rate: share / row.cycle });
+            machine.jobs.push({ item: row.item, cycle: row.cycle, rate: share / row.cycle, ...(row.crew != null ? { crew: row.crew } : {}) });
             remaining -= share;
             if (remaining <= 1e-6) break;
         }

@@ -8,9 +8,10 @@ import {
     MAX_HOME_LEVEL, ANIIMO_MAX, simpleSetup, storageUnitLimit, powerPoleLimit, generatorLimit, LEISURE_FAMILIES,
     LEVEL_UP_COSTS, LEVEL_UP_CHAINS, SPECIAL_RECIPES, SEASONS, RUNNING_SEASONS, seasonById, runningSeason, ANIIPOD_TIERS, PERSONALITY_PAIRS, personalityLetter, opposedPersonality,
 } from './facility-config.js?v=leisure-families';
-import { allocateTurnFacilities, redistributeTurnFacilityRows } from './turn-jobs.js?v=storage-power';
+import { allocateTurnFacilities, redistributeTurnFacilityRows } from './turn-jobs.js?v=auto-worker-travel';
 import { createShareUrl, readShareHash, urlWithoutShare } from './share-config.js';
 import { nearestStorage } from './layout.js?v=storage-power';
+import { ANIIMO_WALK_SPEED, workerTravelDistances } from './worker-travel.js?v=auto-worker-travel';
 
 let wasmReady = false;
 
@@ -127,7 +128,7 @@ let planRunId = 0;
 function selectedAniimoSetup() {
     const tab = selectedSetupTab();
     if (tab === 'minimum') return 'minimum';
-    if (tab === 'custom') return `roster:${JSON.stringify(roster.map(({ name, ...aniimo }) => aniimo))}`;
+    if (tab === 'custom') return `roster:${JSON.stringify({ members: roster.map(({ name, ...aniimo }) => aniimo), movementDistances })}`;
     return bestAniimoSetup();
 }
 
@@ -1189,7 +1190,7 @@ function homelandPieces(plan, input) {
             // A crop that needs an environment but is grown without one stays out of every
             // coverage square, so no building's temperature changes it.
             const growing = step.status === 'producing';
-            pieces.push({ members: [{ x: 0, y: 0, w: footprint[0], h: footprint[1], weight: tripsPerUnit(step), electric_level: step.electric_level, cycle: step.cycle_time, facility: step.facility, crop: growing ? step.item_name : null, sensitive: growing && needsEnvironment(step.item_name) }] });
+            pieces.push({ members: [{ x: 0, y: 0, w: footprint[0], h: footprint[1], weight: tripsPerUnit(step), crew: step.crew, electric_level: step.electric_level, cycle: step.cycle_time, facility: step.facility, crop: growing ? step.item_name : null, sensitive: growing && needsEnvironment(step.item_name) }] });
         }
         count(step.facility, n);
     });
@@ -1212,6 +1213,17 @@ function homelandPieces(plan, input) {
     const generators = Math.min(plan.power_generators || 0, generatorLimit(layoutHomeLevel()));
     for (let i = 0; i < generators; i++) pieces.push({ members: [{ x: 0, y: 0, w: 2, h: 2,
         weight: 0, facility: 'Crackle Generator', generator: true }] });
+    const physical = pieces.flatMap(p => p.cluster ? p.plots : p.members);
+    for (const [item, facility, worker, visits, cropWork] of plan.mobile_work || []) {
+        const targets = physical.filter(m => m.facility === facility && (m.jobs
+            ? m.jobs.some(j => j.item === item && (cropWork || j.crew === worker))
+            : m.crop === item && (cropWork || m.crew === worker)));
+        for (const m of targets) {
+            const share = visits / targets.length;
+            const existing = (m.workers ||= []).find(([member]) => member === worker);
+            if (existing) existing[1] += share; else m.workers.push([worker, share]);
+        }
+    }
     return { pieces, unplaced: [...unplaced] };
 }
 
@@ -1252,6 +1264,7 @@ function attachLayoutHandlers() {
     ['layout-storage-count', 'layout-rv-level'].forEach(id => document.getElementById(id).addEventListener('input', () => {
         clearTimeout(layoutStorageTimer);
         layoutStorageTimer = setTimeout(() => {
+            travelRefinements = 0;
             if (lastPlan?.success) renderHomelandLayout(lastPlan);
         }, 300);
     }));
@@ -1439,6 +1452,7 @@ function renderHomelandLayout(plan) {
         lastLayout = { layout, homeLevel };
         drawLayout(lastLayout);
         setStep('layout', 'done');
+        refineWorkerMovement(layout, plan);
     };
     solver.onerror = (event) => {
         console.error('Homeland layout failed:', event.message || event);
@@ -1596,7 +1610,7 @@ function homelandSvg(layout, homeLevel) {
 // minute a second, at most an hour); a guess from first batches, not the whole wait.
 const SIM_BUILD_UP = 10;
 // Tiles a second a delivery walks, in real time.
-const SIM_PACE = 4;
+const SIM_PACE = ANIIMO_WALK_SPEED;
 // Game seconds per step of the simulation.
 const SIM_STEP = 2;
 // Real seconds between two dots on the same line, at the least.
@@ -1952,6 +1966,29 @@ function renderProgress() {
 // The plan shares their hours out, so one level-4 Earth Aniimo covers what it can and no more.
 
 let roster = [];
+let movementDistances = {};
+let travelRefinements = 0;
+
+function refineWorkerMovement(layout, plan) {
+    if (selectedSetupTab() !== 'custom' || !plan.mobile_work?.length || travelRefinements >= 4) return;
+    const measured = workerTravelDistances(layout.pieces.flatMap(p => p.members));
+    // After the initial measured pass, keep a conservative envelope as allocation/layout change.
+    const next = { ...movementDistances };
+    for (const [member, distance] of measured) next[member] = Math.ceil((travelRefinements
+        ? Math.max(movementDistances[member] || 0, distance) : distance) * 10) / 10;
+    if (JSON.stringify(next) === JSON.stringify(movementDistances)) return;
+    if (travelRefinements === 3) {
+        // A bounded final pass: any pair of jobs inside the open homeland fits this diagonal.
+        const open = homelandPlots().filter(p => p.number <= layoutHomeLevel());
+        const bound = Math.hypot(Math.max(...open.map(p => p.x + p.w)) - Math.min(...open.map(p => p.x)),
+            Math.max(...open.map(p => p.y + p.h)) - Math.min(...open.map(p => p.y)));
+        for (const member of Object.keys(next)) next[member] = bound;
+    }
+    movementDistances = next;
+    travelRefinements++;
+    stopRanking();
+    switchAniimoSetup();
+}
 let rosterFillVersion = 0;
 
 function newRosterAniimo(abilities = {}, personalities = PERSONALITY_PAIRS.map(() => null)) {
@@ -1966,6 +2003,8 @@ const RESIDENT_FACILITIES = new Set(FACILITIES.filter(f => f.category === 'Aniim
 // The roster for the solver (see `JsRoster` in wasm.rs).
 function rosterPayload() {
     return {
+        movement_seconds: 20 / ANIIMO_WALK_SPEED,
+        movement_by_member: Object.fromEntries(Object.entries(movementDistances).map(([member, distance]) => [member, distance / ANIIMO_WALK_SPEED])),
         members: roster.map(a => ({ count: a.count, abilities: a.abilities, personalities: a.personalities.filter(Boolean), family: a.family })),
         residents: [...RESIDENT_FACILITIES],
         environment: ENVIRONMENT_BUILDING_ABILITY,
@@ -2011,6 +2050,7 @@ function renderRoster() {
             </div>`;
     }).join('');
     editor.innerHTML = `${cards || '<p class="hint small">No Aniimo yet. Add the ones you have, or copy a planned team.</p>'}
+        <p class="hint small">${translate('Travel is calculated automatically from the workplace layout at the delivery speed ({speed} tiles/s). Walking time is included in Aniimo workload.').replace('{speed}', ANIIMO_WALK_SPEED)}</p>
         <p class="hint small">The plan can add Lv.3 Aniimo without a personality bonus wherever more workers improve production.</p>
         <div class="roster-actions">
             <button type="button" class="skip-add-btn" data-roster="add">+ Add Aniimo</button>
@@ -2045,6 +2085,8 @@ function showSetupOnly() {
 // Plans again once the player stops changing the roster for a moment, not on every click.
 let rosterReplan = null;
 function rosterChanged(rerender = true) {
+    travelRefinements = 0;
+    movementDistances = {};
     rosterFillVersion++;
     saveInputsToStorage();
     if (rerender) renderRoster();
@@ -2144,6 +2186,7 @@ function renderRosterSummary(plan) {
         members[index] = { count: capacity, abilities: { [ability]: level }, personalities: [], assumed: true, family };
     });
     const busy = members.map(() => 0);
+    const walking = members.map(() => 0);
     const where = members.map(() => new Map());
     (plan.coin_items || []).forEach(step => {
         if (step.crew == null || step.status !== 'producing' || !members[step.crew]) return;
@@ -2155,6 +2198,11 @@ function renderRosterSummary(plan) {
         if (!members[member]) return;
         busy[member] += share;
         where[member].set(building, (where[member].get(building) || 0) + share);
+    });
+    (plan.movement_staffing || []).forEach(([member, travel, reserved]) => {
+        if (!members[member]) return;
+        busy[member] += travel + reserved;
+        walking[member] += travel;
     });
     // Growing jobs are assigned by the same solver capacity constraints as production.
     // Keep their names for the locations column, but never invent a free assignment here.
@@ -2191,7 +2239,7 @@ function renderRosterSummary(plan) {
             <td data-label="Aniimo">${label}<div class="hint small">${abilities} · <span>${letters || 'No personality'}</span>${aniimo.family ? `<br>${leisureFamilyName(aniimo.family)}` : ''}</div></td>
             <td data-label="Assigned">${assigned[i]}</td>
             <td data-label="In roster">${aniimo.assumed ? '—' : aniimo.count}</td>
-            <td data-label="Busy on average">${busy[i].toFixed(3)}</td>
+            <td data-label="Busy on average">${busy[i].toFixed(3)}${walking[i] > 1e-8 ? `<div class="hint small">${translate('{minutes} min/h walking').replace('{minutes}', (walking[i] * 60).toFixed(1))}</div>` : ''}</td>
             <td data-label="Where">${places || '<span class="hint small">idle</span>'}</td>
         </tr>`;
     }).join('');
@@ -2569,6 +2617,7 @@ function renderAbilityLevels() {
 
 // Shows the settings for whichever setup is picked, and works that plan out.
 function showAniimoSetup() {
+    travelRefinements = 0;
     const tab = selectedSetupTab();
     document.getElementById('aniimo-setup-panel').hidden = tab === 'minimum';
     document.getElementById('ability-levels').hidden = tab !== 'best';
@@ -4258,6 +4307,8 @@ function displayGoal(goalResult) {
 // Solve for the best achievable plan (facilities + currency + modules); the heavier computation,
 // triggered explicitly by the Calculate button or Enter in a facility/module field.
 async function runFindPlan() {
+    travelRefinements = 0;
+    movementDistances = {};
     const invalid = (seasonActive() && document.querySelector('#season-crop-minimum-fields input:invalid'))
         || (!document.getElementById('electricity-config').hidden && document.querySelector('#electricity-config input:invalid'));
     if (invalid) {

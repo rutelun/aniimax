@@ -942,3 +942,89 @@ fn leisure_work_requires_the_recipes_family_even_at_level_four() {
         }
     }
 }
+
+fn walking_item(name: &str, facility: &str, seconds: f64, currency: &str) -> ProductionItem {
+    let mut item = load_items().unwrap().into_iter().find(|r| r.name == "fresh_water").unwrap();
+    item.name = name.into(); item.facility = facility.into(); item.production_time = seconds;
+    item.workload = Some(seconds); item.sell_currency = currency.into(); item.sell_value = 1.0;
+    item.yield_amount = 1; item.facility_level = 1; item.module_requirement = None;
+    item.byproduct = None; item.environment = None; item.cost = None;
+    item
+}
+
+#[test]
+fn walking_costs_shared_jobs_but_not_a_dedicated_station() {
+    use aniimax::models::{crew_variants, AniimoRequirements, GrowerSteps};
+    let mut requirements = AniimoRequirements::default();
+    requirements.insert("walking_coins", "Earth", 1).insert("walking_exp", "Earth", 1);
+    let crew = crew_of(&[(1, &[("Earth", 1)])]);
+    let items = crew_variants(vec![walking_item("walking_coins", "Mine", 10.0, "coins"),
+        walking_item("walking_exp", "Well", 10.0, "aniimo_exp")], &crew, &requirements, &GrowerSteps::default());
+    let modules = ModuleLevels::default();
+    let mut counts = FacilityCounts::only(&[("Mine", 1, 1), ("Well", 1, 1)]);
+    counts.set_crew(crew);
+    let floors = [("aniimo_exp".to_string(), 0.02)];
+    let goal = Goal::Earn { floors: &floors };
+    let free = solve_exact(&items, "coins", &counts, &modules, goal, None, None).unwrap();
+    counts.set_movement_seconds(5.0);
+    let shared = solve_exact(&items, "coins", &counts, &modules, goal, None, None).unwrap();
+    check_plan(&shared, &items, "coins", &counts, &modules, None).unwrap();
+    assert!(shared.rate_per_second < free.rate_per_second - 0.01);
+    assert!(shared.movement_staffing.iter().any(|(_, walking, _)| *walking > 0.1));
+    counts.set_member_movement([(0, 0.0)].into());
+    let colocated = solve_exact(&items, "coins", &counts, &modules, goal, None, None).unwrap();
+    check_plan(&colocated, &items, "coins", &counts, &modules, None).unwrap();
+    assert!((colocated.rate_per_second - free.rate_per_second).abs() < 1e-6);
+    counts.set_member_movement([(0, 5.0)].into());
+    let mut invalid = shared.clone(); invalid.work_routes.clear();
+    assert!(check_plan(&invalid, &items, "coins", &counts, &modules, None).is_err());
+    let dedicated = solve_exact(&items, "coins", &counts, &modules, Goal::Earn { floors: &[] }, None, None).unwrap();
+    check_plan(&dedicated, &items, "coins", &counts, &modules, None).unwrap();
+    assert!((dedicated.rate_per_second - 0.1).abs() < 1e-6);
+    assert!(dedicated.movement_staffing.iter().all(|(_, walking, _)| *walking < 1e-8));
+}
+
+#[test]
+fn changing_recipes_on_one_bench_does_not_require_walking() {
+    use aniimax::models::{crew_variants, AniimoRequirements, GrowerSteps};
+    let first = walking_item("walking_first", "Woodworking Bench", 10.0, "none");
+    let mut second = walking_item("walking_second", "Woodworking Bench", 10.0, "none");
+    second.raw_materials = Some(vec![first.name.clone()]); second.required_amount = Some(vec![1]);
+    let mut sold = walking_item("walking_sold", "Crafting Table", 1.0, "coins");
+    sold.raw_materials = Some(vec![second.name.clone()]); sold.required_amount = Some(vec![1]);
+    let mut requirements = AniimoRequirements::default();
+    requirements.insert(&first.name, "Artisanship", 1).insert(&second.name, "Artisanship", 1).insert(&sold.name, "Fire", 1);
+    let crew = crew_of(&[(1, &[("Artisanship", 1)]), (1, &[("Fire", 1)])]);
+    let items = crew_variants(vec![first, second, sold], &crew, &requirements, &GrowerSteps::default());
+    let mut counts = FacilityCounts::only(&[("Woodworking Bench", 1, 1), ("Crafting Table", 1, 1)]);
+    counts.set_crew(crew); counts.set_movement_seconds(20.0);
+    let modules = ModuleLevels::default();
+    let plan = solve_exact(&items, "coins", &counts, &modules, Goal::Earn { floors: &[] }, None, None).unwrap();
+    check_plan(&plan, &items, "coins", &counts, &modules, None).unwrap();
+    assert!((plan.rate_per_second - 0.05).abs() < 1e-6);
+    assert!(plan.work_routes.iter().filter(|r| r.member == 0).all(|r| !r.mobile));
+}
+
+#[test]
+fn crop_visits_include_walking_and_resident_leisure_workers_stay_put() {
+    use aniimax::models::{crew_variants, GrowerStep, GrowerSteps, AniimoRequirements};
+    let mut crop = walking_item("walking_crop", "Farmland", 10.0, "coins"); crop.workload = None;
+    let mut steps = GrowerSteps::default();
+    steps.insert(&crop.name, GrowerStep { step: "Watering".into(), ability: "Water".into(), min_level: 1, workload: 3.0 });
+    let crew = crew_of(&[(1, &[("Water", 1)])]);
+    let items = crew_variants(vec![crop], &crew, &AniimoRequirements::default(), &steps);
+    let mut counts = FacilityCounts::only(&[("Farmland", 20, 1)]);
+    counts.set_crew(crew); counts.set_grower_steps(steps); counts.set_movement_seconds(5.0);
+    let modules = ModuleLevels::default();
+    let plan = solve_exact(&items, "coins", &counts, &modules, Goal::Earn { floors: &[] }, None, None).unwrap();
+    check_plan(&plan, &items, "coins", &counts, &modules, None).unwrap();
+    assert!((plan.rate_per_second - 0.125).abs() < 1e-6);
+    assert!(plan.movement_staffing.iter().any(|(_, walking, _)| *walking > 0.5));
+
+    counts = FacilityCounts::only(&[("Tidewhisper Sandcastle", 1, 1)]);
+    let leisure = crew_of(&[(1, &[("Leisure", 3)])]);
+    let items = crew_items(&leisure).unwrap(); counts.set_crew(leisure); counts.set_movement_seconds(300.0);
+    let plan = solve_exact(&items, "coins", &counts, &modules, Goal::Earn { floors: &[] }, None, None).unwrap();
+    check_plan(&plan, &items, "coins", &counts, &modules, None).unwrap();
+    assert!(plan.movement_staffing.is_empty());
+}

@@ -99,7 +99,6 @@
   ": the best Aniimo you have of each ability (pick its level above), with each facility's personality.": "：每種能力中你擁有的最佳伊莫（在上方選擇其等級），並具備各設施對應的性格。",
   ": the Aniimo you list; each works what its abilities allow, for the hours it has.": "：你列出的伊莫，每隻在其可用時數內做能力允許的工作。",
   ": the lowest ability level each recipe accepts, with no personality bonus. The plan below follows whichever is picked.": "：每個配方接受的最低能力等級，不含性格加成。下方規劃依所選項目而定。",
-  "An Aniimo can take any job needing its ability at or below its level while it has hours to spare, as long as no two of its facilities want opposite personalities. It has four personalities, one from each pair, shown as letters over its portrait: Instinctive or Energetic (I/E), Nimble or Practical (N/S), Faithful or Tenacious (F/T), Playful or Judicious (P/J). Facilities with a resident Aniimo (Sandcastle, Dewy House and the like) need one each, and so does each Heat Furnace (Fire), Cooling Unit (Ice) and Sunlamp (Light) in use. With My Aniimo, Farmland and Woodland jobs only need someone able to do each; they're quick, so they aren't counted against anyone's hours. Not yet checked in game: each recipe's minimum ability level, the Farmland and Woodland jobs, and whether an environment building's Aniimo level or personality matters.": "只要還有剩餘時數，且它負責的任兩個設施不要求相反的性格，一隻伊莫就能接下任何需要其能力、且所需等級不高於其等級的工作。每隻伊莫有四種性格，每組各取一種，以字母顯示在頭像上：性格I或性格E（I/E）、性格N或性格S（N/S）、性格F或性格T（F/T）、性格P或性格J（P/J）。有常駐伊莫的設施（汐語沙堡、採蜜鳥屋等）各需一隻，使用中的每座熱能爐（火）、製冷機（冰）和日光燈（光）也一樣。選擇「我的伊莫」時，田地和林地的工作只需要有能做的伊莫即可；這些工作很快，因此不計入任何伊莫的時數。尚未在遊戲中確認：各配方的最低能力等級、田地和林地的工作，以及環境建築的伊莫等級或性格是否有影響。",
   "Level-Up": "升級",
   "Your Rate": "你的產出速率",
   "Rate unit": "速率單位",
@@ -983,5 +982,8 @@
   "Layout RV level": "配置圖房車等級",
   "Leisure family": "休閒家族",
   "Choose a family": "選擇家族",
-  "Choose a family to use this Aniimo for Leisure recipes.": "請選擇家族，才能安排此伊莫製作休閒配方。"
+  "Choose a family to use this Aniimo for Leisure recipes.": "請選擇家族，才能安排此伊莫製作休閒配方。",
+  "An Aniimo can take any job needing its ability at or below its level while it has hours to spare, as long as no two of its facilities want opposite personalities. It has four personalities, one from each pair, shown as letters over its portrait: Instinctive or Energetic (I/E), Nimble or Practical (N/S), Faithful or Tenacious (F/T), Playful or Judicious (P/J). Facilities with a resident Aniimo (Sandcastle, Dewy House and the like) need one each, and so does each Heat Furnace (Fire), Cooling Unit (Ice) and Sunlamp (Light) in use. With My Aniimo, crop jobs and walking between workplaces share the workers' available time. Not yet checked in game: each recipe's minimum ability level, the Farmland and Woodland jobs, and whether an environment building's Aniimo level or personality matters.": "只要還有剩餘時數，且它負責的任兩個設施不要求相反的性格，一隻伊莫就能接下任何需要其能力、且所需等級不高於其等級的工作。每隻伊莫有四種性格，每組各取一種，以字母顯示在頭像上：性格I或性格E（I/E）、性格N或性格S（N/S）、性格F或性格T（F/T）、性格P或性格J（P/J）。有常駐伊莫的設施（汐語沙堡、採蜜鳥屋等）各需一隻，使用中的每座熱能爐（火）、製冷機（冰）和日光燈（光）也一樣。選擇「我的伊莫」時，田地與林地工作及工作地點間的移動都會計入工作時數。尚未在遊戲中確認：各配方的最低能力等級、田地和林地的工作，以及環境建築的伊莫等級或性格是否有影響。",
+  "{minutes} min/h walking": "每小時步行 {minutes} 分鐘",
+  "Travel is calculated automatically from the workplace layout at the delivery speed ({speed} tiles/s). Walking time is included in Aniimo workload.": "依工作地點配置與配送速度（{speed} 格/秒）自動計算移動，步行時間會計入伊莫負荷。"
 }
