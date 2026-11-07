@@ -12,7 +12,6 @@ import { allocateTurnFacilities, redistributeTurnFacilityRows } from './turn-job
 import { createShareUrl, readShareHash, urlWithoutShare } from './share-config.js';
 import { nearestStorage } from './layout.js?v=storage-power';
 import { ANIIMO_WALK_SPEED, workerTravelDistances } from './worker-travel.js?v=auto-worker-travel';
-import { haulingWorkload, allocateHauling, haulingBatchTrips } from './hauling.js?v=hauling-workload';
 
 let wasmReady = false;
 
@@ -140,7 +139,7 @@ let planRunId = 0;
 function selectedAniimoSetup() {
     const tab = selectedSetupTab();
     if (tab === 'minimum') return 'minimum';
-    if (tab === 'custom') return `roster:${JSON.stringify({ members: roster.map(({ name, ...aniimo }) => aniimo), travel: workerTravelEnabled(), movementDistances: workerTravelEnabled() ? movementDistances : {}, haulingSeconds, haulingDefaultSeconds })}`;
+    if (tab === 'custom') return `roster:${JSON.stringify({ members: roster.map(({ name, ...aniimo }) => aniimo), travel: workerTravelEnabled(), movementDistances: workerTravelEnabled() ? movementDistances : {} })}`;
     return bestAniimoSetup();
 }
 
@@ -935,10 +934,6 @@ function rankImprovementsFor(setup) {
     }
     setStep('improve', 'start');
     const base = { ...lastPlanInput, ...aniimoInput(setup) };
-    if (base.roster && plansBySetup[setup]?.hauling_estimates) {
-        base.roster = { ...base.roster, hauling_seconds: plansBySetup[setup].hauling_estimates,
-            hauling_default_seconds: haulingRouteBound() };
-    }
     const measure = rankMeasure();
     const candidates = improvementCandidates(base, setup);
     ranking = {
@@ -1107,10 +1102,9 @@ function improvementsChecked(best, status, open) {
             : first.label;
         const done = group.indices.every(i => ranking.results[i]);
         const found = best.get(key);
-        const unknown = done && group.indices.some(i => ranking.results[i]?.top == null);
         const outcome = found
             ? `<span class="improve-gain">${found.candidate.level != null && levels.length > 1 ? `Lv.${found.candidate.level}: ` : ''}${found.gain.text}</span>`
-            : `<span class="improve-none">${done ? unknown ? 'not determined' : 'no gain' : 'checking…'}</span>`;
+            : `<span class="improve-none">${done ? 'no gain' : 'checking…'}</span>`;
         if (!kinds.has(group.kind)) kinds.set(group.kind, []);
         kinds.get(group.kind).push(`<li><span>${name}</span>${outcome}</li>`);
     }
@@ -1262,13 +1256,6 @@ function homelandPieces(plan, input) {
             if (existing) existing[1] += share; else m.workers.push([worker, share]);
         }
     }
-    for (const member of pieces.flatMap(piece => piece.cluster ? piece.plots : piece.members)) {
-        if (!(member.weight > 0)) continue;
-        member.batchWeight = member.weight;
-        member.weight = member.jobs ? member.jobs.reduce((sum, job) => sum + job.rate * 3600
-            * haulingBatchTrips(recipeIndex.find(recipe => recipe.name === job.item)), 0)
-            : member.weight * haulingBatchTrips(recipeIndex.find(recipe => recipe.name === member.crop));
-    }
     return { pieces, unplaced: [...unplaced] };
 }
 
@@ -1310,16 +1297,7 @@ function attachLayoutHandlers() {
     ['layout-storage-count', 'layout-rv-level'].forEach(id => document.getElementById(id).addEventListener('input', () => {
         clearTimeout(layoutStorageTimer);
         layoutStorageTimer = setTimeout(() => {
-            stopRanking();
-            delete rankingsBySetup[selectedAniimoSetup()];
             travelRefinements = 0;
-            haulingRefinements = 0;
-            if (haulingDefaultSeconds > 0 && selectedSetupTab() === 'custom') {
-                haulingSeconds = {};
-                haulingDefaultSeconds = 0;
-                switchAniimoSetup();
-                return;
-            }
             if (lastPlan?.success) renderHomelandLayout(lastPlan);
         }, 300);
     }));
@@ -1505,8 +1483,6 @@ function renderHomelandLayout(plan) {
         lastLayout = { layout, homeLevel };
         drawLayout(lastLayout);
         setStep('layout', 'done');
-        if (assignLayoutHauling(layout, plan)) return;
-        renderAniimoSummary(plan);
         if (!refineWorkerMovement(layout, plan)) rankImprovementsFor(selectedAniimoSetup());
     };
     const cached = layoutsByPlan.get(plan);
@@ -1942,8 +1918,7 @@ function startProgress(input, runId) {
         ...(planting ? [{ key: 'crop_variety', label: input.crop_variety ? 'Crop and Tree Variety' : 'Season Crops' }] : []),
         ...priorities.map(target => ({ key: `priority:${target}`, label: `Most ${priorityLabel(target, planContext.aniipod)}` })),
         ...(levelUp ? [] : season),
-        { key: 'plan', label: levelUp ? 'Fastest Level-Up' : priorities.at(-1) === 'coins' && !input.level_up_strategy
-            ? 'Finish Production Plan' : priorities.length || seasonFirst || planting ? "Home Coins with What's Left" : 'Most Home Coins' },
+        { key: 'plan', label: levelUp ? 'Fastest Level-Up' : priorities.length || seasonFirst || planting ? "Home Coins with What's Left" : 'Most Home Coins' },
         ...(levelUp ? season : []),
         { key: 'layout', label: 'Homeland Layout' },
         ...(planting ? [] : [{ key: 'improve', label: 'Opportunities' }]),
@@ -2042,60 +2017,6 @@ function renderProgress() {
 let roster = [];
 let movementDistances = {};
 let travelRefinements = 0;
-let haulingSeconds = {};
-let haulingDefaultSeconds = 0;
-let haulingRefinements = 0;
-const haulingBaseByPlan = new WeakMap();
-const HAULING_ESTIMATE_HINT = 'Delivery is estimated per production batch and carrying capacity. Storage buffering and dispatch delays are not simulated; Hauling Lv.4 uses Lv.3 capacity.';
-
-function haulingRouteBound() {
-    const open = homelandPlots().filter(p => p.number <= layoutHomeLevel());
-    return open.length ? 2 * Math.hypot(
-        Math.max(...open.map(p => p.x + p.w)) - Math.min(...open.map(p => p.x)),
-        Math.max(...open.map(p => p.y + p.h)) - Math.min(...open.map(p => p.y))) / ANIIMO_WALK_SPEED : 0;
-}
-
-function assignLayoutHauling(layout, plan) {
-    const bound = haulingRouteBound();
-    const work = haulingWorkload(layout, plan.coin_items || [], bound, recipeIndex);
-    plan.hauling_estimates = work.seconds;
-    plan.hauling_busy = work.busyByLevel[selectedSetupTab() === 'minimum' ? 1 : 3];
-    if (selectedSetupTab() !== 'custom') return false;
-    if (!haulingBaseByPlan.has(plan)) haulingBaseByPlan.set(plan, [...(plan.assumed_aniimo || [])]);
-    plan.assumed_aniimo = [...haulingBaseByPlan.get(plan)];
-    const { members, busy } = rosterWorkload(plan);
-    const limit = lastPlanInput?.electricity?.max_aniimo ?? Infinity;
-    const allocation = allocateHauling(members, busy, work, limit);
-    if (allocation.unassigned > 1e-6) {
-        if (haulingRefinements >= 3 && plan.hauling_staffing?.length) {
-            // The final model used a whole-homeland route bound. Its independently checked
-            // assignment remains feasible when the fast greedy allocator misses a packing.
-            plan.delivery_assignments = plan.hauling_staffing;
-            return false;
-        }
-        // Only a real shortage triggers another solve. Unseen recipes receive a bounded route
-        // estimate; after two measured passes use the homeland diagonal to end refinement.
-        haulingRefinements++;
-        haulingDefaultSeconds = bound;
-        const upper = haulingRefinements >= 3
-            ? haulingWorkload({pieces:[], storages:[]}, plan.coin_items || [], bound, recipeIndex).seconds : {};
-        haulingSeconds = Object.fromEntries(Object.entries(work.seconds).map(([key, seconds]) =>
-            [key, haulingRefinements >= 3 ? Math.max(upper[key] || bound, seconds) : Math.max(seconds, haulingSeconds[key] || 0)]));
-        if (haulingRefinements > 3) {
-            showError('The planned deliveries do not fit the Aniimo limit. Increase the limit or add Storage Units.');
-            return true;
-        }
-        switchAniimoSetup();
-        return true;
-    }
-    plan.delivery_assignments = allocation.assignments;
-    if (allocation.reserveCount) {
-        const member = members.length;
-        plan.assumed_aniimo.push([member, 'Hauling', 3, allocation.reserveCount, null]);
-        plan.delivery_assignments.push([member, allocation.reserveBusy]);
-    }
-    return false;
-}
 
 function refineWorkerMovement(layout, plan) {
     if (!workerTravelEnabled() || selectedSetupTab() !== 'custom' || !plan.mobile_work?.length || travelRefinements >= 4) return false;
@@ -2132,8 +2053,6 @@ const RESIDENT_FACILITIES = new Set(FACILITIES.filter(f => f.category === 'Aniim
 // The roster for the solver (see `JsRoster` in wasm.rs).
 function rosterPayload() {
     return {
-        hauling_seconds: haulingSeconds,
-        hauling_default_seconds: haulingDefaultSeconds,
         movement_seconds: workerTravelEnabled() ? 20 / ANIIMO_WALK_SPEED : 0,
         movement_by_member: workerTravelEnabled() ? Object.fromEntries(Object.entries(movementDistances).map(([member, distance]) => [member, distance / ANIIMO_WALK_SPEED])) : {},
         members: roster.map(a => ({ count: a.count, abilities: a.abilities, personalities: a.personalities.filter(Boolean), family: a.family })),
@@ -2218,9 +2137,6 @@ let rosterReplan = null;
 function rosterChanged(rerender = true) {
     travelRefinements = 0;
     movementDistances = {};
-    haulingSeconds = {};
-    haulingDefaultSeconds = 0;
-    haulingRefinements = 0;
     rosterFillVersion++;
     saveInputsToStorage();
     if (rerender) renderRoster();
@@ -2253,7 +2169,6 @@ async function fillRosterFrom(setup) {
             else cards.set(key, { ...newRosterAniimo({ [g.ability]: g.level }, personalities), count: g.count, family: g.family || null });
         });
         roster = [...cards.values()];
-        if (plan.hauling_busy > 1e-9) roster.push({ ...newRosterAniimo({ Hauling: 3 }), count: Math.ceil(plan.hauling_busy - 1e-6) });
         rosterChanged();
     } catch (error) {
         if (runId === planRunId && version === rosterFillVersion) status.textContent = 'No working team to copy from this plan.';
@@ -2315,7 +2230,7 @@ function attachRosterHandlers() {
 
 // The Aniimo Team card for a roster plan: how busy each card's Aniimo are and where. A resident
 // facility keeps its Aniimo all day; environment buildings too (see `staffing`).
-function rosterWorkload(plan) {
+function renderRosterSummary(plan) {
     const members = [...roster];
     (plan.assumed_aniimo || []).forEach(([index, ability, level, capacity = 1, family = null]) => {
         members[index] = { count: capacity, abilities: { [ability]: level }, personalities: [], assumed: true, family };
@@ -2357,16 +2272,6 @@ function rosterWorkload(plan) {
             if (!where[member].has(place)) where[member].set(place, 1);
         });
     });
-    return { members, busy, walking, where };
-}
-
-function renderRosterSummary(plan) {
-    const { members, busy, walking, where } = rosterWorkload(plan);
-    (plan.delivery_assignments || plan.hauling_staffing || []).forEach(([member, share]) => {
-        if (!members[member] || share <= 0) return;
-        busy[member] += share;
-        where[member].set(translate('Hauling to Storage Units ({minutes} min/h)').replace('{minutes}', (share * 60).toFixed(1)), 1);
-    });
     const have = roster.reduce((sum, a) => sum + a.count, 0);
     const assigned = members.map((a, i) => {
         const needed = Math.max(where[i].size > 0 ? 1 : 0, Math.ceil(busy[i] - 1e-6));
@@ -2394,8 +2299,6 @@ function renderRosterSummary(plan) {
         ? `<h3>Aniimo assignments</h3>
            <p class="hint small">${working} of your ${have} Aniimo have work in this plan.</p>
            ${reserveNote}
-           ${plan.hauling_busy != null ? `<p class="hint small">${translate(HAULING_ESTIMATE_HINT)}</p>` : ''}
-           ${workerTravelEnabled() ? '' : `<p class="hint small">${translate('Worker travel is off: workload excludes travel between work buildings. Delivery routes are included.')}</p>`}
            <table class="aniimo-table roster-assignment-table"><thead><tr><th>Aniimo</th><th>Assigned</th><th>In roster</th><th>Busy on average</th><th>Where</th></tr></thead><tbody>${rows}</tbody></table>`
         : '<p class="hint">No Aniimo needed.</p>';
     summary.hidden = false;
@@ -2611,7 +2514,7 @@ document.addEventListener('aniimax-language-change', () => {
 async function loadRecipeIndex() {
     try {
         recipeIndex = JSON.parse(await callWorker('get_all_items'))
-            .map(r => ({ name: r.name, facility: r.facility, aniimo: r.aniimo, season: r.season, cost: r.cost || 0, seasonSeedCost: r.season_seed_cost || 0, environment: r.environment || null, jobs: r.jobs || [], ingredients: r.raw_materials || [], amounts: r.required_amount || [], yieldAmount: r.yield_amount || 1, byproduct: r.byproduct_item || null, byproductAmount: r.byproduct?.[1] || 0, turns: false }))
+            .map(r => ({ name: r.name, facility: r.facility, aniimo: r.aniimo, season: r.season, cost: r.cost || 0, seasonSeedCost: r.season_seed_cost || 0, environment: r.environment || null, jobs: r.jobs || [], ingredients: r.raw_materials || [], amounts: r.required_amount || [], yieldAmount: r.yield_amount || 1, byproduct: r.byproduct_item || null, byproductAmount: r.byproduct?.[1] || 0, turns: r.sell_currency === 'none' }))
             .sort((a, b) => a.facility.localeCompare(b.facility) || a.name.localeCompare(b.name));
         renderRecipeOptions();
         renderSkippedRecipes();
@@ -3716,7 +3619,7 @@ function aniimoTeam(plan) {
             g.personalities = new Set(g.personality ? [g.personality] : []);
             kept.push(g);
         });
-        return { kept, total: kept.reduce((sum, g) => sum + g.count, Math.max(0, Math.ceil((plan.hauling_busy || 0) - 1e-6))) };
+        return { kept, total: kept.reduce((sum, g) => sum + g.count, 1) }; // 1 for the Hauling row
     };
     return assign();
 }
@@ -3738,7 +3641,7 @@ function renderAniimoSummary(plan) {
         return;
     }
     const homelandHolds = isSimpleMode() ? ANIIMO_MAX[selectedHomeLevel() - 1] : null;
-    let total = assigned - kept.reduce((sum, g) => sum + g.count, 0);
+    let total = assigned - kept.reduce((sum, g) => sum + g.count, 0); // the Hauling row
     const rows = kept
         .sort((a, b) => a.label.localeCompare(b.label))
         .map(g => {
@@ -3747,8 +3650,7 @@ function renderAniimoSummary(plan) {
             return `<tr><td data-label="Aniimo">${abilityTag(g.ability)} ${aniimoNeeds(g)}</td><td data-label="How many">${g.count}</td><td data-label="Busy on average">${g.busy.toFixed(1)}</td><td data-label="Where">${where}</td></tr>`;
         })
         .join('');
-    const haulingCount = Math.max(0, Math.ceil((plan.hauling_busy || 0) - 1e-6));
-    const haulingRow = haulingCount ? `<tr><td data-label="Aniimo">${abilityTag('Hauling')} any level</td><td data-label="How many">${haulingCount}</td><td data-label="Busy on average">${plan.hauling_busy.toFixed(3)}</td><td data-label="Where">${translate('Hauling to Storage Units ({minutes} min/h)').replace('{minutes}', (plan.hauling_busy * 60).toFixed(1))}</td></tr>` : '';
+    const haulingRow = `<tr><td data-label="Aniimo">${abilityTag('Hauling')} any level</td><td data-label="How many">1+</td><td data-label="Busy on average">?</td><td data-label="Where">Carries produce to storage. How much work this is isn't known yet; add more if produce piles up.</td></tr>`;
 
     // The count above says how many; this is only said when it's more than the homeland holds.
     const cap = homelandHolds;
@@ -3786,14 +3688,14 @@ function renderAniimoSummary(plan) {
         return `<span class="ability-kind">${dot(g.ability, g.environment ? '·' : g.level, g.bonus, tip)}${times}</span>`;
     };
     document.getElementById('aniimo-abilities').innerHTML = ABILITIES.map(a => {
-        const n = a.name === 'Hauling' ? needed.get(a.name) + haulingCount : needed.get(a.name);
+        const n = a.name === 'Hauling' ? `${needed.get(a.name) + 1}+` : needed.get(a.name);
         const zero = n === 0;
         const dots = kept
             .filter(g => g.ability === a.name)
             .sort((x, y) => y.level - x.level || Number(y.bonus) - Number(x.bonus))
             .map(teamDots);
-        if (a.name === 'Hauling' && haulingCount) {
-            dots.push(`<span class="ability-kind">${dot('Hauling', '·', false, translate('Carrying produce to storage'))}${haulingCount > 1 ? `<span class="ability-times">×${haulingCount}</span>` : ''}</span>`);
+        if (a.name === 'Hauling') {
+            dots.push(`<span class="ability-kind">${dot('Hauling', '·', false, 'Hauling, any level · carries produce to storage; add more if produce piles up')}</span>`);
         }
         const stack = dots.length ? `<div class="ability-stack">${dots.join('')}</div>` : '';
         return `<div class="ability-col" style="--ability:${a.color}">
@@ -3809,7 +3711,6 @@ function renderAniimoSummary(plan) {
             </table>
         </div>
         ${capNote}
-        ${haulingCount ? `<p class="hint small">${translate(HAULING_ESTIMATE_HINT)}</p>` : ''}
     `;
 }
 
@@ -4401,11 +4302,6 @@ function displayPlan(plan) {
     // Said only when the plan might not be the best: the solver ran out of time, or the backup
     // planner made it.
     const explored = document.getElementById('plan-explored-hint');
-    const materialHint = document.getElementById('material-work-hint');
-    materialHint.hidden = !plan.material_work_note;
-    materialHint.textContent = !plan.material_work_note ? '' : translate(plan.material_work_note === 'kept'
-        ? 'The production plan is valid. The extra Bench and Kiln workload could not be optimized in time.'
-        : 'Bench and Kiln workload is the best found in the time allowed; its maximum is not proven.');
     explored.style.display = plan.proven_optimal === true ? 'none' : '';
     if (plan.proven_optimal === true) {
         explored.textContent = '';
@@ -4466,9 +4362,6 @@ function displayGoal(goalResult) {
 async function runFindPlan() {
     travelRefinements = 0;
     movementDistances = {};
-    haulingSeconds = {};
-    haulingDefaultSeconds = 0;
-    haulingRefinements = 0;
     const invalid = (seasonActive() && document.querySelector('#season-crop-minimum-fields input:invalid'))
         || (!document.getElementById('electricity-config').hidden && document.querySelector('#electricity-config input:invalid'));
     if (invalid) {

@@ -143,9 +143,6 @@ pub struct ExactPlan {
     pub work_posts: Vec<(String, usize, f64)>,
     /// Member, walking days/day, reserved idle days/day at a dedicated workplace.
     pub movement_staffing: Vec<(usize, f64, f64)>,
-    /// Hauling days/day assigned to each roster member, sharing its production capacity.
-    pub hauling_staffing: Vec<(usize, f64)>,
-    pub hauling_routes: Vec<(String, usize, f64)>,
 }
 
 #[derive(Debug, Clone)]
@@ -242,19 +239,15 @@ pub fn byproducts(items: &[ProductionItem]) -> Vec<String> {
     names
 }
 
-pub fn is_upgrade_material(recipe: &ProductionItem) -> bool {
+/// Whether a recipe shares its facility's time with the facility's other recipes instead of getting
+/// whole units of its own: level-up materials (sold for nothing), since each tier is made from the
+/// one below on the same Woodworking Bench or Chimney Kiln.
+pub fn takes_turns(recipe: &ProductionItem) -> bool {
     recipe.sell_currency == "none"
 }
 
-/// One recipe occupies its own physical building, including upgrade-material chains.
-/// Retain the shared-unit machinery for compatibility, but do not enable automatic recipe changes.
-pub fn takes_turns(recipe: &ProductionItem) -> bool {
-    const SHARE_RECIPE_BUILDINGS: bool = false;
-    SHARE_RECIPE_BUILDINGS && is_upgrade_material(recipe)
-}
-
 fn processes_upgrade_materials(recipe: &ProductionItem) -> bool {
-    is_upgrade_material(recipe) && matches!(recipe.facility.as_str(), "Woodworking Bench" | "Chimney Kiln")
+    takes_turns(recipe) && matches!(recipe.facility.as_str(), "Woodworking Bench" | "Chimney Kiln")
 }
 
 /// The item a recipe makes: a quick variant makes the regular item, and an uncovered crop (see
@@ -295,7 +288,6 @@ enum VarKind<'a> {
     WorkPost { station: String, member: usize },
     WorkRoute { recipe: &'a ProductionItem, member: usize, crop: Option<(String, u32)>, mobile: bool, seconds: f64, travel: f64 },
     ActiveAniimo,
-    HaulingStaff { recipe: &'a ProductionItem, member: usize, seconds: f64 },
 }
 
 /// One linear constraint: `(variable, coefficient)` terms, comparison, right-hand side.
@@ -437,7 +429,8 @@ fn work_groups(recipe: &ProductionItem, counts: &FacilityCounts) -> Vec<Option<(
 }
 
 // Dedicated workers reserve the whole shift at one physical unit. Mobile workers may share
-// jobs, but pay the estimated walk to their next workplace on every batch/job visit.
+// jobs, but pay the estimated walk to their next workplace on every batch/job visit. A turn-capable
+// Bench/Kiln shares one post across its recipes; changing its recipe is not walking.
 fn add_movement_work<'a>(model: &mut Model<'a>, rates: &[(&'a ProductionItem, usize)],
     units: &[(&'a ProductionItem, usize)], counts: &FacilityCounts, busy: &mut [Vec<(usize, f64)>]) {
     let crew = counts.crew().unwrap();
@@ -1000,17 +993,6 @@ fn build_model<'a>(
                 model.constrain(needs, ComparisonOp::Eq, 0.0);
             }
         }
-        for &(recipe, rate) in &rate_of {
-            if facility_counts.hauling_seconds(recipe) <= 0.0 { continue; }
-            let mut deliveries = vec![(rate, -1.0)];
-            for (member, aniimo) in crew.members.iter().enumerate().filter(|(member, _)| crew.can_work(*member, "Hauling", 1)) {
-                let seconds = facility_counts.hauling_seconds_for(recipe, aniimo.level("Hauling"));
-                let staff = model.add(0.0, (0.0, f64::INFINITY), false, VarKind::HaulingStaff { recipe, member, seconds });
-                deliveries.push((staff, 1.0));
-                busy[member].push((staff, seconds));
-            }
-            model.constrain(deliveries, ComparisonOp::Eq, 0.0);
-        }
         if let Some(first) = crew.assumed_from {
             reserve_work.extend(busy.iter().skip(first).flatten().copied());
         }
@@ -1432,8 +1414,6 @@ fn plan_from(model: &Model, value: f64, upper_bound: f64, proven_optimal: bool, 
     let mut pace = None;
     let mut staffing = Vec::new();
     let mut crop_staffing = Vec::new();
-    let mut hauling_staffing = BTreeMap::<usize, f64>::new();
-    let mut hauling_routes = Vec::new();
     let mut work_routes = Vec::new();
     let mut work_posts = Vec::new();
     let mut local_used = BTreeMap::<(String, usize), f64>::new();
@@ -1443,10 +1423,6 @@ fn plan_from(model: &Model, value: f64, upper_bound: f64, proven_optimal: bool, 
             VarKind::Pace => pace = Some(v),
             VarKind::Staff { building, member } if v > 1e-9 => staffing.push((building.clone(), *member, v)),
             VarKind::CropStaff { ability, level, member } if v > 1e-9 => crop_staffing.push((ability.clone(), *level, *member, v)),
-            VarKind::HaulingStaff { recipe, member, seconds } if v > 1e-9 => {
-                *hauling_staffing.entry(*member).or_default() += v * seconds;
-                hauling_routes.push((recipe.name.clone(), *member, v));
-            }
             VarKind::WorkPost { station, member } if v > 1e-9 => work_posts.push((station.clone(), *member, v)),
             VarKind::WorkRoute { recipe, member, crop, mobile, seconds, travel: walking } if v > 1e-9 => {
                 work_routes.push(WorkRoute { recipe: recipe.name.clone(), member: *member, crop: crop.clone(), mobile: *mobile, rate: v });
@@ -1528,8 +1504,6 @@ fn plan_from(model: &Model, value: f64, upper_bound: f64, proven_optimal: bool, 
         work_routes,
         work_posts,
         movement_staffing,
-        hauling_staffing: hauling_staffing.into_iter().collect(),
-        hauling_routes,
     }
 }
 
@@ -1744,35 +1718,6 @@ pub fn check_plan(
             }
         }
         if facility_counts.movement_seconds() > 0.0 { check_movement(plan, &all, facility_counts, &mut busy)?; }
-        let mut delivered = BTreeMap::<&str, f64>::new();
-        let mut haul_busy = BTreeMap::<usize, f64>::new();
-        for (name, member, rate) in &plan.hauling_routes {
-            let recipe = all.get(name.as_str()).ok_or("unknown hauled recipe")?;
-            if !rate.is_finite() || *rate < 0.0 || !crew.can_work(*member, "Hauling", 1) {
-                return Err(format!("invalid hauling route for roster member {member}"));
-            }
-            *delivered.entry(name).or_default() += rate;
-            *haul_busy.entry(*member).or_default() += rate * facility_counts.hauling_seconds_for(recipe, crew.members[*member].level("Hauling"));
-        }
-        for (name, rate) in &plan.recipe_rates {
-            if facility_counts.hauling_seconds(all[name.as_str()]) > 0.0
-                && delivered.get(name.as_str()).copied().unwrap_or(0.0) + TOLERANCE < *rate {
-                return Err(format!("unassigned hauling work for {name}"));
-            }
-        }
-        let mut assigned_hauling = BTreeMap::<usize, f64>::new();
-        for &(member, share) in &plan.hauling_staffing {
-            if !share.is_finite() || share < 0.0 || !crew.can_work(member, "Hauling", 1) {
-                return Err(format!("invalid hauling assignment for roster member {member}"));
-            }
-            busy[member] += share;
-            *assigned_hauling.entry(member).or_default() += share;
-        }
-        for (member, time) in haul_busy {
-            if assigned_hauling.get(&member).copied().unwrap_or(0.0) + TOLERANCE < time {
-                return Err("unassigned hauling work".into());
-            }
-        }
         if let Some(limit) = facility_counts.power().and_then(|power| power.grid.max_aniimo) {
             let active: f64 = busy.iter().map(|n| (n - TOLERANCE).ceil().max(0.0)).sum();
             if active > limit as f64 {
@@ -1868,9 +1813,9 @@ pub fn write_lp(
     LpProblem { lp: out, variables: model.objective.len(), tiebreak: model.tiebreak.clone() }
 }
 
-/// Builds an [`ExactPlan`] from an external solver's variable values. Accepts the complete
-/// solution after checking every bound, integrality and model constraint. Rounding noise
-/// that violates a constraint falls back to fixing whole units and re-solving the rates.
+/// Builds an [`ExactPlan`] from an external solver's variable values (in [`write_lp`]'s `x0`,
+/// `x1`, ... order): rounds every whole-unit variable, then re-solves the rates for exactly those
+/// units, so the plan is consistent even if the solver's own values carry rounding noise.
 /// `proven_optimal` and `upper_bound` are what the solver reported.
 #[allow(clippy::too_many_arguments)]
 pub fn plan_from_values(
@@ -1886,27 +1831,6 @@ pub fn plan_from_values(
     let model = build_model(items, currency, facility_counts, module_levels, goal);
     if values.len() != model.objective.len() {
         return None;
-    }
-    let rounded: Vec<f64> = values.iter().zip(&model.integer).map(|(&v, &int)| if int { v.round() } else { v }).collect();
-    let within_bounds = values.iter().zip(&rounded).zip(&model.bounds).zip(&model.integer)
-        .all(|(((&original, &value), &(lo, hi)), &int)| value.is_finite()
-            && (!int || (original - value).abs() <= 1e-7) && value >= lo && value <= hi);
-    let feasible = within_bounds && model.constraints.iter().all(|(terms, op, rhs)| {
-        let lhs: f64 = terms.iter().map(|&(v, coefficient)| coefficient * rounded[v]).sum();
-        let magnitude: f64 = terms.iter().map(|&(v, coefficient)| (coefficient * rounded[v]).abs()).sum();
-        // Tight absolute tolerance for item flow; only cancellation in large sums gets a
-        // small relative allowance. The public WASM entry point also runs check_plan.
-        let tolerance = 1e-9 + magnitude * 1e-12;
-        lhs.is_finite() && match op {
-            ComparisonOp::Le => lhs <= rhs + tolerance,
-            ComparisonOp::Ge => lhs >= rhs - tolerance,
-            ComparisonOp::Eq => (lhs - rhs).abs() <= tolerance,
-        }
-    });
-    if feasible {
-        let value: f64 = model.objective.iter().zip(&rounded).map(|(c, v)| c * v).sum();
-        let earnings: f64 = model.earnings.iter().zip(&rounded).map(|(c, v)| c * v).sum();
-        return Some(plan_from(&model, value, upper_bound.max(earnings), proven_optimal, 0, &rounded, value));
     }
     let fixed: Vec<(f64, f64)> = model
         .bounds

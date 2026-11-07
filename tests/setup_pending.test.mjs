@@ -31,7 +31,7 @@ function page() {
     };
     const run = code => runInNewContext(code, context);
     run(`let roster = [{count:1, abilities:{Water:3}, personalities:[], family:null}];
-        let haulingSeconds = {}, haulingDefaultSeconds = 0; let movementDistances = {0:40}, lastPlan = null, plansBySetup = {}, planRunId = 1, ranking;
+        let movementDistances = {0:40}, lastPlan = null, plansBySetup = {}, planRunId = 1, ranking;
         const WORKER_URL = 'worker.js';` + setupCode + payloadCode + `
         function aniimoInput(setup) { return {aniimo:'roster', roster:rosterPayload()}; }
         lastPlanInput = {facilities:{Well:[{count:2,level:1}]}};`);
