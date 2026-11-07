@@ -175,7 +175,10 @@ function ensurePlanFor(setup) {
         if (setupSolve?.worker === solver) setupSolve = null;
         if (runId !== planRunId) return;
         plansBySetup[setup] = plan;
-        if (selectedAniimoSetup() === setup) showSelectedPlan();
+        if (selectedAniimoSetup() === setup) {
+            finishSolveSteps();
+            showSelectedPlan();
+        }
     };
     solver.onmessage = (event) => {
         const { type, ok, result, error, count } = event.data;
@@ -201,6 +204,10 @@ function ensurePlanFor(setup) {
 }
 
 function stopSetupSolve() {
+    if (setupSolve) {
+        progress = null;
+        renderProgress();
+    }
     clearTimeout(setupSolve?.timer);
     setupSolve?.worker.terminate();
     setupSolve = null;

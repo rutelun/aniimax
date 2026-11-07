@@ -26,13 +26,13 @@ function page() {
         setTimeout(callback) { const id = timers.size + 1; timers.set(id, callback); return id; },
         clearTimeout(id) { timers.delete(id); },
         displayPlan: plan => shown.push(plan), runTimeToGoal() {},
-        startProgress() {}, setStep: (...args) => steps.push(args), translate: s => s,
+        startProgress() {}, finishSolveSteps() {}, renderProgress() {}, setStep: (...args) => steps.push(args), translate: s => s,
         stopRanking() {}, stopLayout() {}, renderImprovements() {}, restartWorker() {},
         ENVIRONMENT_BUILDING_ABILITY: {}, RESIDENT_FACILITIES: [], FACILITIES: [], ANIIMO_WALK_SPEED: 4,
     };
     const run = code => runInNewContext(code, context);
     run(`let roster = [{count:1, abilities:{Water:3}, personalities:[], family:null}];
-        let haulingSeconds = {}, haulingDefaultSeconds = 0; let movementDistances = {0:40}, movementDefaultDistance = 20, lastPlan = null, plansBySetup = {}, planRunId = 1, ranking;
+        let haulingSeconds = {}, haulingDefaultSeconds = 0; let movementDistances = {0:40}, movementDefaultDistance = 20, lastPlan = null, plansBySetup = {}, planRunId = 1, ranking, progress=null;
         const WORKER_URL = 'worker.js';` + setupCode + payloadCode + `
         function aniimoInput(setup) { return {aniimo:'roster', roster:rosterPayload()}; }
         lastPlanInput = {facilities:{Well:[{count:2,level:1}]}};`);
@@ -108,4 +108,15 @@ test('a completed older setup starts the newly selected plan rather than leaving
         showSelectedPlan();`);
     assert.equal(p.workers.length, 1);
     assert.equal(JSON.parse(p.workers[0].request.payload).roster.members[0].count, 2);
+});
+
+test('returning to a cached setup cancels the old worker and removes its unfinished progress', () => {
+    const p = page();
+    p.run(`const original = selectedAniimoSetup(); plansBySetup[original] = {success:true};
+        roster[0].count = 2; showSelectedPlan(); progress = {steps:[{state:'running'}]};
+        roster[0].count = 1; switchAniimoSetup();`);
+    assert.ok(p.workers[0].stopped);
+    assert.equal(p.run('progress'),null);
+    assert.equal(p.element('aniimo-pending').style.display,'none');
+    assert.equal(p.timers.size,0);
 });
