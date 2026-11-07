@@ -2523,6 +2523,29 @@ tr:hover .skip-row,
     font-size: 0.8rem;
 }
 
+.opportunity-controls, .opportunity-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: .5rem 1rem;
+}
+.opportunity-controls { justify-content: flex-start; margin: .8rem 0; }
+.opportunity-controls [hidden] { display: none; }
+.improve-kind { margin-top: .85rem; }
+.improve-kind > summary { cursor: pointer; font-weight: 600; }
+.improve-checked-list .opportunity-row { display: block; padding: .7rem 0; border-bottom: 1px solid var(--border); }
+.opportunity-row .hint { margin: .25rem 0; }
+.opportunity-heading > span { min-width: 0; overflow-wrap: anywhere; flex: 1; }
+.opportunity-heading button { flex: none; }
+.comparison-result { margin-top: .45rem; }
+.comparison-result > summary { cursor: pointer; font-size: .85rem; }
+.comparison-table { width: 100%; font-size: .85rem; }
+.comparison-table th, .comparison-table td { padding: .45rem .6rem; }
+.comparison-table th:not(:first-child), .comparison-table td:not(:first-child) { text-align: right; white-space: nowrap; }
+.comparison-table th:first-child, .comparison-table td:first-child { min-width: 9rem; }
+.compare-loss { color: var(--error); }
+
 /* Homeland layout. */
 .layout-diagram {
     margin-top: 0.75rem;

@@ -223,6 +223,7 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}) {
     if (!lastCurrencySolve || solved !== lastCurrencySolve) step('final', 'done', solved.proven);
     const coins = solved.objective;
     let materialWork;
+    let materialPace;
     if (hasMaterialProcessors(input)) {
         const currency = input.currency || 'coins';
         const coinFloor = Math.max(coins, ...stage.floors.filter(([name]) => name === currency).map(([, amount]) => amount));
@@ -241,6 +242,7 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}) {
             const stocked = await (await materialSearch).searchMaterials(stockProblem, seed, solveModel, SOLVE_OPTIONS);
             if (!stocked) throw new Error('no plan found for the RV upgrade materials');
             workStage.material_pace = stocked.objective;
+            materialPace = stocked.objective;
             allProven &&= stocked.proven;
             proven &&= stocked.proven;
             if (!stocked.proven) materialWorkNote = 'unproven';
@@ -265,6 +267,13 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}) {
             }
         }
     }
+    const finish = (plan, stock = null) => {
+        plan.level_up_note = levelUpNote;
+        plan.material_work_note = materialWorkNote;
+        plan.comparison_scores = { crop_variety: stage.crop_variety ?? null,
+            material_pace: materialPace ?? null, material_work: materialWork ?? null, stock };
+        return JSON.stringify(plan);
+    };
     if (stage.pace) {
         // Prefer the materials the level-up needs while keeping the maximum workload.
         const stockStage = { ...stage, coins, material_work: materialWork };
@@ -277,9 +286,7 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}) {
             && JSON.parse(exact_plan(payload, stockJson, JSON.stringify({ values: stocked.values, proven: proven && stocked.proven, bound })));
         if (stockedPlan && stockedPlan.success) {
             step('check', 'done');
-            stockedPlan.level_up_note = levelUpNote;
-            stockedPlan.material_work_note = materialWorkNote;
-            return JSON.stringify(stockedPlan);
+            return finish(stockedPlan, stocked.objective);
         }
         console.warn('Level-up stock solve found no usable plan; keeping the plan without it.');
     }
@@ -297,70 +304,26 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}) {
     }
     if (!plan.success) throw new Error(plan.error || 'the plan failed its check');
     step('check', 'done');
-    if (!levelUpNote && !materialWorkNote) return json;
-    plan.level_up_note = levelUpNote;
-    plan.material_work_note = materialWorkNote;
-    return JSON.stringify(plan);
+    return finish(plan);
 }
 
-// Ranks changes the player could make (see `rankImprovements` in app.js). `payload` is
-// `{ measure, base, candidates }`: `measure` is the priority target the plan leads with, or
-// 'level_up' for the soonest level-up; `base` and each candidate are plan inputs. Each input's
-// best `measure` is solved, and where that doesn't move, the most Home Coins while keeping it.
-// Reports one `{ index, top, coins, proven }` per input as it goes, the base first (index -1).
+// Ranks changes the player could make with the same complete optimizer, preserving planting,
+// every priority, E-mode and RV material production. They run only on explicit request.
 async function rankImprovements(pkg, payload, report) {
-    const { measure, base, candidates, baseTop: given } = JSON.parse(payload);
-    const options = { ...SOLVE_OPTIONS, time_limit: 5 };
-    const topOf = async (input) => {
-        const json = JSON.stringify(input);
-        const problem = JSON.parse(measure === 'level_up'
-            ? pkg.exact_level_up_problem(json)
-            : pkg.exact_priority_problem(json, JSON.stringify({ floors: [] }), measure));
-        if (!problem.lp) return null;
-        return solveModel(problem, options);
-    };
-    // Home Coins while keeping `top` of the measure; the same solve the plan itself runs next.
-    const coinsAt = async (input, top) => {
-        if (measure === 'coins') return null;
-        const json = JSON.stringify(input);
-        const problem = JSON.parse(measure === 'level_up'
-            ? pkg.exact_problem(json, JSON.stringify({ floors: [], pace: top }))
-            : pkg.exact_priority_problem(json, JSON.stringify({ floors: [[measure, Math.max(0, top)]] }), 'coins'));
-        if (!problem.lp) return null;
-        return solveModel(problem, options);
-    };
-    // The plan as it stands was solved just now; the page passes that on when it can.
-    const baseTop = given?.measure === measure ? given : await topOf(base);
-    if (!baseTop) {
-        report({ index: -1, top: null });
-        return;
-    }
-    let baseCoins;
-    report({ index: -1, top: baseTop.objective, proven: baseTop.proven });
+    const { base, basePlan, candidates } = JSON.parse(payload);
+    const original = basePlan?.success ? basePlan : JSON.parse(await exactPlanJson(pkg, JSON.stringify(base)));
+    report({ index: -1, plan: original });
     for (const [index, input] of candidates.entries()) {
-        const top = await topOf(input);
-        if (!top) {
-            report({ index, top: null });
-            continue;
+        try {
+            const json = await exactPlanJson(pkg, JSON.stringify(input),
+                (step, state, proven) => report({ index, step, state, proven }));
+            const plan = JSON.parse(json);
+            report(plan.success ? { index, plan } : { index, error: plan.error || 'No plan found' });
+        } catch (error) {
+            report({ index, error: error.message || String(error) });
         }
-        let coins = null;
-        let proven = top.proven;
-        // Only when the measure itself doesn't move does the Home Coins tiebreak matter.
-        if (measure !== 'coins' && top.objective <= baseTop.objective * (1 + RANK_MIN_GAIN)) {
-            if (baseCoins === undefined) baseCoins = await coinsAt(base, baseTop.objective);
-            const candidateCoins = await coinsAt(input, top.objective);
-            if (baseCoins && candidateCoins) {
-                coins = { base: baseCoins.objective, value: candidateCoins.objective };
-                proven &&= baseCoins.proven && candidateCoins.proven;
-            }
-        }
-        report({ index, top: top.objective, coins, proven });
     }
 }
-
-// The smallest gain worth ranking, as a share of what the plan already makes: below it, a
-// difference is as likely to be the solver's tolerances as a real improvement.
-const RANK_MIN_GAIN = 1e-3;
 
 self.onmessage = async (event) => {
     const { id, type, payload } = event.data;

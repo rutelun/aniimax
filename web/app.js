@@ -13,6 +13,7 @@ import { createShareUrl, readShareHash, urlWithoutShare } from './share-config.j
 import { nearestStorage } from './layout.js?v=storage-power';
 import { ANIIMO_WALK_SPEED, workerTravelDistances } from './worker-travel.js?v=auto-worker-travel';
 import { haulingWorkload, allocateHauling, haulingBatchTrips } from './hauling.js?v=hauling-workload';
+import { changeOneMember, personalityInput, reserveLevelFourInputs, comparePlans } from './opportunity-comparison.js?v=full-plan-comparison';
 
 let wasmReady = false;
 
@@ -757,18 +758,16 @@ function attachSpecialHandlers() {
 
 // --- Opportunities ---------------------------------------------------------------------
 // After each plan, what the player could change to do better, best first: a locked recipe, an
-// Aniimo a level higher, and in Advanced mode a module level or one more facility or facility
-// level. Only changes within reach: Simple mode already has everything its RV level allows, and
-// Advanced mode goes up to the lowest RV level that allows everything entered. Each change is
-// solved in full in a worker of its own (see `rankImprovements` in worker.js), so planning never
-// waits on it, and it's measured by what the plan leads with (see `rankMeasure`).
+// personality or Aniimo upgrade, and Advanced-mode facility/module changes. Suggestions are
+// prepared after layout; full comparisons run only on request in one cancellable worker.
 
 let rankWorkers = [];
 let rankRunId = 0;
 // Finished rankings by Aniimo setup, for the plan they were worked out from.
 let rankingsBySetup = {};
-// The ranking on screen: `{ setup, measure, homeLevel, candidates, base, results, done }`.
+// The comparison queue and partial results for the plan on screen.
 let ranking = null;
+let rankCleanups = [];
 
 const MODULE_NAMES = {
     ecological_module: 'Ecological Module',
@@ -781,16 +780,13 @@ function stopRanking() {
     rankRunId++;
     rankWorkers.forEach(worker => worker.terminate());
     rankWorkers = [];
-}
-
-// Leave CPU and memory available for the page and the foreground solver.
-const RANK_WORKERS = 1;
-
-// What a change is measured by: level-up time for a level-up plan that can be worked toward,
-// else the first ranked priority, else Home Coins.
-function rankMeasure() {
-    if (planContext?.levelUp && !planContext.unavailable && !planContext.ready) return 'level_up';
-    return (lastPlanInput?.priorities || [])[0] || 'coins';
+    rankCleanups.forEach(cleanup => cleanup());
+    rankCleanups = [];
+    if (ranking?.running) {
+        ranking.running = false;
+        ranking.paused = true;
+        ranking.activeIndex = null;
+    }
 }
 
 // How many of a facility `tiers` hold, and the highest level among them.
@@ -856,22 +852,37 @@ function improvementCandidates(base, setup) {
         // One of the player's own Aniimo at a higher level, in each ability it has that matters
         // here. Of several alike, just one is trained up, on a card of its own.
         base.roster.members.forEach((member, i) => {
+            if (!(member.count > 0)) return;
             const who = roster[i]?.name.trim() ? escapeText(roster[i].name.trim()) : `${rosterLabel(roster[i] || member, i)} Aniimo`;
             for (const [ability, level] of Object.entries(member.abilities).filter(([a]) => abilities.has(a))) {
                 for (const next of levelsAbove(level, defaultLevelFor(ability))) {
-                    const trained = { ...member, count: 1, abilities: { ...member.abilities, [ability]: next } };
-                    const members = member.count > 1
-                        ? [...base.roster.members.map((m, k) => (k === i ? { ...m, count: m.count - 1 } : m)), trained]
-                        : base.roster.members.map((m, k) => (k === i ? trained : m));
                     const family = `${member.count > 1 ? 'One ' : ''}${who}: ${ability}`;
                     candidates.push({
                         kind: 'Aniimo', group: `roster:${i}:${ability}`, family, level: next,
                         label: `${family} Lv.${next}`,
-                        input: { ...base, roster: { ...base.roster, members } },
+                        input: changeOneMember(base, i, { abilities: { ...member.abilities, [ability]: next } }),
                     });
                 }
             }
+            const traits = new Map();
+            for (const facility of FACILITIES.filter(f => f.personality && owns(f.name) && member.abilities[f.ability])) {
+                const places = traits.get(facility.personality) || [];
+                places.push(facility.name);
+                traits.set(facility.personality, places);
+            }
+            for (const [trait, places] of traits) {
+                if ((member.personalities || []).includes(trait)) continue;
+                candidates.push({ kind: 'Personalities', group: `personality:${i}:${trait}`,
+                    label: `${member.count > 1 ? 'One ' : ''}${who}: ${translate(trait)} (${personalityLetter(trait)})`,
+                    description: places.join(', '), input: personalityInput(base, i, trait, PERSONALITY_PAIRS) });
+            }
         });
+        for (const candidate of reserveLevelFourInputs(base, plansBySetup[setup] || lastPlan, defaultLevelFor)) {
+            const family = candidate.family ? ` · ${leisureFamilyName(candidate.family)}` : '';
+            candidates.push({ kind: 'Aniimo', group: `reserve-four:${candidate.ability}:${candidate.family || ''}`,
+                label: `${translate('Get one {ability} Aniimo Lv.4 (no personality)').replace('{ability}',candidate.ability)}${family}`,
+                input: candidate.input });
+        }
     }
     if (setup.startsWith('best')) {
         for (const ability of levelledAbilities().filter(a => abilities.has(a))) {
@@ -932,205 +943,193 @@ function improvementCandidates(base, setup) {
     return candidates;
 }
 
-// Starts ranking what could improve the plan on screen, unless it's already been worked out.
-function rankImprovementsFor(setup) {
+// Prepare suggestions after planning. Full comparisons run only when the player requests
+// a row or the batch, in one cancellable background worker; the current plan stays intact.
+function rankImprovementsFor(setup, requested = null) {
+    if (requested != null && (mainSolve || setupSolve || layoutWorker)) return;
     stopRanking();
-    if (!lastPlanInput) return;
-    if (!lastPlanInput.level_up_strategy && (lastPlanInput.crop_variety || lastPlanInput.season)) {
-        ranking = null;
-        renderImprovements();
-        return;
+    const plan = plansBySetup[setup] || lastPlan;
+    if (!lastPlanInput || !plan?.success) { ranking = null; renderImprovements(); return; }
+    let current = rankingsBySetup[setup];
+    if (!current || current.plan !== plan) {
+        const base = structuredClone({ ...lastPlanInput, ...aniimoInput(setup) });
+        if (base.roster && plan.hauling_estimates) {
+            base.roster = { ...base.roster, hauling_seconds: plan.hauling_estimates,
+                hauling_default_seconds: haulingRouteBound() };
+        }
+        current = { setup, plan, input: base, base: {plan}, candidates: improvementCandidates(base,setup),
+            results: [], running:false, started:false, paused:false, activeIndex:null, phase:'' };
+        rankingsBySetup[setup] = current;
     }
-    if (rankingsBySetup[setup]) {
-        ranking = rankingsBySetup[setup];
-        renderImprovements();
-        setStep('improve', 'done', `${ranking.candidates.length} changes`);
-        return;
-    }
-    setStep('improve', 'start');
-    const base = { ...lastPlanInput, ...aniimoInput(setup) };
-    if (base.roster && plansBySetup[setup]?.hauling_estimates) {
-        base.roster = { ...base.roster, hauling_seconds: plansBySetup[setup].hauling_estimates,
-            hauling_default_seconds: haulingRouteBound() };
-    }
-    const measure = rankMeasure();
-    const candidates = improvementCandidates(base, setup);
-    ranking = {
-        setup, measure, candidates, base: null, results: [], done: false,
-        homeLevel: planContext?.simple ? null : homeLevelCovering(base),
-    };
-    renderImprovements();
-    if (candidates.length === 0) {
-        ranking.done = true;
-        rankingsBySetup[setup] = ranking;
-        renderImprovements();
-        setStep('improve', 'done', 'nothing to check');
-        return;
-    }
+    ranking = current;
+    if (requested == null) { renderImprovements(); return; }
+    const indices = requested === 'all'
+        ? current.candidates.map((_,i)=>i).filter(i=>!current.results[i])
+        : requested.filter(i=>current.candidates[i]);
+    if (!indices.length) { renderImprovements(); return; }
+    for (const i of indices) delete current.results[i];
+    current.running = true; current.started = true; current.paused = false;
     const runId = rankRunId;
-    const current = ranking;
-    // The candidates dealt out across the workers, each keeping their place in the list.
-    const shares = Array.from({ length: Math.min(RANK_WORKERS, candidates.length) }, () => []);
-    candidates.forEach((candidate, i) => shares[i % shares.length].push(i));
-    let running = shares.length;
-    let failed = false;
-    rankWorkers = shares.map(indices => {
-        const worker = new Worker(WORKER_URL, { type: 'module' });
-        worker.onmessage = (event) => {
-            if (runId !== rankRunId) return;
-            const { type, count: result, ok } = event.data;
-            if (type === 'progress') {
-                if (result.index === -1) current.base ||= result;
-                else current.results[indices[result.index]] = result;
-                setStep('improve', 'start', `${current.results.filter(Boolean).length} of ${candidates.length}`);
-            } else {
-                if (!ok) console.warn('Ranking changes failed:', event.data.error);
-                finish(!ok);
+    const solver = new Worker(WORKER_URL,{type:'module'});
+    rankWorkers = [solver];
+    let timer, finished = false;
+    const finish = failed => {
+        if (finished) return;
+        finished = true; clearTimeout(timer); solver.terminate();
+        if (runId !== rankRunId) return;
+        current.running = false; current.paused = !!failed; current.activeIndex = null;
+        rankWorkers = []; rankCleanups = [];
+        if (ranking === current) renderImprovements();
+    };
+    const heartbeat = () => { clearTimeout(timer); timer = setTimeout(()=>finish(true),SETUP_TIMEOUT); };
+    rankCleanups = [()=>clearTimeout(timer)];
+    heartbeat();
+    solver.onmessage = event => {
+        if (runId !== rankRunId) return;
+        heartbeat();
+        const {type,count:result,ok} = event.data;
+        if (type === 'progress') {
+            if (result.step) {
+                current.activeIndex = indices[result.index];
+                current.phase = comparisonPhase(result.step);
+            } else if (result.index === -1) current.base = result;
+            else {
+                current.results[indices[result.index]] = result;
+                current.activeIndex = null;
             }
-            if (ranking === current) renderImprovements();
-        };
-        let finished = false;
-        const finish = (fail) => {
-            if (finished) return;
-            finished = true;
-            failed ||= fail;
-            worker.terminate();
-            if (--running === 0) {
-                current.done = true;
-                if (!failed) rankingsBySetup[setup] = current;
-                setStep('improve', failed ? 'fail' : 'done', `${candidates.length} changes`);
-                rankWorkers = [];
-            }
-        };
-        worker.onerror = (event) => {
-            if (runId !== rankRunId) return;
-            console.warn('Ranking changes failed:', event.message || event);
-            finish(true);
-            if (ranking === current) renderImprovements();
-        };
-        worker.postMessage({
-            id: 1,
-            type: 'rank_improvements',
-            // The plan's own first solve is the plan as it stands, so no worker solves it again.
-            payload: JSON.stringify({ measure, base, candidates: indices.map(i => candidates[i].input), baseTop: plansBySetup[setup]?.measure_top }),
-        });
-        return worker;
-    });
+        } else finish(!ok);
+        if (ranking === current) renderImprovements();
+    };
+    solver.onerror = solver.onmessageerror = () => finish(true);
+    solver.postMessage({id:1,type:'rank_improvements',payload:JSON.stringify({
+        base:current.input,basePlan:plan,candidates:indices.map(i=>current.candidates[i].input),
+    })});
+    renderImprovements();
 }
 
-// The smallest gain worth showing (see `RANK_MIN_GAIN` in worker.js).
-const RANK_MIN_GAIN = 1e-3;
+function comparisonPhase(step) {
+    if (step.startsWith('priority:')) return priorityLabel(step.slice(9),planContext?.aniipod);
+    return translate({crop_variety:'Crop and Tree Variety',level_up:'Fastest Level-Up',season:'Season Points',
+        final:'Home Coins',materials:'RV materials',stock_up:'RV materials',check:'Checking the plan'}[step] || 'Checking the plan');
+}
 
 // How a change compares with the plan, or null if it doesn't help: `{ score, text }`, with
 // `score` ordering changes that move the measure ahead of those that only earn more Home Coins.
-function improvementGain(result) {
-    const base = ranking.base;
-    if (!result || result.top == null || !base || base.top == null) return null;
-    const about = result.proven === false || base.proven === false ? '~' : '';
-    const { multiplier, suffix } = RATE_UNIT_SECONDS[document.getElementById('rate-unit').value] || RATE_UNIT_SECONDS.second;
-    if (result.top > base.top * (1 + RANK_MIN_GAIN) + 1e-12) {
-        if (ranking.measure === 'level_up') {
-            const before = base.top > 0 ? PACE_UNIT_SECONDS / base.top : null;
-            const after = PACE_UNIT_SECONDS / result.top;
-            return {
-                score: 1 + (before ? (before - after) / before : 1),
-                text: before
-                    ? `${about}−${formatDuration(before - after)} level-up (${formatDuration(after)})`
-                    : `Level-up in ${about}${formatDuration(after)}`,
-            };
-        }
-        const label = ranking.measure === 'coins' ? 'Home Coins' : priorityLabel(ranking.measure, planContext?.aniipod);
-        const added = `+${formatRate((result.top - base.top) * multiplier)}${suffix}`;
-        return {
-            score: 1 + (base.top > 0 ? (result.top - base.top) / base.top : 1),
-            text: base.top > 0 ? `${about}+${formatPercent((result.top - base.top) / base.top)} ${label} (${added})` : `${about}${added} ${label}`,
-        };
-    }
-    const coins = result.coins;
-    if (coins && coins.base > 0 && coins.value > coins.base * (1 + RANK_MIN_GAIN)) {
-        const gain = (coins.value - coins.base) / coins.base;
-        return {
-            score: gain,
-            text: `${about}+${formatPercent(gain)} Home Coins (+${formatRate((coins.value - coins.base) * multiplier)}${suffix})`,
-        };
-    }
-    return null;
+function comparisonFor(index) {
+    const result = ranking?.results[index];
+    if (!result?.plan?.success) return null;
+    return comparePlans(ranking.base?.plan || ranking.plan,result.plan,ranking.input,ranking.candidates[index].input);
 }
 
-const PACE_UNIT_SECONDS = 86400;
+function comparisonMetricLabel(row) {
+    if (row.id.startsWith('item:')) return prettyItem(row.id.slice(5));
+    const labels = {crop_variety:'Planting variety score',rv_time:'RV level-up time',
+        material_pace:'RV material production',material_work:'Material production',stock:'Extra RV supplies',
+        working_aniimo:'Working Aniimo',additional_aniimo:'Additional Aniimo',work_hours:'Combined Aniimo work'};
+    return labels[row.id] ? translate(labels[row.id]) : priorityLabel(row.id,planContext?.aniipod);
+}
+
+function comparisonValue(row,value) {
+    if (value == null) return row.kind === 'duration' ? translate('Not reached with this plan') : '—';
+    if (row.kind === 'duration') return formatDuration(value);
+    if (row.kind === 'count') return formatNumber(value);
+    if (row.kind === 'work') return `${formatRate(value)} ${translate('hours/day')}`;
+    const unit = RATE_UNIT_SECONDS[document.getElementById('rate-unit').value] || RATE_UNIT_SECONDS.second;
+    return `${formatRate(value*unit.multiplier)}${unit.suffix}`;
+}
+
+function improvementGain(result,index) {
+    const comparison = comparisonFor(index);
+    if (!comparison || comparison.direction <= 0) return null;
+    const row = comparison.decisive;
+    const about = comparison.approximate ? '~' : '';
+    const label = comparisonMetricLabel(row);
+    let text;
+    if (row.kind === 'duration') text = row.before == null
+        ? `${label}: ${about}${formatDuration(row.after)}`
+        : `${label}: ${about}−${formatDuration(row.before-row.after)}`;
+    else if (row.kind === 'score') text = `${label}: ${about}+${formatPercent((row.after-row.before)/(row.before||row.after||1))}`;
+    else text = `${label}: ${about}+${comparisonValue(row,row.after-row.before)}`;
+    return {score:comparison.score,text,comparison};
+}
 
 function formatPercent(share) {
     const percent = share * 100;
     return `${percent >= 10 ? Math.round(percent) : percent.toFixed(1)}%`;
 }
 
-function renderImprovements() {
-    const card = document.getElementById('improve-card');
-    if (!ranking || !lastPlan?.success) {
-        card.style.display = 'none';
-        return;
-    }
-    card.style.display = 'block';
-    const checked = ranking.results.filter(Boolean).length;
-    const total = ranking.candidates.length;
-    const within = ranking.homeLevel ? ` Within RV ${ranking.homeLevel} limits.` : '';
-    const by = ranking.measure === 'level_up' ? 'level-up time, then Home Coins'
-        : ranking.measure === 'coins' ? 'Home Coins' : `${priorityLabel(ranking.measure, planContext?.aniipod)}, then Home Coins`;
-    // One row per change, or per group: the least of it that gets the most it can (see
-    // `improvementCandidates`).
-    const best = new Map();
-    ranking.candidates.forEach((candidate, i) => {
-        const gain = improvementGain(ranking.results[i]);
-        if (!gain) return;
-        const key = candidate.group || `#${i}`;
-        const held = best.get(key);
-        if (!held || gain.score > held.gain.score * (1 + RANK_MIN_GAIN)) best.set(key, { candidate, gain });
-    });
-    const rows = [...best.values()].sort((a, b) => b.gain.score - a.gain.score);
-    const options = new Set(ranking.candidates.map((c, i) => c.group || `#${i}`)).size;
-    const status = total === 0 ? `Nothing left to unlock or upgrade.${within}`
-        : !ranking.done ? `Checking ${checked} of ${total}…${within}`
-        : rows.length === 0 ? `No improvements found (${options} checked).${within}`
-        : `Ranked by ${by}. ${rows.length} of ${options} help.${within}`;
-    // The status line opens what was checked. The card is rebuilt as each result comes in; keep
-    // the list open if the player opened it.
-    const open = !!document.querySelector('#improve-list .improve-checked')?.open;
-    document.getElementById('improve-list').innerHTML = improvementsChecked(best, status, open) + (rows.length
-        ? `<ol class="improve-list">${rows.map(r => `<li><span class="improve-name">${r.candidate.label}</span><span class="improve-gain">${r.gain.text}</span></li>`).join('')}</ol>`
-        : '');
+function comparisonTable(comparison) {
+    return `<p class="hint small">${translate(comparison.approximate
+        ? 'Estimated comparison: at least one search did not prove its optimum.'
+        : 'Both plans were checked by the optimizer.')}</p>
+        <div class="table-wrapper"><table class="comparison-table"><thead><tr>
+        <th>${translate('Metric')}</th><th>${translate('Current plan')}</th><th>${translate('With change')}</th><th>${translate('Change')}</th>
+        </tr></thead><tbody>${comparison.rows.map(row=>{
+            // Solver floors allow small numerical drift. Do not present that as a gain/loss
+            // (or let rounding make virtually equal rates appear one item apart).
+            const changed = row.direction !== 0;
+            const delta = row.before != null && row.after != null ? row.after-row.before : null;
+            const difference = !changed ? '—' : delta == null ? comparisonValue(row,row.after)
+                : `${delta<0?'−':'+'}${comparisonValue(row,Math.abs(delta))}`;
+            const colour = row.direction > 0 ? 'improve-gain' : row.direction < 0 ? 'compare-loss' : 'hint';
+            return `<tr><td>${comparisonMetricLabel(row)}</td><td>${comparisonValue(row,row.before)}</td>
+                <td>${comparisonValue(row,changed ? row.after : row.before)}</td><td class="${colour}">${difference}</td></tr>`;
+        }).join('')}</tbody></table></div>`;
 }
 
-// Everything the ranking tries, by kind, each with how it came out: the gain, "no gain", or
-// still to check, behind `status`. A change tried at several levels is one line, e.g. "Earth
-// Aniimo Lv.2–4".
-function improvementsChecked(best, status, open) {
-    if (!ranking.candidates.length) return `<p class="hint">${status}</p>`;
-    const groups = new Map();
-    ranking.candidates.forEach((candidate, i) => {
+function renderImprovements() {
+    const card = document.getElementById('improve-card');
+    if (!ranking || !lastPlan?.success) { card.style.display='none'; return; }
+    card.style.display='block';
+    const checked = ranking.results.filter(Boolean).length, total = ranking.candidates.length;
+    const phase = ranking.running && ranking.activeIndex != null
+        ? ` · ${translate(ranking.candidates[ranking.activeIndex].label)} · ${ranking.phase}` : '';
+    const status = translate(ranking.running ? 'Checking {checked} of {total}' : 'Checked {checked} of {total}')
+        .replace('{checked}',checked).replace('{total}',total);
+    document.getElementById('improve-status').innerHTML = `${ranking.paused?`${translate('Checking stopped')} · `:''}${status}${phase}`;
+    const check = document.getElementById('improve-check-btn');
+    check.disabled = ranking.running || checked === total;
+    check.textContent = translate(checked ? 'Check remaining' : 'Check all improvements');
+    document.getElementById('improve-stop-btn').hidden = !ranking.running;
+    const holder = document.getElementById('improve-list');
+    const open = new Set([...holder.querySelectorAll('details[open][data-open-key]')].map(d=>d.dataset.openKey));
+    const groups = new Map(), best = new Map();
+    ranking.candidates.forEach((candidate,i)=>{
         const key = candidate.group || `#${i}`;
-        if (!groups.has(key)) groups.set(key, { kind: candidate.kind, candidates: [], indices: [] });
-        groups.get(key).candidates.push(candidate);
+        if (!groups.has(key)) groups.set(key,{kind:candidate.kind,indices:[]});
         groups.get(key).indices.push(i);
+        const gain = improvementGain(ranking.results[i],i);
+        if (gain && (!best.has(key) || gain.score > best.get(key).gain.score+1e-9)) best.set(key,{candidate,gain,index:i});
     });
     const kinds = new Map();
-    for (const [key, group] of groups) {
-        const first = group.candidates[0];
-        const levels = group.candidates.map(c => c.level).filter(l => l != null);
-        const name = first.family
-            ? `${first.family}${levels.length ? ` Lv.${levels.length > 1 ? `${levels[0]}–${levels[levels.length - 1]}` : levels[0]}` : ''}`
-            : first.label;
-        const done = group.indices.every(i => ranking.results[i]);
+    for (const [key,group] of groups) {
+        const first = ranking.candidates[group.indices[0]];
+        const levels = group.indices.map(i=>ranking.candidates[i].level).filter(l=>l!=null);
+        const name = first.family ? `${first.family}${levels.length ? ` Lv.${levels.length>1?`${levels[0]}–${levels.at(-1)}`:levels[0]}`:''}` : translate(first.label);
         const found = best.get(key);
-        const unknown = done && group.indices.some(i => ranking.results[i]?.top == null);
-        const outcome = found
-            ? `<span class="improve-gain">${found.candidate.level != null && levels.length > 1 ? `Lv.${found.candidate.level}: ` : ''}${found.gain.text}</span>`
-            : `<span class="improve-none">${done ? unknown ? 'not determined' : 'no gain' : 'checking…'}</span>`;
-        if (!kinds.has(group.kind)) kinds.set(group.kind, []);
-        kinds.get(group.kind).push(`<li><span>${name}</span>${outcome}</li>`);
+        const resultIndex = found?.index ?? group.indices.find(i=>ranking.results[i]?.plan?.success);
+        const comparison = resultIndex != null ? comparisonFor(resultIndex) : null;
+        const active = group.indices.includes(ranking.activeIndex);
+        const error = group.indices.map(i=>ranking.results[i]?.error).find(Boolean);
+        const status = found ? `<span class="improve-gain">${found.gain.text}</span>`
+            : `<span class="improve-none">${translate(active?'Checking…':comparison
+                ? comparison.direction<0?'An earlier goal decreases':'No production gain found':error?'Could not compare':'Not checked')}</span>`;
+        const resultKey = `result:${key}`;
+        const detail = comparison ? `<details class="comparison-result" data-open-key="${escapeText(resultKey)}"${open.has(resultKey)?' open':''}>
+            <summary>${translate('Before / after')}${found?` · ${translate(found.candidate.label)}`:''}</summary>${comparisonTable(comparison)}</details>`
+            : error ? `<p class="hint small">${escapeText(error)}</p>` : '';
+        const button = `<button type="button" class="skip-add-btn" data-compare-group="${escapeText(key)}"${ranking.running?' disabled':''}>${translate('Compare')}</button>`;
+        const row = `<li class="opportunity-row"><div class="opportunity-heading"><span>${name}</span>${button}</div>
+            ${first.description?`<p class="hint small">${first.description}</p>`:''}${status}${detail}</li>`;
+        if (!kinds.has(group.kind)) kinds.set(group.kind,[]);
+        kinds.get(group.kind).push(row);
     }
-    return `<details class="explain improve-checked"${open ? ' open' : ''}><summary>${status}</summary>${[...kinds]
-        .map(([kind, items]) => `<p class="assume-title">${kind}</p><ul class="improve-checked-list">${items.join('')}</ul>`)
-        .join('')}</details>`;
+    const ranked = [...best.values()].sort((a,b)=>b.gain.score-a.gain.score);
+    holder.innerHTML = (!total ? `<p class="hint">${translate('Nothing left to unlock or upgrade.')}</p>` : '')
+        + (ranked.length ? `<ol class="improve-list">${ranked.map(r=>
+        `<li><span class="improve-name">${translate(r.candidate.label)}</span><span class="improve-gain">${r.gain.text}</span></li>`).join('')}</ol>` : '')
+        + [...kinds].map(([kind,items])=>`<details class="improve-kind" data-open-key="${kind}"${open.has(kind)?' open':''}>
+            <summary>${translate(kind)} (${items.length})</summary><ul class="improve-checked-list">${items.join('')}</ul></details>`).join('');
 }
 
 // --- Homeland layout -------------------------------------------------------------------
@@ -1960,7 +1959,6 @@ function startProgress(input, runId) {
             ? 'Finish Production Plan' : priorities.length || seasonFirst || planting ? "Home Coins with What's Left" : 'Most Home Coins' },
         ...(levelUp ? season : []),
         { key: 'layout', label: 'Homeland Layout' },
-        ...(planting ? [] : [{ key: 'improve', label: 'Opportunities' }]),
     ];
     progress = { runId, steps: steps.map(step => ({ ...step, state: 'pending' })) };
     renderProgress();
@@ -2607,6 +2605,7 @@ function renderRecipeOptions() {
 }
 
 document.addEventListener('aniimax-language-change', () => {
+    renderImprovements();
     const input = document.getElementById('skip-input');
     const options = document.getElementById('skip-options');
     const selected = Array.from(options.options)
@@ -4511,6 +4510,8 @@ async function runFindPlan() {
     plansBySetup = {};
     rankingsBySetup = {};
     stopRanking();
+    ranking = null;
+    renderImprovements();
     stopSetupSolve();
     stopLayout();
     if (pendingWorkerRequests.size > 0) restartWorker();
@@ -4928,6 +4929,14 @@ async function initApp() {
     document.getElementById('optimize-btn').addEventListener('click', runFindPlan);
     document.getElementById('clear-saved-btn').addEventListener('click', clearSavedInputs);
     document.getElementById('share-config-btn').addEventListener('click', shareCurrentConfig);
+    document.getElementById('improve-check-btn').addEventListener('click', () => rankImprovementsFor(selectedAniimoSetup(),'all'));
+    document.getElementById('improve-stop-btn').addEventListener('click', () => { stopRanking(); renderImprovements(); });
+    document.getElementById('improve-list').addEventListener('click', event => {
+        const button = event.target.closest('[data-compare-group]');
+        if (!button || !ranking) return;
+        const indices = ranking.candidates.map((c,i)=>(c.group || `#${i}`) === button.dataset.compareGroup ? i : -1).filter(i=>i>=0);
+        rankImprovementsFor(selectedAniimoSetup(),indices);
+    });
     if (sharedData) document.getElementById('share-config-status').textContent = 'Shared setup loaded. Your saved setup is kept until you edit this one.';
     document.getElementById('rate-unit').addEventListener('change', () => {
         rateUnitChosen = true;

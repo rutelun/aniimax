@@ -60,15 +60,17 @@ for (const [before, after, typed] of [
 ]) {
     const input = { value: typed, validity: 'previous error', setCustomValidity(value) { this.validity = value; } };
     const options = { options: [{ value: before }] };
-    let languageChanged;
+    let languageChanged, comparisonsRendered = 0;
     runInNewContext(handlerSource, {
         document: {
             addEventListener: (_, listener) => { languageChanged = listener; },
             getElementById: id => id === 'skip-input' ? input : options,
         },
         renderRecipeOptions: () => { options.options = [{ value: after }]; },
+        renderImprovements: () => { comparisonsRendered++; },
     });
     languageChanged();
+    assert.equal(comparisonsRendered, 1);
     assert.equal(input.value, typed === before ? after : typed);
     assert.equal(input.validity, typed === before ? '' : 'previous error');
 }

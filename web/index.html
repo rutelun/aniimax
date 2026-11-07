@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Aniimax - Aniimo Production Optimizer</title>
-    <link rel="stylesheet" href="style.css?v=auto-worker-travel">
+    <link rel="stylesheet" href="style.css?v=full-plan-opportunities">
     <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
 </head>
 <body>
@@ -282,6 +282,13 @@
 
                     <div class="card production-steps" id="improve-card" style="display: none;">
                         <h2>Opportunities</h2>
+                        <p class="hint small">Compare a recipe, personality or Aniimo upgrade against the whole current plan. Comparisons run only on request and may take as long as planning.</p>
+                        <p class="hint small">Uses the current travel and delivery estimates; a changed layout may give different results.</p>
+                        <div class="opportunity-controls">
+                            <button type="button" class="skip-add-btn" id="improve-check-btn">Check all improvements</button>
+                            <button type="button" class="skip-add-btn" id="improve-stop-btn" hidden>Stop checking</button>
+                            <span class="hint small" id="improve-status" role="status" aria-live="polite"></span>
+                        </div>
                         <div id="improve-list"></div>
                     </div>
 
@@ -527,7 +534,7 @@
                     <li><strong>Seeds to Plant</strong>: the seeds your Farmland and Woodland go through and what they cost, in total until the level-up with Level up, or at the chosen rate with Priorities.</li>
                     <li><strong>Profit by Product</strong>: with Level up, what each product earns per hour and in total until the level-up is ready.</li>
                     <li><strong>What Each Facility Should Do</strong>: what to set each facility to, all running at once. Recipes tagged "unverified" haven't been checked in game yet.</li>
-                    <li><strong>Opportunities</strong>: changes within your reach (a recipe to unlock, an Aniimo level, and in Advanced mode a module or facility) ranked by how much they'd improve the plan.</li>
+                    <li><strong>Opportunities</strong>: compare recipes, personalities and Aniimo upgrades on request, using every priority in the current plan. In Advanced mode you can also check module and facility upgrades.</li>
                     <li><strong>Homeland Layout</strong>: where to put each facility so the busiest are nearest the Storage Unit.</li>
                     <li><strong>Set a Goal</strong>: with Priorities, how long it takes to reach a target amount of Home Coins or any priority that's on, and what else you'll have by then.</li>
                 </ul>
@@ -588,6 +595,6 @@
             }
         });
     </script>
-    <script type="module" src="app.js?v=bounded-workload-progress"></script>
+    <script type="module" src="app.js?v=full-plan-opportunities"></script>
 </body>
 </html>
