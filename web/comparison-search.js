@@ -1,9 +1,11 @@
 // Fast comparisons use the same model and checker as planning. Only their search budget is
 // smaller. A continuous upper bound can certify an earlier goal without another integer search;
 // the completed plan must still meet that goal and pass the native independent check.
+import {comparePlans} from './opportunity-comparison.js?v=protected-comparisons';
+
 export function createComparisonSearch(basePlan, solve, { detailed = false, now = () => performance.now() } = {}) {
     const cache = new Map();
-    let cacheSize = 0, deadline = Infinity, useBounds = true, usedBounds = false;
+    let cacheSize = 0, deadline = Infinity, useBounds = true, usedBounds = false, earlierImproved = false;
     const stats = { cached: 0, bounded: 0 };
     const options = { mip_rel_gap: 0, time_limit: detailed ? 30 : 1 };
     const run = async (problem, requested = options, message, incumbent) => {
@@ -26,18 +28,43 @@ export function createComparisonSearch(basePlan, solve, { detailed = false, now 
         const goals = basePlan.comparison_goals;
         if (goal === 'crop_variety') return goals?.crop_variety;
         if (goal === 'level_up') return goals?.pace;
+        if (goal === (goals?.currency || basePlan.currency || 'coins')) {
+            return goals?.currency_value ?? goals?.floors?.find(([name])=>name===goal)?.[1] ?? basePlan.rate_per_second;
+        }
         return goals?.floors?.find(([name])=>name===goal)?.[1];
     };
+    const objectiveText = problem => problem.primary_objective
+        .map(([v,c])=>`${c<0?'-':'+'} ${Math.abs(c)} x${v}`).join(' ');
     return {
         options, solve: run, stats,
-        begin() { deadline = detailed ? Infinity : now() + 8_000; useBounds = true; usedBounds = false; },
+        inconclusive(plan, beforeInput, afterInput) {
+            return comparePlans(basePlan, plan, beforeInput, afterInput).inconclusiveLoss;
+        },
+        begin() { deadline = detailed ? Infinity : now() + 8_000; useBounds = true; usedBounds = false; earlierImproved = false; },
         get usedBounds() { return usedBounds; },
         disableBounds() { useBounds = false; },
+        protect(problem, goal) {
+            const expected = goalValue(goal);
+            if (detailed || earlierImproved || !(expected > 0) || !problem.primary_objective?.length) return problem;
+            // A one-second search must not redefine the baseline downward. A matching
+            // incumbent is not necessarily found in time; then this comparison is unknown.
+            // Use the planner's own floor tolerance, including for scores and RV pace.
+            const floor = goal === 'crop_variety' ? expected : expected * (1 - 1e-4);
+            return { ...problem, lp: problem.lp.replace('\nBounds\n',
+                `\n comparison_baseline: ${objectiveText(problem)} >= ${floor}\nBounds\n`) };
+        },
+        observe(goal, result) {
+            const expected = goalValue(goal);
+            if (Number.isFinite(expected) && result?.objective > expected + Math.max(1e-8, Math.abs(expected)*1e-3)) {
+                earlierImproved = true;
+            }
+        },
         async bound(problem, goal) {
-            if (!useBounds) return null;
+            // Coins need a feasible vector for the final plan, not only an objective bound.
+            if (!useBounds || goal === (basePlan.currency || 'coins')) return null;
             const expected = goalValue(goal);
             if (!Number.isFinite(expected) || !problem.primary_objective?.length) return null;
-            const objective = problem.primary_objective.map(([v,c])=>`${c<0?'-':'+'} ${Math.abs(c)} x${v}`).join(' ');
+            const objective = objectiveText(problem);
             const relaxed = { ...problem, tiebreak: [], lp: problem.lp
                 .replace(/Maximize\n[\s\S]*?\nSubject To\n/, `Maximize\n obj: ${objective}\nSubject To\n`)
                 .replace(/\nGeneral\n[\s\S]*\nEnd/, '\nEnd') };

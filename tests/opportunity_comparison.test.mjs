@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {changeOneMember,personalityInput,reserveLevelFourInputs,workerUsage,comparePlans} from '../web/opportunity-comparison.js';
+import {changeOneMember,personalityInput,reserveLevelFourInputs,workerUsage,comparePlans,keepBetterComparison} from '../web/opportunity-comparison.js';
 import {createComparisonSearch} from '../web/comparison-search.js';
 
 const input = () => ({priorities:['season_points','Wood Blocks','coins'],roster:{members:[
@@ -98,6 +98,32 @@ test('unproven optimization is identified as an estimate', () => {
     assert.equal(comparePlans(plan(),after,input()).approximate,true);
 });
 
+test('the screenshot case is an inconclusive search, not an upgrade-caused income loss',()=>{
+    const before=plan(3_506_373/86400),after=plan(2_851_758/86400);after.proven_optimal=false;
+    const comparison=comparePlans(before,after,input());
+    assert.equal(comparison.direction,-1);
+    assert.equal(comparison.inconclusiveLoss,true);
+    after.proven_optimal=true;
+    assert.equal(comparePlans(before,after,input()).inconclusiveLoss,false);
+});
+
+test('a repeat search or its timeout cannot discard a better checked alternative',()=>{
+    const previous={plan:plan(12)},poor={plan:{...plan(8),proven_optimal:false}};
+    assert.equal(keepBetterComparison(previous,poor,input()).plan,previous.plan);
+    assert.equal(keepBetterComparison(previous,{error:'timeout'},input()).retained,true);
+    assert.equal(keepBetterComparison(previous,{plan:plan(14)},input()).plan.rate_per_second,14);
+});
+
+test('a failed preliminary search is explained without a misleading before/after loss table',async()=>{
+    const source=await readFile(new URL('../web/app.js',import.meta.url),'utf8');
+    const code=source.slice(source.indexOf('function comparisonTable('),source.indexOf('function renderImprovements('));
+    const render=new Function('translate',`${code};return comparisonTable;`)(s=>s);
+    const after={...plan(8),proven_optimal:false};
+    const html=render(comparePlans(plan(),after,input()));
+    assert.ok(!html.includes('<table'));
+    assert.ok(html.includes('does not show that the upgrade reduces production'));
+});
+
 test('comparison worker runs the complete planner per change and reports progress and failures independently', async () => {
     const source=await readFile(new URL('../web/worker.js',import.meta.url),'utf8');
     const code=source.slice(source.indexOf('async function rankImprovements('),source.indexOf('self.onmessage ='));
@@ -144,7 +170,7 @@ test('suggestions do not launch searches automatically, and cancelled comparison
         postMessage(message){this.message=JSON.parse(message.payload);}
         reply(count){this.onmessage({data:{type:'progress',count}});}
     }
-    const api=new Function('Worker','setTimeout','clearTimeout','baseline','base',`
+    const api=new Function('Worker','setTimeout','clearTimeout','baseline','base','keepBetterComparison',`
         let rankRunId=0,rankWorkers=[],rankCleanups=[],ranking=null,rankingsBySetup={};
         const mainSolve=null,setupSolve=null,layoutWorker=null,lastPlan=baseline,lastPlanInput=base;
         const plansBySetup={roster:baseline},WORKER_URL='worker',SETUP_TIMEOUT=100;
@@ -153,7 +179,7 @@ test('suggestions do not launch searches automatically, and cancelled comparison
         const comparisonPhase=step=>step;
         ${stop}\n${run}
         return {run:rankImprovementsFor,stop:stopRanking,state:()=>ranking};
-    `)(FakeWorker,fn=>{timers.add(fn);return fn;},id=>timers.delete(id),baseline,base);
+    `)(FakeWorker,fn=>{timers.add(fn);return fn;},id=>timers.delete(id),baseline,base,keepBetterComparison);
     api.run('roster');
     assert.equal(workers.length,0);
     api.run('roster',[2]);

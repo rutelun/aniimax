@@ -144,7 +144,21 @@ export function comparePlans(beforePlan, afterPlan, beforeInput, afterInput = be
     const first = objectives.findIndex(row=>row.direction !== 0);
     const decisive = first < 0 ? null : objectives[first];
     const relative = decisive?.before > 0 ? Math.abs(decisive.after - decisive.before) / decisive.before : 1;
+    const approximate = beforePlan.proven_optimal !== true || afterPlan.proven_optimal !== true;
     return {rows, decisive, direction:decisive?.direction || 0,
+        inconclusiveLoss: approximate && decisive?.direction < 0,
         score:decisive?.direction > 0 ? (32-first)*1e6 + Math.min(1e5,relative) : 0,
-        approximate:beforePlan.proven_optimal !== true || afterPlan.proven_optimal !== true};
+        approximate};
+}
+
+// A timeout or a weaker incumbent on a repeat check must not replace an already checked
+// better solution for the same alternative and the same base plan.
+export function keepBetterComparison(previous, next, input) {
+    if (!previous?.plan?.success) return next;
+    if (!next?.plan?.success) return { ...previous, retained: true };
+    const comparison = comparePlans(previous.plan, next.plan, input, input);
+    if (comparison.direction < 0 || (comparison.direction === 0 && previous.plan.proven_optimal && !next.plan.proven_optimal)) {
+        return { ...previous, retained: true };
+    }
+    return next;
 }

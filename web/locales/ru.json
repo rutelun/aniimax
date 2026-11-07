@@ -959,6 +959,8 @@
   "Quick compare": "Быстро сравнить",
   "Detailed search": "Подробный поиск",
   "Search inconclusive — use Detailed search": "Результат неясен — нужен подробный поиск",
+  "Kept the better plan from the previous search.": "Сохранён лучший план из предыдущей проверки.",
+  "The search did not match the current plan. This does not show that the upgrade reduces production. Use Detailed search.": "Поиск не смог сохранить показатели текущего плана. Это не означает, что улучшение снижает производство. Запустите подробный поиск.",
   "Quick checks use a short search budget and may miss improvements. Use Detailed search for a promising or inconclusive alternative. Only checked, feasible plans are compared.": "Быстрая проверка ограничена по времени и может пропустить улучшения. Для интересного или неясного результата запустите подробный поиск. Сравниваются только корректные планы, прошедшие проверку.",
   "Quick check reached its time budget. Use Detailed search for this alternative.": "Время быстрой проверки истекло. Запустите подробный поиск для этого варианта.",
   "Recipe Note: {name}": "Рецепт: {name}",

@@ -959,6 +959,8 @@
   "Quick compare",
   "Detailed search",
   "Search inconclusive — use Detailed search",
+  "Kept the better plan from the previous search.",
+  "The search did not match the current plan. This does not show that the upgrade reduces production. Use Detailed search.",
   "Quick checks use a short search budget and may miss improvements. Use Detailed search for a promising or inconclusive alternative. Only checked, feasible plans are compared.",
   "Quick check reached its time budget. Use Detailed search for this alternative.",
   "Recipe Note: {name}",

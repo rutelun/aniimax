@@ -13,7 +13,7 @@ import { createShareUrl, readShareHash, urlWithoutShare } from './share-config.j
 import { nearestStorage } from './layout.js?v=storage-power';
 import { ANIIMO_WALK_SPEED, workerTravelDistances } from './worker-travel.js?v=auto-worker-travel';
 import { haulingWorkload, allocateHauling, haulingBatchTrips } from './hauling.js?v=hauling-workload';
-import { changeOneMember, personalityInput, reserveLevelFourInputs, comparePlans, usefulUpgrade } from './opportunity-comparison.js?v=fast-comparisons';
+import { changeOneMember, personalityInput, reserveLevelFourInputs, comparePlans, usefulUpgrade, keepBetterComparison } from './opportunity-comparison.js?v=protected-comparisons';
 
 let wasmReady = false;
 
@@ -971,7 +971,6 @@ function rankImprovementsFor(setup, requested = null, detailed = false) {
         ? current.candidates.map((_,i)=>i).filter(i=>!current.results[i])
         : requested.filter(i=>current.candidates[i]);
     if (!indices.length) { renderImprovements(); return; }
-    for (const i of indices) delete current.results[i];
     current.running = true; current.started = true; current.paused = false;
     const runId = rankRunId;
     const solver = new Worker(WORKER_URL,{type:'module'});
@@ -998,7 +997,8 @@ function rankImprovementsFor(setup, requested = null, detailed = false) {
                 current.phase = comparisonPhase(result.step);
             } else if (result.index === -1) current.base = result;
             else {
-                current.results[indices[result.index]] = result;
+                const index = indices[result.index];
+                current.results[index] = keepBetterComparison(current.results[index], result, current.candidates[index].input);
                 current.activeIndex = null;
             }
         } else finish(!ok);
@@ -1063,6 +1063,7 @@ function formatPercent(share) {
 }
 
 function comparisonTable(comparison) {
+    if (comparison.inconclusiveLoss) return `<p class="hint small">${translate('The search did not match the current plan. This does not show that the upgrade reduces production. Use Detailed search.')}</p>`;
     return `<p class="hint small">${translate(comparison.approximate
         ? 'Estimated comparison: at least one search did not prove its optimum.'
         : 'Both plans were checked by the optimizer.')}</p>
@@ -1113,6 +1114,7 @@ function renderImprovements() {
         const found = best.get(key);
         const resultIndex = found?.index ?? group.indices.find(i=>ranking.results[i]?.plan?.success);
         const comparison = resultIndex != null ? comparisonFor(resultIndex) : null;
+        const retained = resultIndex != null && ranking.results[resultIndex]?.retained;
         const active = group.indices.includes(ranking.activeIndex);
         const error = group.indices.map(i=>ranking.results[i]?.error).find(Boolean);
         const status = found ? `<span class="improve-gain">${found.gain.text}</span>`
@@ -1121,11 +1123,12 @@ function renderImprovements() {
         const resultKey = `result:${key}`;
         const detail = comparison ? `<details class="comparison-result" data-open-key="${escapeText(resultKey)}"${open.has(resultKey)?' open':''}>
             <summary>${translate('Before / after')}${found?` · ${translate(found.candidate.label)}`:''}</summary>${comparisonTable(comparison)}</details>`
-            : error ? `<p class="hint small">${translate('Search inconclusive — use Detailed search')}<br>${escapeText(translate(error))}</p>` : '';
+            : error ? `<p class="hint small">${translate('The search did not match the current plan. This does not show that the upgrade reduces production. Use Detailed search.')}</p>` : '';
         const button = `<span class="opportunity-actions"><button type="button" class="skip-add-btn" data-compare-group="${escapeText(key)}"${ranking.running?' disabled':''}>${translate('Quick compare')}</button>
             <button type="button" class="skip-add-btn" data-compare-detailed="${escapeText(key)}"${ranking.running?' disabled':''}>${translate('Detailed search')}</button></span>`;
         const row = `<li class="opportunity-row"><div class="opportunity-heading"><span>${name}</span>${button}</div>
-            ${first.description?`<p class="hint small">${first.description}</p>`:''}${status}${detail}</li>`;
+            ${first.description?`<p class="hint small">${first.description}</p>`:''}${status}
+            ${retained?`<p class="hint small">${translate('Kept the better plan from the previous search.')}</p>`:''}${detail}</li>`;
         if (!kinds.has(group.kind)) kinds.set(group.kind,[]);
         kinds.get(group.kind).push(row);
     }

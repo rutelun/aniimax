@@ -51,6 +51,41 @@ test('quick checks have a per-alternative deadline; detailed search preserves th
     detailed.begin();time+=1_000_000;await detailed.solve(model);assert.equal(budgets[2],30);
 });
 
+test('quick alternatives preserve the current income floor while earlier goals stay unchanged',()=>{
+    const before={...baseline,currency:'coins',rate_per_second:3_506_373/86400,
+        comparison_goals:{...baseline.comparison_goals,currency:'coins',currency_value:3_506_373/86400}};
+    const search=createComparisonSearch(before,async()=>null);search.begin();
+    search.observe('Wood Blocks',{objective:10});
+    const guarded=search.protect(model,'coins');
+    assert.notEqual(guarded.lp,model.lp);
+    assert.ok(guarded.lp.includes(`>= ${before.rate_per_second*(1-1e-4)}`));
+    assert.ok(guarded.lp.indexOf('comparison_baseline:')<guarded.lp.indexOf('Bounds'));
+    assert.equal(search.protect(model,'crop_variety').lp.includes('>= 10'),true);
+    assert.equal(model.lp.includes('comparison_baseline:'),false);
+});
+
+test('a real improvement in an earlier goal permits lower later-priority income',()=>{
+    const search=createComparisonSearch({...baseline,rate_per_second:10},async()=>null);search.begin();
+    search.observe('Wood Blocks',{objective:11});
+    assert.equal(search.protect(model,'coins'),model);
+    search.begin();
+    assert.notEqual(search.protect(model,'coins'),model);
+});
+
+test('detailed searches can find genuine trade-offs and do not impose quick baseline guards',()=>{
+    const search=createComparisonSearch({...baseline,rate_per_second:10},async()=>null,{detailed:true});search.begin();
+    assert.equal(search.protect(model,'coins'),model);
+});
+
+test('a weaker time-limited incumbent is rejected, while a higher-priority gain can trade income',()=>{
+    const before={currency:'coins',proven_optimal:true,rate_per_second:100,priorities:[{target:'Wood Blocks',per_second:10}]};
+    const after={...before,proven_optimal:false,rate_per_second:80};
+    const search=createComparisonSearch(before,async()=>null);
+    const input={priorities:['Wood Blocks','coins']};
+    assert.equal(search.inconclusive(after,input,input),true);
+    assert.equal(search.inconclusive({...after,priorities:[{target:'Wood Blocks',per_second:11}]},input,input),false);
+});
+
 const input=()=>({facilities:{'Nimbus Bed':[{count:1,level:2}],'Dewy House':[{count:1,level:1}],Mill:[{count:1,level:1}]},
     modules:{kitchen:1},exclude:[],roster:{members:[{count:1,abilities:{Leisure:3},family:'wool'}],
         personalities:{'Nimbus Bed':'Judicious','Dewy House':'Instinctive'}}});

@@ -132,11 +132,12 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
     const solve = async (problem, goal) => {
         const certified = goal && await comparison?.bound(problem, goal);
         if (certified) return certified;
-        const result = await runModel(problem, options,
+        const result = await runModel(comparison?.protect(problem, goal) || problem, options,
         hasSeasonCropMinimums(input) && !stage.floors.length && !stage.pace
             ? 'The minimum event crop plots cannot be met. Check plot levels, growing conditions, and the seed budget.'
             : undefined, incumbent?.values);
         if (result) incumbent = result;
+        comparison?.observe(goal, result);
         return result;
     };
     let allProven = true;
@@ -163,7 +164,7 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
         const priority = JSON.parse(exact_priority_problem(payload, JSON.stringify(stage), target));
         if (!priority.lp) throw new Error('this setup isn\'t covered by the exact planner');
         // The final currency needs an actual feasible vector for the subsequent material solve.
-        const most = await solve(priority, target === (input.currency || 'coins') ? null : target);
+        const most = await solve(priority, target);
         lastCurrencySolve = target === (input.currency || 'coins') ? most : null;
         step(`priority:${target}`, 'done', most?.proven);
         if (!most) throw new Error(`no plan found for the most ${target}`);
@@ -214,7 +215,7 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
         solved = lastCurrencySolve;
     }
     step('final', solved ? 'skip' : 'start');
-    solved ||= await solve(problem);
+    solved ||= await solve(problem, input.currency || 'coins');
     if (!solved) throw new Error('the solver found no plan');
     if (alone) first({ measure: 'coins', objective: solved.objective, proven: solved.proven });
     let proven = solved.proven && allProven;
@@ -280,7 +281,8 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
         plan.material_work_note = materialWorkNote;
         plan.comparison_scores = { crop_variety: stage.crop_variety ?? null,
             material_pace: materialPace ?? null, material_work: materialWork ?? null, stock };
-        plan.comparison_goals = { crop_variety: stage.crop_variety ?? null, floors: stage.floors, pace: stage.pace ?? null };
+        plan.comparison_goals = { crop_variety: stage.crop_variety ?? null, floors: stage.floors, pace: stage.pace ?? null,
+            currency: input.currency || 'coins', currency_value: coins };
         return JSON.stringify(plan);
     };
     if (stage.pace) {
@@ -339,6 +341,10 @@ async function rankImprovements(pkg, payload, report) {
                 json = await search();
             }
             const plan = JSON.parse(json);
+            if (plan.success && comparison.inconclusive(plan, base, input)) {
+                report({index, error:'The search did not match the current plan. This does not show that the upgrade reduces production. Use Detailed search.', detailed});
+                continue;
+            }
             report(plan.success ? { index, plan, detailed, stats: { ...comparison.stats } }
                 : { index, error: plan.error || 'No plan found', detailed });
         } catch (error) {
