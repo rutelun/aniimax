@@ -1234,6 +1234,8 @@ pub struct FacilityCounts {
     grower_steps: Option<GrowerSteps>,
     movement_seconds: f64,
     member_movement: std::collections::BTreeMap<usize, f64>,
+    hauling_seconds: std::collections::BTreeMap<String, f64>,
+    hauling_default_seconds: f64,
 }
 
 impl Default for FacilityCounts {
@@ -1247,11 +1249,36 @@ impl Default for FacilityCounts {
             grower_steps: None,
             movement_seconds: 0.0,
             member_movement: Default::default(),
+            hauling_seconds: Default::default(),
+            hauling_default_seconds: 0.0,
         }
     }
 }
 
 impl FacilityCounts {
+    pub fn set_hauling(&mut self, default_seconds: f64, values: std::collections::BTreeMap<String, f64>) {
+        self.hauling_default_seconds = if default_seconds.is_finite() { default_seconds.clamp(0.0, 86400.0) } else { 0.0 };
+        self.hauling_seconds = values.into_iter().filter(|(_, s)| s.is_finite() && *s >= 0.0)
+            .map(|(key, s)| (key, s.min(86400.0))).collect();
+    }
+
+    pub fn hauling_seconds(&self, recipe: &ProductionItem) -> f64 {
+        self.hauling_seconds.get(&format!("{}|{}", recipe.facility, base_item_name(&recipe.name)))
+            .copied().unwrap_or(self.hauling_default_seconds)
+    }
+
+    pub fn hauling_seconds_for(&self, recipe: &ProductionItem, level: u32) -> f64 {
+        let key = format!("{}|{}", recipe.facility, base_item_name(&recipe.name));
+        if let Some(seconds) = self.hauling_seconds.get(&format!("{}|{}", key, level.min(4).max(1))) {
+            return *seconds;
+        }
+        if let Some(seconds) = self.hauling_seconds.get(&key) { return *seconds; }
+        let capacity = match level { 0 | 1 => 60.0, 2 => 80.0, _ => 100.0 };
+        let trips = (recipe.yield_amount as f64 / capacity).ceil()
+            + recipe.byproduct.as_ref().map_or(0.0, |(_, amount)| (*amount as f64 / capacity).ceil());
+        self.hauling_default_seconds * trips.max(1.0)
+    }
+
     pub fn set_movement_seconds(&mut self, seconds: f64) {
         self.movement_seconds = if seconds.is_finite() { seconds.clamp(0.0, 300.0) } else { 0.0 };
     }

@@ -787,6 +787,10 @@ pub struct JsRoster {
     pub movement_seconds: f64,
     #[serde(default)]
     pub movement_by_member: std::collections::BTreeMap<usize, f64>,
+    #[serde(default)]
+    pub hauling_seconds: std::collections::BTreeMap<String, f64>,
+    #[serde(default)]
+    pub hauling_default_seconds: f64,
     /// Facilities whose Aniimo lives there, e.g. the Tidewhisper Sandcastle.
     #[serde(default)]
     pub residents: Vec<String>,
@@ -1271,6 +1275,8 @@ pub struct JsProductionPlan {
     pub crop_assignments: Vec<(String, u32, usize, f64)>,
     #[serde(default)]
     pub movement_staffing: Vec<(usize, f64, f64)>,
+    #[serde(default)]
+    pub hauling_staffing: Vec<(usize, f64)>,
     /// Item, facility, member, visits/hour, whether this is crop work.
     #[serde(default)]
     pub mobile_work: Vec<(String, String, usize, f64, bool)>,
@@ -1343,6 +1349,7 @@ fn empty_production_plan(success: bool, error: Option<String>) -> JsProductionPl
         crop_staffing: false,
         crop_assignments: Vec::new(),
         movement_staffing: Vec::new(),
+        hauling_staffing: Vec::new(),
         mobile_work: Vec::new(),
     }
 }
@@ -1674,6 +1681,7 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
     js.crop_staffing = prepared.crew.is_some();
     js.crop_assignments = exact.crop_staffing.clone();
     js.movement_staffing = exact.movement_staffing.clone();
+    js.hauling_staffing = exact.hauling_staffing.clone();
     js.mobile_work = exact.work_routes.iter().filter(|route| route.mobile).filter_map(|route| {
         let item = prepared.items.iter().find(|item| item.name == route.recipe)?;
         let visits = route.crop.as_ref().map_or(1, |(ability, level)| prepared.grower_steps.get(&item.name).iter()
@@ -1732,7 +1740,7 @@ fn level_up_report(
     });
     let level_up_item = |name: &str| {
         crate::models::BYPRODUCT_ITEMS.iter().any(|(_, item)| *item == name)
-            || items.iter().any(|i| i.name == name && crate::exact::takes_turns(i))
+            || items.iter().any(|i| i.name == name && crate::exact::is_upgrade_material(i))
     };
     let mut names: Vec<&str> = net.keys().map(String::as_str).chain(level_up.stock.iter().map(|(n, _)| n.as_str())).collect();
     names.sort_unstable();
@@ -1817,6 +1825,7 @@ impl PreparedInput {
                 let mut crew = roster.crew();
                 facility_counts.set_movement_seconds(roster.movement_seconds);
                 facility_counts.set_member_movement(roster.movement_by_member.clone());
+                facility_counts.set_hauling(roster.hauling_default_seconds, roster.hauling_seconds.clone());
                 let available = items.iter().filter(|item| {
                     facility_counts.get_count(&item.facility) > 0
                         && facility_counts.can_produce(&item.facility, item.facility_level)
@@ -1840,6 +1849,14 @@ impl PreparedInput {
                     .chain((generators > 0).then_some(("Lightning", 1)));
                 crew.add_reserve_workers(jobs, capacity);
                 crew.add_reserve_families(available.filter_map(|item| requirements.family(&item.name)), capacity);
+                if roster.hauling_default_seconds > 0.0 || roster.hauling_seconds.values().any(|&s| s > 0.0) {
+                    crew.assumed_from.get_or_insert(crew.members.len());
+                    crew.members.push(crate::models::RosterAniimo {
+                        count: capacity.saturating_mul(100).max(1),
+                        abilities: [("Hauling".to_string(), 3)].into(),
+                        personalities: Vec::new(), family: None,
+                    });
+                }
                 Some(crew)
             }
             _ => None,
@@ -1955,6 +1972,7 @@ impl PreparedInput {
             crop_staffing: false,
             crop_assignments: Vec::new(),
             movement_staffing: Vec::new(),
+            hauling_staffing: Vec::new(),
             mobile_work: Vec::new(),
         }
     }

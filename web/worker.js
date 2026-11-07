@@ -264,13 +264,14 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}) {
 // Reports one `{ index, top, coins, proven }` per input as it goes, the base first (index -1).
 async function rankImprovements(pkg, payload, report) {
     const { measure, base, candidates, baseTop: given } = JSON.parse(payload);
+    const options = { ...SOLVE_OPTIONS, time_limit: 5 };
     const topOf = async (input) => {
         const json = JSON.stringify(input);
         const problem = JSON.parse(measure === 'level_up'
             ? pkg.exact_level_up_problem(json)
             : pkg.exact_priority_problem(json, JSON.stringify({ floors: [] }), measure));
         if (!problem.lp) return null;
-        return solveModel(problem);
+        return solveModel(problem, options);
     };
     // Home Coins while keeping `top` of the measure; the same solve the plan itself runs next.
     const coinsAt = async (input, top) => {
@@ -280,7 +281,7 @@ async function rankImprovements(pkg, payload, report) {
             ? pkg.exact_problem(json, JSON.stringify({ floors: [], pace: top }))
             : pkg.exact_priority_problem(json, JSON.stringify({ floors: [[measure, Math.max(0, top)]] }), 'coins'));
         if (!problem.lp) return null;
-        return solveModel(problem);
+        return solveModel(problem, options);
     };
     // The plan as it stands was solved just now; the page passes that on when it can.
     const baseTop = given?.measure === measure ? given : await topOf(base);

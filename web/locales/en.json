@@ -913,5 +913,10 @@
   "very slow",
   "This setup took too long. Try turning off Aniimo travel or simplifying the priorities.",
   "The planner took too long. Try turning off Aniimo travel or simplifying the priorities.",
-  "The planner returned an unreadable response."
+  "The planner returned an unreadable response.",
+  "Hauling to Storage Units ({minutes} min/h)",
+  "Worker travel is off: workload excludes travel between work buildings. Delivery routes are included.",
+  "The planned deliveries do not fit the Aniimo limit. Increase the limit or add Storage Units.",
+  "Use the power available on your connected grid. Each 600 W of load needs one Lightning Aniimo. In My Aniimo, the worker limit includes delivery.",
+  "Delivery is estimated per production batch and carrying capacity. Storage buffering and dispatch delays are not simulated; Hauling Lv.4 uses Lv.3 capacity."
 ]
