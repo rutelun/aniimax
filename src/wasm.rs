@@ -1620,7 +1620,8 @@ pub fn exact_problem(input_json: &str, stage_json: &str) -> String {
 /// `{"lp", "variables", "tiebreak"}` for a model (see [`crate::exact::LpProblem`]).
 fn lp_json(problem: &crate::exact::LpProblem) -> String {
     serde_json::json!({ "lp": problem.lp, "variables": problem.variables, "tiebreak": problem.tiebreak,
-        "primary_objective": problem.primary_objective, "material_fixed": problem.material_fixed }).to_string()
+        "primary_objective": problem.primary_objective, "material_fixed": problem.material_fixed,
+        "variable_keys": problem.variable_keys }).to_string()
 }
 
 /// The solver's answer to [`exact_problem`]'s model.

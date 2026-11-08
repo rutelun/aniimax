@@ -276,13 +276,16 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
             }
         }
     }
-    const finish = (plan, stock = null) => {
+    const finish = (plan, stock = null, seedProblem = problem, seedSolved = solved) => {
         plan.level_up_note = levelUpNote;
         plan.material_work_note = materialWorkNote;
         plan.comparison_scores = { crop_variety: stage.crop_variety ?? null,
             material_pace: materialPace ?? null, material_work: materialWork ?? null, stock };
         plan.comparison_goals = { crop_variety: stage.crop_variety ?? null, floors: stage.floors, pace: stage.pace ?? null,
             currency: input.currency || 'coins', currency_value: coins };
+        if (!comparison && Array.isArray(seedProblem.variable_keys) && seedProblem.variable_keys.length === seedSolved.values?.length) {
+            plan.comparison_seed = { keys: seedProblem.variable_keys, values: seedSolved.values };
+        }
         return JSON.stringify(plan);
     };
     if (stage.pace) {
@@ -290,14 +293,15 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
         const stockStage = { ...stage, coins, material_work: materialWork };
         const stockJson = JSON.stringify(stockStage);
         step('stock_up', 'start');
-        const stocked = await runModel(JSON.parse(exact_problem(payload, stockJson)), options);
+        const stockProblem = JSON.parse(exact_problem(payload, stockJson));
+        const stocked = await runModel(stockProblem, options);
         step('stock_up', 'done', stocked?.proven);
         step('check', 'start');
         const stockedPlan = stocked
             && JSON.parse(exact_plan(payload, stockJson, JSON.stringify({ values: stocked.values, proven: proven && stocked.proven, bound })));
         if (stockedPlan && stockedPlan.success) {
             step('check', 'done');
-            return finish(stockedPlan, stocked.objective);
+            return finish(stockedPlan, stocked.objective, stockProblem, stocked);
         }
         console.warn('Level-up stock solve found no usable plan; keeping the plan without it.');
     }
@@ -311,6 +315,7 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
         if (strict) {
             json = exact_plan(payload, stageJson, JSON.stringify({ values: strict.values, proven: strict.proven && allProven, bound }));
             plan = JSON.parse(json);
+            if (plan.success) solved = strict;
         }
     }
     if (!plan.success) throw new Error(plan.error || 'the plan failed its check');
@@ -321,10 +326,10 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
 // Ranks changes the player could make with the same complete optimizer, preserving planting,
 // every priority, E-mode and RV material production. They run only on explicit request.
 async function rankImprovements(pkg, payload, report) {
-    const { base, basePlan, candidates, detailed = false } = JSON.parse(payload);
+    const { base, basePlan, candidates, detailed = false, warm_start = true } = JSON.parse(payload);
     const original = basePlan?.success ? basePlan : JSON.parse(await exactPlanJson(pkg, JSON.stringify(base)));
     report({ index: -1, plan: original });
-    const comparison = (await comparisonSearch).createComparisonSearch(original, solveModel, { detailed });
+    const comparison = (await comparisonSearch).createComparisonSearch(original, solveModel, { detailed, warmStart: warm_start });
     for (const [index, input] of candidates.entries()) {
         try {
             comparison.begin();

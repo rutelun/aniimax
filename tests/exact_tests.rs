@@ -29,6 +29,30 @@ fn external_values_are_checked_before_skipping_continuous_reoptimization() {
     assert!(repaired.rate_per_second >= 0.09);
 }
 
+#[test]
+fn warm_start_keys_keep_worker_identity_when_levels_and_reserve_indices_change() {
+    use aniimax::models::{crew_variants, AniimoRequirements, GrowerSteps};
+    use aniimax::exact::write_lp;
+    let recipe = walking_item("warm_identity", "Mine", 10.0, "coins");
+    let mut requirements = AniimoRequirements::default(); requirements.insert(&recipe.name, "Earth", 1);
+    let make = |upgraded: bool| {
+        let mut crew = crew_of(&[(1, &[("Earth", if upgraded { 4 } else { 3 })])]);
+        if upgraded { crew.members.push(aniimax::models::RosterAniimo {count:1,abilities:[("Water".into(),3)].into(),..Default::default()}); }
+        crew.assumed_from = Some(crew.members.len());
+        crew.members.push(aniimax::models::RosterAniimo {count:20,abilities:[("Earth".into(),3)].into(),..Default::default()});
+        let items = crew_variants(vec![recipe.clone()], &crew, &requirements, &GrowerSteps::default());
+        let mut counts = FacilityCounts::only(&[("Mine",1,1)]); counts.set_crew(crew); counts.set_movement_seconds(5.0);
+        write_lp(&items,"coins",&counts,&ModuleLevels::default(),Goal::Earn{floors:&[]})
+    };
+    let old = make(false); let changed = make(true);
+    assert_eq!(old.variable_keys.len(),old.variables);
+    assert_eq!(old.variable_keys.iter().collect::<std::collections::BTreeSet<_>>().len(),old.variables);
+    let relevant = |keys: &[String]| keys.iter().filter(|k| k.starts_with("rate:") || k.starts_with("units:"))
+        .cloned().collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(relevant(&old.variable_keys),relevant(&changed.variable_keys));
+    assert_ne!(old.lp,changed.lp);
+}
+
 fn load_items() -> Option<Vec<ProductionItem>> {
     let data_dir = Path::new("data");
     data_dir.exists().then(|| load_all_data(data_dir).expect("Failed to load data"))

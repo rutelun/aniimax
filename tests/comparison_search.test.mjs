@@ -86,6 +86,44 @@ test('a weaker time-limited incumbent is rejected, while a higher-priority gain 
     assert.equal(search.inconclusive({...after,priorities:[{target:'Wood Blocks',per_second:11}]},input,input),false);
 });
 
+test('warm starts map semantic variable identities rather than reusing old column indices',async()=>{
+    const before={comparison_seed:{keys:['rate:owned','rate:reserve','sold'],values:[.5,.1,.6]}};
+    let supplied;
+    const search=createComparisonSearch(before,async(_,__,___,seed)=>{supplied=seed;return null;},{detailed:true});search.begin();
+    await search.solve({...model,variables:4,variable_keys:['sold','new-job','rate:reserve','rate:owned']});
+    assert.deepEqual(supplied,[.6,0,.1,.5]);
+    assert.equal(search.stats.warm,1);
+    await search.solve({...model,variables:4,variable_keys:['sold','new-job','rate:reserve','rate:owned']},undefined,undefined,[1,2,3,4]);
+    assert.deepEqual(supplied,[1,2,3,4]);
+});
+
+test('refitting a fixed layout supplies only an incumbent and cannot certify the unrestricted optimum',async()=>{
+    const before={comparison_seed:{keys:['a','b'],values:[1,.5]}};
+    const calls=[];
+    const search=createComparisonSearch(before,async(p,options,message,seed)=>{
+        calls.push({p,seed});
+        return calls.length===1 ? {values:[1,.7],objective:7,proven:true} : {values:[1,.8],objective:8,proven:false};
+    },{detailed:true});search.begin();
+    const result=await search.solve({...model,variable_keys:['a','b']});
+    assert.ok(calls[0].p.lp.includes('warm_fix_0'));
+    assert.ok(!calls[0].p.lp.includes('General'));
+    assert.equal(calls[1].p.lp,model.lp);
+    assert.deepEqual(calls[1].seed,[1,.7]);
+    assert.equal(result.proven,false);
+    assert.equal(result.objective,8);
+});
+
+test('large rosters receive preparation time without increasing the per-solve search limit',async()=>{
+    let time=0,limit;
+    const keys=Array.from({length:6646},(_,i)=>`job:${i}`);
+    const search=createComparisonSearch({comparison_seed:{keys,values:keys.map(()=>0)}},async(_,o)=>{limit=o.time_limit;return null;},{now:()=>time});
+    search.begin();time=10_000;
+    await search.solve(model);
+    assert.equal(limit,1);
+    time=22_000;
+    await assert.rejects(search.solve(model),/Detailed search/);
+});
+
 const input=()=>({facilities:{'Nimbus Bed':[{count:1,level:2}],'Dewy House':[{count:1,level:1}],Mill:[{count:1,level:1}]},
     modules:{kitchen:1},exclude:[],roster:{members:[{count:1,abilities:{Leisure:3},family:'wool'}],
         personalities:{'Nimbus Bed':'Judicious','Dewy House':'Instinctive'}}});

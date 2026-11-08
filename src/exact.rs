@@ -296,7 +296,7 @@ enum VarKind<'a> {
     CropStaff { ability: String, level: u32, member: usize },
     WorkPost { station: String, member: usize },
     WorkRoute { recipe: &'a ProductionItem, member: usize, crop: Option<(String, u32)>, mobile: bool, seconds: f64, travel: f64 },
-    ActiveAniimo,
+    ActiveAniimo { member: usize },
     HaulingStaff { recipe: &'a ProductionItem, member: usize, seconds: f64 },
 }
 
@@ -1032,7 +1032,7 @@ fn build_model<'a>(
         if let Some((_, limit)) = team_limit {
             let mut active = Vec::new();
             for (member, mut terms) in busy.into_iter().enumerate().filter(|(_, terms)| !terms.is_empty()) {
-                let count = model.add(0.0, (0.0, crew.members[member].count as f64), true, VarKind::ActiveAniimo);
+                let count = model.add(0.0, (0.0, crew.members[member].count as f64), true, VarKind::ActiveAniimo { member });
                 terms.push((count, -1.0));
                 model.constrain(terms, ComparisonOp::Le, 0.0);
                 active.push((count, 1.0));
@@ -1848,6 +1848,59 @@ pub struct LpProblem {
     pub primary_objective: Vec<(usize, f64)>,
     /// Integers that can be fixed to the income plan while filling material processors.
     pub material_fixed: Vec<usize>,
+    /// Stable semantic identities for optional warm starts across alternative inputs.
+    pub variable_keys: Vec<String>,
+}
+
+fn warm_start_keys(model: &Model<'_>, items: &[ProductionItem], counts: &FacilityCounts) -> Vec<String> {
+    let member_key = |member: usize| {
+        if let Some(crew) = counts.crew() {
+            if crew.assumed_from.is_some_and(|first| member >= first) {
+                let worker = &crew.members[member];
+                return format!("reserve:{:?}:{:?}", worker.abilities, worker.family);
+            }
+        }
+        format!("owned:{member}")
+    };
+    let recipe_key = |recipe: &ProductionItem| match recipe.crew {
+        Some(member) => recipe.name.replace(&format!("__by{member}"), &format!("__by{}", member_key(member))),
+        None => recipe.name.clone(),
+    };
+    let names: HashMap<_, _> = items.iter().map(|r| (r.name.as_str(), recipe_key(r))).collect();
+    let mut duplicates = BTreeMap::<String, usize>::new();
+    model.kinds.iter().map(|kind| {
+        let key = match kind {
+            VarKind::Rate(r) => format!("rate:{}", recipe_key(r)),
+            VarKind::Units(r) => format!("units:{}", recipe_key(r)),
+            VarKind::Sold(name) => format!("sold:{name}"),
+            VarKind::Pace => "pace".into(),
+            VarKind::MaterialPace => "material_pace".into(),
+            VarKind::CropVariety => "crop_variety".into(),
+            VarKind::LowerLevelPlots => "lower_level_plots".into(),
+            VarKind::UnavailableCrop => "unavailable_crop".into(),
+            VarKind::PoweredUnits => "powered_units".into(),
+            VarKind::PowerGenerators => "generators".into(),
+            VarKind::Extra => "extra".into(),
+            VarKind::Environment { building, mode, types, option } =>
+                format!("environment:{building}:{mode}:{types:?}:{:?}", option.counts),
+            VarKind::EnvironmentPair { buildings, modes, types, option } =>
+                format!("pair:{buildings:?}:{modes:?}:{types:?}:{option:?}"),
+            VarKind::Staff { building, member } => format!("staff:{building}:{}", member_key(*member)),
+            VarKind::CropStaff { ability, level, member } => format!("crop:{ability}:{level}:{}", member_key(*member)),
+            VarKind::WorkPost { station, member } => {
+                let station = station.strip_prefix("recipe:").and_then(|n| names.get(n)).map_or(station.as_str(), String::as_str);
+                format!("post:{station}:{}", member_key(*member))
+            }
+            VarKind::WorkRoute { recipe, member, crop, mobile, .. } =>
+                format!("route:{}:{}:{crop:?}:{mobile}", recipe_key(recipe), member_key(*member)),
+            VarKind::ActiveAniimo { member } => format!("active:{}", member_key(*member)),
+            VarKind::HaulingStaff { recipe, member, .. } => format!("haul:{}:{}", recipe_key(recipe), member_key(*member)),
+        };
+        let ordinal = duplicates.entry(key.clone()).or_default();
+        let unique = format!("{key}#{ordinal}");
+        *ordinal += 1;
+        unique
+    }).collect()
 }
 
 /// The model in CPLEX LP format, for solving with an external solver (a solver may leave out any
@@ -1913,12 +1966,13 @@ pub fn write_lp(
             VarKind::Units(recipe) => processes_upgrade_materials(recipe),
             VarKind::WorkPost { station, .. } => station.strip_prefix("recipe:")
                 .and_then(|name| items.iter().find(|r| r.name == name)).is_some_and(processes_upgrade_materials),
-            VarKind::ActiveAniimo | VarKind::PowerGenerators | VarKind::PoweredUnits => true,
+            VarKind::ActiveAniimo { .. } | VarKind::PowerGenerators | VarKind::PoweredUnits => true,
             _ => false,
         };
         (!flexible).then_some(v)
     }).collect();
-    LpProblem { lp: out, variables: model.objective.len(), tiebreak: model.tiebreak.clone(), primary_objective, material_fixed }
+    LpProblem { lp: out, variables: model.objective.len(), tiebreak: model.tiebreak.clone(), primary_objective, material_fixed,
+        variable_keys: warm_start_keys(&model, items, facility_counts) }
 }
 
 /// Builds an [`ExactPlan`] from an external solver's variable values. Accepts the complete
