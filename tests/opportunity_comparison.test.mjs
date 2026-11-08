@@ -1,10 +1,9 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {changeOneMember,personalityInput,reserveLevelFourInputs,workerUsage,comparePlans,keepBetterComparison,twoAbilityInput,replacedWorkers} from '../web/opportunity-comparison.js';
+import {changeOneMember,personalityInput,reserveLevelFourInputs,workerUsage,comparePlans,keepBetterComparison} from '../web/opportunity-comparison.js';
 import {createComparisonSearch} from '../web/comparison-search.js';
 import {comparisonConcurrency,startComparisonQueue} from '../web/comparison-queue.js';
-import {automaticReplacements} from '../web/two-ability-search.js';
 
 const input = () => ({priorities:['season_points','Wood Blocks','coins'],roster:{members:[
     {count:2,abilities:{Artisanship:3,Water:3},personalities:['Instinctive','Nimble'],family:'1017'},
@@ -13,37 +12,6 @@ const plan = (coins=10,wood=2) => ({success:true,proven_optimal:true,rate_per_se
     priorities:[{target:'season_points',per_second:1},{target:'Wood Blocks',per_second:wood}],
     comparison_scores:{crop_variety:26,material_pace:.3,material_work:3},
     level_up_preview:{seconds:1_000,requirements:[{name:'standard_planks',per_second:.1}]},coin_items:[]});
-
-test('a two-ability proposal is one neutral hypothetical copy and never edits the saved team',()=>{
-    const original=input(),saved=structuredClone(original),changed=twoAbilityInput(original,{Fire:4,Artisanship:4});
-    assert.deepEqual(original,saved);
-    assert.equal(changed.roster.members.length,2);
-    assert.equal(changed.roster.members[0].count,2);
-    assert.deepEqual(changed.roster.members[1],{count:1,abilities:{Artisanship:4,Fire:4},personalities:[],family:null});
-    assert.equal(changed.opportunity_goal,'team_size');
-    assert.throws(()=>twoAbilityInput(original,{Fire:4}),/two different/);
-    assert.throws(()=>twoAbilityInput(original,{Leisure:4,Fire:4}),/family/);
-});
-
-test('smaller teams are an improvement only after every production objective is preserved',()=>{
-    const before=plan(),after=plan(),base={...input(),roster:{members:[{count:1},{count:1}]}};
-    before.coin_items=[{status:'producing',crew:0,busy_units:.5},{status:'producing',crew:1,busy_units:.5}];
-    after.coin_items=[{status:'producing',crew:2,busy_units:1}];
-    const candidate=twoAbilityInput(base,{Fire:4,Artisanship:4});
-    const improvement=comparePlans(before,after,base,candidate);
-    assert.equal(improvement.direction,1);
-    assert.equal(improvement.decisive.id,'working_aniimo');
-    after.priorities.find(p=>p.target==='Wood Blocks').per_second=1;
-    assert.equal(comparePlans(before,after,base,candidate).direction,-1);
-});
-
-test('replacement labels follow reserve identities when the hypothetical worker shifts their indices',()=>{
-    const base={roster:{members:[{count:1}]}},candidate=twoAbilityInput(base,{Fire:4,Artisanship:4});
-    const before={assumed_aniimo:[[1,'Grass',3,10,null]],coin_items:[{status:'producing',crew:0,busy_units:.5},{status:'producing',crew:1,busy_units:.5}]};
-    const after={assumed_aniimo:[[2,'Grass',3,10,null]],coin_items:[{status:'producing',crew:1,busy_units:1}]};
-    assert.deepEqual(replacedWorkers(before,after,base,candidate),[{member:0,count:1},{member:null,count:1,ability:'Grass',level:3,family:null}]);
-    assert.equal(workerUsage(after,candidate).additional,1,'the new hypothetical Aniimo is still additional');
-});
 
 test('only one copy is trained, preserving its family, other ability and original input', () => {
     const original=input(), saved=structuredClone(original);
@@ -174,36 +142,6 @@ test('comparison worker runs the complete planner per change and reports progres
     assert.equal(reports.find(r=>r.index===2&&r.plan).plan.rate_per_second,15);
 });
 
-test('replacement checks discard a weaker cached reference and retain the current plan for later candidates',async()=>{
-    const source=await readFile(new URL('../web/worker.js',import.meta.url),'utf8');
-    const code=source.slice(source.indexOf('async function rebalanceCurrentTeam('),source.indexOf('self.onmessage ='));
-    const reports=[],original=plan(),base=input();
-    const candidate=twoAbilityInput(base,{Fire:4,Artisanship:4});
-    const run=new Function('exactPlanJson','comparisonSearch','workforceSearch','solveModel',`${code};return rankImprovements;`)(
-        async()=>JSON.stringify(plan(12)),Promise.resolve({createComparisonSearch}),import('../web/workforce-search.js'),()=>{});
-    await run({},JSON.stringify({base,basePlan:original,teamBasePlan:plan(9),candidates:[candidate,candidate]}),r=>reports.push(r));
-    const results=reports.filter(r=>r.plan&&r.index>=0);
-    assert.equal(results.length,2);
-    assert.ok(results.every(r=>r.basePlan.rate_per_second===10));
-    assert.ok(results.every(r=>r.replacement_used===false));
-});
-
-test('a retained replacement reference supplies the complete native solution contract',async()=>{
-    const source=await readFile(new URL('../web/worker.js',import.meta.url),'utf8');
-    const code=source.slice(source.indexOf('async function retainTeamReference('),source.indexOf('async function rankImprovements('));
-    const run=new Function('workforceSearch',`${code};return retainTeamReference;`)(import('../web/workforce-search.js'));
-    const original={...plan(),comparison_seed:{keys:['existing'],values:[1]}};
-    const pkg={exact_problem:()=>JSON.stringify({lp:'model',variable_keys:['existing','new']}),
-        exact_plan:(_,__,json)=>{
-            const answer=JSON.parse(json);
-            assert.equal(answer.bound,10);
-            assert.equal(answer.summary_only,true);
-            assert.deepEqual(answer.values,[1,0]);
-            return JSON.stringify(plan());
-        }};
-    assert.equal((await run(pkg,twoAbilityInput(input(),{Fire:4,Artisanship:4}),original)).success,true);
-});
-
 test('detailed comparison retries without baseline floors when an integer-feasible alternative needs lower goals',async()=>{
     const source=await readFile(new URL('../web/worker.js',import.meta.url),'utf8');
     const code=source.slice(source.indexOf('async function rankImprovements('),source.indexOf('self.onmessage ='));
@@ -233,7 +171,7 @@ test('suggestions do not launch searches automatically, and cancelled comparison
         postMessage(message){this.id=message.id;this.message=JSON.parse(message.payload);}
         reply(count){this.onmessage({data:{id:this.id,type:'progress',count}});}
     }
-    const api=new Function('Worker','setTimeout','clearTimeout','baseline','base','keepBetterComparison','startComparisonQueue','comparisonConcurrency','automaticReplacements',`
+    const api=new Function('Worker','setTimeout','clearTimeout','baseline','base','keepBetterComparison','startComparisonQueue','comparisonConcurrency',`
         let rankRunId=0,rankWorkers=[],rankCleanups=[],ranking=null,rankingsBySetup={};
         const mainSolve=null,setupSolve=null,layoutWorker=null,lastPlan=baseline,lastPlanInput=base;
         const plansBySetup={roster:baseline},WORKER_URL='worker',SETUP_TIMEOUT=100;
@@ -241,10 +179,9 @@ test('suggestions do not launch searches automatically, and cancelled comparison
         const improvementCandidates=()=>[0,1,2].map(i=>({input:{...base,change:i}}));
         const comparisonPhase=step=>step;
         const navigator={hardwareConcurrency:4,deviceMemory:4};
-        const recipeIndex=[],defaultLevelFor=()=>4;
         ${stop}\n${run}
         return {run:rankImprovementsFor,stop:stopRanking,state:()=>ranking};
-    `)(FakeWorker,fn=>{timers.add(fn);return fn;},id=>timers.delete(id),baseline,base,keepBetterComparison,startComparisonQueue,comparisonConcurrency,automaticReplacements);
+    `)(FakeWorker,fn=>{timers.add(fn);return fn;},id=>timers.delete(id),baseline,base,keepBetterComparison,startComparisonQueue,comparisonConcurrency);
     api.run('roster');
     assert.equal(workers.length,0);
     api.run('roster',[2]);

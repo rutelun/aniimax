@@ -2546,12 +2546,6 @@ tr:hover .skip-row,
 .comparison-table th:not(:first-child), .comparison-table td:not(:first-child) { text-align: right; white-space: nowrap; }
 .comparison-table th:first-child, .comparison-table td:first-child { min-width: 9rem; }
 .compare-loss { color: var(--error); }
-.replacement-controls { margin: 1rem 0; padding: .8rem; border: 1px solid var(--border); border-radius: .65rem; }
-.replacement-controls[hidden], #replacement-family-field[hidden] { display: none; }
-.replacement-controls > summary { cursor: pointer; font-weight: 600; }
-.replacement-grid { display: grid; grid-template-columns: minmax(0,2fr) minmax(0,1fr) minmax(0,2fr) minmax(0,1fr); gap: .7rem; margin: .7rem 0; }
-.replacement-controls .input-field, .replacement-controls select { min-width: 0; width: 100%; }
-@media (max-width: 620px) { .replacement-grid { grid-template-columns: minmax(0,2fr) minmax(0,1fr); } }
 
 /* Homeland layout. */
 .layout-diagram {

@@ -13,9 +13,8 @@ import { createShareUrl, readShareHash, urlWithoutShare } from './share-config.j
 import { nearestStorage } from './layout.js?v=storage-power';
 import { ANIIMO_WALK_SPEED, workerTravelDistances } from './worker-travel.js?v=auto-worker-travel';
 import { haulingWorkload, allocateHauling, haulingBatchTrips } from './hauling.js?v=hauling-workload';
-import { changeOneMember, personalityInput, reserveLevelFourInputs, comparePlans, usefulUpgrade, keepBetterComparison, twoAbilityInput, replacedWorkers, availableRecipes } from './opportunity-comparison.js?v=two-ability';
+import { changeOneMember, personalityInput, reserveLevelFourInputs, comparePlans, usefulUpgrade, keepBetterComparison } from './opportunity-comparison.js?v=protected-comparisons';
 import { comparisonConcurrency, startComparisonQueue } from './comparison-queue.js?v=parallel-comparisons';
-import { automaticReplacements } from './two-ability-search.js?v=automatic-pairs';
 
 let wasmReady = false;
 
@@ -964,9 +963,7 @@ function rankImprovementsFor(setup, requested = null, detailed = false) {
             base.roster = { ...base.roster, hauling_seconds: plan.hauling_estimates,
                 hauling_default_seconds: haulingRouteBound() };
         }
-        const candidates=improvementCandidates(base,setup);
-        if(base.roster)candidates.push(...automaticReplacements(base,plan,recipeIndex,defaultLevelFor));
-        current = { setup, plan, input: base, base: {plan}, candidates,
+        current = { setup, plan, input: base, base: {plan}, candidates: improvementCandidates(base,setup),
             results: [], running:false, started:false, paused:false, activeIndex:null, activeIndices:[], phase:'' };
         rankingsBySetup[setup] = current;
     }
@@ -981,7 +978,7 @@ function rankImprovementsFor(setup, requested = null, detailed = false) {
     const queue = startComparisonQueue({indices,parallel:comparisonConcurrency(navigator,indices.length),
         createWorker:()=>new Worker(WORKER_URL,{type:'module'}), timeout:SETUP_TIMEOUT,
         setTimer:setTimeout,clearTimer:clearTimeout,
-        payload:index=>({base:current.input,basePlan:plan,teamBasePlan:current.teamBasePlan,candidates:[current.candidates[index].input],detailed}),
+        payload:index=>({base:current.input,basePlan:plan,candidates:[current.candidates[index].input],detailed}),
         onProgress:active=>{
             if (runId !== rankRunId) return;
             current.activeIndices = active.map(s=>s.index);
@@ -992,7 +989,6 @@ function rankImprovementsFor(setup, requested = null, detailed = false) {
         onResult:(index,result)=>{
             if (runId !== rankRunId) return;
             current.results[index] = keepBetterComparison(current.results[index],result,current.candidates[index].input);
-            if(result.basePlan?.success) current.teamBasePlan=result.basePlan;
             if (ranking === current) renderImprovements();
         },
         onDone:failed=>{
@@ -1008,10 +1004,9 @@ function rankImprovementsFor(setup, requested = null, detailed = false) {
 }
 
 function comparisonPhase(step) {
-    if(step.startsWith('team_baseline:'))return translate('Rebalancing current team');
     if (step.startsWith('priority:')) return priorityLabel(step.slice(9),planContext?.aniipod);
     return translate({crop_variety:'Crop and Tree Variety',level_up:'Fastest Level-Up',season:'Season Points',
-        final:'Home Coins',materials:'RV materials',stock_up:'RV materials',workforce:'Smallest working team',check:'Checking the plan'}[step] || 'Checking the plan');
+        final:'Home Coins',materials:'RV materials',stock_up:'RV materials',check:'Checking the plan'}[step] || 'Checking the plan');
 }
 
 // How a change compares with the plan, or null if it doesn't help: `{ score, text }`, with
@@ -1019,7 +1014,7 @@ function comparisonPhase(step) {
 function comparisonFor(index) {
     const result = ranking?.results[index];
     if (!result?.plan?.success) return null;
-    return {...comparePlans(result.basePlan || ranking.base?.plan || ranking.plan,result.plan,ranking.input,ranking.candidates[index].input),rebalanced:!!result.basePlan};
+    return comparePlans(ranking.base?.plan || ranking.plan,result.plan,ranking.input,ranking.candidates[index].input);
 }
 
 function comparisonMetricLabel(row) {
@@ -1040,7 +1035,6 @@ function comparisonValue(row,value) {
 }
 
 function improvementGain(result,index) {
-    if(result?.replacement_used===false)return null;
     const comparison = comparisonFor(index);
     if (!comparison || comparison.direction <= 0) return null;
     const row = comparison.decisive;
@@ -1051,7 +1045,7 @@ function improvementGain(result,index) {
         ? `${label}: ${about}${formatDuration(row.after)}`
         : `${label}: ${about}−${formatDuration(row.before-row.after)}`;
     else if (row.kind === 'score') text = `${label}: ${about}+${formatPercent((row.after-row.before)/(row.before||row.after||1))}`;
-    else text = `${label}: ${about}${row.lower?'−':'+'}${comparisonValue(row,Math.abs(row.after-row.before))}`;
+    else text = `${label}: ${about}+${comparisonValue(row,row.after-row.before)}`;
     return {score:comparison.score,text,comparison};
 }
 
@@ -1066,7 +1060,7 @@ function comparisonTable(comparison) {
         ? 'Estimated comparison: at least one search did not prove its optimum.'
         : 'Both plans were checked by the optimizer.')}</p>
         <div class="table-wrapper"><table class="comparison-table"><thead><tr>
-        <th>${translate('Metric')}</th><th>${translate(comparison.rebalanced?'Current team, rearranged':'Current plan')}</th><th>${translate('With change')}</th><th>${translate('Change')}</th>
+        <th>${translate('Metric')}</th><th>${translate('Current plan')}</th><th>${translate('With change')}</th><th>${translate('Change')}</th>
         </tr></thead><tbody>${comparison.rows.map(row=>{
             // Solver floors allow small numerical drift. Do not present that as a gain/loss
             // (or let rounding make virtually equal rates appear one item apart).
@@ -1080,80 +1074,10 @@ function comparisonTable(comparison) {
         }).join('')}</tbody></table></div>`;
 }
 
-let replacementControlsPlan=null,replacementControlsLocale=null;
-function renderReplacementControls() {
-    const controls=document.getElementById('replacement-controls');
-    controls.hidden=!ranking?.input.roster;
-    const automatic=document.getElementById('replacement-auto');
-    document.getElementById('replacement-auto-controls').hidden=controls.hidden;
-    automatic.disabled=ranking?.running || !ranking?.candidates.some((c,i)=>c.input.opportunity_goal==='team_size'&&!ranking.results[i]);
-    if(controls.hidden)return;
-    const first=document.getElementById('replacement-first'),second=document.getElementById('replacement-second');
-    if(replacementControlsPlan!==ranking || replacementControlsLocale!==currentLocale()){
-        const available=availableRecipes(ranking.input,recipeIndex);
-        const useful=new Set(available.flatMap(r=>[r.aniimo?.[0],...(r.jobs||[]).map(j=>j[1])]).filter(Boolean));
-        Object.entries(ranking.input.roster.environment||{}).forEach(([building,ability])=>{
-            if(building==='Crackle Generator'?ranking.input.electricity?.watts>0:tierCount(ranking.input.facilities[building])>0)useful.add(ability);
-        });
-        if(ranking.input.roster.hauling_default_seconds>0)useful.add('Hauling');
-        const options=ABILITIES.filter(a=>useful.has(a.name));
-        for(const [select,preferred] of [[first,'Fire'],[second,'Artisanship']]){
-            const before=select.value;
-            select.innerHTML=options.map(a=>`<option value="${a.name}">${translate(a.name)}</option>`).join('');
-            select.value=options.some(a=>a.name===before)?before:options.some(a=>a.name===preferred)?preferred:options[select===first?0:1]?.name||'';
-        }
-        const family=document.getElementById('replacement-family'),before=family.value;
-        family.innerHTML=`<option value="">${translate('Choose a family')}</option>`+LEISURE_FAMILIES.map(f=>`<option value="${f.id}">${f.name} — ${translate(f.product)}</option>`).join('');
-        family.value=before;
-        replacementControlsPlan=ranking;replacementControlsLocale=currentLocale();
-    }
-    for(const [ability,id] of [[first.value,'replacement-first-level'],[second.value,'replacement-second-level']]){
-        const select=document.getElementById(id);
-        if(select.dataset.ability!==ability){
-            const max=defaultLevelFor(ability);
-            select.innerHTML=Array.from({length:max},(_,i)=>`<option value="${i+1}">${i+1}</option>`).join('');
-            select.value=String(max);select.dataset.ability=ability;
-        }
-    }
-    const leisure=[first.value,second.value].includes('Leisure');
-    document.getElementById('replacement-family-field').hidden=!leisure;
-    const error=!first.value||!second.value||first.value===second.value?'Choose two different abilities.':leisure&&!document.getElementById('replacement-family').value?'Choose a Leisure family.':'';
-    document.getElementById('replacement-hint').textContent=translate(error);
-    document.getElementById('replacement-compare').disabled=ranking.running||!!error;
-}
-
-function compareTwoAbilityReplacement() {
-    if(!ranking?.input.roster || ranking.running || mainSolve || setupSolve || layoutWorker)return;
-    const a=document.getElementById('replacement-first').value,b=document.getElementById('replacement-second').value;
-    if(!a||!b||a===b)return;
-    const abilities={[a]:Number(document.getElementById('replacement-first-level').value),[b]:Number(document.getElementById('replacement-second-level').value)};
-    const family=document.getElementById('replacement-family').value||null;
-    if(abilities.Leisure&&!family)return;
-    const input=twoAbilityInput(ranking.input,abilities,family);
-    const group=`replacement:${JSON.stringify([Object.entries(input.roster.members.at(-1).abilities),input.roster.members.at(-1).family])}`;
-    let index=ranking.candidates.findIndex(c=>c.group===group);
-    if(index<0){
-        const label=Object.entries(abilities).map(([name,level])=>`${name} Lv.${level}`).join(' + ')+(abilities.Leisure?` · ${leisureFamilyName(family)}`:'');
-        index=ranking.candidates.length;
-        ranking.candidates.push({kind:'Two-ability replacements',group,label,input,
-            description:translate('One Aniimo with two abilities and no personality.')});
-    }
-    rankImprovementsFor(ranking.setup,[index]);
-}
-
-function replacementSummary(candidate,result) {
-    if(!result?.plan?.success || candidate.input.replacement_member==null)return '';
-    if(result.replacement_used===false)return `<p class="hint small">${translate('The proposed Aniimo is not used in this plan.')}</p>`;
-    const changes=replacedWorkers(result.basePlan||ranking.plan,result.plan,ranking.input,candidate.input);
-    const names=changes.map(c=>`${c.member!=null?rosterLabel(roster[c.member],c.member):`${translate('Assumed Aniimo')} (${translate(c.ability)} ${c.level}${c.family?` · ${leisureFamilyName(c.family)}`:''})`} ×${c.count}`);
-    return `<p class="hint small">${translate('Compared with a rearranged current team.')}${names.length?` ${translate('Replaces in the working team:')} ${names.join(', ')}`:''}</p>`;
-}
-
 function renderImprovements() {
     const card = document.getElementById('improve-card');
     if (!ranking || !lastPlan?.success) { card.style.display='none'; return; }
     card.style.display='block';
-    renderReplacementControls();
     const checked = ranking.results.filter(Boolean).length, total = ranking.candidates.length;
     const phase = ranking.running && ranking.activeIndex != null
         ? ` · ${translate(ranking.candidates[ranking.activeIndex].label)} · ${ranking.phase}` : '';
@@ -1185,10 +1109,9 @@ function renderImprovements() {
         const retained = resultIndex != null && ranking.results[resultIndex]?.retained;
         const active = group.indices.some(i=>(ranking.activeIndices || [ranking.activeIndex]).includes(i));
         const error = group.indices.map(i=>ranking.results[i]?.error).find(Boolean);
-        const unused=resultIndex!=null&&ranking.results[resultIndex]?.replacement_used===false;
         const status = found ? `<span class="improve-gain">${found.gain.text}</span>`
             : `<span class="improve-none">${translate(active?'Checking…':comparison
-                ? unused?'No improvement found':comparison.approximate?'Search inconclusive — use Detailed search':comparison.direction<0?'An earlier goal decreases':first.input.opportunity_goal==='team_size'?'No improvement found':'No production gain found':error?'Could not compare':'Not checked')}</span>`;
+                ? comparison.approximate?'Search inconclusive — use Detailed search':comparison.direction<0?'An earlier goal decreases':'No production gain found':error?'Could not compare':'Not checked')}</span>`;
         const resultKey = `result:${key}`;
         const detail = comparison ? `<details class="comparison-result" data-open-key="${escapeText(resultKey)}"${open.has(resultKey)?' open':''}>
             <summary>${translate('Before / after')}${found?` · ${translate(found.candidate.label)}`:''}</summary>${comparisonTable(comparison)}</details>`
@@ -1197,8 +1120,7 @@ function renderImprovements() {
             <button type="button" class="skip-add-btn" data-compare-detailed="${escapeText(key)}"${ranking.running?' disabled':''}>${translate('Detailed search')}</button></span>`;
         const row = `<li class="opportunity-row"><div class="opportunity-heading"><span>${name}</span>${button}</div>
             ${first.description?`<p class="hint small">${first.description}</p>`:''}${status}
-            ${retained?`<p class="hint small">${translate('Kept the better plan from the previous search.')}</p>`:''}${detail}
-            ${resultIndex!=null?replacementSummary(ranking.candidates[resultIndex],ranking.results[resultIndex]):''}</li>`;
+            ${retained?`<p class="hint small">${translate('Kept the better plan from the previous search.')}</p>`:''}${detail}</li>`;
         if (!kinds.has(group.kind)) kinds.set(group.kind,[]);
         kinds.get(group.kind).push(row);
     }
@@ -5010,12 +4932,6 @@ async function initApp() {
     document.getElementById('share-config-btn').addEventListener('click', shareCurrentConfig);
     document.getElementById('improve-check-btn').addEventListener('click', () => rankImprovementsFor(selectedAniimoSetup(),'all'));
     document.getElementById('improve-stop-btn').addEventListener('click', () => { stopRanking(); renderImprovements(); });
-    document.getElementById('replacement-controls').addEventListener('change',renderReplacementControls);
-    document.getElementById('replacement-compare').addEventListener('click',compareTwoAbilityReplacement);
-    document.getElementById('replacement-auto').addEventListener('click',()=>{
-        const indices=ranking?.candidates.map((c,i)=>c.input.opportunity_goal==='team_size'&&!ranking.results[i]?i:null).filter(i=>i!=null)||[];
-        if(indices.length)rankImprovementsFor(ranking.setup,indices);
-    });
     document.getElementById('improve-list').addEventListener('click', event => {
         const button = event.target.closest('[data-compare-group], [data-compare-detailed]');
         if (!button || !ranking) return;

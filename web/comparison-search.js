@@ -1,7 +1,7 @@
 // Fast comparisons use the same model and checker as planning. Only their search budget is
 // smaller. A continuous upper bound can certify an earlier goal without another integer search;
 // the completed plan must still meet that goal and pass the native independent check.
-import {comparePlans} from './opportunity-comparison.js?v=two-ability';
+import {comparePlans} from './opportunity-comparison.js?v=protected-comparisons';
 
 export function createComparisonSearch(basePlan, solve, { detailed = false, warmStart = true, baseInput = null, now = () => performance.now() } = {}) {
     const cache = new Map();

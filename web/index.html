@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Aniimax - Aniimo Production Optimizer</title>
-    <link rel="stylesheet" href="style.css?v=two-ability-replacements">
+    <link rel="stylesheet" href="style.css?v=fast-opportunities">
     <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
 </head>
 <body>
@@ -289,23 +289,6 @@
                             <button type="button" class="skip-add-btn" id="improve-stop-btn" hidden>Stop checking</button>
                             <span class="hint small" id="improve-status" role="status" aria-live="polite"></span>
                         </div>
-                        <div id="replacement-auto-controls" hidden>
-                            <button type="button" class="skip-add-btn" id="replacement-auto">Find two-ability replacements</button>
-                            <p class="hint small">Ability pairs are selected automatically and checked from the most promising first. Results are ranked as checks finish; you can stop at any time.</p>
-                        </div>
-                        <details class="replacement-controls" id="replacement-controls" hidden>
-                            <summary>Check a specific ability pair</summary>
-                            <p class="hint small">Compare a hypothetical Aniimo with two abilities and no personality. The current team is also rearranged to minimize workers before comparison.</p>
-                            <div class="replacement-grid">
-                                <div class="input-field"><label for="replacement-first">First ability</label><select id="replacement-first"></select></div>
-                                <div class="input-field"><label for="replacement-first-level">First ability level</label><select id="replacement-first-level"></select></div>
-                                <div class="input-field"><label for="replacement-second">Second ability</label><select id="replacement-second"></select></div>
-                                <div class="input-field"><label for="replacement-second-level">Second ability level</label><select id="replacement-second-level"></select></div>
-                            </div>
-                            <div class="input-field" id="replacement-family-field" hidden><label for="replacement-family">Leisure family</label><select id="replacement-family"></select></div>
-                            <p class="hint small" id="replacement-hint" role="status"></p>
-                            <button type="button" class="skip-add-btn" id="replacement-compare">Compare replacement</button>
-                        </details>
                         <div id="improve-list"></div>
                     </div>
 
@@ -612,6 +595,6 @@
             }
         });
     </script>
-    <script type="module" src="app.js?v=automatic-pairs"></script>
+    <script type="module" src="app.js?v=bounded-priorities"></script>
 </body>
 </html>
