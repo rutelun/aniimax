@@ -48,5 +48,5 @@ export function polishSolution(highs, problem, result, timeLimit = .5) {
     const values = Array.from({length:problem.variables},(_,i)=>refined.Columns['x'+i]?.Primal ?? 0);
     if (!integers.every(v=>Math.abs(values[v]-Math.round(values[v]))<=1e-7)) return result;
     const objective = refined.ObjectiveValue+(problem.tiebreak || []).reduce((sum,[v,w])=>sum+w*values[v],0);
-    return {...result,values,objective};
+    return {...result,values,objective,polished:true};
 }

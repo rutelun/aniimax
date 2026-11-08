@@ -29,7 +29,7 @@ export function withProductionBounds(problem,certificates) {
     const rows=certificates.flatMap((bound,i)=>{
         if (!bound.terms.every(([key])=>variables.has(key))) return [];
         const terms=bound.terms.map(([key,c])=>`${c<0?'-':'+'} ${Math.abs(c)} x${variables.get(key)}`).join(' ');
-        return [` priority_upper_${i}: ${terms} <= ${bound.upper}`];
+        return [` priority_upper_${i}: ${terms} ${bound.lower==null?'<=':'>='} ${bound.lower??bound.upper}`];
     });
     return rows.length ? {...problem,lp:problem.lp.replace('\nBounds\n',`\n${rows.join('\n')}\nBounds\n`)} : problem;
 }

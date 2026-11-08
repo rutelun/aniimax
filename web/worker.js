@@ -13,6 +13,7 @@ const incumbentSolver = import('./highs-solve.js' + load);
 const materialSearch = import('./material-search.js' + load);
 const comparisonSearch = import('./comparison-search.js' + load);
 const prioritySearch = import('./priority-search.js' + load);
+const boundTightening = import('./bound-tightening.js' + load);
 const ready = import('./pkg/aniimax.js' + load).then(async (pkg) => {
     await pkg.default({ module_or_path: fetch(new URL('./pkg/aniimax_bg.wasm', import.meta.url), { cache: 'no-cache' }) });
     return pkg;
@@ -143,10 +144,35 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
             const previous = new Map(incumbentKeys.map((key,i)=>[key,seed[i]]));
             seed = problem.variable_keys.map(key=>previous.get(key) ?? 0);
         }
-        const result = await runModel(comparison?.protect(problem, goal) || problem, options,
-        hasSeasonCropMinimums(input) && !stage.floors.length && !stage.pace
+        const message = hasSeasonCropMinimums(input) && !stage.floors.length && !stage.pace
             ? 'The minimum event crop plots cannot be met. Check plot levels, growing conditions, and the seed budget.'
-            : undefined, seed);
+            : undefined;
+        const protectedProblem=comparison?.protect(problem,goal)||problem;
+        let result;
+        if((!comparison || options.time_limit>=EXACT_TIME_LIMIT) && goal===(input.currency||'coins') && problem.production_only
+            && problem.variables>=1000 && problem.integer_groups?.length){
+            const initial=await runModel(protectedProblem,{...options,time_limit:Math.min(2,options.time_limit)},message,seed);
+            if(initial?.proven)result=initial;
+            else {
+                let refined=initial;
+                if(initial?.values){
+                    const bounded=withProductionBounds(protectedProblem,certificates);
+                    refined=(await incumbentSolver).polishSolution(await newHighs(),bounded,{...initial,polished:false});
+                    if(refined.polished){
+                        try {
+                            const cuts=(await boundTightening).tightenIntegerBounds(await newHighs(),bounded,
+                                {...refined,objective:Math.min(initial.objective,refined.objective)});
+                            certificates.push(...cuts);
+                        } catch(error) {
+                            console.warn('Skipping LP bound tightening:',error.message||error);
+                            highsRuntime=null;
+                        }
+                    }
+                }
+                result=await runModel(protectedProblem,options,message,initial?.values||seed);
+                if(refined && (!result || (!result.proven && refined.objective>result.objective)))result={...refined,proven:false};
+            }
+        }else result=await runModel(protectedProblem,options,message,seed);
         if (result) { incumbent = result; incumbentKeys = problem.variable_keys; }
         const certificate = productionCertificate(problem,result);
         if (certificate) certificates.push(certificate);

@@ -682,9 +682,9 @@ thread_local! {
         std::cell::RefCell::new(HashMap::new());
 }
 
-/// A tidy layout to show for exactly `counts` plots around one building: [`nearest_layout`], or
-/// if that search fails, whichever of [`pinwheel_layout`] and [`grid_layout`] puts the plots
-/// nearer the building. All keep every plot on the building's tile grid, inside the rules. Only
+/// A tidy layout for exactly `counts` plots: start with a valid deterministic grid,
+/// then pull plots inward. Use [`nearest_layout`] only when the grids cannot fit.
+/// All keep every plot on the building's tile grid, inside the rules. Only
 /// for drawing: how many plots a building covers comes from the packing, not from this. `None`
 /// if nothing fits, so the packing's quarter-tile layout is shown instead. Cached per `counts`.
 pub fn tidy_layout(building: f64, counts: &[(String, u32)]) -> Option<Vec<Placement>> {
@@ -693,7 +693,9 @@ pub fn tidy_layout(building: f64, counts: &[(String, u32)]) -> Option<Vec<Placem
     if let Some(hit) = TIDY_CACHE.with(|cache| cache.borrow().get(&key).cloned()) {
         return hit;
     }
-    let layout = nearest_layout(building, &counts).or_else(|| fallback_layout(building, &counts));
+    let types: Vec<_> = counts.iter().map(|(facility,_)|facility.as_str()).collect();
+    let layout = fallback_layout(building, &counts).map(|layout|compact_layout(building,layout,&types))
+        .or_else(||nearest_layout(building, &counts));
     TIDY_CACHE.with(|cache| cache.borrow_mut().insert(key, layout.clone()));
     layout
 }

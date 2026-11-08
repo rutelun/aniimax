@@ -1852,6 +1852,23 @@ pub struct LpProblem {
     pub variable_keys: Vec<String>,
     /// Dominated environment assignments for production-only stages without a headcount cap.
     pub production_zero: Vec<usize>,
+    /// Integer sums for LP-based bound tightening: name, terms, natural upper bound.
+    pub integer_groups: Vec<(String, Vec<(usize, f64)>, u32)>,
+}
+
+fn integer_groups(model: &Model<'_>, counts: &FacilityCounts) -> Vec<(String, Vec<(usize, f64)>, u32)> {
+    let mut groups=BTreeMap::<&str,(Vec<(usize,f64)>,u32)>::new();
+    for (v,kind) in model.kinds.iter().enumerate() {
+        if !model.integer[v] {continue;}
+        if let VarKind::Units(recipe)=kind {
+            let entry=groups.entry(crate::models::base_item_name(&recipe.name)).or_default();
+            entry.0.push((v,1.0));
+            entry.1=entry.1.max(counts.get_count(&recipe.facility));
+        }
+    }
+    let mut recipes: Vec<_> = groups.into_iter().map(|(name,(terms,capacity))|(name.to_string(),terms,capacity)).collect();
+    recipes.sort_by_key(|(_,terms,_)|terms.first().map(|(v,_)|*v).unwrap_or(usize::MAX));
+    recipes
 }
 
 fn production_staff_zeros(model: &Model<'_>, counts: &FacilityCounts) -> Vec<usize> {
@@ -2002,7 +2019,8 @@ pub fn write_lp(
         (!flexible).then_some(v)
     }).collect();
     LpProblem { lp: out, variables: model.objective.len(), tiebreak: model.tiebreak.clone(), primary_objective, material_fixed,
-        variable_keys: warm_start_keys(&model, items, facility_counts), production_zero:production_staff_zeros(&model,facility_counts) }
+        variable_keys: warm_start_keys(&model, items, facility_counts), production_zero:production_staff_zeros(&model,facility_counts),
+        integer_groups:integer_groups(&model,facility_counts) }
 }
 
 /// Builds an [`ExactPlan`] from an external solver's variable values. Accepts the complete

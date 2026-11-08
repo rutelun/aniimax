@@ -70,6 +70,11 @@ fn production_staff_pruning_requires_sufficient_reserves_and_keeps_final_choices
         add_electric_variants(&mut items,original.clone(),&counts,&requirements,&grid);
         let problem=write_lp(&items,"coins",&counts,&ModuleLevels::default(),Goal::Earn{floors:&[]});
         let staff=problem.variable_keys.iter().position(|key|key=="staff:Crackle Generator:owned:0#0").unwrap();
+        let (_,terms,capacity)=problem.integer_groups.iter().find(|(name,_,_)|name=="staff_pruning").unwrap();
+        let variants: Vec<_> = problem.variable_keys.iter().enumerate().filter(|(_,key)|key.starts_with("units:staff_pruning__"))
+            .map(|(v,_)|(v,1.0)).collect();
+        assert_eq!(*terms,variants,"worker and E-mode units belong to one physical recipe group");
+        assert_eq!(*capacity,1);
         assert_eq!(problem.production_zero.contains(&staff),expected,"capacity={capacity}, limit={limit:?}");
         assert!(!problem.lp.contains(&format!(" 0 <= x{staff} <= 0\n")),"final staffing retains the owned worker");
     }
