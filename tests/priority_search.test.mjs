@@ -32,3 +32,20 @@ test('only a proved production maximum supplies a bound, with semantic columns a
     assert.equal(next.lp.includes('priority_upper'),false);
 });
 
+test('a timed-out primary search can transfer its dual bound, never its unproved incumbent value',()=>{
+    const p={production_only:true,variables:1,variable_keys:['rate'],primary_objective:[[0,2]]};
+    assert.equal(productionCertificate(p,{objective:6,proven:false}),null);
+    assert.equal(productionCertificate(p,{objective:6,upper:5,proven:false}),null);
+    const result=productionCertificate(p,{objective:6,upper:8,proven:false});
+    assert.ok(result.upper>8 && result.upper<8.00001);
+    assert.deepEqual(result.terms,[['rate',2]]);
+});
+
+test('dominated staffing is pruned only when explicitly enabled for an initial production stage',()=>{
+    const p={variables:2,production_zero:[1],primary_objective:[[0,1]],
+        lp:'Maximize\n obj: x0\nSubject To\nBounds\n x0 >= 0\n 0 <= x1 <= 2\nGeneral\n x1\nEnd'};
+    assert.ok(!productionObjective(p).lp.includes('0 <= x1 <= 0'));
+    assert.ok(productionObjective(p,{prune:true}).lp.includes('0 <= x1 <= 0'));
+    assert.ok(!p.lp.includes('0 <= x1 <= 0'));
+});
+

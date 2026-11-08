@@ -66,12 +66,11 @@ async function solveModel(problem, options = SOLVE_OPTIONS, infeasibleMessage, i
     let result;
     try {
         const highs = await newHighs();
-        const run = incumbent ? (await incumbentSolver).solveWithIncumbent : null;
-        result = run ? run(highs, problem, options, incumbent) : highs.solve(problem.lp, options);
+        const run = (await incumbentSolver).solveWithIncumbent;
+        result = run(highs, problem, options, incumbent);
         if (result.Status === 'Infeasible') {
             // Presolve can call a tightly constrained model infeasible when it isn't.
-            result = run ? run(highs, problem, { ...options, presolve: 'off' }, incumbent)
-                : highs.solve(problem.lp, { ...options, presolve: 'off' });
+            result = run(highs, problem, { ...options, presolve: 'off' }, incumbent);
         }
     } catch (error) {
         // A WASM trap must not poison subsequent requests handled by this worker.
@@ -84,7 +83,7 @@ async function solveModel(problem, options = SOLVE_OPTIONS, infeasibleMessage, i
     // Out of time before finding any plan at all.
     if (!Number.isFinite(result.ObjectiveValue) || !result.Columns) return null;
     const values = columnValues(problem, result);
-    return { values, proven, objective: result.ObjectiveValue + tiebreakOf(problem, values) };
+    return { values, proven, objective: result.ObjectiveValue + tiebreakOf(problem, values), upper:result.UpperBound };
 }
 
 function hasSeasonCropMinimums(input) {
@@ -128,6 +127,7 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
     let incumbent = null;
     let incumbentKeys = null;
     let lastCurrencySolve = null;
+    let provenCurrencyMaximum = null;
     let materialWorkNote = null;
     const options = comparison?.options || SOLVE_OPTIONS;
     const {productionObjective,productionCertificate,withProductionBounds} = await prioritySearch;
@@ -182,12 +182,13 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
         // Earlier priorities get their true production maximum; the final solve chooses
         // owned workers, E-mode and compact layouts while retaining all those maxima.
         const finalCurrency = priorityIndex === priorities.length-1 && target === (input.currency || 'coins');
-        if (!finalCurrency) priority = productionObjective(priority);
+        if (!finalCurrency) priority = productionObjective(priority,{prune:!comparison});
         // The final currency needs an actual feasible vector for the subsequent material solve.
         const most = await solve(priority, target);
         lastCurrencySolve = finalCurrency ? most : null;
         step(`priority:${target}`, 'done', most?.proven);
         if (!most) throw new Error(`no plan found for the most ${target}`);
+        if (target === (input.currency || 'coins') && most.proven && priority.production_only) provenCurrencyMaximum=most.objective;
         if (alone) first({ measure: target, objective: most.objective, proven: most.proven });
         allProven &&= most.proven;
         stage.floors.push([target, Math.max(0, most.objective)]);
@@ -234,7 +235,20 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
         // plan once, after material allocation, rather than rebuilding this intermediate one.
         solved = lastCurrencySolve;
     }
-    step('final', solved ? 'skip' : 'start');
+    if (!solved && !comparison && provenCurrencyMaximum != null && !stage.pace && !input.level_up_strategy
+        && hasMaterialProcessors(input) && incumbent?.values && incumbentKeys?.length === incumbent.values.length
+        && problem.variable_keys?.length === problem.variables
+        && JSON.parse(exact_problem(payload,JSON.stringify({...stage,maximize_material_work:true}))).lp) {
+        // The currency already has a proved maximum as an earlier priority. The material
+        // stage below retains max(final currency, that priority), so another currency MIP
+        // cannot raise its floor. Map the latest feasible priority plan directly into that
+        // stage instead of spending another search merely to obtain an incumbent.
+        const previous = new Map(incumbentKeys.map((key,i)=>[key,incumbent.values[i]]));
+        solved = {values:problem.variable_keys.map(key=>previous.get(key) ?? 0),
+            objective:provenCurrencyMaximum,proven:true};
+    }
+    const finalReused = !!solved;
+    step('final', finalReused ? 'skip' : 'start');
     solved ||= await solve(problem, input.currency || 'coins');
     if (!solved) throw new Error('the solver found no plan');
     if (alone) first({ measure: 'coins', objective: solved.objective, proven: solved.proven });
@@ -249,7 +263,7 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
             }
         }
     }
-    if (!lastCurrencySolve || solved !== lastCurrencySolve) step('final', 'done', solved.proven);
+    if (!finalReused) step('final', 'done', solved.proven);
     const coins = solved.objective;
     let materialWork;
     let materialPace;

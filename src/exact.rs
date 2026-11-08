@@ -1850,6 +1850,37 @@ pub struct LpProblem {
     pub material_fixed: Vec<usize>,
     /// Stable semantic identities for optional warm starts across alternative inputs.
     pub variable_keys: Vec<String>,
+    /// Dominated environment assignments for production-only stages without a headcount cap.
+    pub production_zero: Vec<usize>,
+}
+
+fn production_staff_zeros(model: &Model<'_>, counts: &FacilityCounts) -> Vec<usize> {
+    let Some(crew) = counts.crew() else { return Vec::new() };
+    let Some(first) = crew.assumed_from else { return Vec::new() };
+    if counts.power().is_some_and(|p|p.grid.max_aniimo.is_some()) { return Vec::new(); }
+    let recipes: Vec<_> = model.kinds.iter().filter_map(|kind|match kind { VarKind::Rate(r)=>Some(*r),_=>None }).collect();
+    let workplaces: std::collections::BTreeSet<_> = recipes.iter().map(|r|r.facility.as_str())
+        .chain(crew.environment.keys().map(String::as_str).filter(|&f|f!=GENERATOR)).collect();
+    let generators = counts.power().map_or(0,|p|generator_workers(p.grid.watts as f64));
+    let capacity = workplaces.into_iter().fold(generators,|sum,f|sum.saturating_add(counts.get_count(f)));
+    let reserves: BTreeMap<_,_> = crew.members.iter().enumerate().skip(first).filter_map(|(member,a)| {
+        if a.count < capacity || a.abilities.len()!=1 || a.abilities.values().any(|&level|level==0) || a.level("Hauling")>0 { return None; }
+        // This pool can dedicate one worker to every physical workplace, including the
+        // environment buildings. Crop jobs at each station must fit one growth cycle.
+        let crops_fit = recipes.iter().filter(|r|r.crew.is_none()).all(|r| {
+            work_groups(r,counts).iter().filter_map(|crop|work_spec(r,crop.as_ref(),member,counts))
+                .map(|(seconds,_)|seconds).sum::<f64>() <= r.production_time+1e-9
+        });
+        crops_fit.then(||(a.abilities.keys().next().unwrap().as_str(),member))
+    }).collect();
+    // Staffing an environment/generator never benefits from ability level or personality.
+    // A sufficient single-ability reserve can take all such shifts, freeing productive
+    // owned workers. Final staffing preferences retain the full original choice of workers.
+    model.kinds.iter().enumerate().filter_map(|(v,kind)| {
+        let VarKind::Staff{building,member} = kind else { return None };
+        let ability = if building==GENERATOR {"Lightning"} else {crew.environment.get(building)?.as_str()};
+        reserves.get(ability).is_some_and(|chosen|chosen!=member).then_some(v)
+    }).collect()
 }
 
 fn warm_start_keys(model: &Model<'_>, items: &[ProductionItem], counts: &FacilityCounts) -> Vec<String> {
@@ -1964,15 +1995,14 @@ pub fn write_lp(
         if !model.integer[v] { return None; }
         let flexible = match kind {
             VarKind::Units(recipe) => processes_upgrade_materials(recipe),
-            VarKind::WorkPost { station, .. } => station.strip_prefix("recipe:")
-                .and_then(|name| items.iter().find(|r| r.name == name)).is_some_and(processes_upgrade_materials),
-            VarKind::ActiveAniimo { .. } | VarKind::PowerGenerators | VarKind::PoweredUnits => true,
+            VarKind::WorkPost { .. } => true,
+            VarKind::Staff { .. } | VarKind::ActiveAniimo { .. } | VarKind::PowerGenerators | VarKind::PoweredUnits => true,
             _ => false,
         };
         (!flexible).then_some(v)
     }).collect();
     LpProblem { lp: out, variables: model.objective.len(), tiebreak: model.tiebreak.clone(), primary_objective, material_fixed,
-        variable_keys: warm_start_keys(&model, items, facility_counts) }
+        variable_keys: warm_start_keys(&model, items, facility_counts), production_zero:production_staff_zeros(&model,facility_counts) }
 }
 
 /// Builds an [`ExactPlan`] from an external solver's variable values. Accepts the complete

@@ -10,6 +10,7 @@ test('incumbent values follow variable names despite a different native LP colum
     const result = solveWithIncumbent(highs,problem,{time_limit:1},[0,1]);
     assert.equal(result.Status,'Optimal');
     assert.equal(result.ObjectiveValue,2);
+    assert.equal(result.UpperBound,2);
     assert.equal(result.Columns.x1.Primal,1);
     assert.equal(result.Columns.x0.Primal,0);
     const impossible = {...problem,lp:problem.lp.replace('<= 1\nBounds','<= -1\nBounds')};

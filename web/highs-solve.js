@@ -22,6 +22,8 @@ export function solveWithIncumbent(highs, problem, options, incumbent) {
         return {
             Status: status === statuses.optimal ? 'Optimal' : 'Time limit reached',
             ObjectiveValue: model.getObjectiveValue(),
+            UpperBound: status === statuses.optimal ? model.getObjectiveValue()
+                : /\nGeneral\n\s*x\d/.test(problem.lp) ? model.info.get('mip_dual_bound') : undefined,
             Columns: Object.fromEntries(names.map((name, i) => [name, { Primal: solution.colValue[i] }])),
         };
     } finally {

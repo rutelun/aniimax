@@ -53,6 +53,28 @@ fn warm_start_keys_keep_worker_identity_when_levels_and_reserve_indices_change()
     assert_ne!(old.lp,changed.lp);
 }
 
+#[test]
+fn production_staff_pruning_requires_sufficient_reserves_and_keeps_final_choices() {
+    use aniimax::models::{crew_variants,AniimoRequirements,GrowerSteps};
+    use aniimax::power::{Electricity,PowerPlan,add_electric_variants};
+    use aniimax::exact::write_lp;
+    let original=vec![walking_item("staff_pruning","Mine",10.0,"coins")];
+    let mut requirements=AniimoRequirements::default();requirements.insert("staff_pruning","Earth",1);
+    for (capacity,limit,expected) in [(2,None,true),(1,None,false),(2,Some(2),false)] {
+        let mut crew=crew_of(&[(1,&[("Lightning",4)])]);
+        crew.add_reserve_workers([("Earth",1),("Lightning",1)],capacity);
+        let mut counts=FacilityCounts::only(&[("Mine",1,1)]);counts.set_crew(crew.clone());counts.set_movement_seconds(5.0);
+        let grid=Electricity{watts:600,percent:120,max_aniimo:limit};
+        counts.set_power(PowerPlan{grid:grid.clone(),grower_steps:GrowerSteps::default()});
+        let mut items=crew_variants(original.clone(),&crew,&requirements,&GrowerSteps::default());
+        add_electric_variants(&mut items,original.clone(),&counts,&requirements,&grid);
+        let problem=write_lp(&items,"coins",&counts,&ModuleLevels::default(),Goal::Earn{floors:&[]});
+        let staff=problem.variable_keys.iter().position(|key|key=="staff:Crackle Generator:owned:0#0").unwrap();
+        assert_eq!(problem.production_zero.contains(&staff),expected,"capacity={capacity}, limit={limit:?}");
+        assert!(!problem.lp.contains(&format!(" 0 <= x{staff} <= 0\n")),"final staffing retains the owned worker");
+    }
+}
+
 fn load_items() -> Option<Vec<ProductionItem>> {
     let data_dir = Path::new("data");
     data_dir.exists().then(|| load_all_data(data_dir).expect("Failed to load data"))
