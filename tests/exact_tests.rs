@@ -1065,6 +1065,50 @@ fn walking_item(name: &str, facility: &str, seconds: f64, currency: &str) -> Pro
 }
 
 #[test]
+fn profitable_processing_uses_spare_owned_worker_time_before_selling_raw_surplus() {
+    use aniimax::models::{crew_variants, AniimoRequirements, GrowerSteps};
+    let mut raw = walking_item("spare_raw", "Raw Source", 1000.0, "coins");
+    raw.workload = None;
+    let mut processed = walking_item("spare_processed", "Spare Processor", 100.0, "coins");
+    processed.raw_materials = Some(vec![raw.name.clone()]);
+    processed.required_amount = Some(vec![1]);
+    processed.sell_value = 30.0;
+    let mut occupied = walking_item("spare_other_job", "Other Processor", 100.0, "aniimo_exp");
+    occupied.raw_materials = Some(vec![]);
+    occupied.required_amount = Some(vec![]);
+    let mut requirements = AniimoRequirements::default();
+    requirements.insert(&processed.name, "Artisanship", 1).insert(&occupied.name, "Artisanship", 1);
+    for walking in [0.0, 5.0] {
+        for occupied_rate in [0.005, 0.01] {
+            // The same owned Aniimo has either half a day free or a full-day priority job.
+            let crew = crew_of(&[(1, &[("Artisanship", 1)])]);
+            let items = crew_variants(vec![raw.clone(), processed.clone(), occupied.clone()],
+                &crew, &requirements, &GrowerSteps::default());
+            let raw_capacity = 1.0 / items.iter().find(|item| item.name == raw.name).unwrap().production_time;
+            let mut counts = FacilityCounts::only(&[("Raw Source", 1, 1), ("Spare Processor", 1, 1), ("Other Processor", 1, 1)]);
+            counts.set_crew(crew); counts.set_movement_seconds(walking);
+            let floors = [("aniimo_exp".into(), occupied_rate)];
+            let goal = Goal::Earn { floors: &floors };
+            let modules = ModuleLevels::default();
+            let plan = solve_exact(&items, "coins", &counts, &modules, goal, Some(Duration::from_secs(5)), None).unwrap();
+            assert!(plan.proven_optimal);
+            check_plan(&plan, &items, "coins", &counts, &modules, None).unwrap();
+            let raw_sold = plan.sold.get(&raw.name).copied().unwrap_or(0.0);
+            let processed_sold = plan.sold.get(&processed.name).copied().unwrap_or(0.0);
+            if occupied_rate < 0.01 {
+                assert!(raw_sold < 1e-8, "walking={walking}: spare worker must process the surplus");
+                assert!((processed_sold - raw_capacity).abs() < 1e-8);
+            } else {
+                // Currency floors have 1e-4 relative slack; only that numerical allowance
+                // can be used by another job when the main job occupies the full day.
+                assert!(processed_sold <= 1.01e-6, "a full-day worker cannot also process surplus");
+                assert!((raw_sold + processed_sold - raw_capacity).abs() < 1e-8);
+            }
+        }
+    }
+}
+
+#[test]
 fn idle_dedicated_posts_are_removed_together_with_idle_machines() {
     use aniimax::models::{crew_variants, AniimoRequirements, GrowerSteps};
     let first = walking_item("active_post", "Mine", 10.0, "coins");
