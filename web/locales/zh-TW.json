@@ -1003,5 +1003,8 @@
   "Compared with a rearranged current team.": "與重新分配後的現有隊伍比較。",
   "Replaces in the working team:": "替代工作隊伍成員：",
   "The proposed Aniimo is not used in this plan.": "此計畫未使用建議的阿尼莫。",
-  "No improvement found": "未找到改善"
+  "No improvement found": "未找到改善",
+  "Find two-ability replacements": "尋找雙能力替換方案",
+  "Check a specific ability pair": "檢查指定能力組合",
+  "Ability pairs are selected automatically and checked from the most promising first. Results are ranked as checks finish; you can stop at any time.": "自動選擇能力組合，優先檢查最有潛力的組合。結果會隨檢查進度排序，您隨時可以停止。"
 }

@@ -4,6 +4,7 @@ import {readFile} from 'node:fs/promises';
 import {changeOneMember,personalityInput,reserveLevelFourInputs,workerUsage,comparePlans,keepBetterComparison,twoAbilityInput,replacedWorkers} from '../web/opportunity-comparison.js';
 import {createComparisonSearch} from '../web/comparison-search.js';
 import {comparisonConcurrency,startComparisonQueue} from '../web/comparison-queue.js';
+import {automaticReplacements} from '../web/two-ability-search.js';
 
 const input = () => ({priorities:['season_points','Wood Blocks','coins'],roster:{members:[
     {count:2,abilities:{Artisanship:3,Water:3},personalities:['Instinctive','Nimble'],family:'1017'},
@@ -187,6 +188,22 @@ test('replacement checks discard a weaker cached reference and retain the curren
     assert.ok(results.every(r=>r.replacement_used===false));
 });
 
+test('a retained replacement reference supplies the complete native solution contract',async()=>{
+    const source=await readFile(new URL('../web/worker.js',import.meta.url),'utf8');
+    const code=source.slice(source.indexOf('async function retainTeamReference('),source.indexOf('async function rankImprovements('));
+    const run=new Function('workforceSearch',`${code};return retainTeamReference;`)(import('../web/workforce-search.js'));
+    const original={...plan(),comparison_seed:{keys:['existing'],values:[1]}};
+    const pkg={exact_problem:()=>JSON.stringify({lp:'model',variable_keys:['existing','new']}),
+        exact_plan:(_,__,json)=>{
+            const answer=JSON.parse(json);
+            assert.equal(answer.bound,10);
+            assert.equal(answer.summary_only,true);
+            assert.deepEqual(answer.values,[1,0]);
+            return JSON.stringify(plan());
+        }};
+    assert.equal((await run(pkg,twoAbilityInput(input(),{Fire:4,Artisanship:4}),original)).success,true);
+});
+
 test('detailed comparison retries without baseline floors when an integer-feasible alternative needs lower goals',async()=>{
     const source=await readFile(new URL('../web/worker.js',import.meta.url),'utf8');
     const code=source.slice(source.indexOf('async function rankImprovements('),source.indexOf('self.onmessage ='));
@@ -216,7 +233,7 @@ test('suggestions do not launch searches automatically, and cancelled comparison
         postMessage(message){this.id=message.id;this.message=JSON.parse(message.payload);}
         reply(count){this.onmessage({data:{id:this.id,type:'progress',count}});}
     }
-    const api=new Function('Worker','setTimeout','clearTimeout','baseline','base','keepBetterComparison','startComparisonQueue','comparisonConcurrency',`
+    const api=new Function('Worker','setTimeout','clearTimeout','baseline','base','keepBetterComparison','startComparisonQueue','comparisonConcurrency','automaticReplacements',`
         let rankRunId=0,rankWorkers=[],rankCleanups=[],ranking=null,rankingsBySetup={};
         const mainSolve=null,setupSolve=null,layoutWorker=null,lastPlan=baseline,lastPlanInput=base;
         const plansBySetup={roster:baseline},WORKER_URL='worker',SETUP_TIMEOUT=100;
@@ -224,9 +241,10 @@ test('suggestions do not launch searches automatically, and cancelled comparison
         const improvementCandidates=()=>[0,1,2].map(i=>({input:{...base,change:i}}));
         const comparisonPhase=step=>step;
         const navigator={hardwareConcurrency:4,deviceMemory:4};
+        const recipeIndex=[],defaultLevelFor=()=>4;
         ${stop}\n${run}
         return {run:rankImprovementsFor,stop:stopRanking,state:()=>ranking};
-    `)(FakeWorker,fn=>{timers.add(fn);return fn;},id=>timers.delete(id),baseline,base,keepBetterComparison,startComparisonQueue,comparisonConcurrency);
+    `)(FakeWorker,fn=>{timers.add(fn);return fn;},id=>timers.delete(id),baseline,base,keepBetterComparison,startComparisonQueue,comparisonConcurrency,automaticReplacements);
     api.run('roster');
     assert.equal(workers.length,0);
     api.run('roster',[2]);

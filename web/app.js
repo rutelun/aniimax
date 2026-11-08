@@ -15,6 +15,7 @@ import { ANIIMO_WALK_SPEED, workerTravelDistances } from './worker-travel.js?v=a
 import { haulingWorkload, allocateHauling, haulingBatchTrips } from './hauling.js?v=hauling-workload';
 import { changeOneMember, personalityInput, reserveLevelFourInputs, comparePlans, usefulUpgrade, keepBetterComparison, twoAbilityInput, replacedWorkers, availableRecipes } from './opportunity-comparison.js?v=two-ability';
 import { comparisonConcurrency, startComparisonQueue } from './comparison-queue.js?v=parallel-comparisons';
+import { automaticReplacements } from './two-ability-search.js?v=automatic-pairs';
 
 let wasmReady = false;
 
@@ -963,7 +964,9 @@ function rankImprovementsFor(setup, requested = null, detailed = false) {
             base.roster = { ...base.roster, hauling_seconds: plan.hauling_estimates,
                 hauling_default_seconds: haulingRouteBound() };
         }
-        current = { setup, plan, input: base, base: {plan}, candidates: improvementCandidates(base,setup),
+        const candidates=improvementCandidates(base,setup);
+        if(base.roster)candidates.push(...automaticReplacements(base,plan,recipeIndex,defaultLevelFor));
+        current = { setup, plan, input: base, base: {plan}, candidates,
             results: [], running:false, started:false, paused:false, activeIndex:null, activeIndices:[], phase:'' };
         rankingsBySetup[setup] = current;
     }
@@ -1081,6 +1084,9 @@ let replacementControlsPlan=null,replacementControlsLocale=null;
 function renderReplacementControls() {
     const controls=document.getElementById('replacement-controls');
     controls.hidden=!ranking?.input.roster;
+    const automatic=document.getElementById('replacement-auto');
+    document.getElementById('replacement-auto-controls').hidden=controls.hidden;
+    automatic.disabled=ranking?.running || !ranking?.candidates.some((c,i)=>c.input.opportunity_goal==='team_size'&&!ranking.results[i]);
     if(controls.hidden)return;
     const first=document.getElementById('replacement-first'),second=document.getElementById('replacement-second');
     if(replacementControlsPlan!==ranking || replacementControlsLocale!==currentLocale()){
@@ -5006,6 +5012,10 @@ async function initApp() {
     document.getElementById('improve-stop-btn').addEventListener('click', () => { stopRanking(); renderImprovements(); });
     document.getElementById('replacement-controls').addEventListener('change',renderReplacementControls);
     document.getElementById('replacement-compare').addEventListener('click',compareTwoAbilityReplacement);
+    document.getElementById('replacement-auto').addEventListener('click',()=>{
+        const indices=ranking?.candidates.map((c,i)=>c.input.opportunity_goal==='team_size'&&!ranking.results[i]?i:null).filter(i=>i!=null)||[];
+        if(indices.length)rankImprovementsFor(ranking.setup,indices);
+    });
     document.getElementById('improve-list').addEventListener('click', event => {
         const button = event.target.closest('[data-compare-group], [data-compare-detailed]');
         if (!button || !ranking) return;

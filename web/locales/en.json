@@ -984,5 +984,8 @@
   "Compared with a rearranged current team.",
   "Replaces in the working team:",
   "The proposed Aniimo is not used in this plan.",
-  "No improvement found"
+  "No improvement found",
+  "Find two-ability replacements",
+  "Check a specific ability pair",
+  "Ability pairs are selected automatically and checked from the most promising first. Results are ranked as checks finish; you can stop at any time."
 ]

@@ -289,8 +289,12 @@
                             <button type="button" class="skip-add-btn" id="improve-stop-btn" hidden>Stop checking</button>
                             <span class="hint small" id="improve-status" role="status" aria-live="polite"></span>
                         </div>
+                        <div id="replacement-auto-controls" hidden>
+                            <button type="button" class="skip-add-btn" id="replacement-auto">Find two-ability replacements</button>
+                            <p class="hint small">Ability pairs are selected automatically and checked from the most promising first. Results are ranked as checks finish; you can stop at any time.</p>
+                        </div>
                         <details class="replacement-controls" id="replacement-controls" hidden>
-                            <summary>Two-ability replacement</summary>
+                            <summary>Check a specific ability pair</summary>
                             <p class="hint small">Compare a hypothetical Aniimo with two abilities and no personality. The current team is also rearranged to minimize workers before comparison.</p>
                             <div class="replacement-grid">
                                 <div class="input-field"><label for="replacement-first">First ability</label><select id="replacement-first"></select></div>
@@ -608,6 +612,6 @@
             }
         });
     </script>
-    <script type="module" src="app.js?v=two-ability-replacements"></script>
+    <script type="module" src="app.js?v=automatic-pairs"></script>
 </body>
 </html>

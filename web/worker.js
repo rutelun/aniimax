@@ -402,7 +402,7 @@ async function rebalanceCurrentTeam(pkg,base,original,options,report) {
         const compact=await workforce.searchWorkforce(problem,incumbent,solveModel,options);
         if(!compact) return fallback();
         const plan=JSON.parse(pkg.exact_plan(payload,stageJson,JSON.stringify({values:compact.values,
-            proven:compact.proven,summary_only:true})));
+            proven:compact.proven,bound:original.comparison_goals?.currency_value||original.rate_per_second||0,summary_only:true})));
         if(!plan.success || (workforce.workerUsage(plan,base)?.working??Infinity)>compact.workers) return fallback();
         Object.assign(plan,{comparison_goals:original.comparison_goals,comparison_scores:original.comparison_scores,
             comparison_stage:stage,comparison_seed:{keys:problem.variable_keys,values:compact.values},
@@ -414,6 +414,26 @@ async function rebalanceCurrentTeam(pkg,base,original,options,report) {
     } finally { report('workforce','done'); }
 }
 
+// Adding one optional worker cannot invalidate the existing team. If a short
+// search misses that incumbent, rebuild and check it with the new member indices
+// instead of presenting a spurious loss or failure for an otherwise feasible setup.
+async function retainTeamReference(pkg,input,reference) {
+    const seed=reference.comparison_seed;
+    if(!seed?.keys || seed.keys.length!==seed.values?.length) return null;
+    const workforce=await workforceSearch,payload=JSON.stringify(input);
+    const stage=workforce.referenceStage(reference),stageJson=JSON.stringify(stage);
+    const problem=JSON.parse(pkg.exact_problem(payload,stageJson));
+    if(!problem.lp || !problem.variable_keys) return null;
+    const previous=new Map(seed.keys.map((key,i)=>[key,seed.values[i]]));
+    const values=problem.variable_keys.map(key=>previous.get(key)??0);
+    const plan=JSON.parse(pkg.exact_plan(payload,stageJson,JSON.stringify({values,proven:false,
+        bound:reference.comparison_goals?.currency_value||reference.rate_per_second||0,summary_only:true})));
+    if(!plan.success) return null;
+    Object.assign(plan,{comparison_goals:reference.comparison_goals,comparison_scores:reference.comparison_scores,
+        comparison_stage:stage,workforce_proven:false});
+    return workforce.checkedTeamReference(reference,plan,input)===plan ? plan : null;
+}
+
 async function rankImprovements(pkg, payload, report) {
     const { base, basePlan, teamBasePlan, candidates, detailed = false, warm_start = true } = JSON.parse(payload);
     const original = basePlan?.success ? basePlan : JSON.parse(await exactPlanJson(pkg, JSON.stringify(base)));
@@ -423,8 +443,19 @@ async function rankImprovements(pkg, payload, report) {
     let teamReference=teamBasePlan?.success&&(!detailed||teamBasePlan.proven_optimal===true)
         ? (await workforceSearch).checkedTeamReference(original,teamBasePlan,base) : null;
     for (const [index, input] of candidates.entries()) {
+        let reference=original;
+        const retainReference=async()=>{
+            if(input.opportunity_goal!=='team_size')return false;
+            try {
+                const plan=await retainTeamReference(pkg,input,reference);
+                if(!plan)return false;
+                const used=((await workforceSearch).workerUsage(plan,input)?.busy.get(input.replacement_member)||0)>1e-7;
+                report({index,plan,detailed,basePlan:reference,replacement_used:used});
+                return true;
+            } catch { return false; }
+        };
         try {
-            let reference=original,comparison=normalComparison;
+            let comparison=normalComparison;
             if(input.opportunity_goal==='team_size'){
                 if(!teamReference?.success){
                     teamReference=await rebalanceCurrentTeam(pkg,base,original,normalComparison.options,
@@ -447,6 +478,7 @@ async function rankImprovements(pkg, payload, report) {
             }
             const plan = JSON.parse(json);
             if (plan.success && comparison.inconclusive(plan, base, input)) {
+                if(await retainReference())continue;
                 report({index, error:'The search did not match the current plan. This does not show that the upgrade reduces production. Use Detailed search.', detailed});
                 continue;
             }
@@ -456,6 +488,7 @@ async function rankImprovements(pkg, payload, report) {
                 ...(input.opportunity_goal==='team_size'?{basePlan:reference,replacement_used:replacementUsed}:{}) }
                 : { index, error: plan.error || 'No plan found', detailed });
         } catch (error) {
+            if(await retainReference())continue;
             report({ index, error: error.message || String(error), detailed,
                 ...(input.opportunity_goal==='team_size'&&teamReference?.success?{basePlan:teamReference}:{}) });
         }

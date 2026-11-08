@@ -984,5 +984,8 @@
   "Compared with a rearranged current team.": "Сравнение с текущей командой после перераспределения.",
   "Replaces in the working team:": "Заменяет в рабочей команде:",
   "The proposed Aniimo is not used in this plan.": "Предложенный Анимо не задействован в этом плане.",
-  "No improvement found": "Улучшение не найдено"
+  "No improvement found": "Улучшение не найдено",
+  "Find two-ability replacements": "Найти замены с двумя способностями",
+  "Check a specific ability pair": "Проверить конкретную пару способностей",
+  "Ability pairs are selected automatically and checked from the most promising first. Results are ranked as checks finish; you can stop at any time.": "Пары способностей подбираются автоматически, сначала проверяются самые перспективные. Результаты ранжируются по мере проверки; поиск можно остановить в любой момент."
 }
