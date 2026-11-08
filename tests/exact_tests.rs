@@ -241,6 +241,12 @@ fn exact_grows_crops_without_their_environment() {
     let covered = solve_and_check(&items, &warmed, &ModuleLevels::default());
     assert!((covered.rate_per_second - 4.0 * 673.0 / 1800.0).abs() < 1e-9, "got {}", covered.rate_per_second);
     assert_eq!(covered.units.get("palm_bark"), Some(&4));
+    let mut full = to_production_plan(&covered,&items,"coins",&warmed);
+    let summary = aniimax::exact::to_production_summary(&covered,&items,"coins",&warmed);
+    assert!(!full.environment_assignments.is_empty());
+    assert!(summary.environment_assignments.is_empty());
+    full.environment_assignments.clear();
+    assert_eq!(format!("{full:?}"),format!("{summary:?}"),"comparison reports retain every production metric");
 
     // Adequate crops still need their Sunlamp: walnut is worth more than chestnut but can't grow
     // without one.

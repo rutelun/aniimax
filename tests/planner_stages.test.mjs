@@ -2,6 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {searchMaterials} from '../web/material-search.js';
+import {productionObjective,productionCertificate,withProductionBounds} from '../web/priority-search.js';
 
 const source = await readFile(new URL('../web/worker.js', import.meta.url), 'utf8');
 const pipeline = source.slice(source.indexOf('function hasSeasonCropMinimums'), source.indexOf('// Ranks changes the player could make'));
@@ -27,8 +28,9 @@ function planner(materialResult, priorities = ['coins'], extra = {}) {
             return JSON.stringify({success:true,rate_per_second:10});
         },
     };
-    const run = new Function('solveModel', 'materialSearch', `const SOLVE_OPTIONS={time_limit:30}, STRICT_OPTIONS={}, SEASON_POINTS='season_points';
-        ${pipeline}; return exactPlanJson;`)(solveModel, Promise.resolve({searchMaterials}));
+    const run = new Function('solveModel', 'materialSearch','prioritySearch', `const SOLVE_OPTIONS={time_limit:30}, STRICT_OPTIONS={}, SEASON_POINTS='season_points';
+        const newHighs=async()=>null, incumbentSolver=Promise.resolve({polishSolution:(_,__,r)=>r});
+        ${pipeline}; return exactPlanJson;`)(solveModel, Promise.resolve({searchMaterials}),Promise.resolve({productionObjective,productionCertificate,withProductionBounds}));
     return {calls,checks,progress, result, run:()=>run(pkg, JSON.stringify({currency:'coins',priorities,
         facilities:{'Woodworking Bench':[{count:2,level:2}]},...extra}), (...event)=>progress.push(event))};
 }
@@ -82,4 +84,26 @@ test('materials already in stock do not trigger an unnecessary RV production sea
     });
     await p.run();
     assert.deepEqual(p.calls.map(c=>c.problem.lp),['priority:coins','materials']);
+});
+
+test('initial planning remaps the incumbent when a new priority inserts or reorders sale variables',async()=>{
+    const calls=[];
+    const solveModel=async(problem,options,message,seed)=>{
+        calls.push({lp:problem.lp,seed});
+        return {objective:1,proven:true,values:problem.lp==='coins'?[.3,.2]:problem.lp==='wood'?[.4,.3,.2]:[.3,.2,.4]};
+    };
+    const pkg={
+        exact_byproduct_problems:()=> '[]',exact_level_up_problem:()=> '{}',
+        exact_priority_problem:(_,__,target)=>JSON.stringify(target==='coins'
+            ? {lp:'coins',variables:2,variable_keys:['rate','sold:coins']}
+            : {lp:'wood',variables:3,variable_keys:['sold:wood','rate','sold:coins']}),
+        exact_problem:()=>JSON.stringify({lp:'final',variables:3,variable_keys:['rate','sold:coins','sold:wood']}),
+        exact_plan:()=>JSON.stringify({success:true,rate_per_second:1}),
+    };
+    const run=new Function('solveModel','prioritySearch',`const SOLVE_OPTIONS={time_limit:30},STRICT_OPTIONS={},SEASON_POINTS='season_points';
+        const newHighs=async()=>null, incumbentSolver=Promise.resolve({polishSolution:(_,__,r)=>r});
+        ${pipeline};return exactPlanJson;`)(solveModel,Promise.resolve({productionObjective,productionCertificate,withProductionBounds}));
+    await run(pkg,JSON.stringify({currency:'coins',priorities:['coins','Wood Blocks'],facilities:{'Woodworking Bench':[],'Chimney Kiln':[]}}));
+    assert.deepEqual(calls[1].seed,[0,.3,.2]);
+    assert.deepEqual(calls[2].seed,[.3,.2,.4]);
 });

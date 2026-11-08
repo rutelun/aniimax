@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {changeOneMember,personalityInput,reserveLevelFourInputs,workerUsage,comparePlans,keepBetterComparison} from '../web/opportunity-comparison.js';
 import {createComparisonSearch} from '../web/comparison-search.js';
+import {comparisonConcurrency,startComparisonQueue} from '../web/comparison-queue.js';
 
 const input = () => ({priorities:['season_points','Wood Blocks','coins'],roster:{members:[
     {count:2,abilities:{Artisanship:3,Water:3},personalities:['Instinctive','Nimble'],family:'1017'},
@@ -167,19 +168,20 @@ test('suggestions do not launch searches automatically, and cancelled comparison
     class FakeWorker {
         constructor(){workers.push(this);}
         terminate(){this.terminated=true;}
-        postMessage(message){this.message=JSON.parse(message.payload);}
-        reply(count){this.onmessage({data:{type:'progress',count}});}
+        postMessage(message){this.id=message.id;this.message=JSON.parse(message.payload);}
+        reply(count){this.onmessage({data:{id:this.id,type:'progress',count}});}
     }
-    const api=new Function('Worker','setTimeout','clearTimeout','baseline','base','keepBetterComparison',`
+    const api=new Function('Worker','setTimeout','clearTimeout','baseline','base','keepBetterComparison','startComparisonQueue','comparisonConcurrency',`
         let rankRunId=0,rankWorkers=[],rankCleanups=[],ranking=null,rankingsBySetup={};
         const mainSolve=null,setupSolve=null,layoutWorker=null,lastPlan=baseline,lastPlanInput=base;
         const plansBySetup={roster:baseline},WORKER_URL='worker',SETUP_TIMEOUT=100;
         const aniimoInput=()=>({}),haulingRouteBound=()=>0,renderImprovements=()=>{};
         const improvementCandidates=()=>[0,1,2].map(i=>({input:{...base,change:i}}));
         const comparisonPhase=step=>step;
+        const navigator={hardwareConcurrency:4,deviceMemory:4};
         ${stop}\n${run}
         return {run:rankImprovementsFor,stop:stopRanking,state:()=>ranking};
-    `)(FakeWorker,fn=>{timers.add(fn);return fn;},id=>timers.delete(id),baseline,base,keepBetterComparison);
+    `)(FakeWorker,fn=>{timers.add(fn);return fn;},id=>timers.delete(id),baseline,base,keepBetterComparison,startComparisonQueue,comparisonConcurrency);
     api.run('roster');
     assert.equal(workers.length,0);
     api.run('roster',[2]);
@@ -197,6 +199,6 @@ test('suggestions do not launch searches automatically, and cancelled comparison
     assert.equal(api.state().results[1].plan.rate_per_second,12);
     api.stop();
     api.run('roster','all');
-    assert.deepEqual(workers[2].message.candidates.map(c=>c.change),[0,2]);
+    assert.deepEqual(workers.slice(2).flatMap(w=>w.message.candidates.map(c=>c.change)),[0,2]);
     api.stop();
 });

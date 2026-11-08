@@ -12,6 +12,7 @@ const load = new URL(import.meta.url).search;
 const incumbentSolver = import('./highs-solve.js' + load);
 const materialSearch = import('./material-search.js' + load);
 const comparisonSearch = import('./comparison-search.js' + load);
+const prioritySearch = import('./priority-search.js' + load);
 const ready = import('./pkg/aniimax.js' + load).then(async (pkg) => {
     await pkg.default({ module_or_path: fetch(new URL('./pkg/aniimax_bg.wasm', import.meta.url), { cache: 'no-cache' }) });
     return pkg;
@@ -125,18 +126,30 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
     const input = JSON.parse(payload);
     const stage = { floors: [] };
     let incumbent = null;
+    let incumbentKeys = null;
     let lastCurrencySolve = null;
     let materialWorkNote = null;
     const options = comparison?.options || SOLVE_OPTIONS;
-    const runModel = comparison?.solve || solveModel;
+    const {productionObjective,productionCertificate,withProductionBounds} = await prioritySearch;
+    const certificates = [];
+    const searchModel = comparison?.solve || solveModel;
+    const runModel = (problem,...args)=>searchModel(withProductionBounds(problem,certificates),...args);
     const solve = async (problem, goal) => {
         const certified = goal && await comparison?.bound(problem, goal);
         if (certified) return certified;
+        let seed = incumbent?.values;
+        if (seed && incumbentKeys?.length === seed.length && problem.variable_keys?.length === problem.variables
+            && (seed.length !== problem.variables || incumbentKeys.some((key,i)=>key!==problem.variable_keys[i]))) {
+            const previous = new Map(incumbentKeys.map((key,i)=>[key,seed[i]]));
+            seed = problem.variable_keys.map(key=>previous.get(key) ?? 0);
+        }
         const result = await runModel(comparison?.protect(problem, goal) || problem, options,
         hasSeasonCropMinimums(input) && !stage.floors.length && !stage.pace
             ? 'The minimum event crop plots cannot be met. Check plot levels, growing conditions, and the seed budget.'
-            : undefined, incumbent?.values);
-        if (result) incumbent = result;
+            : undefined, seed);
+        if (result) { incumbent = result; incumbentKeys = problem.variable_keys; }
+        const certificate = productionCertificate(problem,result);
+        if (certificate) certificates.push(certificate);
         comparison?.observe(goal, result);
         return result;
     };
@@ -158,14 +171,21 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
     }
     // The player's priorities, in order: each is made as much as the ones before it allow, and
     // the coin solve after them has to keep all of it up.
-    for (const target of input.priorities || []) {
+    const priorities = input.priorities || [];
+    for (let priorityIndex=0;priorityIndex<priorities.length;priorityIndex++) {
+        const target = priorities[priorityIndex];
         step(`priority:${target}`, 'start');
         const alone = stage.floors.length === 0;
-        const priority = JSON.parse(exact_priority_problem(payload, JSON.stringify(stage), target));
+        let priority = JSON.parse(exact_priority_problem(payload, JSON.stringify(stage), target));
         if (!priority.lp) throw new Error('this setup isn\'t covered by the exact planner');
+        // Keep the final currency stage's preferences, since its full solution is reused.
+        // Earlier priorities get their true production maximum; the final solve chooses
+        // owned workers, E-mode and compact layouts while retaining all those maxima.
+        const finalCurrency = priorityIndex === priorities.length-1 && target === (input.currency || 'coins');
+        if (!finalCurrency) priority = productionObjective(priority);
         // The final currency needs an actual feasible vector for the subsequent material solve.
         const most = await solve(priority, target);
-        lastCurrencySolve = target === (input.currency || 'coins') ? most : null;
+        lastCurrencySolve = finalCurrency ? most : null;
         step(`priority:${target}`, 'done', most?.proven);
         if (!most) throw new Error(`no plan found for the most ${target}`);
         if (alone) first({ measure: target, objective: most.objective, proven: most.proven });
@@ -294,11 +314,12 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
         const stockJson = JSON.stringify(stockStage);
         step('stock_up', 'start');
         const stockProblem = JSON.parse(exact_problem(payload, stockJson));
-        const stocked = await runModel(stockProblem, options);
+        let stocked = await runModel(stockProblem, options);
         step('stock_up', 'done', stocked?.proven);
         step('check', 'start');
+        if (stocked) stocked = (await incumbentSolver).polishSolution(await newHighs(),stockProblem,stocked);
         const stockedPlan = stocked
-            && JSON.parse(exact_plan(payload, stockJson, JSON.stringify({ values: stocked.values, proven: proven && stocked.proven, bound })));
+            && JSON.parse(exact_plan(payload, stockJson, JSON.stringify({ values: stocked.values, proven: proven && stocked.proven, bound, summary_only:!!comparison })));
         if (stockedPlan && stockedPlan.success) {
             step('check', 'done');
             return finish(stockedPlan, stocked.objective, stockProblem, stocked);
@@ -306,14 +327,15 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
         console.warn('Level-up stock solve found no usable plan; keeping the plan without it.');
     }
     step('check', 'start');
-    let json = exact_plan(payload, stageJson, JSON.stringify({ values: solved.values, proven, bound }));
+    solved = (await incumbentSolver).polishSolution(await newHighs(),problem,solved);
+    let json = exact_plan(payload, stageJson, JSON.stringify({ values: solved.values, proven, bound, summary_only:!!comparison }));
     let plan = JSON.parse(json);
     if (!plan.success) {
         // The answer didn't survive being rebuilt exactly; solve again, this time refusing the
         // rounding noise it may have leaned on.
         const strict = await runModel(problem, { ...STRICT_OPTIONS, time_limit: options.time_limit }, undefined, solved.values);
         if (strict) {
-            json = exact_plan(payload, stageJson, JSON.stringify({ values: strict.values, proven: strict.proven && allProven, bound }));
+            json = exact_plan(payload, stageJson, JSON.stringify({ values: strict.values, proven: strict.proven && allProven, bound, summary_only:!!comparison }));
             plan = JSON.parse(json);
             if (plan.success) solved = strict;
         }
@@ -329,10 +351,10 @@ async function rankImprovements(pkg, payload, report) {
     const { base, basePlan, candidates, detailed = false, warm_start = true } = JSON.parse(payload);
     const original = basePlan?.success ? basePlan : JSON.parse(await exactPlanJson(pkg, JSON.stringify(base)));
     report({ index: -1, plan: original });
-    const comparison = (await comparisonSearch).createComparisonSearch(original, solveModel, { detailed, warmStart: warm_start });
+    const comparison = (await comparisonSearch).createComparisonSearch(original, solveModel, { detailed, warmStart: warm_start, baseInput:base });
     for (const [index, input] of candidates.entries()) {
         try {
-            comparison.begin();
+            comparison.begin(input);
             const search = () => exactPlanJson(pkg, JSON.stringify(input),
                 (step, state, proven) => report({ index, step, state, proven }), () => {}, comparison);
             let json;

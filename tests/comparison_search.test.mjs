@@ -124,6 +124,35 @@ test('large rosters receive preparation time without increasing the per-solve se
     await assert.rejects(search.solve(model),/Detailed search/);
 });
 
+test('warm starts zero inactive jobs without mutating earlier incumbents',async()=>{
+    let passed;
+    const search=createComparisonSearch({},async(_,__,___,seed)=>{passed=seed;return null;},{detailed:true});search.begin();
+    const seed=[1,.5];
+    await search.solve({...model,lp:model.lp.replace(' 0 <= x0 <= 5',' 0 <= x0 <= 0')},undefined,undefined,seed);
+    assert.deepEqual(passed,[0,.5]);
+    assert.deepEqual(seed,[1,.5]);
+});
+
+test('training one copy can repair discrete jobs of the split pool without fixing the full search',async()=>{
+    const calls=[];
+    const original={comparison_seed:{keys:['post:mine:owned:0#0','post:well:owned:1#0'],values:[3,1]}};
+    const baseInput={roster:{members:[{count:3},{count:1}]}};
+    const candidate={roster:{members:[{count:2},{count:1},{count:1}]}};
+    const problem={variables:3,variable_keys:['post:mine:owned:0#0','post:well:owned:1#0','post:mine:owned:2#0'],
+        primary_objective:[[0,1]],tiebreak:[],lp:'Maximize\n obj: x0\nSubject To\nBounds\n 0 <= x0 <= 2\n 0 <= x1 <= 1\n 0 <= x2 <= 1\nGeneral\n x0\n x1\n x2\nEnd'};
+    const search=createComparisonSearch(original,async(p,o)=>{
+        calls.push({p,o});return {values:[2,1,1],objective:2,proven:calls.length===1};
+    },{baseInput});
+    search.begin(candidate);
+    const result=await search.solve(problem);
+    assert.match(calls[0].p.lp,/warm_fix_1: x1 = 1/);
+    assert.ok(!calls[0].p.lp.includes('warm_fix_0'));
+    assert.ok(!calls[0].p.lp.includes('warm_fix_2'));
+    assert.match(calls[0].p.lp,/General\n x0\n x2\nEnd/);
+    assert.equal(calls[1].p.lp,problem.lp);
+    assert.equal(result.proven,false);
+});
+
 const input=()=>({facilities:{'Nimbus Bed':[{count:1,level:2}],'Dewy House':[{count:1,level:1}],Mill:[{count:1,level:1}]},
     modules:{kitchen:1},exclude:[],roster:{members:[{count:1,abilities:{Leisure:3},family:'wool'}],
         personalities:{'Nimbus Bed':'Judicious','Dewy House':'Instinctive'}}});

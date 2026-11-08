@@ -3,9 +3,10 @@
 // the completed plan must still meet that goal and pass the native independent check.
 import {comparePlans} from './opportunity-comparison.js?v=protected-comparisons';
 
-export function createComparisonSearch(basePlan, solve, { detailed = false, warmStart = true, now = () => performance.now() } = {}) {
+export function createComparisonSearch(basePlan, solve, { detailed = false, warmStart = true, baseInput = null, now = () => performance.now() } = {}) {
     const cache = new Map();
     let cacheSize = 0, deadline = Infinity, useBounds = true, usedBounds = false, earlierImproved = false;
+    let splitMembers = new Set();
     const stats = { cached: 0, bounded: 0, warm: 0, polished: 0 };
     const profile = basePlan.comparison_seed;
     // Building/parsing a large roster model is outside HiGHS' per-solve limit. Allow that
@@ -14,32 +15,45 @@ export function createComparisonSearch(basePlan, solve, { detailed = false, warm
     const seedByKey = warmStart && Array.isArray(profile?.keys) && profile.keys.length === profile?.values?.length
         ? new Map(profile.keys.map((key,i)=>[key,profile.values[i]])) : null;
     const options = { mip_rel_gap: 0, time_limit: detailed ? 30 : 1 };
+    const clipInactive = (problem,values) => {
+        const zero = [...problem.lp.matchAll(/^ 0 <= x(\d+) <= 0$/gm)].map(m=>Number(m[1]));
+        if (!zero.some(v=>values[v] !== 0)) return values;
+        const clipped = [...values]; zero.forEach(v=>clipped[v]=0); return clipped;
+    };
     const run = async (problem, requested = options, message, incumbent) => {
         const key = `${problem.variables}|${requested.mip_feasibility_tolerance ?? 'default'}|${JSON.stringify(problem.tiebreak || [])}|${problem.lp}`;
         if (cache.has(key)) { stats.cached++; return cache.get(key); }
         const remaining = (deadline - now()) / 1000;
         if (remaining <= 0) throw new Error('Quick check reached its time budget. Use Detailed search for this alternative.');
         let seed = incumbent;
-        if (seed?.length !== problem.variables && seedByKey && problem.variable_keys?.length === problem.variables
-            && /\nGeneral\n\s*x\d/.test(problem.lp)) {
-            seed = problem.variable_keys.map(key=>seedByKey.get(key) ?? 0);
+        const mapped = seedByKey && problem.variable_keys?.length === problem.variables
+            && /\nGeneral\n\s*x\d/.test(problem.lp) ? clipInactive(problem,problem.variable_keys.map(key=>seedByKey.get(key) ?? 0)) : null;
+        const value = values => (problem.primary_objective || []).reduce((sum,[v,c])=>sum+c*(values[v]||0),0);
+        if (mapped && (seed?.length !== problem.variables || (!earlierImproved && value(mapped)>value(seed)+1e-9))) {
+            seed = mapped;
             stats.warm++;
             // Refit continuous production/work times to the changed worker while keeping
             // the baseline's discrete placement. This is only a feasible start; the complete
             // unrestricted integer model below still has to find/prove the final optimum.
             const section = problem.lp.match(/\nGeneral\n([\s\S]*?)\nEnd/);
             const integers = [...(section?.[1] || '').matchAll(/\bx(\d+)\b/g)].map(m=>Number(m[1]));
-            const fixed = integers.map(v=>` warm_fix_${v}: x${v} = ${Math.round(seed[v])}`).join('\n');
+            // Training one of several identical Aniimo splits that pool. Its old discrete
+            // assignments may exceed the remaining count; repair only the split members,
+            // retaining all other baseline choices as a small initial subproblem.
+            const flexible = new Set(integers.filter(v=>[...(problem.variable_keys[v] || '').matchAll(/owned:(\d+)/g)]
+                .some(m=>splitMembers.has(Number(m[1])))));
+            const fixed = integers.filter(v=>!flexible.has(v)).map(v=>` warm_fix_${v}: x${v} = ${Math.round(seed[v])}`).join('\n');
             const local = {...problem,lp:problem.lp.replace('\nBounds\n',`\n${fixed}\nBounds\n`)
-                .replace(/\nGeneral\n[\s\S]*\nEnd/,'\nEnd')};
+                .replace(/\nGeneral\n[\s\S]*\nEnd/,flexible.size ? `\nGeneral\n${[...flexible].map(v=>` x${v}`).join('\n')}\nEnd` : '\nEnd')};
             const remaining = (deadline-now())/1000;
             if (remaining > .05) {
-                const polished = await solve(local,{...requested,time_limit:Math.min(.3,remaining)},undefined,seed);
+                const polished = await solve(local,{...requested,time_limit:Math.min(flexible.size ? 1 : .3,remaining)},undefined,seed);
                 if (polished?.values && integers.every(v=>Math.abs(polished.values[v]-Math.round(polished.values[v]))<1e-6)) {
                     seed = polished.values; stats.polished++;
                 }
             }
         }
+        if (seed?.length === problem.variables) seed = clipInactive(problem,seed);
         const left = (deadline-now())/1000;
         if (left <= 0) throw new Error('Quick check reached its time budget. Use Detailed search for this alternative.');
         const result = await solve(problem, { ...requested, time_limit: Math.min(requested.time_limit ?? options.time_limit, left) }, message, seed);
@@ -69,7 +83,15 @@ export function createComparisonSearch(basePlan, solve, { detailed = false, warm
         inconclusive(plan, beforeInput, afterInput) {
             return comparePlans(basePlan, plan, beforeInput, afterInput).inconclusiveLoss;
         },
-        begin() { deadline = detailed ? Infinity : now() + quickBudgetMs; useBounds = true; usedBounds = false; earlierImproved = false; },
+        begin(input) {
+            deadline = detailed ? Infinity : now() + quickBudgetMs; useBounds = true; usedBounds = false; earlierImproved = false;
+            const before=baseInput?.roster?.members,after=input?.roster?.members;
+            splitMembers=new Set();
+            if (before && after?.length === before.length+1 && after.at(-1).count === 1) {
+                before.forEach((m,i)=>{if(m.count>1 && after[i].count===m.count-1)splitMembers.add(i);});
+                if(splitMembers.size)splitMembers.add(before.length);
+            }
+        },
         get usedBounds() { return usedBounds; },
         disableBounds() { useBounds = false; },
         protect(problem, goal) {

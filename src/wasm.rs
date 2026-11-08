@@ -1633,6 +1633,9 @@ struct JsSolverResult {
     proven: bool,
     /// The solver's best bound on what any plan could earn.
     bound: f64,
+    /// Opportunities compare checked rates and staffing; they never draw this plan's map.
+    #[serde(default)]
+    summary_only: bool,
 }
 
 /// Turns HiGHS's solution of [`exact_problem`]'s model into the same result [`find_plan`]
@@ -1686,7 +1689,8 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
     });
     let preview = prepared.input.level_up_preview.as_ref().filter(|_| currency == "coins")
         .map(|target| report_at(target, None));
-    let plan = crate::exact::to_production_plan(&exact, &prepared.items, &currency, &prepared.facility_counts);
+    let build_report = if result.summary_only { crate::exact::to_production_summary } else { crate::exact::to_production_plan };
+    let plan = build_report(&exact, &prepared.items, &currency, &prepared.facility_counts);
     let mut js = prepared.to_js(plan, Some(proof));
     js.level_up = report;
     js.level_up_preview = preview;

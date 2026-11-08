@@ -2244,6 +2244,20 @@ pub fn to_production_plan(
     currency: &str,
     facility_counts: &FacilityCounts,
 ) -> crate::models::ProductionPlan {
+    production_plan(exact, items, currency, facility_counts, true)
+}
+
+/// The same production/staffing report for comparisons, which do not display a map.
+/// Feasibility is checked before either report; only cosmetic coordinate packing is omitted.
+pub fn to_production_summary(
+    exact: &ExactPlan, items: &[ProductionItem], currency: &str, facility_counts: &FacilityCounts,
+) -> crate::models::ProductionPlan {
+    production_plan(exact, items, currency, facility_counts, false)
+}
+
+fn production_plan(
+    exact: &ExactPlan, items: &[ProductionItem], currency: &str, facility_counts: &FacilityCounts, include_layout: bool,
+) -> crate::models::ProductionPlan {
     use crate::models::{EnvironmentAssignment, FacilityPlacement, PlanProduct, PlanStep, PlanStepStatus};
     let all: HashMap<&str, &ProductionItem> = items.iter().map(|i| (i.name.as_str(), i)).collect();
     let is_grower = |facility: &str| !items.iter().any(|i| i.facility == facility && i.raw_materials.is_some());
@@ -2422,6 +2436,13 @@ pub fn to_production_plan(
         }
     }
 
+    if !include_layout {
+        return crate::models::ProductionPlan {
+            currency:currency.to_string(), rate_per_second:exact.rate_per_second,
+            income_streams,coin_items,byproduct_rates,environment_assignments:Vec::new(),
+            candidates_evaluated:exact.recipe_rates.len() as u32,trial_solves:exact.nodes,
+        };
+    }
     // Environment layouts, trimmed to the plots the plan actually uses.
     let mut still_needed: HashMap<(String, String), u32> = HashMap::new();
     for (name, &units) in &exact.units {

@@ -14,6 +14,7 @@ import { nearestStorage } from './layout.js?v=storage-power';
 import { ANIIMO_WALK_SPEED, workerTravelDistances } from './worker-travel.js?v=auto-worker-travel';
 import { haulingWorkload, allocateHauling, haulingBatchTrips } from './hauling.js?v=hauling-workload';
 import { changeOneMember, personalityInput, reserveLevelFourInputs, comparePlans, usefulUpgrade, keepBetterComparison } from './opportunity-comparison.js?v=protected-comparisons';
+import { comparisonConcurrency, startComparisonQueue } from './comparison-queue.js?v=parallel-comparisons';
 
 let wasmReady = false;
 
@@ -759,7 +760,7 @@ function attachSpecialHandlers() {
 // --- Opportunities ---------------------------------------------------------------------
 // After each plan, what the player could change to do better, best first: a locked recipe, an
 // personality or Aniimo upgrade, and Advanced-mode facility/module changes. Suggestions are
-// prepared after layout; full comparisons run only on request in one cancellable worker.
+// prepared after layout; full comparisons run only on request in a cancellable worker pool.
 
 let rankWorkers = [];
 let rankRunId = 0;
@@ -786,6 +787,7 @@ function stopRanking() {
         ranking.running = false;
         ranking.paused = true;
         ranking.activeIndex = null;
+        ranking.activeIndices = [];
     }
 }
 
@@ -948,7 +950,7 @@ function improvementCandidates(base, setup) {
 }
 
 // Prepare suggestions after planning. Full comparisons run only when the player requests
-// a row or the batch, in one cancellable background worker; the current plan stays intact.
+// a row or the batch, in a small cancellable pool; the current plan stays intact.
 function rankImprovementsFor(setup, requested = null, detailed = false) {
     if (requested != null && (mainSolve || setupSolve || layoutWorker)) return;
     stopRanking();
@@ -962,7 +964,7 @@ function rankImprovementsFor(setup, requested = null, detailed = false) {
                 hauling_default_seconds: haulingRouteBound() };
         }
         current = { setup, plan, input: base, base: {plan}, candidates: improvementCandidates(base,setup),
-            results: [], running:false, started:false, paused:false, activeIndex:null, phase:'' };
+            results: [], running:false, started:false, paused:false, activeIndex:null, activeIndices:[], phase:'' };
         rankingsBySetup[setup] = current;
     }
     ranking = current;
@@ -973,41 +975,31 @@ function rankImprovementsFor(setup, requested = null, detailed = false) {
     if (!indices.length) { renderImprovements(); return; }
     current.running = true; current.started = true; current.paused = false;
     const runId = rankRunId;
-    const solver = new Worker(WORKER_URL,{type:'module'});
-    rankWorkers = [solver];
-    let timer, finished = false;
-    const finish = failed => {
-        if (finished) return;
-        finished = true; clearTimeout(timer); solver.terminate();
-        if (runId !== rankRunId) return;
-        current.running = false; current.paused = !!failed; current.activeIndex = null;
-        rankWorkers = []; rankCleanups = [];
-        if (ranking === current) renderImprovements();
-    };
-    const heartbeat = () => { clearTimeout(timer); timer = setTimeout(()=>finish(true),SETUP_TIMEOUT); };
-    rankCleanups = [()=>clearTimeout(timer)];
-    heartbeat();
-    solver.onmessage = event => {
-        if (runId !== rankRunId) return;
-        heartbeat();
-        const {type,count:result,ok} = event.data;
-        if (type === 'progress') {
-            if (result.step) {
-                current.activeIndex = indices[result.index];
-                current.phase = comparisonPhase(result.step);
-            } else if (result.index === -1) current.base = result;
-            else {
-                const index = indices[result.index];
-                current.results[index] = keepBetterComparison(current.results[index], result, current.candidates[index].input);
-                current.activeIndex = null;
-            }
-        } else finish(!ok);
-        if (ranking === current) renderImprovements();
-    };
-    solver.onerror = solver.onmessageerror = () => finish(true);
-    solver.postMessage({id:1,type:'rank_improvements',payload:JSON.stringify({
-        base:current.input,basePlan:plan,candidates:indices.map(i=>current.candidates[i].input),detailed,
-    })});
+    const queue = startComparisonQueue({indices,parallel:comparisonConcurrency(navigator,indices.length),
+        createWorker:()=>new Worker(WORKER_URL,{type:'module'}), timeout:SETUP_TIMEOUT,
+        setTimer:setTimeout,clearTimer:clearTimeout,
+        payload:index=>({base:current.input,basePlan:plan,candidates:[current.candidates[index].input],detailed}),
+        onProgress:active=>{
+            if (runId !== rankRunId) return;
+            current.activeIndices = active.map(s=>s.index);
+            current.activeIndex = active[0]?.index ?? null;
+            current.phase = active[0]?.step ? comparisonPhase(active[0].step) : '';
+            if (ranking === current) renderImprovements();
+        },
+        onResult:(index,result)=>{
+            if (runId !== rankRunId) return;
+            current.results[index] = keepBetterComparison(current.results[index],result,current.candidates[index].input);
+            if (ranking === current) renderImprovements();
+        },
+        onDone:failed=>{
+            if (runId !== rankRunId) return;
+            current.running=false; current.paused=failed; current.activeIndex=null; current.activeIndices=[];
+            rankWorkers=[]; rankCleanups=[];
+            if (ranking === current) renderImprovements();
+        },
+    });
+    rankWorkers = queue.workers;
+    rankCleanups = [()=>queue.stop()];
     renderImprovements();
 }
 
@@ -1115,7 +1107,7 @@ function renderImprovements() {
         const resultIndex = found?.index ?? group.indices.find(i=>ranking.results[i]?.plan?.success);
         const comparison = resultIndex != null ? comparisonFor(resultIndex) : null;
         const retained = resultIndex != null && ranking.results[resultIndex]?.retained;
-        const active = group.indices.includes(ranking.activeIndex);
+        const active = group.indices.some(i=>(ranking.activeIndices || [ranking.activeIndex]).includes(i));
         const error = group.indices.map(i=>ranking.results[i]?.error).find(Boolean);
         const status = found ? `<span class="improve-gain">${found.gain.text}</span>`
             : `<span class="improve-none">${translate(active?'Checking…':comparison
