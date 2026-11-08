@@ -966,5 +966,16 @@
   "Recipe Note: {name}",
   "Unlock {name}",
   "Unskip {name}",
-  ": compare recipes, personalities and Aniimo upgrades on request, using every priority in the current plan. In Advanced mode you can also check module and facility upgrades."
+  ": compare recipes, personalities and Aniimo upgrades on request, using every priority in the current plan. In Advanced mode you can also check module and facility upgrades.",
+  "Opens recipe chains: {recipes}.",
+  "Adds capacity at {facility}; {assigned} of {owned} buildings are currently assigned.",
+  "Changes recipe capacity and E-mode power use at {facility}.",
+  "Increases recipe capacity at {facility}.",
+  "Speeds up {ability} jobs at {facilities}.",
+  "Applies the matching personality bonus at {facilities}.",
+  "Skipped {n} options with no recipe or capacity change.",
+  "No additional usable recipes at this module level.",
+  "No reachable production chain uses this facility.",
+  "Usable recipe capacity is unchanged at this level.",
+  "Starts production: {recipes}."
 ]

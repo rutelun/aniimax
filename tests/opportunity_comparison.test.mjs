@@ -176,7 +176,7 @@ test('suggestions do not launch searches automatically, and cancelled comparison
         const mainSolve=null,setupSolve=null,layoutWorker=null,lastPlan=baseline,lastPlanInput=base;
         const plansBySetup={roster:baseline},WORKER_URL='worker',SETUP_TIMEOUT=100;
         const aniimoInput=()=>({}),haulingRouteBound=()=>0,renderImprovements=()=>{};
-        const improvementCandidates=()=>[0,1,2].map(i=>({input:{...base,change:i}}));
+        const improvementCandidates=()=>({candidates:[0,1,2].map(i=>({input:{...base,change:i}})),omitted:[]});
         const comparisonPhase=step=>step;
         const navigator={hardwareConcurrency:4,deviceMemory:4};
         ${stop}\n${run}

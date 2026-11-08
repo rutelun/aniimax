@@ -966,5 +966,16 @@
   "Recipe Note: {name}": "Рецепт: {name}",
   "Unlock {name}": "Открыть {name}",
   "Unskip {name}": "Снять исключение: {name}",
-  ": compare recipes, personalities and Aniimo upgrades on request, using every priority in the current plan. In Advanced mode you can also check module and facility upgrades.": ": сравните рецепты, характеры и улучшения Анимо по запросу с учётом всех приоритетов текущего плана. В расширенном режиме также можно проверить улучшения модулей и зданий."
+  ": compare recipes, personalities and Aniimo upgrades on request, using every priority in the current plan. In Advanced mode you can also check module and facility upgrades.": ": сравните рецепты, характеры и улучшения Анимо по запросу с учётом всех приоритетов текущего плана. В расширенном режиме также можно проверить улучшения модулей и зданий.",
+  "Opens recipe chains: {recipes}.": "Открывает цепочки рецептов: {recipes}.",
+  "Adds capacity at {facility}; {assigned} of {owned} buildings are currently assigned.": "Дополнительные мощности: {facility}. Рецепты назначены {assigned} из {owned} зданий.",
+  "Changes recipe capacity and E-mode power use at {facility}.": "Меняет доступные мощности рецептов и потребление электричества {facility} в E-mode.",
+  "Increases recipe capacity at {facility}.": "Увеличивает доступные мощности рецептов {facility}.",
+  "Speeds up {ability} jobs at {facilities}.": "Ускоряет работы со способностью «{ability}». Здания: {facilities}.",
+  "Applies the matching personality bonus at {facilities}.": "Даёт бонус подходящего характера. Здания: {facilities}.",
+  "Skipped {n} options with no recipe or capacity change.": "Пропущено {n} вариантов без изменения рецептов или мощностей.",
+  "No additional usable recipes at this module level.": "Этот уровень модуля не добавляет доступных рецептов.",
+  "No reachable production chain uses this facility.": "Нет доступной производственной цепочки для этого здания.",
+  "Usable recipe capacity is unchanged at this level.": "Этот уровень не меняет мощности доступных рецептов.",
+  "Starts production: {recipes}.": "Начинает производить: {recipes}."
 }

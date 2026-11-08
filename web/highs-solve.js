@@ -1,10 +1,26 @@
-// The native column order follows the LP parser, not the x0/x1/... numbering. Map names
-// before supplying an incumbent, and dispose every native model even on a failed solve.
-export function solveWithIncumbent(highs, problem, options, incumbent) {
-    const model = highs.createModel({ format: 'lp', data: problem.lp });
+const reuse = await import('./highs-reuse.js' + new URL(import.meta.url).search);
+const configuredOptions = new WeakMap();
+
+function applyOptions(model, options) {
+    let state = configuredOptions.get(model);
+    if (!state) { state={defaults:new Map(),previous:[]}; configuredOptions.set(model,state); }
+    const next = {...options};
+    for (const name of state.previous) if (!(name in next)) next[name]=state.defaults.get(name);
+    for (const name of Object.keys(options)) if (!state.defaults.has(name)) state.defaults.set(name,model.options.get(name));
+    // Reset only caller-controlled options. resetOptions() would also reset the WASM
+    // wrapper's protected single-thread settings and change subsequent search behavior.
+    model.options.set(next);
+    state.previous=Object.keys(options);
+}
+
+// Column names preserve worker identity while a native model is updated between stages.
+// Reuse is bounded to one model per runtime; unsupported LP syntax takes a fresh model.
+export function solveWithIncumbent(highs, problem, options, incumbent, reuseModel = true) {
+    const {model,names,persistent} = reuse.acquireModel(highs,problem,reuseModel);
     try {
-        model.options.set(options);
-        const names = Array.from({ length: model.getDimensions().numCols }, (_, i) => model.getColName(i));
+        if (/\nGeneral\n\s*x\d/.test(problem.lp)) model.clearSolver();
+        model.zeroAllClocks();
+        applyOptions(model,options);
         if (incumbent?.length === problem.variables) {
             const values = names.map(name => incumbent[Number(name.slice(1))] ?? 0);
             if (values.every(Number.isFinite)) model.setSolution({ colValue: values });
@@ -26,8 +42,11 @@ export function solveWithIncumbent(highs, problem, options, incumbent) {
                 : /\nGeneral\n\s*x\d/.test(problem.lp) ? model.info.get('mip_dual_bound') : undefined,
             Columns: Object.fromEntries(names.map((name, i) => [name, { Primal: solution.colValue[i] }])),
         };
+    } catch (error) {
+        if (persistent) reuse.discardReusableModel(highs);
+        throw error;
     } finally {
-        model.dispose();
+        if (!persistent) model.dispose();
     }
 }
 

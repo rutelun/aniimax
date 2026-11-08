@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { layOut, layOutHomeland, nearestStorage, layoutCost } from '../web/layout.js';
+import { layOut, layOutHomeland, nearestStorage, layoutCost, refineStorageNeighborhood } from '../web/layout.js';
 import { storageUnitLimit } from '../web/facility-config.js';
 
 const cells = [{ x: 0, y: 0, w: 20, h: 15 }, { x: 20, y: 0, w: 20, h: 15 }];
@@ -128,4 +128,25 @@ test('a shorter delivery route is rejected when the joint move increases shared 
     assert.equal(exchanged.pieces[0].members[0].x, 10);
     assert.equal(exchanged.unplaced.length, 0);
     assert.ok(layoutCost(exchanged) <= layoutCost(initial) + 1e-6);
+});
+
+test('storage can exchange an occupied position with buildings without losing a physical unit', () => {
+    // The useful 8x8 plot is completely full. A storage-only move cannot enter it.
+    const members = [];
+    for (let x=10;x<18;x+=2) for (let y=0;y<8;y+=2)
+        members.push({x,y,w:2,h:2,weight:x===12&&y===2?0:10,facility:'Processor'});
+    const pieces=members.map(m=>({members:[{...m,x:0,y:0}]}));
+    const layout={pieces:members.map(m=>({members:[m]})),storages:[{x:0,y:0,w:2,h:2}],unplaced:[],tried:0};
+    const cells=[{x:0,y:0,w:2,h:2},{x:10,y:0,w:8,h:8}];
+    const before=structuredClone(layout);
+    const result=refineStorageNeighborhood(layout,pieces,cells);
+    assert.ok(result.storages[0].x>=10);
+    assert.equal(result.storages.length,1);
+    assert.equal(result.unplaced.length,0);
+    assert.equal(result.pieces.flatMap(p=>p.members).length,members.length);
+    assert.ok(layoutCost(result)<layoutCost(layout));
+    assert.deepEqual(layout,before,'joint moves must not mutate the previous layout');
+    const rectangles=[...result.storages,...result.pieces.flatMap(p=>p.members)];
+    assert.ok(rectangles.every((r,i)=>rectangles.slice(i+1).every(other=>!overlap(r,other))));
+    assert.ok(rectangles.every(r=>cells.some(c=>r.x>=c.x&&r.y>=c.y&&r.x+r.w<=c.x+c.w&&r.y+r.h<=c.y+c.h)));
 });

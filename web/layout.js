@@ -261,7 +261,7 @@ export function layOut(pieces, options = {}) {
     // Nothing moves out while pieces are first put down, so once a piece of some shape finds no
     // room, no later one of that shape will: they're skipped rather than searched for again.
     const noRoom = new Set();
-    const shapeOf = i => (pieces[i].cluster ? null : JSON.stringify(pieces[i].members.map(m => [m.x, m.y, m.w, m.h, !!m.sensitive])));
+    const shapeOf = i => (pieces[i].cluster ? null : JSON.stringify(pieces[i].members.map(m => [m.x, m.y, m.w, m.h, !!m.sensitive, m.electric_level != null])));
     for (const i of order) {
         if (placed.has(i)) continue;
         const shape = shapeOf(i);
@@ -475,22 +475,93 @@ export function layoutCost(layout) {
 // Power routing may move consumers after the hauling layout, freeing better positions.
 // Refine against the final infrastructure: poles and generators stay fixed, and consumers
 // may move only within connected supply zones. Climate and collision checks still apply.
-export function refineSuppliedLayout(layout, pieces, cells) {
-    if (layout.unplaced.length || layout.power?.disconnected) return layout;
+function suppliedPlacementOptions(layout) {
     const zones = (layout.power?.coverage || []).filter(zone => zone.connected);
-    const refined = layOut(pieces, {
-        storages: layout.storages, cells, passes: 2, exchangeBudget: 24, initialLayout: layout,
+    return {
         obstacles: layout.power?.poles,
-        fixedPieces: new Set(layout.pieces.flatMap((p, i) => p.members.some(m => m.generator) ? [i] : [])),
         canPlace: (i, metadata, rectangles) => metadata.every((member, j) => member.electric_level == null
             || zones.some(zone => Math.min(rectangles[j].x + rectangles[j].w, zone.x + zone.w) - Math.max(rectangles[j].x, zone.x) >= .25 - EPSILON
                 && Math.min(rectangles[j].y + rectangles[j].h, zone.y + zone.h) - Math.max(rectangles[j].y, zone.y) >= .25 - EPSILON)),
+    };
+}
+
+export function refineSuppliedLayout(layout, pieces, cells, {storageTrials = 4} = {}) {
+    if (layout.unplaced.length || layout.power?.disconnected) return layout;
+    const refined = layOut(pieces, {
+        storages: layout.storages, cells, passes: 2, exchangeBudget: 24, initialLayout: layout,
+        ...suppliedPlacementOptions(layout),
+        fixedPieces: new Set(layout.pieces.flatMap((p, i) => p.members.some(m => m.generator) ? [i] : [])),
     });
     refined.storageAt = layout.storageAt;
     refined.tried += layout.tried;
-    if (refined.unplaced.length || layoutCost(refined) >= layoutCost(layout) - 1e-9) return layout;
-    refined.power = layout.power;
-    return refined;
+    const best = refined.unplaced.length || layoutCost(refined) >= layoutCost(layout) - 1e-9 ? layout : refined;
+    best.power = layout.power;
+    return refineStorageNeighborhood(best,pieces,cells,storageTrials);
+}
+
+// Move a storage together with up to four buildings occupying its proposed position.
+// Search only a bounded neighborhood; climate clusters and power infrastructure stay
+// fixed, and every accepted candidate retains all units and improves the complete cost.
+export function refineStorageNeighborhood(layout, pieces, cells, trials = 4) {
+    if (!trials || !layout.storages.length || layout.unplaced.length || layout.power?.disconnected) return layout;
+    const fixed = i => pieces[i].cluster || layout.pieces[i].members.length !== 1
+        || layout.pieces[i].members.some(m=>m.generator);
+    const members = layout.pieces.flatMap((piece,i)=>piece.members.map(member=>({...member,piece:i})));
+    const haulingCost = stores => members.reduce((sum,m)=>{
+        const s=nearestStorage(m,stores);
+        return sum+((m.weight||0)+EPSILON)*Math.hypot(m.x+m.w/2-s.x-s.w/2,m.y+m.h/2-s.y-s.h/2);
+    },0);
+    const baseline = haulingCost(layout.storages), proposals = [];
+    layout.storages.forEach((storage,index)=>{
+        const seen = new Set(), choices = [];
+        const add = (x,y)=>{
+            const key=`${x},${y}`;
+            if(seen.has(key))return; seen.add(key);
+            const candidate={...storage,x,y};
+            if(cells.reduce((sum,c)=>sum+overlapArea(candidate,c),0)<candidate.w*candidate.h-EPSILON)return;
+            if(layout.storages.some((s,i)=>i!==index&&overlaps(s,candidate))
+                || (layout.power?.poles||[]).some(p=>overlaps(p,candidate)))return;
+            const blocking=members.filter(m=>overlaps(m,candidate));
+            const blockers=[...new Set(blocking.map(m=>m.piece))];
+            if(blockers.length>4||blockers.some(fixed))return;
+            const stores=layout.storages.map((s,i)=>i===index?candidate:s);
+            let estimate=haulingCost(stores);
+            // Rank displaced buildings as if they could occupy the old storage position.
+            // This estimate selects trials only; the full physical solve decides acceptance.
+            for(const member of blocking){
+                const atOld={...member,x:storage.x+storage.w/2-member.w/2,y:storage.y+storage.h/2-member.h/2};
+                const a=nearestStorage(atOld,stores),b=nearestStorage(member,stores);
+                estimate+=(member.weight||0)*(Math.hypot(atOld.x+atOld.w/2-a.x-a.w/2,atOld.y+atOld.h/2-a.y-a.h/2)
+                    -Math.hypot(member.x+member.w/2-b.x-b.w/2,member.y+member.h/2-b.y-b.h/2));
+            }
+            if(estimate<baseline-EPSILON)choices.push({index,candidate,estimate});
+        };
+        for(let x=Math.round(storage.x)-6;x<=Math.round(storage.x)+6;x++)
+            for(let y=Math.round(storage.y)-6;y<=Math.round(storage.y)+6;y++)add(x,y);
+        for(const member of members.filter(m=>m.weight>0))add(Math.round(member.x+(member.w-storage.w)/2),Math.round(member.y+(member.h-storage.h)/2));
+        choices.sort((a,b)=>a.estimate-b.estimate);
+        // Give separate storage neighborhoods a chance before checking small variants.
+        choices.slice(0,2).forEach((proposal,rank)=>proposals.push({...proposal,rank}));
+    });
+    proposals.sort((a,b)=>a.rank-b.rank||a.estimate-b.estimate);
+    let best=layout;
+    for(const {index,candidate} of proposals.slice(0,trials)){
+        if(best.storages.some((s,i)=>i!==index&&overlaps(s,candidate)))continue;
+        const blockers=best.pieces.flatMap((p,i)=>p.members.some(m=>overlaps(m,candidate))?[i]:[]);
+        if(blockers.length>4||blockers.some(fixed))continue;
+        const neighbors=best.pieces.flatMap((p,i)=>!fixed(i)?[{i,weight:p.members[0].weight||0,
+            distance:Math.hypot(p.members[0].x-candidate.x,p.members[0].y-candidate.y)}]:[])
+            .filter(p=>p.distance<12).sort((a,b)=>b.weight-a.weight).slice(0,3).map(p=>p.i);
+        const movable=new Set([...blockers,...neighbors]);
+        const initialLayout={...best,pieces:best.pieces.map((p,i)=>blockers.includes(i)?{...p,members:[]}:p)};
+        const stores=best.storages.map((s,i)=>i===index?candidate:s);
+        const result=layOut(pieces,{storages:stores,cells,initialLayout,passes:1,exchangeBudget:6,
+            ...suppliedPlacementOptions(best),fixedPieces:new Set(pieces.flatMap((_,i)=>movable.has(i)?[]:[i]))});
+        result.storageAt={x:stores[0].x+stores[0].w/2,y:stores[0].y+stores[0].h/2};
+        result.tried+=best.tried; result.power=best.power;
+        if(!result.unplaced.length&&layoutCost(result)<layoutCost(best)-EPSILON)best=result;
+    }
+    return best;
 }
 
 // Add useful storage locations, then alternate relocating storage and laying facilities out.

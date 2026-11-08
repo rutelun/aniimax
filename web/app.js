@@ -15,6 +15,7 @@ import { ANIIMO_WALK_SPEED, workerTravelDistances } from './worker-travel.js?v=a
 import { haulingWorkload, allocateHauling, haulingBatchTrips } from './hauling.js?v=hauling-workload';
 import { changeOneMember, personalityInput, reserveLevelFourInputs, comparePlans, usefulUpgrade, keepBetterComparison } from './opportunity-comparison.js?v=protected-comparisons';
 import { comparisonConcurrency, startComparisonQueue } from './comparison-queue.js?v=parallel-comparisons';
+import { prepareOpportunities, startedProcessing } from './opportunity-effects.js?v=upgrade-effects';
 
 let wasmReady = false;
 
@@ -946,7 +947,7 @@ function improvementCandidates(base, setup) {
             }
         }
     }
-    return candidates.filter(candidate=>usefulUpgrade(candidate.input,candidate.change,recipeIndex));
+    return prepareOpportunities(base,candidates.filter(candidate=>usefulUpgrade(candidate.input,candidate.change,recipeIndex)),recipeIndex,plansBySetup[setup] || lastPlan);
 }
 
 // Prepare suggestions after planning. Full comparisons run only when the player requests
@@ -963,7 +964,8 @@ function rankImprovementsFor(setup, requested = null, detailed = false) {
             base.roster = { ...base.roster, hauling_seconds: plan.hauling_estimates,
                 hauling_default_seconds: haulingRouteBound() };
         }
-        current = { setup, plan, input: base, base: {plan}, candidates: improvementCandidates(base,setup),
+        const prepared = improvementCandidates(base,setup);
+        current = { setup, plan, input: base, base: {plan}, candidates: prepared.candidates, omitted: prepared.omitted,
             results: [], running:false, started:false, paused:false, activeIndex:null, activeIndices:[], phase:'' };
         rankingsBySetup[setup] = current;
     }
@@ -1074,6 +1076,24 @@ function comparisonTable(comparison) {
         }).join('')}</tbody></table></div>`;
 }
 
+function opportunityDescription(candidate) {
+    const lines = (candidate.effect?.lines || []).map(effect=>{
+        if (effect.kind==='unlocks') return translate('Opens recipe chains: {recipes}.')
+            .replace('{recipes}',effect.recipes.slice(0,5).map(name=>translate(prettyItem(name))).join(', ')+(effect.recipes.length>5?'…':''));
+        if (effect.kind==='capacity') return translate('Adds capacity at {facility}; {assigned} of {owned} buildings are currently assigned.')
+            .replace('{facility}',translate(effect.facility)).replace('{assigned}',effect.assigned).replace('{owned}',effect.owned);
+        if (effect.kind==='electric') return translate('Changes recipe capacity and E-mode power use at {facility}.').replace('{facility}',translate(effect.facility));
+        if (effect.kind==='level') return translate('Increases recipe capacity at {facility}.').replace('{facility}',translate(effect.facility));
+        if (effect.kind==='ability') return translate('Speeds up {ability} jobs at {facilities}.')
+            .replace('{ability}',translate(effect.ability)).replace('{facilities}',effect.facilities.slice(0,4).map(translate).join(', '));
+        if (effect.kind==='personality') return translate('Applies the matching personality bonus at {facilities}.')
+            .replace('{facilities}',effect.facilities.slice(0,4).map(translate).join(', '));
+        return '';
+    }).filter(Boolean);
+    return lines.slice(0,2).map(line=>`<p class="hint small">${escapeText(line)}</p>`).join('')
+        + (candidate.description ? `<p class="hint small">${candidate.description}</p>` : '');
+}
+
 function renderImprovements() {
     const card = document.getElementById('improve-card');
     if (!ranking || !lastPlan?.success) { card.style.display='none'; return; }
@@ -1113,19 +1133,25 @@ function renderImprovements() {
             : `<span class="improve-none">${translate(active?'Checking…':comparison
                 ? comparison.approximate?'Search inconclusive — use Detailed search':comparison.direction<0?'An earlier goal decreases':'No production gain found':error?'Could not compare':'Not checked')}</span>`;
         const resultKey = `result:${key}`;
+        const started = resultIndex != null ? startedProcessing(ranking.plan,ranking.results[resultIndex]?.plan) : [];
+        const productionNote = started.length ? `<p class="hint small">${escapeText(translate('Starts production: {recipes}.')
+            .replace('{recipes}',started.slice(0,5).map(name=>translate(prettyItem(name))).join(', ')+(started.length>5?'…':'')))}</p>` : '';
         const detail = comparison ? `<details class="comparison-result" data-open-key="${escapeText(resultKey)}"${open.has(resultKey)?' open':''}>
-            <summary>${translate('Before / after')}${found?` · ${translate(found.candidate.label)}`:''}</summary>${comparisonTable(comparison)}</details>`
+            <summary>${translate('Before / after')}${found?` · ${translate(found.candidate.label)}`:''}</summary>${productionNote}${comparisonTable(comparison)}</details>`
             : error ? `<p class="hint small">${translate('The search did not match the current plan. This does not show that the upgrade reduces production. Use Detailed search.')}</p>` : '';
         const button = `<span class="opportunity-actions"><button type="button" class="skip-add-btn" data-compare-group="${escapeText(key)}"${ranking.running?' disabled':''}>${translate('Quick compare')}</button>
             <button type="button" class="skip-add-btn" data-compare-detailed="${escapeText(key)}"${ranking.running?' disabled':''}>${translate('Detailed search')}</button></span>`;
         const row = `<li class="opportunity-row"><div class="opportunity-heading"><span>${name}</span>${button}</div>
-            ${first.description?`<p class="hint small">${first.description}</p>`:''}${status}
+            ${opportunityDescription(found?.candidate || ranking.candidates[group.indices.at(-1)])}${status}
             ${retained?`<p class="hint small">${translate('Kept the better plan from the previous search.')}</p>`:''}${detail}</li>`;
         if (!kinds.has(group.kind)) kinds.set(group.kind,[]);
         kinds.get(group.kind).push(row);
     }
     const ranked = [...best.values()].sort((a,b)=>b.gain.score-a.gain.score);
-    holder.innerHTML = (!total ? `<p class="hint">${translate('Nothing left to unlock or upgrade.')}</p>` : '')
+    const omitted = ranking.omitted || [];
+    holder.innerHTML = (omitted.length ? `<details class="improve-kind" data-open-key="omitted"${open.has('omitted')?' open':''}><summary>${translate('Skipped {n} options with no recipe or capacity change.').replace('{n}',omitted.length)}</summary>
+        <ul>${omitted.map(candidate=>`<li>${translate(candidate.label)} — ${translate(candidate.effect.skip)}</li>`).join('')}</ul></details>` : '')
+        + (!total ? `<p class="hint">${translate('Nothing left to unlock or upgrade.')}</p>` : '')
         + (ranked.length ? `<ol class="improve-list">${ranked.map(r=>
         `<li><span class="improve-name">${translate(r.candidate.label)}</span><span class="improve-gain">${r.gain.text}</span></li>`).join('')}</ol>` : '')
         + [...kinds].map(([kind,items])=>`<details class="improve-kind" data-open-key="${kind}"${open.has(kind)?' open':''}>

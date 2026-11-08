@@ -985,5 +985,16 @@
   "Choose a family to use this Aniimo for Leisure recipes.": "請選擇家族，才能安排此伊莫製作休閒配方。",
   "An Aniimo can take any job needing its ability at or below its level while it has hours to spare, as long as no two of its facilities want opposite personalities. It has four personalities, one from each pair, shown as letters over its portrait: Instinctive or Energetic (I/E), Nimble or Practical (N/S), Faithful or Tenacious (F/T), Playful or Judicious (P/J). Facilities with a resident Aniimo (Sandcastle, Dewy House and the like) need one each, and so does each Heat Furnace (Fire), Cooling Unit (Ice) and Sunlamp (Light) in use. With My Aniimo, crop jobs and walking between workplaces share the workers' available time. Not yet checked in game: each recipe's minimum ability level, the Farmland and Woodland jobs, and whether an environment building's Aniimo level or personality matters.": "只要還有剩餘時數，且它負責的任兩個設施不要求相反的性格，一隻伊莫就能接下任何需要其能力、且所需等級不高於其等級的工作。每隻伊莫有四種性格，每組各取一種，以字母顯示在頭像上：性格I或性格E（I/E）、性格N或性格S（N/S）、性格F或性格T（F/T）、性格P或性格J（P/J）。有常駐伊莫的設施（汐語沙堡、採蜜鳥屋等）各需一隻，使用中的每座熱能爐（火）、製冷機（冰）和日光燈（光）也一樣。選擇「我的伊莫」時，田地與林地工作及工作地點間的移動都會計入工作時數。尚未在遊戲中確認：各配方的最低能力等級、田地和林地的工作，以及環境建築的伊莫等級或性格是否有影響。",
   "{minutes} min/h walking": "每小時步行 {minutes} 分鐘",
-  "Travel is calculated automatically from the workplace layout at the delivery speed ({speed} tiles/s). Walking time is included in Aniimo workload.": "依工作地點配置與配送速度（{speed} 格/秒）自動計算移動，步行時間會計入伊莫負荷。"
+  "Travel is calculated automatically from the workplace layout at the delivery speed ({speed} tiles/s). Walking time is included in Aniimo workload.": "依工作地點配置與配送速度（{speed} 格/秒）自動計算移動，步行時間會計入伊莫負荷。",
+  "Opens recipe chains: {recipes}.": "開放配方生產鏈：{recipes}。",
+  "Adds capacity at {facility}; {assigned} of {owned} buildings are currently assigned.": "增加 {facility} 的產能；目前 {owned} 座建築中有 {assigned} 座已分配配方。",
+  "Changes recipe capacity and E-mode power use at {facility}.": "改變 {facility} 的配方產能及電力模式耗電量。",
+  "Increases recipe capacity at {facility}.": "提高 {facility} 的配方產能。",
+  "Speeds up {ability} jobs at {facilities}.": "加快 {facilities} 的 {ability} 工作。",
+  "Applies the matching personality bonus at {facilities}.": "在 {facilities} 套用匹配性格加成。",
+  "Skipped {n} options with no recipe or capacity change.": "已略過 {n} 個不改變配方或產能的選項。",
+  "No additional usable recipes at this module level.": "此模組等級不會增加可用配方。",
+  "No reachable production chain uses this facility.": "沒有可用的生產鏈需要此設施。",
+  "Usable recipe capacity is unchanged at this level.": "此等級不會改變可用配方的產能。",
+  "Starts production: {recipes}.": "開始生產：{recipes}。"
 }
