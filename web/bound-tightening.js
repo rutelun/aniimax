@@ -27,6 +27,10 @@ export function tightenIntegerBounds(highs,problem,incumbent,{timeLimit=4,now=()
             if(previous.length)model.changeColsCost({kind:'set',indices:previous},previous.map(()=>0));
             previous=indices;
             for(const sign of [1,-1]){
+                // A feasible witness already reaches these bounds. Its zero use rules
+                // out a positive minimum; use at capacity rules out a tighter maximum.
+                // Neither probe can add a cut, so retain its full search time for useful LPs.
+                if(sign===-1&&seed===0 || sign===1&&seed>=capacity)continue;
                 const remaining=timeLimit-(now()-start)/1000;
                 if(remaining<=0)break;
                 // HiGHS accumulates run time on a persistent model. Each probe

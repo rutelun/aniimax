@@ -30,6 +30,54 @@ const CLUSTER_TRIES = 24;
 const CLUSTER_PACKS = 2;
 const CLUSTER_PACK_MOST = 12;
 
+// Quarter-tile rectangles can query a summed-area table instead of intersecting every
+// open plot on every placement. Non-grid or overlapping input retains the area check.
+export function createInsideTest(cells) {
+    if (!cells) return () => true;
+    const fallback = r => cells.reduce((sum,c)=>sum+overlapArea(r,c),0)>=r.w*r.h-EPSILON;
+    if (!cells.length || !cells.every(c=>[c.x,c.y,c.w,c.h,c.x+c.w,c.y+c.h].every(v=>Number.isSafeInteger(v/STEP))&&c.w>0&&c.h>0)
+        || cells.some((c,i)=>cells.slice(i+1).some(other=>overlapArea(c,other)>0))) return fallback;
+    const left=Math.min(...cells.map(c=>c.x))/STEP,top=Math.min(...cells.map(c=>c.y))/STEP;
+    const width=Math.max(...cells.map(c=>c.x+c.w))/STEP-left,height=Math.max(...cells.map(c=>c.y+c.h))/STEP-top;
+    if (width*height>1_000_000) return fallback;
+    const covered=new Uint8Array(width*height),stride=width+1,prefix=new Uint32Array(stride*(height+1));
+    for(const cell of cells){
+        const x=cell.x/STEP-left,y=cell.y/STEP-top,w=cell.w/STEP,h=cell.h/STEP;
+        for(let row=y;row<y+h;row++)covered.fill(1,row*width+x,row*width+x+w);
+    }
+    for(let y=0;y<height;y++){
+        let count=0;
+        for(let x=0;x<width;x++){
+            count+=covered[y*width+x];
+            prefix[(y+1)*stride+x+1]=prefix[y*stride+x+1]+count;
+        }
+    }
+    return r=>{
+        if (!Number.isSafeInteger(r.x/STEP)||!Number.isSafeInteger(r.y/STEP)||!Number.isSafeInteger(r.w/STEP)||!Number.isSafeInteger(r.h/STEP)
+            || !Number.isSafeInteger((r.x+r.w)/STEP)||!Number.isSafeInteger((r.y+r.h)/STEP)
+            || r.w<=0 || r.h<=0) return fallback(r);
+        const x=r.x/STEP-left,y=r.y/STEP-top,w=r.w/STEP,h=r.h/STEP;
+        if(x<0||y<0||x+w>width||y+h>height)return false;
+        const count=prefix[(y+h)*stride+x+w]-prefix[y*stride+x+w]-prefix[(y+h)*stride+x]+prefix[y*stride+x];
+        return count===w*h;
+    };
+}
+
+export function cacheGridDistance(extent, distance) {
+    const left=Math.floor(extent.x/STEP),top=Math.floor(extent.y/STEP);
+    const width=Math.ceil(extent.x2/STEP)-left+1,height=Math.ceil(extent.y2/STEP)-top+1;
+    if(![left,top,Math.ceil(extent.x2/STEP),Math.ceil(extent.y2/STEP)].every(Number.isSafeInteger)
+        || !Number.isFinite(width*height)||width*height>1_000_000||width<=0||height<=0)return distance;
+    const values=new Float64Array(width*height).fill(-1);
+    return (x,y)=>{
+        const ix=x/STEP-left,iy=y/STEP-top;
+        if(!Number.isInteger(ix)||!Number.isInteger(iy)||ix<0||iy<0||ix>=width||iy>=height)return distance(x,y);
+        const index=iy*width+ix;
+        if(values[index]<0)values[index]=distance(x,y);
+        return values[index];
+    };
+}
+
 // `pieces`: each either
 // - `{ members: [{ x, y, w, h, weight, sensitive }] }`, one rigid piece (a facility unit), whose
 //   members are relative to its own frame; `sensitive` members stay out of every coverage square;
@@ -49,7 +97,7 @@ export function layOut(pieces, options = {}) {
     const storageRect = { x: -storage.w / 2, y: -storage.h / 2, w: storage.w, h: storage.h };
     const storages = options.storages ?? [storageRect];
     const storageCenters = storages.map(s => [s.x + s.w / 2, s.y + s.h / 2]);
-    const distanceToStorage = (x, y) => {
+    const rawDistanceToStorage = (x, y) => {
         if (!storageCenters.length) return Math.hypot(x, y);
         let nearest = Infinity;
         for (const center of storageCenters) {
@@ -61,7 +109,7 @@ export function layOut(pieces, options = {}) {
     };
     let tried = 0;
     // Within the open cells: the parts of it inside each cell add up to all of it.
-    const inside = r => !cells || cells.reduce((sum, c) => sum + overlapArea(r, c), 0) >= r.w * r.h - EPSILON;
+    const inside = createInsideTest(cells);
     const shapes = pieces.map(piece => (piece.cluster ? clusterOrientations(piece) : orientations(piece.members)));
     const membersOf = piece => (piece.cluster ? [...piece.buildings.map(b => ({ ...b, weight: 0 })), ...piece.plots] : piece.members);
     const weightOf = piece => membersOf(piece).reduce((sum, m) => sum + m.weight, 0);
@@ -80,6 +128,7 @@ export function layOut(pieces, options = {}) {
             x2: Math.max(...cells.map(c => c.x + c.w)), y2: Math.max(...cells.map(c => c.y + c.h)),
         }
         : { x: -reach, y: -reach, x2: reach, y2: reach };
+    const distanceToStorage = cacheGridDistance(extent,rawDistanceToStorage);
     const offsets = latticeByDistance(extent, STEP, distanceToStorage);
     // Environment buildings stand on whole tiles, which is plenty for them and far fewer to try.
     const clusterOffsets = latticeByDistance(extent, 1, distanceToStorage);
@@ -87,14 +136,23 @@ export function layOut(pieces, options = {}) {
     // What's down: rectangles by piece, found through a coarse grid; coverage squares by cluster;
     // and the rectangles that must stay out of every square.
     const grid = new Map();
+    const minCellX=Math.floor(extent.x/CELL)-2,minCellY=Math.floor(extent.y/CELL)-2;
+    const cellWidth=Math.ceil(extent.x2/CELL)-minCellX+3,cellHeight=Math.ceil(extent.y2/CELL)-minCellY+3;
+    // Numeric keys avoid allocating strings in the inner collision loop. Coordinates
+    // outside this layout's finite grid retain distinct string keys.
+    const cellKey=(x,y)=>x>=minCellX&&y>=minCellY&&x<minCellX+cellWidth&&y<minCellY+cellHeight
+        ? (x-minCellX)*cellHeight+y-minCellY : `${x},${y}`;
+    const spatialCells=r=>cellsOf(r,cellKey);
     const placedRects = new Map();
+    const collisionSeen=new Uint32Array(pieces.length+2);
+    let collisionStamp=0;
     let activeWorkerHubs = new Map();
     const hasWorkerRoutes = pieces.some(p => membersOf(p).some(m => m.workers?.length));
     const squares = new Map();
     const sensitive = new Map();
     const occupy = (key, spot) => {
         placedRects.set(key, spot.rects);
-        spot.rects.forEach(r => cellsOf(r).forEach(c => {
+        spot.rects.forEach(r => spatialCells(r).forEach(c => {
             if (!grid.has(c)) grid.set(c, new Set());
             grid.get(c).add(key);
         }));
@@ -102,20 +160,28 @@ export function layOut(pieces, options = {}) {
         if (spot.sensitive?.length) sensitive.set(key, spot.sensitive);
     };
     const vacate = key => {
-        (placedRects.get(key) || []).forEach(r => cellsOf(r).forEach(c => grid.get(c)?.delete(key)));
+        (placedRects.get(key) || []).forEach(r => spatialCells(r).forEach(c => grid.get(c)?.delete(key)));
         placedRects.delete(key);
         squares.delete(key);
         sensitive.delete(key);
     };
-    const free = (r, ignore, extra = []) => {
+    const free = (r, ignore) => {
         if (!inside(r)) return false;
-        for (const c of cellsOf(r)) {
-            for (const other of grid.get(c) || []) {
+        collisionStamp=(collisionStamp+1)>>>0;
+        if(!collisionStamp){collisionSeen.fill(0);collisionStamp=1;}
+        const right=Math.floor((r.x+r.w-EPSILON)/CELL),bottom=Math.floor((r.y+r.h-EPSILON)/CELL);
+        for(let cx=Math.floor(r.x/CELL);cx<=right;cx++)for(let cy=Math.floor(r.y/CELL);cy<=bottom;cy++){
+            const occupants=grid.get(cellKey(cx,cy));
+            if(!occupants)continue;
+            for (const other of occupants) {
                 if (other === ignore) continue;
-                if (placedRects.get(other).some(o => overlaps(r, o))) return false;
+                const index=typeof other==='number'?other:pieces.length+(other==='storage'?0:1);
+                if(collisionSeen[index]===collisionStamp)continue;
+                collisionSeen[index]=collisionStamp;
+                for(const o of placedRects.get(other))if(overlaps(r,o))return false;
             }
         }
-        return !extra.some(o => overlaps(r, o));
+        return true;
     };
     const inOtherSquare = (r, ignore) => {
         for (const [key, list] of squares) {
@@ -131,6 +197,32 @@ export function layOut(pieces, options = {}) {
         for (const shape of shapes[i]) {
             const travelRadius = hasWorkerRoutes && shape.members.some(m => m.workers?.length) ? 6 : 0;
             let firstFit = null;
+            // Almost every rigid piece is one physical building. Reuse its probe rectangle
+            // and only copy a winning position instead of allocating arrays per grid point.
+            if(shape.members.length===1&&options.singleBuildingFastPath!==false){
+                const member=shape.members[0],rectangle={x:0,y:0,w:member.w,h:member.h},rectangles=[rectangle];
+                for(const [ox,oy,distance] of offsets){
+                    if(firstFit!==null&&distance>firstFit+shape.spread+STEP+travelRadius)break;
+                    const x=snap(ox-shape.cx),y=snap(oy-shape.cy);
+                    rectangle.x=member.x+x;rectangle.y=member.y+y;tried++;
+                    if(!free(rectangle,i)||member.sensitive&&inOtherSquare(rectangle,i))continue;
+                    if(options.canPlace&&!options.canPlace(i,shape.members,rectangles))continue;
+                    if(firstFit===null)firstFit=distance;
+                    const centerX=rectangle.x+rectangle.w/2,centerY=rectangle.y+rectangle.h/2;
+                    const away=distanceToStorage(centerX,centerY);
+                    let walking=0;
+                    if(hasWorkerRoutes)for(const [worker,visits] of member.workers || []){
+                        const hub=activeWorkerHubs.get(worker);
+                        if(hub)walking+=visits*Math.hypot(centerX-hub.x,centerY-hub.y);
+                    }
+                    const cost=member.weight*away+walking+EPSILON*away;
+                    if(!best||cost<best.cost-EPSILON){
+                        const placed={...rectangle};
+                        best={cost,x,y,shape,rects:[placed],sensitive:member.sensitive?[placed]:[]};
+                    }
+                }
+                continue;
+            }
             for (const [ox, oy, distance] of offsets) {
                 if (firstFit !== null && distance > firstFit + shape.spread + STEP
                     + travelRadius) break;
@@ -162,15 +254,22 @@ export function layOut(pieces, options = {}) {
         const own = buildings.map(b => ({ x: b.x + b.w / 2 - RADIUS, y: b.y + b.h / 2 - RADIUS, w: 2 * RADIUS, h: 2 * RADIUS }));
         if (!clear(buildings, own)) return null;
         const allowed = (r, zone) => {
-            const inside = shape.pair ? [[0], [0, 1], [1]][zone] : [0];
-            const outside = shape.pair ? [[1], [], [0]][zone] : [];
-            return inside.every(k => overlaps(r, own[k])) && outside.every(k => !overlaps(r, own[k])) && !inOtherSquare(r, i);
+            if(shape.pair){
+                if(!overlaps(r,own[zone===2?1:0]) || zone===1&&!overlaps(r,own[1])
+                    || zone!==1&&overlaps(r,own[zone===0?1:0]))return false;
+            }else if(!overlaps(r,own[0]))return false;
+            return !inOtherSquare(r,i);
         };
         const costOf = rects => shape.plots.reduce((sum, p, j) => sum + p.weight * distanceToStorage(rects[j].x + p.w / 2, rects[j].y + p.h / 2), 0)
             + (hasWorkerRoutes ? workerPlacementCost(shape.plots, rects, activeWorkerHubs) : 0);
         let plots = null;
-        const slots = shape.plots.map((p, j) => ({ x: shape.planned[j].x + x, y: shape.planned[j].y + y, w: p.w, h: p.h }));
-        if (slots.every(r => free(r, i) && !buildings.some(b => overlaps(r, b)))) {
+        const slots = [];
+        for(let j=0;j<shape.plots.length;j++){
+            const p=shape.plots[j],r={x:shape.planned[j].x+x,y:shape.planned[j].y+y,w:p.w,h:p.h};
+            if(!free(r,i)||buildings.some(b=>overlaps(r,b)))break;
+            slots.push(r);
+        }
+        if (slots.length===shape.plots.length) {
             plots = assignSlots(shape.plots, slots, distanceToStorage);
             if (!plots.every((r, j) => allowed(r, shape.plots[j].zone))) plots = null;
         }
@@ -311,7 +410,7 @@ export function layOut(pieces, options = {}) {
             && !options.fixedPieces?.has(i);
         const blockersAt = (rectangle, i) => {
             const blockers = new Set();
-            for (const cell of cellsOf(rectangle)) for (const other of grid.get(cell) || []) {
+            for (const cell of spatialCells(rectangle)) for (const other of grid.get(cell) || []) {
                 if (other === i || blockers.has(other)) continue;
                 if (!placedRects.get(other).some(r => overlaps(r, rectangle))) continue;
                 if (!movable(other)) return null;
@@ -774,11 +873,11 @@ function overlaps(a, b) {
     return a.x < b.x + b.w - EPSILON && b.x < a.x + a.w - EPSILON && a.y < b.y + b.h - EPSILON && b.y < a.y + a.h - EPSILON;
 }
 
-function cellsOf(r) {
+function cellsOf(r,keyOf) {
     const cells = [];
     for (let cx = Math.floor(r.x / CELL); cx <= Math.floor((r.x + r.w - EPSILON) / CELL); cx++) {
         for (let cy = Math.floor(r.y / CELL); cy <= Math.floor((r.y + r.h - EPSILON) / CELL); cy++) {
-            cells.push(`${cx},${cy}`);
+            cells.push(keyOf(cx,cy));
         }
     }
     return cells;

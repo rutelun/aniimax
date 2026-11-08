@@ -244,6 +244,8 @@ Successive solves can retain one native HiGHS model per worker, updating objecti
 
 Homeland placement includes bounded joint moves of a Storage Unit and up to four displaced buildings, followed by nearby facility placement. Every accepted layout keeps all physical units, growing zones and connected power infrastructure, and improves the combined hauling/worker-distance objective. This spatial search remains heuristic.
 
+Quarter-tile placement uses a summed-area table for open-plot containment, cached storage distances and reusable single-building probes. These shortcuts preserve candidate order and placement scores; irregular geometry falls back to the original intersection checks. Bound tightening skips probes whose feasible incumbent already reaches zero or capacity, since they cannot supply a tighter valid bound.
+
 ### Web App Fallback: Joint Facility Allocation
 
 The heuristic planner (`find_plan`, backed by `find_production_plan`) solves a harder version of the problem than "what's the single best item": it solves for what *every* owned facility should be doing at once, including facilities that multiple recipes want to share.

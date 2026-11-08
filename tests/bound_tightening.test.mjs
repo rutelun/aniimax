@@ -46,3 +46,22 @@ test('no bound is fabricated without a usable incumbent, metadata, or probing bu
     assert.deepEqual(tightenIntegerBounds(highs,problem,{values:[2],objective:10}),[]);
     assert.deepEqual(tightenIntegerBounds(highs,problem,{values:[2,0],objective:10},{timeLimit:0}),[]);
 });
+
+test('a feasible zero/capacity witness skips only probes that cannot tighten a bound',()=>{
+    let runs=0;
+    const measured={constants:highs.constants,createModel:source=>{
+        const model=highs.createModel(source),run=model.run.bind(model);
+        model.run=()=>{runs++;return run();};return model;
+    }};
+    const p={...problem,integer_groups:[['unused',[[1,1]],2],['at capacity',[[0,1]],2]]};
+    const cuts=tightenIntegerBounds(measured,p,{values:[2,0],objective:10});
+    assert.equal(runs,2,'the known zero minimum and already reached maximum require no LP search');
+    assert.ok(cuts.some(c=>c.lower===1));
+    for(let a=0;a<=2;a++)for(let b=0;b<=2;b++){
+        if(a+b>2.5||5*a+4*b<10*(1-1e-4))continue;
+        for(const cut of cuts){
+            const value=cut.terms.reduce((s,[key,c])=>s+c*(key==='fast'?a:b),0);
+            assert.ok(cut.lower==null?value<=cut.upper:value>=cut.lower);
+        }
+    }
+});
