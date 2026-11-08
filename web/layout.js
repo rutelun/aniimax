@@ -213,12 +213,15 @@ export function layOut(pieces, options = {}) {
         return best;
     };
 
-    const place = i => {
+    const refreshWorkerHubs = i => {
         if (hasWorkerRoutes) {
             const others = [...placedRects].filter(([key]) => typeof key === 'number' && key !== i)
                 .flatMap(([key, rects]) => rects.map((r, j) => ({ ...membersOf(pieces[key])[j], ...r })));
             activeWorkerHubs = workerHubs(others);
         }
+    };
+    const place = i => {
+        refreshWorkerHubs(i);
         return pieces[i].cluster ? placeCluster(i) : placeRigid(i);
     };
     const positionCost = spot => {
@@ -290,6 +293,91 @@ export function layOut(pieces, options = {}) {
             occupy(i, placed.get(i));
         }
         if (!moved) break;
+    }
+
+    // A busy large building cannot enter a better position occupied by several small ones,
+    // even when those smaller units would fit where it stood. Try bounded joint moves after
+    // the ordinary single-piece search. Every transaction is scored against the complete
+    // hauling + worker objective, and rolled back unless all displaced units fit and it wins.
+    const completeCost = () => {
+        const members = [...placed].flatMap(([i, spot]) => spot.rects.map((r, j) => ({ ...membersOf(pieces[i])[j], ...r })));
+        return members.reduce((sum, m) => sum + ((m.weight || 0) + EPSILON)
+            * distanceToStorage(m.x + m.w / 2, m.y + m.h / 2), 0) + workerLayoutCost(members);
+    };
+    let exchangeBudget = options.exchangeBudget ?? 0;
+    if (exchangeBudget > 0) {
+        let currentCost = completeCost();
+        const movable = i => placed.has(i) && !pieces[i].cluster && placed.get(i).rects.length === 1
+            && !options.fixedPieces?.has(i);
+        const blockersAt = (rectangle, i) => {
+            const blockers = new Set();
+            for (const cell of cellsOf(rectangle)) for (const other of grid.get(cell) || []) {
+                if (other === i || blockers.has(other)) continue;
+                if (!placedRects.get(other).some(r => overlaps(r, rectangle))) continue;
+                if (!movable(other)) return null;
+                blockers.add(other);
+                if (blockers.size > 4) return null;
+            }
+            return [...blockers];
+        };
+        const candidates = order.filter(i => movable(i) && weightOf(pieces[i]) > 0)
+            .sort((a, b) => {
+                const priority = i => { const r = placed.get(i).rects[0];
+                    return weightOf(pieces[i]) * distanceToStorage(r.x + r.w / 2, r.y + r.h / 2); };
+                return priority(b) - priority(a);
+            });
+        for (const i of candidates) {
+            if (exchangeBudget <= 0) break;
+            const previous = placed.get(i), r = previous.rects[0];
+            const distance = distanceToStorage(r.x + r.w / 2, r.y + r.h / 2);
+            const proposals = [], seenGroups = new Map();
+            for (const shape of shapes[i]) {
+                for (const [ox, oy, away] of offsets) {
+                    if (away >= distance - STEP) break;
+                    const x = snap(ox - shape.cx), y = snap(oy - shape.cy);
+                    const m = shape.members[0], rectangle = { x: m.x + x, y: m.y + y, w: m.w, h: m.h };
+                    if (!inside(rectangle) || (m.sensitive && inOtherSquare(rectangle, i))) continue;
+                    if (options.canPlace && !options.canPlace(i, shape.members, [rectangle])) continue;
+                    const blockers = blockersAt(rectangle, i);
+                    if (!blockers?.length) continue;
+                    const group = blockers.sort((a, b) => a - b).join(',');
+                    // A couple of positions per displaced group avoids spending the budget
+                    // on quarter-tile variants of exactly the same exchange.
+                    if ((seenGroups.get(group) || 0) >= 2) continue;
+                    seenGroups.set(group, (seenGroups.get(group) || 0) + 1);
+                    proposals.push({ blockers, spot: { x, y, shape, rects: [rectangle],
+                        sensitive: m.sensitive ? [rectangle] : [], cost: 0 }, away });
+                }
+            }
+            proposals.sort((a, b) => a.away - b.away || a.blockers.length - b.blockers.length);
+            for (const { spot } of proposals.slice(0, 6)) {
+                if (exchangeBudget-- <= 0) break;
+                // Previous accepted exchanges can change occupancy while candidate lists
+                // are being traversed; derive this transaction from the current grid.
+                const currentBlockers = blockersAt(spot.rects[0], i);
+                if (!currentBlockers?.length) continue;
+                const saved = new Map([i, ...currentBlockers].map(j => [j, placed.get(j)]));
+                for (const j of saved.keys()) vacate(j);
+                placed.set(i, spot); occupy(i, spot);
+                let fits = true;
+                for (const j of currentBlockers.sort((a, b) => weightOf(pieces[b]) - weightOf(pieces[a]))) {
+                    const replacement = place(j);
+                    if (!replacement) { fits = false; break; }
+                    placed.set(j, replacement); occupy(j, replacement);
+                }
+                const cost = fits ? completeCost() : Infinity;
+                if (cost < currentCost - EPSILON) {
+                    currentCost = cost;
+                    for (const j of saved.keys()) {
+                        refreshWorkerHubs(j);
+                        placed.get(j).cost = positionCost(placed.get(j));
+                    }
+                    break;
+                }
+                for (const j of saved.keys()) vacate(j);
+                for (const [j, old] of saved) { placed.set(j, old); occupy(j, old); }
+            }
+        }
     }
 
     return {
@@ -388,11 +476,11 @@ export function layoutCost(layout) {
 // Refine against the final infrastructure: poles and generators stay fixed, and consumers
 // may move only within connected supply zones. Climate and collision checks still apply.
 export function refineSuppliedLayout(layout, pieces, cells) {
-    if (!layout.power?.generators || layout.unplaced.length || layout.power.disconnected) return layout;
-    const zones = layout.power.coverage.filter(zone => zone.connected);
+    if (layout.unplaced.length || layout.power?.disconnected) return layout;
+    const zones = (layout.power?.coverage || []).filter(zone => zone.connected);
     const refined = layOut(pieces, {
-        storages: layout.storages, cells, passes: 2, initialLayout: layout,
-        obstacles: layout.power.poles,
+        storages: layout.storages, cells, passes: 2, exchangeBudget: 24, initialLayout: layout,
+        obstacles: layout.power?.poles,
         fixedPieces: new Set(layout.pieces.flatMap((p, i) => p.members.some(m => m.generator) ? [i] : [])),
         canPlace: (i, metadata, rectangles) => metadata.every((member, j) => member.electric_level == null
             || zones.some(zone => Math.min(rectangles[j].x + rectangles[j].w, zone.x + zone.w) - Math.max(rectangles[j].x, zone.x) >= .25 - EPSILON

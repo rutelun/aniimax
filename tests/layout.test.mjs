@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { layOut, layOutHomeland, nearestStorage } from '../web/layout.js';
+import { layOut, layOutHomeland, nearestStorage, layoutCost } from '../web/layout.js';
 import { storageUnitLimit } from '../web/facility-config.js';
 
 const cells = [{ x: 0, y: 0, w: 20, h: 15 }, { x: 20, y: 0, w: 20, h: 15 }];
@@ -89,4 +89,43 @@ test('continuing a rotated environment layout preserves coverage and all physica
     const rectangles = [...layout.storages, ...layout.pieces.flatMap(p => p.members)];
     assert.ok(rectangles.every((r, i) => rectangles.slice(i + 1).every(other => !overlap(r, other))));
     assert.ok(cost(layout) <= cost(initialLayout) + 1e-5);
+});
+
+test('a frequent large producer can replace four small units in a fully occupied nearer bay', () => {
+    const members = [
+        { x: 10, y: 0, w: 4, h: 4, weight: 100, facility: 'Frequent producer' },
+        ...[2, 4].flatMap(x => [0, 2].map(y => ({ x, y, w: 2, h: 2, weight: 0.1, facility: 'Infrequent producer' }))),
+        { x: 6, y: 0, w: 4, h: 4, weight: 0, facility: 'Fixed building' },
+    ];
+    const pieces = members.map(m => ({ members: [{ ...m, x: 0, y: 0 }] }));
+    const initialLayout = { pieces: members.map(m => ({ members: [m] })) };
+    const options = { cells: [{ x: 0, y: 0, w: 14, h: 4 }],
+        storages: [{ x: 0, y: 0, w: 2, h: 2 }], initialLayout, fixedPieces: new Set([5]) };
+    const singleMoves = layOut(pieces, options);
+    assert.equal(singleMoves.pieces[0].members[0].x, 10, 'single-building moves cannot escape this packing');
+    const exchanged = layOut(pieces, { ...options, exchangeBudget: 24 });
+    assert.equal(exchanged.pieces[0].members[0].x, 2);
+    assert.equal(exchanged.unplaced.length, 0);
+    assert.equal(exchanged.pieces.flatMap(p => p.members).length, members.length);
+    assert.ok(layoutCost(exchanged) < layoutCost(singleMoves) / 2);
+    assert.deepEqual(exchanged.pieces[5].members[0], members[5]);
+    const rectangles = [...exchanged.storages, ...exchanged.pieces.flatMap(p => p.members)];
+    assert.ok(rectangles.every((r, i) => rectangles.slice(i + 1).every(other => !overlap(r, other))));
+});
+
+test('a shorter delivery route is rejected when the joint move increases shared worker travel more', () => {
+    const members = [
+        { x: 10, y: 0, w: 4, h: 4, weight: 100, workers: [[0, 10000]] },
+        ...[2, 4].flatMap(x => [0, 2].map(y => ({ x, y, w: 2, h: 2, weight: 0.1 }))),
+        { x: 6, y: 0, w: 4, h: 4, weight: 0 },
+        { x: 14, y: 0, w: 2, h: 4, weight: 0, workers: [[0, 10000]] },
+    ];
+    const pieces = members.map(m => ({ members: [{ ...m, x: 0, y: 0 }] }));
+    const options = { cells: [{ x: 0, y: 0, w: 16, h: 4 }], storages: [{ x: 0, y: 0, w: 2, h: 2 }],
+        initialLayout: { pieces: members.map(m => ({ members: [m] })) }, fixedPieces: new Set([5, 6]) };
+    const initial = layOut(pieces, options);
+    const exchanged = layOut(pieces, { ...options, exchangeBudget: 24 });
+    assert.equal(exchanged.pieces[0].members[0].x, 10);
+    assert.equal(exchanged.unplaced.length, 0);
+    assert.ok(layoutCost(exchanged) <= layoutCost(initial) + 1e-6);
 });
