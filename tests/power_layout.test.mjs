@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { connectPower, powerLinked } from '../web/power-layout.js';
+import { connectPower, powerLinked, updatePowerConnections } from '../web/power-layout.js';
+import { refineSuppliedLayout, layoutCost, nearestStorage } from '../web/layout.js';
 import { powerPoleLimit, generatorLimit } from '../web/facility-config.js';
 import { allocateTurnFacilities } from '../web/turn-jobs.js';
 
@@ -32,8 +33,52 @@ test('distant electric buildings get a connected pole route on clear open land',
     });
     const reached = new Set([source]);
     for (let i = 0; i < rectangles.length; i++) for (const r of rectangles)
-        if ([...reached].some(n => powerLinked(n, r))) reached.add(r);
+        if ([...reached].some(n => (n.generator || n.pole) && powerLinked(n, r))) reached.add(r);
     assert.ok(reached.has(target));
+    assert.ok(result.power.links.every(link => [source, ...result.power.poles].some(n =>
+        n.x + n.w / 2 === link.from.x && n.y + n.h / 2 === link.from.y)));
+});
+
+test('a consumer overlapping two supply areas cannot energize a pole or another generator', () => {
+    const source = generator(0, 0);
+    const bridge = { ...consumer(5, 0), w: 5 };
+    const pole = { x: 10, y: 0, w: 1.5, h: 1.5, pole: true };
+    const far = consumer(13, 0);
+    const otherGenerator = generator(14, 0);
+    const result = layout([source, bridge, far, otherGenerator]);
+    result.power = { poles: [pole], maximum: 6 };
+    updatePowerConnections(result);
+    assert.equal(bridge.power_connected, true);
+    assert.equal(far.power_connected, false);
+    assert.equal(result.power.disconnected, 3);
+    assert.equal(result.power.links.length, 1);
+    assert.deepEqual(result.power.coverage.map(zone => zone.connected), [true, false, false]);
+});
+
+test('post-routing refinement fills nearby holes without moving or breaking power infrastructure', () => {
+    const source = generator(8, 8);
+    const pole = { x: 13, y: 8, w: 1.5, h: 1.5, pole: true };
+    const mine = { ...consumer(17, 8), w: 5, h: 5, weight: 5, facility: 'Mine' };
+    const wool = { x: 30, y: 8, w: 5, h: 5, weight: 3, facility: 'Nimbus Bed' };
+    const members = [source, mine, wool].map(m => ({ weight: 0, ...m }));
+    const pieces = members.map(m => ({ members: [{ ...m, x: 0, y: 0 }] }));
+    const before = { storages: [{ x: 0, y: 8, w: 2, h: 2 }],
+        pieces: members.map(m => ({ members: [m] })), unplaced: [], tried: 0, power: { poles: [pole], maximum: 6 } };
+    updatePowerConnections(before);
+    assert.equal(before.power.disconnected, 0);
+    const refined = refineSuppliedLayout(before, pieces, [{ x: 0, y: 0, w: 40, h: 20 }]);
+    assert.ok(layoutCost(refined) < layoutCost(before));
+    const result = updatePowerConnections(refined);
+    assert.equal(result.power.disconnected, 0);
+    assert.deepEqual(result.pieces[0].members[0], before.pieces[0].members[0]);
+    assert.deepEqual(result.power.poles, [pole]);
+    const movedWool = result.pieces[2].members[0], store = nearestStorage(movedWool, result.storages);
+    assert.ok(Math.hypot(movedWool.x + movedWool.w / 2 - store.x - store.w / 2,
+        movedWool.y + movedWool.h / 2 - store.y - store.h / 2) < 6);
+    const rectangles = [...result.storages, ...result.pieces.flatMap(p => p.members), ...result.power.poles];
+    const overlaps = (a, b) => Math.min(a.x + a.w, b.x + b.w) > Math.max(a.x, b.x) + 1e-6
+        && Math.min(a.y + a.h, b.y + b.h) > Math.max(a.y, b.y) + 1e-6;
+    assert.ok(rectangles.every((r, i) => rectangles.slice(i + 1).every(other => !overlaps(r, other))));
 });
 test('pole cap and missing generators leave explicit disconnected consumers', () => {
     const result = connectPower(layout([generator(), consumer(35), consumer(1)]), cells, 0, false);

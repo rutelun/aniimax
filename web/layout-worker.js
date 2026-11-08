@@ -6,8 +6,11 @@ const ready = import('./layout.js' + new URL(import.meta.url).search);
 const powerReady = import('./power-layout.js' + new URL(import.meta.url).search);
 
 self.onmessage = async (event) => {
-    const { layOutHomeland } = await ready;
-    const { connectPower } = await powerReady;
+    const { layOutHomeland, refineSuppliedLayout } = await ready;
+    const { connectPower, updatePowerConnections } = await powerReady;
     const layout = layOutHomeland(event.data.pieces, event.data.cells, { w: 2, h: 2 }, event.data.storageCount ?? 1);
-    self.postMessage(connectPower(layout, event.data.cells, event.data.poleLimit ?? 0));
+    const powered = connectPower(layout, event.data.cells, event.data.poleLimit ?? 0);
+    // Routing can relocate electric facilities and vacate useful positions. Fill those holes
+    // after routing too, without moving infrastructure or disconnecting any electric consumer.
+    self.postMessage(updatePowerConnections(refineSuppliedLayout(powered, event.data.pieces, event.data.cells)));
 };

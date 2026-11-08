@@ -1,5 +1,5 @@
 // Power coverage is square, centered on the generator/pole. A real 1/4 tile overlap
-// connects a building; powered consumers can relay between supply areas. The ranges,
+// connects a building. Only generators and poles relay power; consumers are endpoints. The ranges,
 // footprints and conservative overlap follow Aniimo Camp's public Home planner data.
 const EPS = 1e-6;
 const center = r => ({ x: r.x + r.w / 2, y: r.y + r.h / 2 });
@@ -13,6 +13,40 @@ const overlap = (a, b, margin = 0.25) => a && b
     && Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x) >= margin - EPS
     && Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y) >= margin - EPS;
 export const powerLinked = (a, b) => !!(overlap(a, powerCoverage(b)) || overlap(b, powerCoverage(a)));
+const relaysPower = member => member.generator || member.pole;
+
+function attachTargets(targets, connected, links) {
+    let changed;
+    do {
+        changed = false;
+        for (const target of targets) {
+            if (connected.has(target)) continue;
+            const parent = [...connected].find(node => relaysPower(node) && powerLinked(node, target));
+            if (!parent) continue;
+            links.push({ from: center(parent), to: center(target) });
+            connected.add(target);
+            changed = true;
+        }
+    } while (changed);
+}
+
+// Refresh wiring after consumers move inside existing supply zones. Infrastructure stays put.
+export function updatePowerConnections(layout) {
+    const members = layout.pieces.flatMap(p => p.members);
+    const generators = members.filter(m => m.generator);
+    const consumers = members.filter(m => m.electric_level != null);
+    const poles = layout.power?.poles || [];
+    const targets = [...generators, ...poles, ...consumers];
+    const connected = new Set(generators.slice(0, 1));
+    const links = [];
+    attachTargets(targets, connected, links);
+    for (const m of consumers) m.power_connected = connected.has(m);
+    layout.power = { ...layout.power, poles, links, generators: generators.length, consumers: consumers.length,
+        disconnected: targets.filter(m => !connected.has(m)).length,
+        coverage: [...generators, ...poles].map(m => ({ ...powerCoverage(m), connected: connected.has(m) })),
+    };
+    return layout;
+}
 
 export function connectPower(layout, cells, maximum, repack = true) {
     const members = layout.pieces.flatMap(p => p.members);
@@ -42,21 +76,7 @@ export function connectPower(layout, cells, maximum, repack = true) {
     const connected = new Set();
     const links = [];
     if (generators.length) connected.add(generators[0]);
-    const attach = () => {
-        let changed;
-        do {
-            changed = false;
-            for (const t of [...targets, ...poles]) {
-                if (connected.has(t)) continue;
-                const parent = [...connected].find(n => powerLinked(n, t));
-                if (parent) {
-                    links.push({ from: center(parent), to: center(t) });
-                    connected.add(t);
-                    changed = true;
-                }
-            }
-        } while (changed);
-    };
+    const attach = () => attachTargets([...targets, ...poles], connected, links);
     attach();
     // Free half-tile locations for poles, never on facilities, storage or locked land.
     const blocked = [...members, ...layout.storages];
@@ -83,7 +103,7 @@ export function connectPower(layout, cells, maximum, repack = true) {
         const parents = new Map();
         const depth = new Map();
         const queue = [];
-        for (const r of available) if ([...connected].some(n => powerLinked(n, r))) {
+        for (const r of available) if ([...connected].some(n => relaysPower(n) && powerLinked(n, r))) {
             parents.set(r, null); depth.set(r, 1); queue.push(r);
         }
         let end = null;

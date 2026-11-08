@@ -124,6 +124,7 @@ export function layOut(pieces, options = {}) {
         return false;
     };
     occupy('storage', { rects: storages });
+    if (options.obstacles?.length) occupy('obstacles', { rects: options.obstacles });
 
     const placeRigid = i => {
         let best = null;
@@ -140,6 +141,7 @@ export function layOut(pieces, options = {}) {
                 if (!rects.every(r => free(r, i))) continue;
                 const touchy = rects.filter((r, j) => shape.members[j].sensitive);
                 if (touchy.some(r => inOtherSquare(r, i))) continue;
+                if (options.canPlace && !options.canPlace(i, shape.members, rects)) continue;
                 if (firstFit === null) firstFit = distance;
                 const cost = shape.members.reduce((sum, m) => sum + m.weight * distanceToStorage(m.x + x + m.w / 2, m.y + y + m.h / 2), 0)
                     + (hasWorkerRoutes ? workerPlacementCost(shape.members, rects, activeWorkerHubs) : 0)
@@ -274,6 +276,7 @@ export function layOut(pieces, options = {}) {
         let moved = false;
         for (const i of order) {
             if (!placed.has(i)) continue;
+            if (options.fixedPieces?.has(i)) continue;
             vacate(i);
             const previous = placed.get(i);
             const spot = place(i);
@@ -372,13 +375,34 @@ export function nearestStorage(member, storages) {
 
 // Score complete alternatives consistently; cached piece costs contain local worker-hub
 // estimates from different points in the search and must not be added to global worker cost.
-function layoutCost(layout) {
+export function layoutCost(layout) {
     const members = layout.pieces.flatMap(p => p.members);
     return members.reduce((sum, m) => {
         const store = nearestStorage(m, layout.storages);
         return sum + (store ? ((m.weight || 0) + EPSILON) * Math.hypot(
             m.x + m.w / 2 - store.x - store.w / 2, m.y + m.h / 2 - store.y - store.h / 2) : 0);
     }, 0) + workerLayoutCost(members);
+}
+
+// Power routing may move consumers after the hauling layout, freeing better positions.
+// Refine against the final infrastructure: poles and generators stay fixed, and consumers
+// may move only within connected supply zones. Climate and collision checks still apply.
+export function refineSuppliedLayout(layout, pieces, cells) {
+    if (!layout.power?.generators || layout.unplaced.length || layout.power.disconnected) return layout;
+    const zones = layout.power.coverage.filter(zone => zone.connected);
+    const refined = layOut(pieces, {
+        storages: layout.storages, cells, passes: 2, initialLayout: layout,
+        obstacles: layout.power.poles,
+        fixedPieces: new Set(layout.pieces.flatMap((p, i) => p.members.some(m => m.generator) ? [i] : [])),
+        canPlace: (i, metadata, rectangles) => metadata.every((member, j) => member.electric_level == null
+            || zones.some(zone => Math.min(rectangles[j].x + rectangles[j].w, zone.x + zone.w) - Math.max(rectangles[j].x, zone.x) >= .25 - EPSILON
+                && Math.min(rectangles[j].y + rectangles[j].h, zone.y + zone.h) - Math.max(rectangles[j].y, zone.y) >= .25 - EPSILON)),
+    });
+    refined.storageAt = layout.storageAt;
+    refined.tried += layout.tried;
+    if (refined.unplaced.length || layoutCost(refined) >= layoutCost(layout) - 1e-9) return layout;
+    refined.power = layout.power;
+    return refined;
 }
 
 // Add useful storage locations, then alternate relocating storage and laying facilities out.
