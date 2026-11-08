@@ -319,6 +319,7 @@ struct Model<'a> {
     /// `(variable, weight)` for the tie-break in the objective (see [`BUILDING_TIE_BREAK`]),
     /// so a solve's objective can be given back without it.
     tiebreak: Vec<(usize, f64)>,
+    worker_loads: Vec<(usize, u32, Vec<(usize, f64)>)>,
 }
 
 /// What each environment building a plan sets up costs in the objective: far too little to give
@@ -595,6 +596,7 @@ fn build_model<'a>(
         kinds: Vec::new(),
         constraints: Vec::new(),
         tiebreak: Vec::new(),
+        worker_loads: Vec::new(),
     };
 
     // Seeds are paid in coins, so they only come off a coin total.
@@ -1029,6 +1031,8 @@ fn build_model<'a>(
         if let Some(first) = crew.assumed_from {
             reserve_work.extend(busy.iter().skip(first).flatten().copied());
         }
+        model.worker_loads = busy.iter().enumerate().filter(|(_,terms)|!terms.is_empty())
+            .map(|(member,terms)|(member,crew.members[member].count,terms.clone())).collect();
         if let Some((_, limit)) = team_limit {
             let mut active = Vec::new();
             for (member, mut terms) in busy.into_iter().enumerate().filter(|(_, terms)| !terms.is_empty()) {
@@ -1852,6 +1856,8 @@ pub struct LpProblem {
     pub variable_keys: Vec<String>,
     /// Dominated environment assignments for production-only stages without a headcount cap.
     pub production_zero: Vec<usize>,
+    /// Actual worker days, including residents, environment, crop work, walking and hauling.
+    pub worker_loads: Vec<(usize, u32, Vec<(usize, f64)>)>,
 }
 
 fn production_staff_zeros(model: &Model<'_>, counts: &FacilityCounts) -> Vec<usize> {
@@ -2002,7 +2008,8 @@ pub fn write_lp(
         (!flexible).then_some(v)
     }).collect();
     LpProblem { lp: out, variables: model.objective.len(), tiebreak: model.tiebreak.clone(), primary_objective, material_fixed,
-        variable_keys: warm_start_keys(&model, items, facility_counts), production_zero:production_staff_zeros(&model,facility_counts) }
+        variable_keys: warm_start_keys(&model, items, facility_counts), production_zero:production_staff_zeros(&model,facility_counts),
+        worker_loads:model.worker_loads.clone() }
 }
 
 /// Builds an [`ExactPlan`] from an external solver's variable values. Accepts the complete

@@ -1621,7 +1621,8 @@ pub fn exact_problem(input_json: &str, stage_json: &str) -> String {
 fn lp_json(problem: &crate::exact::LpProblem) -> String {
     serde_json::json!({ "lp": problem.lp, "variables": problem.variables, "tiebreak": problem.tiebreak,
         "primary_objective": problem.primary_objective, "material_fixed": problem.material_fixed,
-        "variable_keys": problem.variable_keys, "production_zero":problem.production_zero }).to_string()
+        "variable_keys": problem.variable_keys, "production_zero":problem.production_zero,
+        "worker_loads":problem.worker_loads }).to_string()
 }
 
 /// The solver's answer to [`exact_problem`]'s model.

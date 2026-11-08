@@ -13,6 +13,7 @@ const incumbentSolver = import('./highs-solve.js' + load);
 const materialSearch = import('./material-search.js' + load);
 const comparisonSearch = import('./comparison-search.js' + load);
 const prioritySearch = import('./priority-search.js' + load);
+const workforceSearch = import('./workforce-search.js' + load);
 const ready = import('./pkg/aniimax.js' + load).then(async (pkg) => {
     await pkg.default({ module_or_path: fetch(new URL('./pkg/aniimax_bg.wasm', import.meta.url), { cache: 'no-cache' }) });
     return pkg;
@@ -267,6 +268,20 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
     const coins = solved.objective;
     let materialWork;
     let materialPace;
+    let workforceProven = null;
+    let workforceLimit = null;
+    let countWorkerUsage;
+    const compactTeam = async (model,result) => {
+        if(input.opportunity_goal !== 'team_size') return result;
+        step('workforce','start');
+        const workforce = await workforceSearch;
+        countWorkerUsage = workforce.workerUsage;
+        const compact = await workforce.searchWorkforce(model,result,solveModel,options);
+        workforceProven = compact?.workers_proven ?? false;
+        workforceLimit = compact?.workers ?? null;
+        step('workforce','done',workforceProven);
+        return compact || {...result,proven:false};
+    };
     if (hasMaterialProcessors(input)) {
         const currency = input.currency || 'coins';
         const coinFloor = Math.max(coins, ...stage.floors.filter(([name]) => name === currency).map(([, amount]) => amount));
@@ -310,14 +325,19 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
             }
         }
     }
-    const finish = (plan, stock = null, seedProblem = problem, seedSolved = solved) => {
+    const finish = (plan, stock = null, seedProblem = problem, seedSolved = solved, seedStage = stageJson) => {
+        if(workforceLimit!=null && (countWorkerUsage(plan,input)?.working ?? Infinity)>workforceLimit) {
+            throw new Error('The compact team failed its independent workload check.');
+        }
         plan.level_up_note = levelUpNote;
         plan.material_work_note = materialWorkNote;
+        plan.workforce_proven = workforceProven;
+        plan.comparison_stage = JSON.parse(seedStage);
         plan.comparison_scores = { crop_variety: stage.crop_variety ?? null,
             material_pace: materialPace ?? null, material_work: materialWork ?? null, stock };
         plan.comparison_goals = { crop_variety: stage.crop_variety ?? null, floors: stage.floors, pace: stage.pace ?? null,
             currency: input.currency || 'coins', currency_value: coins };
-        if (!comparison && Array.isArray(seedProblem.variable_keys) && seedProblem.variable_keys.length === seedSolved.values?.length) {
+        if ((!comparison || input.opportunity_goal==='team_size') && Array.isArray(seedProblem.variable_keys) && seedProblem.variable_keys.length === seedSolved.values?.length) {
             plan.comparison_seed = { keys: seedProblem.variable_keys, values: seedSolved.values };
         }
         return JSON.stringify(plan);
@@ -332,23 +352,27 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
         step('stock_up', 'done', stocked?.proven);
         step('check', 'start');
         if (stocked) stocked = (await incumbentSolver).polishSolution(await newHighs(),stockProblem,stocked);
+        if (stocked) stocked = await compactTeam(stockProblem,stocked);
         const stockedPlan = stocked
             && JSON.parse(exact_plan(payload, stockJson, JSON.stringify({ values: stocked.values, proven: proven && stocked.proven, bound, summary_only:!!comparison })));
         if (stockedPlan && stockedPlan.success) {
             step('check', 'done');
-            return finish(stockedPlan, stocked.objective, stockProblem, stocked);
+            return finish(stockedPlan, stocked.objective, stockProblem, stocked, stockJson);
         }
         console.warn('Level-up stock solve found no usable plan; keeping the plan without it.');
     }
     step('check', 'start');
     solved = (await incumbentSolver).polishSolution(await newHighs(),problem,solved);
+    solved = await compactTeam(problem,solved);
+    proven &&= solved.proven;
     let json = exact_plan(payload, stageJson, JSON.stringify({ values: solved.values, proven, bound, summary_only:!!comparison }));
     let plan = JSON.parse(json);
     if (!plan.success) {
         // The answer didn't survive being rebuilt exactly; solve again, this time refusing the
         // rounding noise it may have leaned on.
-        const strict = await runModel(problem, { ...STRICT_OPTIONS, time_limit: options.time_limit }, undefined, solved.values);
+        let strict = await runModel(problem, { ...STRICT_OPTIONS, time_limit: options.time_limit }, undefined, solved.values);
         if (strict) {
+            strict = await compactTeam(problem,strict);
             json = exact_plan(payload, stageJson, JSON.stringify({ values: strict.values, proven: strict.proven && allProven, bound, summary_only:!!comparison }));
             plan = JSON.parse(json);
             if (plan.success) solved = strict;
@@ -361,13 +385,53 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
 
 // Ranks changes the player could make with the same complete optimizer, preserving planting,
 // every priority, E-mode and RV material production. They run only on explicit request.
+async function rebalanceCurrentTeam(pkg,base,original,options,report) {
+    const workforce=await workforceSearch;
+    const fallback=()=>workforce.checkedTeamReference(original,null,base);
+    const seed=original.comparison_seed;
+    if(!seed?.keys || seed.keys.length!==seed.values?.length) return fallback();
+    report('workforce','start');
+    try {
+        const payload=JSON.stringify(base),stage=workforce.referenceStage(original),stageJson=JSON.stringify(stage);
+        const problem=JSON.parse(pkg.exact_problem(payload,stageJson));
+        if(!problem.lp || !problem.variable_keys) return fallback();
+        const previous=new Map(seed.keys.map((key,i)=>[key,seed.values[i]]));
+        let incumbent={values:problem.variable_keys.map(key=>previous.get(key)??0),proven:original.proven_optimal===true};
+        incumbent=(await incumbentSolver).polishSolution(await newHighs(),problem,incumbent);
+        incumbent.objective=(problem.primary_objective||[]).reduce((s,[v,c])=>s+c*incumbent.values[v],0);
+        const compact=await workforce.searchWorkforce(problem,incumbent,solveModel,options);
+        if(!compact) return fallback();
+        const plan=JSON.parse(pkg.exact_plan(payload,stageJson,JSON.stringify({values:compact.values,
+            proven:compact.proven,summary_only:true})));
+        if(!plan.success || (workforce.workerUsage(plan,base)?.working??Infinity)>compact.workers) return fallback();
+        Object.assign(plan,{comparison_goals:original.comparison_goals,comparison_scores:original.comparison_scores,
+            comparison_stage:stage,comparison_seed:{keys:problem.variable_keys,values:compact.values},
+            workforce_proven:compact.workers_proven});
+        return workforce.checkedTeamReference(original,plan,base);
+    } catch(error) {
+        console.warn('Keeping the current team as the replacement reference:',error.message);
+        return fallback();
+    } finally { report('workforce','done'); }
+}
+
 async function rankImprovements(pkg, payload, report) {
-    const { base, basePlan, candidates, detailed = false, warm_start = true } = JSON.parse(payload);
+    const { base, basePlan, teamBasePlan, candidates, detailed = false, warm_start = true } = JSON.parse(payload);
     const original = basePlan?.success ? basePlan : JSON.parse(await exactPlanJson(pkg, JSON.stringify(base)));
     report({ index: -1, plan: original });
-    const comparison = (await comparisonSearch).createComparisonSearch(original, solveModel, { detailed, warmStart: warm_start, baseInput:base });
+    const createComparison = (plan) => comparisonSearch.then(({createComparisonSearch})=>createComparisonSearch(plan,solveModel,{detailed,warmStart:warm_start,baseInput:base}));
+    const normalComparison = await createComparison(original);
+    let teamReference=teamBasePlan?.success&&(!detailed||teamBasePlan.proven_optimal===true)
+        ? (await workforceSearch).checkedTeamReference(original,teamBasePlan,base) : null;
     for (const [index, input] of candidates.entries()) {
         try {
+            let reference=original,comparison=normalComparison;
+            if(input.opportunity_goal==='team_size'){
+                if(!teamReference?.success){
+                    teamReference=await rebalanceCurrentTeam(pkg,base,original,normalComparison.options,
+                        (step,state,proven)=>report({index,step:`team_baseline:${step}`,state,proven}));
+                }
+                reference=teamReference;comparison=await createComparison(reference);
+            }
             comparison.begin(input);
             const search = () => exactPlanJson(pkg, JSON.stringify(input),
                 (step, state, proven) => report({ index, step, state, proven }), () => {}, comparison);
@@ -386,10 +450,14 @@ async function rankImprovements(pkg, payload, report) {
                 report({index, error:'The search did not match the current plan. This does not show that the upgrade reduces production. Use Detailed search.', detailed});
                 continue;
             }
-            report(plan.success ? { index, plan, detailed, stats: { ...comparison.stats } }
+            const replacementUsed=input.replacement_member==null ? null
+                : ((await workforceSearch).workerUsage(plan,input)?.busy.get(input.replacement_member)||0)>1e-7;
+            report(plan.success ? { index, plan, detailed, stats: { ...comparison.stats },
+                ...(input.opportunity_goal==='team_size'?{basePlan:reference,replacement_used:replacementUsed}:{}) }
                 : { index, error: plan.error || 'No plan found', detailed });
         } catch (error) {
-            report({ index, error: error.message || String(error), detailed });
+            report({ index, error: error.message || String(error), detailed,
+                ...(input.opportunity_goal==='team_size'&&teamReference?.success?{basePlan:teamReference}:{}) });
         }
     }
 }

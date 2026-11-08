@@ -15,6 +15,28 @@ export function personalityInput(input, index, personality, pairs) {
     return changeOneMember(input, index, { personalities: [...personalities, personality] });
 }
 
+export function twoAbilityInput(input, abilities, family = null) {
+    const entries=Object.entries(abilities).sort(([a],[b])=>a.localeCompare(b));
+    if(!input.roster || entries.length!==2 || entries.some(([,level])=>!Number.isInteger(level)||level<1||level>4)) throw new Error('Choose two different abilities and valid levels.');
+    if(abilities.Leisure && !family)throw new Error('Choose a Leisure family.');
+    const member=input.roster.members.length;
+    return {...input,opportunity_goal:'team_size',replacement_member:member,
+        roster:{...input.roster,members:[...input.roster.members,{count:1,abilities:Object.fromEntries(entries),personalities:[],family:abilities.Leisure?family:null}]}};
+}
+
+export function replacedWorkers(before,after,beforeInput,afterInput) {
+    const a=workerUsage(before,beforeInput),b=workerUsage(after,afterInput);
+    if(!a||!b)return [];
+    const afterReserves=new Map((after.assumed_aniimo||[]).map(([i,ability,level,,family])=>[JSON.stringify([ability,level,family||null]),i]));
+    const reserves=new Map((before.assumed_aniimo||[]).map(([i,ability,level,,family])=>[i,{ability,level,family,
+        after:afterReserves.get(JSON.stringify([ability,level,family||null]))}]));
+    return [...a.busy].flatMap(([member,busy])=>{
+        const reserve=reserves.get(member),next=reserve?reserve.after:member;
+        const count=Math.ceil(busy-1e-6)-Math.max(0,Math.ceil((b.busy.get(next)||0)-1e-6));
+        return count>0 ? [{member:reserve?null:member,count,...(reserve?{ability:reserve.ability,level:reserve.level,family:reserve.family}:{})}] : [];
+    });
+}
+
 // Conservative reachability: remove only recipes blocked by a missing building, level,
 // module, season, unlock, or an ingredient with no available producer. Never prune a job
 // merely because it is idle in the current solution: an upgrade can make it worthwhile.
@@ -70,7 +92,7 @@ export function workerUsage(plan, input) {
     for (const [member, share] of plan.delivery_assignments || plan.hauling_staffing || []) add(member, share);
     const heads = n => Math.max(0, Math.ceil(n - 1e-6));
     return { busy, working: [...busy.values()].reduce((n, b) => n + heads(b), 0),
-        additional: [...busy].filter(([i]) => i >= input.roster.members.length).reduce((n, [, b]) => n + heads(b), 0),
+        additional: [...busy].filter(([i]) => i >= (input.replacement_member ?? input.roster.members.length)).reduce((n, [, b]) => n + heads(b), 0),
         hours: [...busy.values()].reduce((n, b) => n + b * 24, 0) };
 }
 
@@ -137,9 +159,10 @@ export function comparePlans(beforePlan, afterPlan, beforeInput, afterInput = be
     }
     const beforeWork = workerUsage(beforePlan,beforeInput), afterWork = workerUsage(afterPlan,afterInput);
     if (beforeWork && afterWork) {
-        add('working_aniimo','count',beforeWork.working,afterWork.working,true);
+        const teamSize=afterInput.opportunity_goal==='team_size';
+        add('working_aniimo','count',beforeWork.working,afterWork.working,true,teamSize);
         add('additional_aniimo','count',beforeWork.additional,afterWork.additional,true);
-        add('work_hours','work',beforeWork.hours,afterWork.hours,true);
+        add('work_hours','work',beforeWork.hours,afterWork.hours,true,teamSize);
     }
     const first = objectives.findIndex(row=>row.direction !== 0);
     const decisive = first < 0 ? null : objectives[first];
