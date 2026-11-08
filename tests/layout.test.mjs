@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { layOutHomeland, nearestStorage } from '../web/layout.js';
+import { layOut, layOutHomeland, nearestStorage } from '../web/layout.js';
 import { storageUnitLimit } from '../web/facility-config.js';
 
 const cells = [{ x: 0, y: 0, w: 20, h: 15 }, { x: 20, y: 0, w: 20, h: 15 }];
@@ -55,4 +55,38 @@ test('RV without storage keeps the layout available without delivery targets', (
     assert.equal(layout.storage, null);
     assert.equal(layout.unplaced.length, 0);
     assert.equal(nearestStorage(layout.pieces[0].members[0], layout.storages), null);
+});
+
+test('refinement fills nearby holes with idle facilities even when worker routes are enabled', () => {
+    const pieces = [
+        { members: [{ x: 0, y: 0, w: 2, h: 2, weight: 5, workers: [[0, 2]] }] },
+        { members: [{ x: 0, y: 0, w: 2, h: 2, weight: 0, facility: 'Idle table' }] },
+    ];
+    const initialLayout = { pieces: [
+        { members: [{ ...pieces[0].members[0], x: 1, y: -1 }] },
+        { members: [{ ...pieces[1].members[0], x: 9, y: -1 }] },
+    ] };
+    const layout = layOut(pieces, { cells: [{ x: -12, y: -8, w: 24, h: 16 }], initialLayout });
+    assert.equal(layout.unplaced.length, 0);
+    const idle = layout.pieces[1].members[0];
+    assert.ok(Math.hypot(idle.x + 1, idle.y + 1) <= 2.01, 'idle building must use a free nearby position');
+    assert.ok(!overlap(idle, layout.pieces[0].members[0]));
+});
+
+test('continuing a rotated environment layout preserves coverage and all physical units', () => {
+    const pieces = [{ cluster: true,
+        buildings: [{ x: 0, y: 0, w: 2, h: 2, weight: 0 }],
+        plots: Array.from({ length: 4 }, () => ({ w: 2, h: 2, weight: 3, zone: 0, sensitive: true })),
+        planned: [{ x: -2, y: 0 }, { x: 2, y: 0 }, { x: 0, y: 2 }, { x: -2, y: 2 }],
+    }, ...Array.from({ length: 5 }, () => ({ members: [{ x: 0, y: 0, w: 2, h: 3, weight: 1 }] }))];
+    const initialLayout = layOut(pieces);
+    const layout = layOut(pieces, { initialLayout });
+    assert.equal(layout.unplaced.length, 0);
+    assert.equal(layout.pieces.flatMap(p => p.members).length, 10);
+    const [building, ...plots] = layout.pieces[0].members;
+    const coverage = { x: building.x - 3.5, y: building.y - 3.5, w: 9, h: 9 };
+    assert.ok(plots.every(plot => overlap(plot, coverage)));
+    const rectangles = [...layout.storages, ...layout.pieces.flatMap(p => p.members)];
+    assert.ok(rectangles.every((r, i) => rectangles.slice(i + 1).every(other => !overlap(r, other))));
+    assert.ok(cost(layout) <= cost(initialLayout) + 1e-5);
 });
