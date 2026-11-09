@@ -11,11 +11,11 @@ self.onmessage = async (event) => {
     const { pieces, cells } = event.data;
     const storageCount = event.data.storageCount ?? 1;
     const poleLimit = event.data.poleLimit ?? 0;
-    const { style, groupGap, saleProducts } = event.data;
+    const { style, groupGap, saleProducts, recipes } = event.data;
     const grouped = style === 'courtyards' || style === 'avenues';
     if (grouped && storageCount > 0) {
         const { groupHomelandLayout } = await import('./group-layout.js' + new URL(import.meta.url).search);
-        const arranged = await groupHomelandLayout(pieces, cells, { style, gap: groupGap, storageCount, poleLimit, saleProducts });
+        const arranged = await groupHomelandLayout(pieces, cells, { style, gap: groupGap, storageCount, poleLimit, saleProducts, recipes });
         if (arranged) {
             self.postMessage(arranged);
             return;

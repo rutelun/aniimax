@@ -10,7 +10,7 @@ if (!Object.hasOwn(languages, preferredLanguage)) preferredLanguage = 'en';
 
 async function load(code) {
     if (!catalogs[code]) {
-        const response = await fetch(new URL(`./locales/${code}.json`, import.meta.url));
+        const response = await fetch(new URL(`./locales/${code}.json${new URL(import.meta.url).search}`, import.meta.url));
         if (!response.ok) throw new Error(`Could not load ${code} translations`);
         catalogs[code] = await response.json();
         templates[code] = Object.entries(catalogs[code])
@@ -173,6 +173,7 @@ function escapeRegExp(text) {
 }
 
 function updateText(node) {
+    if (node.parentElement?.closest?.('[translate="no"]')) return;
     const previous = textSources.get(node);
     if (previous?.shown === node.nodeValue) {
         if (language === previous.language) return;

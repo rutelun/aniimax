@@ -1,7 +1,7 @@
 // Aniimax Web Application
 
-import { currentLocale, sourceAttribute, translate } from './i18n.js';
-import './math-translation.js';
+import { currentLocale, sourceAttribute, translate } from './i18n.js?v=production-chains';
+import './math-translation.js?v=production-chains';
 
 import {
     FACILITIES, FACILITY_CATEGORIES, FACILITY_CATEGORY_BY_NAME, FACILITY_FOOTPRINTS, HOMELAND_PLOTS, HOMELAND_PLOT_SIZE,
@@ -1378,6 +1378,30 @@ function updateLayoutStyleControls() {
 }
 
 function attachLayoutHandlers() {
+    document.getElementById('layout-building-index').addEventListener('click', event => {
+        const button = event.target.closest('[data-layout-sites]');
+        const svg = document.querySelector('#layout-diagram .layout-svg');
+        if (!button || !svg) return;
+        const sites = new Set(button.dataset.layoutSites.split(','));
+        const matches = [...svg.querySelectorAll('[data-layout-site]')].filter(element => {
+            const chosen = sites.has(element.dataset.layoutSite);
+            element.classList.toggle('layout-site-focused', chosen);
+            return chosen;
+        });
+        if (!matches.length) return;
+        document.querySelectorAll('#layout-building-index [aria-pressed]').forEach(entry =>
+            entry.setAttribute('aria-pressed', String(entry === button)));
+        const rectangles = matches.map(element => element.querySelector('rect'));
+        const left = Math.min(...rectangles.map(rectangle => Number(rectangle.getAttribute('x'))));
+        const top = Math.min(...rectangles.map(rectangle => Number(rectangle.getAttribute('y'))));
+        const right = Math.max(...rectangles.map(rectangle => Number(rectangle.getAttribute('x')) + Number(rectangle.getAttribute('width'))));
+        const bottom = Math.max(...rectangles.map(rectangle => Number(rectangle.getAttribute('y')) + Number(rectangle.getAttribute('height'))));
+        const [, , baseWidth, baseHeight] = layoutBaseOf(svg);
+        const width = Math.min(baseWidth, Math.max(baseWidth / LAYOUT_MAX_ZOOM, right - left + 8, (bottom - top + 8) * baseWidth / baseHeight));
+        const height = width * baseHeight / baseWidth;
+        setLayoutView(svg, [(left + right - width) / 2, (top + bottom - height) / 2, width, height]);
+        svg.scrollIntoView({ block: 'nearest' });
+    });
     ['layout-style', 'layout-group-gap', 'layout-separate-sales'].forEach(id => document.getElementById(id).addEventListener('change', () => {
         updateLayoutStyleControls();
         if (!lastPlan?.success) return;
@@ -1501,6 +1525,7 @@ function attachLayoutZoom(diagram) {
 function drawLayout(drawn) {
     const diagram = document.getElementById('layout-diagram');
     diagram.innerHTML = homelandSvg(drawn.layout, drawn.homeLevel);
+    renderBuildingIndex(drawn.layout);
     // A redraw of the same view keeps its zoom; a new plan or the whole homeland starts over.
     const svg = diagram.querySelector('.layout-svg');
     if (!svg) return;
@@ -1513,6 +1538,35 @@ function drawLayout(drawn) {
     startLayoutSim(on ? diagram.querySelector('.layout-svg') : null, layoutFlows(drawn.layout), stock);
 }
 
+function renderBuildingIndex(layout) {
+    const panel = document.getElementById('layout-building-index');
+    if (!layout.groups?.length) {
+        panel.hidden = true;
+        return;
+    }
+    const members = layout.pieces.flatMap(piece => piece.members);
+    const processors = new Set(recipeIndex.filter(recipe => recipe.ingredients?.length).map(recipe => recipe.name));
+    const groups = layout.groups.map((group, i) => {
+        const names = new Map();
+        members.forEach((member, index) => {
+            const products = member.jobs?.map(job => job.item) ?? [member.crop];
+            if (!(member.weight > 0) || !products.some(item => processors.has(item))) return;
+            const { x, y, w, h } = group.bounds;
+            if (member.x < x || member.y < y || member.x + member.w > x + w || member.y + member.h > y + h) return;
+            if (!names.has(member.facility)) names.set(member.facility, { sites: [], products: new Set() });
+            const entry = names.get(member.facility);
+            entry.sites.push(index);
+            products.filter(Boolean).forEach(item => entry.products.add(prettyItem(item)));
+        });
+        if (!names.size) return '';
+        const sorted = [...names].sort(([a], [b]) => a.localeCompare(b, 'en'));
+        return `<div class="layout-index-group"><strong>SU${i + 1}</strong><div>${sorted.map(([name, entry]) =>
+            `<button type="button" data-layout-sites="${entry.sites.join(',')}" aria-pressed="false" title="${escapeText([...entry.products].join(', '))}" translate="no">${escapeText(name)}</button>`).join('')}</div></div>`;
+    }).filter(Boolean);
+    document.getElementById('layout-building-index-list').innerHTML = groups.join('');
+    panel.hidden = !groups.length;
+}
+
 function layoutOptionsFor(plan, homeLevel) {
     const limit = storageUnitLimit(homeLevel);
     const storageCount = Math.min(limit, Math.max(0, Math.floor(numberOrDefault(
@@ -1523,9 +1577,12 @@ function layoutOptionsFor(plan, homeLevel) {
     const saleProducts = separateSales ? (plan.income_streams || [])
         .filter(stream => stream.item_name && stream.rate_per_second > 1e-9 && stream.sell_value > 0)
         .map(stream => [stream.facility, stream.item_name]) : null;
+    const recipes = style === 'delivery' ? [] : [...new Set((plan.coin_items || [])
+        .filter(step => step.status === 'producing' && step.item_name).map(step => step.item_name))]
+        .map(item => ({ item, ...recipeTerms(item) }));
     return {
         key: `${homeLevel}:${storageCount}:${style}:${groupGap}:${separateSales}`,
-        storageCount, poleLimit: powerPoleLimit(homeLevel), style, groupGap, saleProducts,
+        storageCount, poleLimit: powerPoleLimit(homeLevel), style, groupGap, saleProducts, recipes,
         cells: homelandPlots().filter(p => p.number <= homeLevel).map(({ x, y, w, h }) => ({ x, y, w, h })),
     };
 }
@@ -1555,6 +1612,7 @@ function renderHomelandLayout(plan) {
     document.getElementById('layout-summary').textContent = 'Laying out…';
     document.getElementById('layout-diagram').innerHTML = '';
     document.getElementById('layout-group-legend').hidden = true;
+    document.getElementById('layout-building-index').hidden = true;
     updateLayoutStyleControls();
     // Worked out in a worker of its own: a large homeland takes a few seconds.
     const { pieces, unplaced } = homelandPieces(plan, lastPlanInput);
@@ -1710,7 +1768,7 @@ function homelandSvg(layout, homeLevel) {
     for (let y = minY; y <= maxY; y++) lines.push(`<line x1="${minX}" y1="${y}" x2="${maxX}" y2="${y}" />`);
     const maxTrips = Math.max(...layout.pieces.flatMap(p => p.members.map(m => m.weight || 0)), 1e-9);
     const showRecipes = document.getElementById('layout-recipes').checked;
-    const shapes = layout.pieces.flatMap(p => p.members).map(m => {
+    const shapes = layout.pieces.flatMap(p => p.members).map((m, index) => {
         const color = layoutColor(m);
         const storage = nearestStorage(m, layout.storages);
         const away = storage ? Math.hypot(m.x + m.w / 2 - storage.x - storage.w / 2, m.y + m.h / 2 - storage.y - storage.h / 2) : 0;
@@ -1732,7 +1790,7 @@ function homelandSvg(layout, homeLevel) {
                 fill="${color}" fill-opacity="${m.mode ? 1 : 0.25}" stroke="currentColor" stroke-opacity="0.6" stroke-width="0.08" />
                 ${m.mode ? environmentBuildingIcon(m.facility, m.mode, m.x + m.w / 2, m.y + m.h / 2) : ''}</g>`;
         }
-        return `<g class="layout-piece${electric ? ' layout-emode' : ''}${m.generator ? ' layout-generator' : ''}" ${tip}><rect x="${m.x + 0.04}" y="${m.y + 0.04}" width="${m.w - 0.08}" height="${m.h - 0.08}" rx="0.2"
+        return `<g class="layout-piece${electric ? ' layout-emode' : ''}${m.generator ? ' layout-generator' : ''}" data-layout-site="${index}" ${tip}><rect x="${m.x + 0.04}" y="${m.y + 0.04}" width="${m.w - 0.08}" height="${m.h - 0.08}" rx="0.2"
             fill="${m.generator ? '#f6cd58' : color}" fill-opacity="${m.generator ? 0.5 : fill.toFixed(2)}" stroke="${color}" stroke-width="0.06" />${label}${badge}</g>`;
     }).join('');
     const coverageShapes = coverage.map(c => {

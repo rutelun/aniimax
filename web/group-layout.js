@@ -1,7 +1,10 @@
 // An optional physical layout with a Storage Unit and a clear feature in each group.
+import { alphabetInversions, chainPurposes, productionDistance, productionGraph, refineProductionPlacement } from './production-layout.js?v=chains';
+
 const load = new URL(import.meta.url).search;
 const placement = import('./layout.js' + load);
 const wiring = import('./power-layout.js' + load);
+const ROUTE_ALLOWANCE = 1.03;
 const area = rectangle => rectangle.w * rectangle.h;
 const center = rectangle => [rectangle.x + rectangle.w / 2, rectangle.y + rectangle.h / 2];
 const contains = (outer, inner) => inner.x >= outer.x && inner.y >= outer.y
@@ -98,15 +101,17 @@ function makeGroup(lot, style, gap) {
     return { bounds, storage, feature, buildable: around(bounds, feature), reserved: [...around(lot, bounds), feature] };
 }
 
-export async function groupHomelandLayout(pieces, cells, { style, gap = 2, storageCount, poleLimit, saleProducts = null }) {
+export async function groupHomelandLayout(pieces, cells, { style, gap = 2, storageCount, poleLimit, saleProducts = null, recipes = [] }) {
     if (storageCount < 1 || !cells.length) return null;
-    const [{ layOut, layoutTravelCost }, { connectPower }] = await Promise.all([placement, wiring]);
+    const [{ layOut, layoutTravelCost }, { connectPower, updatePowerConnections }] = await Promise.all([placement, wiring]);
     const requiredArea = pieces.reduce((sum, piece) => sum + pieceArea(piece), 0);
     const sales = saleProducts && new Set(saleProducts.map(([facility, item]) => saleKey(facility, item)));
     const purposes = sales ? pieces.map(piece => piecePurpose(piece, sales)) : null;
     const splitRequested = purposes?.includes('sales') && purposes.some(purpose => purpose !== 'sales');
+    const linked = splitRequested && recipes.length ? chainPurposes(purposes, productionGraph(pieces, recipes)) : null;
+    const assignments = linked?.some((purpose, i) => purpose !== purposes[i]) ? [purposes, linked] : [purposes];
     const seen = new Set();
-    let best = null, bestCost = Infinity;
+    const candidates = [];
     for (const aspect of style === 'courtyards' ? [1, 1.65] : [2, .65]) {
         const lots = groupLots(cells, storageCount, aspect);
         const key = JSON.stringify(lots);
@@ -115,38 +120,57 @@ export async function groupHomelandLayout(pieces, cells, { style, gap = 2, stora
         const groups = lots.map(lot => makeGroup(lot, style, gap)).filter(Boolean);
         const buildable = groups.flatMap(group => group.buildable);
         if (!buildable.length || buildable.reduce((sum, rectangle) => sum + area(rectangle), 0) < requiredArea) continue;
-        const labels = splitRequested ? assignPurposes(groups, pieces, purposes) : groups.map(() => 'mixed');
-        if (!labels) continue;
-        const storages = groups.map(group => group.storage);
-        const allowed = purposes && groups.map((group, i) => ({
-            bounds: group.bounds,
-            accepts: purpose => labels[i] === 'mixed' || (purpose === 'rv' ? labels[i] === 'rv'
-                : purpose === 'sales' ? labels[i] === 'sales' : labels[i] !== 'sales'),
-        }));
-        const sameGroup = (purpose, rectangles) => groups.some((group, i) =>
-            (!allowed || allowed[i].accepts(purpose)) && rectangles.every(rectangle => contains(group.bounds, rectangle)));
-        const layout = layOut(pieces, { cells: buildable, storages, passes: 2,
-            clusterFits: (i, rectangles) => sameGroup(purposes?.[i], rectangles),
-            canPlace: (i, _, rectangles) => (!splitRequested && rectangles.length === 1) || sameGroup(purposes?.[i], rectangles) });
-        if (layout.unplaced.length) continue;
-        // Restrict generators, repacked E-mode facilities and poles to the buildable
-        // tiles too. Wires can cross the reserved space without occupying it.
-        if (splitRequested) layout.pieces.forEach((piece, i) => {
-            piece.members.forEach(member => { member.layoutPurpose = purposes[i]; });
-        });
-        const canRelocate = splitRequested ? (member, rectangle) => member.generator
-            || sameGroup(member.layoutPurpose, [rectangle]) : null;
-        const powered = connectPower(layout, buildable, poleLimit, true, canRelocate);
-        if (powered.power.disconnected) continue;
-        const cost = layoutTravelCost(powered);
-        if (cost >= bestCost) continue;
-        bestCost = cost;
-        best = { ...powered, storageAt: { x: storages[0].x + 1, y: storages[0].y + 1 },
-            groups: groups.map(({ bounds, feature, reserved }, i) => ({ bounds, feature, reserved, purpose: labels[i] })), groupGap: gap };
+        for (const assignment of assignments) {
+            const labels = splitRequested ? assignPurposes(groups, pieces, assignment) : groups.map(() => 'mixed');
+            if (!labels) continue;
+            const storages = groups.map(group => group.storage);
+            const accepts = (label, purpose) => label === 'mixed' || (purpose === 'rv' ? label === 'rv'
+                : purpose === 'sales' ? label === 'sales' : label !== 'sales');
+            const sameGroup = (purpose, rectangles) => groups.some((group, i) =>
+                accepts(labels[i], purpose) && rectangles.every(rectangle => contains(group.bounds, rectangle)));
+            const layout = layOut(pieces, { cells: buildable, storages, passes: 2,
+                clusterFits: (i, rectangles) => sameGroup(assignment?.[i], rectangles),
+                canPlace: (i, _, rectangles) => (!splitRequested && rectangles.length === 1) || sameGroup(assignment?.[i], rectangles) });
+            if (layout.unplaced.length) continue;
+            // Generators and poles also leave the reserved paths and plazas clear.
+            if (splitRequested) layout.pieces.forEach((piece, i) => {
+                piece.members.forEach(member => { member.layoutPurpose = assignment[i]; });
+            });
+            const canRelocate = splitRequested ? (member, rectangle) => member.generator
+                || sameGroup(member.layoutPurpose, [rectangle]) : null;
+            const powered = connectPower(layout, buildable, poleLimit, true, canRelocate);
+            if (powered.power.disconnected) continue;
+            const arranged = { ...powered, storageAt: { x: storages[0].x + 1, y: storages[0].y + 1 },
+                groups: groups.map(({ bounds, feature, reserved }, i) => ({ bounds, feature, reserved, purpose: labels[i] })), groupGap: gap };
+            candidates.push({ arranged, groups, assignment, route: layoutTravelCost(arranged),
+                canPlace: (i, rectangle) => sameGroup(assignment?.[i], [rectangle]) });
+        }
     }
-    if (!best && splitRequested) {
-        const mixed = await groupHomelandLayout(pieces, cells, { style, gap, storageCount, poleLimit });
+    if (!candidates.length && splitRequested) {
+        const mixed = await groupHomelandLayout(pieces, cells, { style, gap, storageCount, poleLimit, recipes });
         return mixed && { ...mixed, groupPurposeFallback: true };
     }
-    return best;
+    if (!candidates.length) return null;
+    candidates.sort((a, b) => a.route - b.route);
+    const baseline = candidates.find(candidate => candidate.assignment === purposes) ?? candidates[0];
+    if (!recipes.length) return baseline.arranged;
+    const limit = baseline.route * ROUTE_ALLOWANCE;
+    const baselineGraph = productionGraph(baseline.arranged.pieces, recipes);
+    const maxChain = productionDistance(baselineGraph), maxOrder = alphabetInversions(baseline.groups, baselineGraph);
+    let best = baseline.arranged, chain = maxChain, order = maxOrder;
+    let route = baseline.route;
+    for (const candidate of candidates) {
+        if (candidate.route > limit + 1e-6) continue;
+        const graph = productionGraph(candidate.arranged.pieces, recipes);
+        const result = refineProductionPlacement(candidate.arranged, candidate.groups, graph, layoutTravelCost,
+            { limit, maxChain, maxOrder, canPlace: candidate.canPlace });
+        if (result.chain > maxChain + 1e-6 || result.order > maxOrder) continue;
+        const betterChain = result.chain < chain - 1e-6;
+        const sameChain = Math.abs(result.chain - chain) <= 1e-6;
+        if (betterChain || (sameChain && (result.order < order || (result.order === order && result.route < route)))) {
+            best = candidate.arranged;
+            ({ chain, order, route } = result);
+        }
+    }
+    return updatePowerConnections(best);
 }
