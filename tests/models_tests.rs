@@ -140,6 +140,12 @@ fn test_production_item_creation() {
     assert!(item.raw_materials.is_none());
     assert_eq!(item.sell_value, 1.0);
     assert_eq!(item.yield_amount, 10);
+
+    let mut counts = FacilityCounts::only(&[("Farmland", 1, 6)]);
+    counts.set_hauling(12.0, Default::default());
+    assert_eq!(counts.hauling_seconds_for(&item, 3), 4.0); // Three wheat batches in 30 slots.
+    counts.add_tier("Farmland", 1, 1);
+    assert_eq!(counts.hauling_seconds_for(&item, 3), 12.0); // Conservative when the plot's tier is unknown.
 }
 
 #[test]

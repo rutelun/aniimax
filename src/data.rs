@@ -11,7 +11,7 @@ use std::path::Path;
 
 use crate::models::{
     AniimoRequirements, FarmlandRow, GrowerStep, GrowerSteps, MineralRow, ProcessingRowNoEnergy, ProcessingRowWithEnergy,
-    ProductionItem, WoodlandRow,
+    ProductionItem, WoodlandRow, GROWER_JOB_TIME_SCALE,
 };
 
 /// One row of `aniimo_requirements.csv`.
@@ -61,7 +61,7 @@ pub fn parse_grower_steps(csv_text: &str) -> Result<GrowerSteps, Box<dyn Error>>
         let row = row?;
         steps.insert(
             &row.name,
-            GrowerStep { step: row.step, ability: row.ability, min_level: row.min_level, workload: row.workload },
+            GrowerStep { step: row.step, ability: row.ability, min_level: row.min_level, workload: row.workload * GROWER_JOB_TIME_SCALE },
         );
     }
     Ok(steps)

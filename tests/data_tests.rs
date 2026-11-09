@@ -289,6 +289,9 @@ fn test_aniimo_requirements_cover_every_worked_recipe() {
 fn test_grower_steps_cover_every_crop_and_tree() {
     let Some(items) = load_items() else { return };
     let steps = aniimax::data::load_grower_steps(Path::new("data")).expect("Failed to load grower steps");
+    let potato = steps.get("potato");
+    assert_eq!(potato.iter().find(|job| job.step == "Reclaiming").unwrap().workload, 10.0);
+    assert_eq!(potato.iter().filter(|job| job.step == "Watering").map(|job| job.workload).collect::<Vec<_>>(), vec![6.0, 6.0]);
     for item in items.iter().filter(|i| i.facility == "Farmland" || i.facility == "Woodland") {
         let jobs = steps.get(&item.name);
         assert!(jobs.iter().any(|j| j.step == "Sowing"), "{} has no Sowing step in grower_steps.csv", item.name);

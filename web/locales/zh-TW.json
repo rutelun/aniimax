@@ -1019,6 +1019,8 @@
   "Workshops": "工坊",
   "Tree groves": "林地",
   "Mining area": "採礦區",
+  "Delivery estimates use facility stock limits, carrying capacity, and twice the basic walking time. Pickup timing is approximate; Hauling Lv.4 uses Lv.3 capacity.": "運送估算考量設施庫存上限、搬運容量及兩倍基本步行時間。取貨時機為估算值，搬運 Lv.4 採用 Lv.3 的容量。",
+  "Local output stock: {n} items": "設施產品庫存上限：{n} 件",
   "Water wells": "水井",
   "{n} zones with {gap}-tile gaps.": "共有 {n} 個區域，間距為 {gap} 格。",
   "Zone {n}": "區域 {n}",

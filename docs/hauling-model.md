@@ -25,14 +25,24 @@ of the game's automatic dispatcher.
 The model groups nearby delivery jobs around their nearest Storage Unit. A delivery consists
 of carrying cargo to storage and walking to the next pickup. Next pickups are weighted by
 the delivery frequency of the buildings in that storage pool. There is no mandatory return
-to the building just serviced. The walking speed is the application's existing 4 tiles/s,
-as requested by the user; this has not been independently measured in the game.
+to the building just serviced. The basic walking speed is the application's existing 4 tiles/s.
+The workload model applies a 2× time allowance to both legs. It also doubles the estimated
+work of each Farmland/Woodland job, including both waterings; crop growth time and ordinary
+worker travel between workplaces retain their existing values.
 
-Each production batch is one pickup group. Each output type, including byproducts, is split
-into trips by the courier's carrying capacity. Accumulation of several production batches
-into a single pickup, mixing different output types in one load, pickup/drop-off animation
-times, hunger, and the game's dispatch priorities are not simulated. Reported minutes and
-headcounts are therefore estimates, not verified guarantees of in-game throughput.
+Building stock limits by tier are shared by the browser and the Rust optimizer in
+`web/facility-stock.json`. They come from the `facilities[].lv[].lim` fields of the
+[extracted game tables](https://aniimocamp.com/aniimotools/homefarm.json) (build 3584014).
+[GameWith's Farmland guide](https://gamewith.ai/aniimo/en/articles/how-to-farm#farmland-levels-and-item-count)
+also shows the 5–35 item limits and that farming can deliver a single oversized harvest intact.
+
+The estimate combines as many whole batches as fit in the building's local stock before
+collection. An oversized harvest still goes out as a whole batch. Output and byproducts share
+the estimated buffer and are carried in separate loads. If the building has no recorded
+limit or switches between recipes, the estimate uses one batch per pickup. With mixed
+building tiers the layout assigns compatible owned levels; the route bound uses the busiest
+compatible tier. The in-game pickup threshold and queues are not verified for every building.
+The animation shows accumulation, but does not simulate individual dispatch queues.
 
 Hauling shares the assigned courier's available hours with production, crop jobs, generator
 staffing and optional worker travel. The fast allocation uses free hours first. If a specified

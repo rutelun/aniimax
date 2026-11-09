@@ -12,6 +12,7 @@ on:
       - 'web/**/*.mjs'
       - 'web/**/*.html'
       - 'web/**/*.css'
+      - 'web/facility-stock.json'
       - 'build-wasm.sh'
 
 permissions:

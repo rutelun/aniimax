@@ -414,6 +414,7 @@ pub const WATERING_ABILITY: &str = "Water";
 
 /// How many times a plot asks for water as it grows.
 pub const WATERINGS_PER_CYCLE: u32 = 2;
+pub(crate) const GROWER_JOB_TIME_SCALE: f64 = 2.0;
 
 /// What each watering takes off a crop's timer, as a share of its own grow time: an eighth, twice
 /// over. A 40-minute crop loses 5 minutes at each, and a 4-minute one about 30 seconds, both seen
@@ -798,7 +799,7 @@ impl GrowerSteps {
                         step: "Watering".to_string(),
                         ability: WATERING_ABILITY.to_string(),
                         min_level: 1,
-                        workload: 3.0,
+                        workload: 3.0 * GROWER_JOB_TIME_SCALE,
                     },
                 );
             }
@@ -1257,6 +1258,17 @@ impl Default for FacilityCounts {
     }
 }
 
+/// Local output storage, distinct from the shared Home warehouse.
+fn facility_stock_limit(facility: &str, level: u32) -> u32 {
+    use std::{collections::BTreeMap, sync::OnceLock};
+    static LIMITS: OnceLock<BTreeMap<String, Vec<u32>>> = OnceLock::new();
+    let limits = LIMITS.get_or_init(|| serde_json::from_str(include_str!("../web/facility-stock.json"))
+        .expect("embedded facility stock limits are valid"));
+    limits.get(facility)
+        .and_then(|tiers| tiers.get(level.max(1) as usize - 1).or_else(|| tiers.last()))
+        .copied().unwrap_or(0)
+}
+
 impl FacilityCounts {
     pub fn set_hauling(&mut self, default_seconds: f64, values: std::collections::BTreeMap<String, f64>) {
         self.hauling_default_seconds = if default_seconds.is_finite() { default_seconds.clamp(0.0, 86400.0) } else { 0.0 };
@@ -1276,9 +1288,20 @@ impl FacilityCounts {
         }
         if let Some(seconds) = self.hauling_seconds.get(&key) { return *seconds; }
         let capacity = match level { 0 | 1 => 60.0, 2 => 80.0, _ => 100.0 };
-        let trips = (recipe.yield_amount as f64 / capacity).ceil()
-            + recipe.byproduct.as_ref().map_or(0.0, |(_, amount)| (*amount as f64 / capacity).ceil());
-        self.hauling_default_seconds * trips.max(1.0)
+        let output = recipe.yield_amount.max(1) as f64;
+        let byproduct = recipe.byproduct.as_ref().map_or(0.0, |(_, amount)| *amount as f64);
+        let per_batch = |limit: u32| {
+            let batches = (limit as f64 / (output + byproduct)).floor().max(1.0);
+            ((output * batches / capacity).ceil() + (byproduct * batches / capacity).ceil()) / batches
+        };
+        // The exact model does not choose a physical tier for every ordinary
+        // recipe. For the route bound, use the busiest compatible buffer size.
+        let powered = crate::power::electric_level(&recipe.name);
+        let trips = self.tiers(&recipe.facility).into_iter().filter(|&(count, tier)| {
+            count > 0 && powered.map_or(tier >= recipe.facility_level, |required| tier == required)
+        }).map(|(_, tier)| per_batch(facility_stock_limit(&recipe.facility, tier)))
+            .reduce(f64::max).unwrap_or_else(|| per_batch(0));
+        self.hauling_default_seconds * trips
     }
 
     pub fn set_movement_seconds(&mut self, seconds: f64) {

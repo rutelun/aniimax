@@ -1,18 +1,63 @@
 import { nearestStorage } from './layout.js?v=optional-worker-travel';
 import { ANIIMO_WALK_SPEED } from './worker-travel.js?v=auto-worker-travel';
+import facilityStock from './facility-stock.json' with { type: 'json' };
 
 // Client-derived Wikily profiles: Skippy 60, Fenrier 80, Bouldus/Glacy 100.
 // Lv.4's carrying count is unverified; retain the verified Lv.3 capacity conservatively.
 export const HAULING_CAPACITY = Object.freeze({1:60, 2:80, 3:100, 4:100});
 const levels = [1, 2, 3, 4];
 const headcount = n => Math.max(0, Math.ceil(n - 1e-6));
-export const haulingBatchTrips = (recipe, level = 3) => Math.ceil((recipe?.yieldAmount || 1) / HAULING_CAPACITY[level])
-    + (recipe?.byproductAmount > 0 ? Math.ceil(recipe.byproductAmount / HAULING_CAPACITY[level]) : 0);
+export const haulingTravelSeconds = distance => 2 * distance / ANIIMO_WALK_SPEED;
+const batchOutput = recipe => [Math.max(1, recipe?.yieldAmount || 1), Math.max(0, recipe?.byproductAmount || 0)];
+export const facilityStockLimit = (facility, level = 1) =>
+    facilityStock[facility]?.[Math.max(1, level) - 1] ?? facilityStock[facility]?.at(-1) ?? 0;
 
-// Estimate one completed batch per pickup group, split over carrying capacity. After storage
+export function bufferedBatches(recipe, limit = 0) {
+    return Math.max(1, Math.floor(limit / batchOutput(recipe).reduce((sum, amount) => sum + amount, 0)));
+}
+
+export function haulingBatchTrips(recipe, level = 3, limit = 0) {
+    const batches = bufferedBatches(recipe, limit), capacity = HAULING_CAPACITY[level];
+    return batchOutput(recipe).reduce((sum, amount) => sum + Math.ceil(amount * batches / capacity), 0) / batches;
+}
+
+export function assignFacilityStock(members, facilities, recipeOf) {
+    const byFacility = new Map();
+    for (const member of members) {
+        if (!(member.weight > 0) || !facilityStock[member.facility]) continue;
+        const recipes = member.jobs?.map(job => job.item) ?? [member.crop];
+        const required = Math.max(1, ...recipes.map(item => recipeOf.get(item)?.facility_level ?? 1));
+        if (!byFacility.has(member.facility)) byFacility.set(member.facility, []);
+        byFacility.get(member.facility).push({ member, required });
+    }
+    for (const [facility, placements] of byFacility) {
+        const tiers = (facilities?.[facility] ?? []).map(tier => ({ ...tier })).sort((a, b) => a.level - b.level);
+        placements.sort((a, b) => Number(b.member.electric_level != null) - Number(a.member.electric_level != null)
+            || b.required - a.required);
+        for (const { member, required } of placements) {
+            const powered = member.electric_level;
+            const tier = tiers.find(t => t.count > 0 && (powered != null ? t.level === powered : t.level >= required));
+            if (tier) tier.count--;
+            member.stockLimit = facilityStockLimit(facility, powered ?? tier?.level ?? required);
+        }
+    }
+}
+
+// A machine switching recipes does not fill a separate full buffer for each.
+export const pickupStockLimit = member => member.jobs?.length > 1 ? 0 : member.stockLimit ?? 0;
+
+function fallbackTrips(step, recipe, level, facilities) {
+    const tiers = (facilities?.[step.facility] ?? []).filter(tier => tier.count > 0 && (step.electric_level != null
+        ? tier.level === step.electric_level : tier.level >= (recipe?.facility_level ?? 1)));
+    return tiers.length ? Math.max(...tiers.map(tier =>
+        haulingBatchTrips(recipe, level, facilityStockLimit(step.facility, tier.level)))) : haulingBatchTrips(recipe, level);
+}
+
+// Accumulate whole batches in the building's output buffer, then split the
+// pickup over carrying capacity. An oversized harvest still needs all its trips. After storage
 // comes the next pickup, weighted by its delivery frequency in the same storage pool.
-// Buffer accumulation, pickup animations and dispatch priorities are not verified game rules.
-export function haulingWorkload(layout, steps, fallbackSeconds = 0, recipes = []) {
+// Pickup thresholds are estimates. Fallback seconds already include the time allowance.
+export function haulingWorkload(layout, steps, fallbackSeconds = 0, recipes = [], facilities = null) {
     const recipeOf = new Map(recipes.map(recipe => [recipe.name, recipe]));
     const seconds = {}, jobs = new Map();
     for (const level of levels) {
@@ -21,12 +66,12 @@ export function haulingWorkload(layout, steps, fallbackSeconds = 0, recipes = []
             if (!(member.weight > 0)) continue;
             const storage = nearestStorage(member, layout.storages);
             if (!storage) continue;
-            const loaded = Math.hypot(member.x + member.w / 2 - storage.x - storage.w / 2,
-                member.y + member.h / 2 - storage.y - storage.h / 2) / ANIIMO_WALK_SPEED;
+            const loaded = haulingTravelSeconds(Math.hypot(member.x + member.w / 2 - storage.x - storage.w / 2,
+                member.y + member.h / 2 - storage.y - storage.h / 2));
             const cargo = member.jobs?.map(job => [job.item, job.rate * 3600]) || [[member.crop, member.batchWeight ?? member.weight]];
             const pool = pools.get(storage) || { trips: 0, pickupSeconds: 0 };
             for (const [item, batches] of cargo) {
-                const trips = batches * haulingBatchTrips(recipeOf.get(item), level);
+                const trips = batches * haulingBatchTrips(recipeOf.get(item), level, pickupStockLimit(member));
                 pool.trips += trips;
                 pool.pickupSeconds += trips * loaded;
                 pickups.push({key:`${member.facility}|${item}`, storage, loaded, trips, batches});
@@ -46,7 +91,7 @@ export function haulingWorkload(layout, steps, fallbackSeconds = 0, recipes = []
         if (step.status !== 'producing' || !(step.cycle_time > 0)) continue;
         const key = `${step.facility}|${step.item_name}`;
         const costs = Object.fromEntries(levels.map(level => [level,
-            seconds[`${key}|${level}`] ?? fallbackSeconds * haulingBatchTrips(recipeOf.get(step.item_name), level)]));
+            seconds[`${key}|${level}`] ?? fallbackSeconds * fallbackTrips(step, recipeOf.get(step.item_name), level, facilities)]));
         for (const level of levels) seconds[`${key}|${level}`] = costs[level];
         seconds[key] = costs[3];
         const job = jobs.get(key) || { key, rate: 0, seconds: costs };

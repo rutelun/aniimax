@@ -1,7 +1,7 @@
 // Aniimax Web Application
 
-import { currentLocale, sourceAttribute, translate } from './i18n.js?v=local-deliveries';
-import './math-translation.js?v=local-deliveries';
+import { currentLocale, sourceAttribute, translate } from './i18n.js?v=facility-stock';
+import './math-translation.js?v=facility-stock';
 
 import {
     FACILITIES, FACILITY_CATEGORIES, FACILITY_CATEGORY_BY_NAME, FACILITY_FOOTPRINTS, HOMELAND_PLOTS, HOMELAND_PLOT_SIZE,
@@ -12,7 +12,8 @@ import { allocateTurnFacilities, redistributeTurnFacilityRows } from './turn-job
 import { createShareUrl, readShareHash, urlWithoutShare } from './share-config.js';
 import { nearestStorage } from './layout.js?v=storage-power';
 import { ANIIMO_WALK_SPEED, workerTravelDistances } from './worker-travel.js?v=auto-worker-travel';
-import { haulingWorkload, allocateHauling, haulingBatchTrips } from './hauling.js?v=hauling-workload';
+import { assignFacilityStock, bufferedBatches, haulingWorkload, allocateHauling, haulingBatchTrips,
+    haulingTravelSeconds, pickupStockLimit } from './hauling.js?v=facility-stock';
 import { changeOneMember, personalityInput, reserveLevelFourInputs, comparePlans, usefulUpgrade, keepBetterComparison } from './opportunity-comparison.js?v=income-aware-chains';
 import { comparisonConcurrency, startComparisonQueue } from './comparison-queue.js?v=parallel-comparisons';
 import { prepareOpportunities, startedProcessing, increasedProcessing } from './opportunity-effects.js?v=upgrade-constraints';
@@ -1323,12 +1324,15 @@ function homelandPieces(plan, input) {
             if (existing) existing[1] += share; else m.workers.push([worker, share]);
         }
     }
-    for (const member of pieces.flatMap(piece => piece.cluster ? piece.plots : piece.members)) {
+    const recipesByName = new Map(recipeIndex.map(recipe => [recipe.name, recipe]));
+    assignFacilityStock(physical, input.facilities, recipesByName);
+    for (const member of physical) {
         if (!(member.weight > 0)) continue;
         member.batchWeight = member.weight;
+        const limit = pickupStockLimit(member);
         member.weight = member.jobs ? member.jobs.reduce((sum, job) => sum + job.rate * 3600
-            * haulingBatchTrips(recipeIndex.find(recipe => recipe.name === job.item)), 0)
-            : member.weight * haulingBatchTrips(recipeIndex.find(recipe => recipe.name === member.crop));
+            * haulingBatchTrips(recipesByName.get(job.item), 3, limit), 0)
+            : member.weight * haulingBatchTrips(recipesByName.get(member.crop), 3, limit);
     }
     return { pieces, unplaced: [...unplaced] };
 }
@@ -1616,6 +1620,7 @@ function layoutOptionsFor(plan, homeLevel, setup = selectedSetupTab()) {
                 ? { defaultDistance: movementDefaultDistance, byMember: movementDistances, visits } : null,
             haulingLevel: setup === 'minimum' ? 1 : 3,
             haulingBound: haulingRouteBound(),
+            facilities: lastPlanInput?.facilities,
             steps: (plan.coin_items || []).filter(step => step.status === 'producing'),
         };
     }
@@ -1832,7 +1837,10 @@ function homelandSvg(layout, homeLevel) {
         const electricDetail = electric ? ` · ${translate('E-mode · Building Lv.{level}').replace('{level}', m.electric_level)} · ${translate(m.power_connected ? 'Connected to power' : 'No power connection')}` : '';
         const tip = tipAttrs(m.facility, {
             detail: m.jobs ? m.jobs.map(j => prettyItem(j.item)).join(', ') : m.crop ? prettyItem(m.crop) : m.building && m.mode ? m.mode : 'Idle',
-            stats: (m.weight > 0 && storage ? `${formatRate(m.weight)} trips/hour · ${away.toFixed(1)} tiles from storage` : '') + electricDetail,
+            stats: [
+                m.weight > 0 && storage ? `${formatRate(m.weight)} trips/hour · ${away.toFixed(1)} tiles from storage` : '',
+                m.stockLimit ? translate('Local output stock: {n} items').replace('{n}', m.stockLimit) : '',
+            ].filter(Boolean).join(' · ') + electricDetail,
             color,
         });
         const badge = electric ? `<g class="layout-emode-badge${m.power_connected ? '' : ' disconnected'}" aria-label="E-mode"><circle cx="${m.x + m.w - 0.4}" cy="${m.y + 0.4}" r="0.45" /><text x="${m.x + m.w - 0.4}" y="${m.y + 0.4}" font-size="0.65">⚡</text></g>` : '';
@@ -1867,8 +1875,7 @@ function homelandSvg(layout, homeLevel) {
     const rings = flowList.map(f => `<g class="layout-ring" transform="translate(${f.rx.toFixed(2)} ${f.ry.toFixed(2)})">
             <circle r="${f.ring.toFixed(2)}" class="ring-track" /><circle r="${f.ring.toFixed(2)}" class="ring-fill" pathLength="1" stroke-dasharray="0 1" transform="rotate(-90)" /></g>`).join('');
     const storageShapes = layout.storages.map((s, index) => {
-        const trips = flowList.filter(flow => flow.storage === index).reduce((sum, flow) =>
-            sum + flow.jobs.reduce((n, job) => n + job.rate * 3600, 0), 0);
+        const trips = flowList.filter(flow => flow.storage === index).reduce((sum, flow) => sum + flow.trips, 0);
         return `<g class="layout-piece layout-storage-unit" ${tipAttrs('Storage Unit', { detail: 'Nearest storage for its deliveries', stats: trips > 0 ? `${formatRate(trips)} trips/hour` : '' })}>
             <rect x="${s.x + 0.04}" y="${s.y + 0.04}" width="${s.w - 0.08}" height="${s.h - 0.08}" rx="0.2" class="layout-storage" />
             <text x="${s.x + s.w / 2}" y="${s.y + s.h / 2}" font-size="0.65" class="layout-storage-text">SU${index + 1}</text></g>`;
@@ -1911,19 +1918,18 @@ function homelandSvg(layout, homeLevel) {
 
 // --- Deliveries ------------------------------------------------------------------------
 // The layout plays its homeland out in sped-up game time, from the moment everything is set up.
-// Every finished batch goes to the Storage Unit, with its byproduct, and adds to what's there; a
-// recipe starts a batch only once the Storage Unit has all it takes, and takes it out. Each unit
+// Finished batches build up at each facility until the estimated pickup size is reached.
+// A recipe starts a batch once the shared warehouse has its ingredients. Each unit
 // also keeps to the plan's pace for each recipe it runs, so it doesn't take more than its share
 // of what others need; a Bench or Kiln runs its tiers in turn. A ring on each shows its batch,
-// amber while it waits for materials. What isn't modeled: carrying takes no time (the dots walk
-// at a fixed pace just to show it), and which of two recipes wanting the same thing gets it first
-// (they take turns at random).
+// amber while it waits for materials. Pickup dots illustrate the route; the warehouse receives
+// stock at dispatch in this visualization. Recipes competing for inputs take turns at random.
 
 // Roughly how many real seconds the build-up takes, however long it is in game (at least a
 // minute a second, at most an hour); a guess from first batches, not the whole wait.
 const SIM_BUILD_UP = 10;
 // Tiles a second a delivery walks, in real time.
-const SIM_PACE = ANIIMO_WALK_SPEED;
+const SIM_PACE = 1 / haulingTravelSeconds(1);
 // Game seconds per step of the simulation.
 const SIM_STEP = 2;
 // Real seconds between two dots on the same line, at the least.
@@ -1945,7 +1951,8 @@ function layoutFlows(layout) {
         return {
             x1, y1, x2, y2, storage: layout.storages.indexOf(s), length: Math.hypot(x2 - x1, y2 - y1),
             ring, rx: m.x + m.w - ring - 0.12, ry: m.y + ring + 0.12,
-            jobs: m.jobs || [{ item: m.crop, cycle: m.cycle, rate: m.weight / 3600 }],
+            trips: m.weight, stockLimit: pickupStockLimit(m),
+            jobs: m.jobs || [{ item: m.crop, cycle: m.cycle, rate: (m.batchWeight ?? m.weight) / 3600 }],
         };
     });
 }
@@ -1956,6 +1963,7 @@ function recipeTerms(name) {
     const r = recipeIndex.find(r => r.name === name);
     return {
         takes: (r?.ingredients || []).map((ingredient, i) => [ingredient, r.amounts?.[i] ?? 1]),
+        facility_level: r?.facility_level,
         makes: name.replace(/^quick_/, ''),
         yield: r?.yieldAmount || 1,
         byproduct: r?.byproduct ? [r.byproduct, r.byproductAmount || 0] : null,
@@ -2035,6 +2043,8 @@ function resetLayoutSim(sim) {
         unit.until = null;
         unit.free = 0;
         unit.lastDot = -Infinity;
+        unit.pending = new Map();
+        unit.buffered = 0;
         unit.line?.classList.remove('live');
         showRing(unit, 0, false);
     });
@@ -2084,12 +2094,18 @@ function stepLayoutSim(sim, dt) {
     }
     for (const unit of order) {
         unit.jobs.forEach(job => { job.pace = Math.min(1 + job.rate * SIM_STEP, job.pace + job.rate * dt); });
-        // Each batch finished within the step is delivered then, and the next starts right away.
+        // Only full estimated pickup groups leave the facility's local buffer.
         while (unit.until != null && unit.until <= sim.game) {
             const { makes, byproduct, yield: amount } = unit.job.terms;
-            sim.store.set(makes, (sim.store.get(makes) || 0) + amount);
-            if (byproduct) sim.store.set(byproduct[0], (sim.store.get(byproduct[0]) || 0) + byproduct[1]);
-            deliver(sim, unit, (sim.game - unit.until) / sim.speed);
+            unit.pending.set(makes, (unit.pending.get(makes) || 0) + amount);
+            if (byproduct) unit.pending.set(byproduct[0], (unit.pending.get(byproduct[0]) || 0) + byproduct[1]);
+            unit.buffered++;
+            if (unit.buffered >= bufferedBatches({ yieldAmount: amount, byproductAmount: byproduct?.[1] }, unit.flow.stockLimit)) {
+                for (const [item, count] of unit.pending) sim.store.set(item, (sim.store.get(item) || 0) + count);
+                unit.pending.clear();
+                unit.buffered = 0;
+                deliver(sim, unit, (sim.game - unit.until) / sim.speed);
+            }
             unit.free = unit.until;
             unit.until = null;
             unit.job = null;
@@ -2290,18 +2306,18 @@ let haulingSeconds = {};
 let haulingDefaultSeconds = 0;
 let haulingRefinements = 0;
 const haulingBaseByPlan = new WeakMap();
-const HAULING_ESTIMATE_HINT = 'Delivery is estimated per production batch and carrying capacity. Storage buffering and dispatch delays are not simulated; Hauling Lv.4 uses Lv.3 capacity.';
+const HAULING_ESTIMATE_HINT = 'Delivery estimates use facility stock limits, carrying capacity, and twice the basic walking time. Pickup timing is approximate; Hauling Lv.4 uses Lv.3 capacity.';
 
 function haulingRouteBound() {
     const open = homelandPlots().filter(p => p.number <= layoutHomeLevel());
-    return open.length ? 2 * Math.hypot(
+    return open.length ? haulingTravelSeconds(2 * Math.hypot(
         Math.max(...open.map(p => p.x + p.w)) - Math.min(...open.map(p => p.x)),
-        Math.max(...open.map(p => p.y + p.h)) - Math.min(...open.map(p => p.y))) / ANIIMO_WALK_SPEED : 0;
+        Math.max(...open.map(p => p.y + p.h)) - Math.min(...open.map(p => p.y)))) : 0;
 }
 
 function assignLayoutHauling(layout, plan) {
     const bound = haulingRouteBound();
-    const work = haulingWorkload(layout, plan.coin_items || [], bound, recipeIndex);
+    const work = haulingWorkload(layout, plan.coin_items || [], bound, recipeIndex, lastPlanInput?.facilities);
     plan.hauling_estimates = work.seconds;
     plan.hauling_busy = work.busyByLevel[selectedSetupTab() === 'minimum' ? 1 : 3];
     if (selectedSetupTab() !== 'custom') return false;
@@ -2528,7 +2544,7 @@ async function measureSourceTeamHauling(plan, input, level) {
         });
         rememberLayout(plan, key, layout);
     }
-    return haulingWorkload(layout, plan.coin_items || [], haulingRouteBound(), recipeIndex).busyByLevel[level];
+    return haulingWorkload(layout, plan.coin_items || [], haulingRouteBound(), recipeIndex, input.facilities).busyByLevel[level];
 }
 
 function attachRosterHandlers() {

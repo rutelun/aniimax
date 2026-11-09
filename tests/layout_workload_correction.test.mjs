@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {runInNewContext} from 'node:vm';
 import {workerTravelDistances} from '../web/worker-travel.js';
+import {haulingTravelSeconds} from '../web/hauling.js';
 
 const source = await readFile(new URL('../web/app.js',import.meta.url),'utf8');
 const movementCode = source.slice(source.indexOf('function refineWorkerMovement('),source.indexOf('let rosterFillVersion'));
@@ -12,7 +13,7 @@ const layout = (distance, worker = 0) => ({pieces:[{members:[site(0,worker),site
 
 function page() {
     let updates = 0;
-    const context = {workerTravelDistances,workerTravelEnabled:()=>true,selectedSetupTab:()=> 'custom',
+    const context = {workerTravelDistances,haulingTravelSeconds,workerTravelEnabled:()=>true,selectedSetupTab:()=> 'custom',
         homelandPlots:()=>[{number:1,x:0,y:0,w:100,h:60}],layoutHomeLevel:()=>1,ANIIMO_WALK_SPEED:4,
         stopRanking(){},switchAniimoSetup:()=>updates++,showError:message=>assert.fail(message),
         recipeIndex:[],rosterWorkload:()=>({members:[],busy:[]}),
@@ -49,7 +50,7 @@ test('a delivery shortage uses one full-map correction and accepts the checked c
     p.context.plan={assumed_aniimo:[],coin_items:[]};
     assert.equal(p.run('assignLayoutHauling({},plan)'),true);
     assert.equal(p.run('Object.keys(haulingSeconds).length'),0);
-    assert.ok(p.run('haulingDefaultSeconds')>=2*Math.hypot(100,60)/4);
+    assert.ok(Math.abs(p.run('haulingDefaultSeconds') - Math.hypot(100,60)) < 1e-9);
     p.context.plan={assumed_aniimo:[],coin_items:[],hauling_staffing:[[0,1]]};
     assert.equal(p.run('assignLayoutHauling({},plan)'),false);
     assert.deepEqual(p.context.plan.delivery_assignments,[[0,1]]);

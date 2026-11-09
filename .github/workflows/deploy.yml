@@ -28,6 +28,11 @@ jobs:
           toolchain: stable
           target: wasm32-unknown-unknown
 
+      - name: Check production data and workload models
+        run: |
+          cargo test --locked --test data_tests --test models_tests
+          cargo test --locked --test exact_tests hauling
+
       - name: Install wasm-pack
         run: cargo install wasm-pack
 
