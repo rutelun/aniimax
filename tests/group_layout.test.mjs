@@ -32,11 +32,13 @@ for (const style of ['courtyards', 'avenues', 'districts']) test(`${style} keep 
     assert.ok(occupied.every(insideOpenLand));
     assert.ok(occupied.every((r, i) => occupied.slice(i + 1).every(other => !overlaps(r, other))));
     assert.ok(obstacles.every(r => reserved.every(space => !overlaps(r, space))));
-    if (style === 'districts') layout.groups.forEach(({ bounds, feature }, i) => {
+    if (style === 'districts') layout.groups.forEach(({ bounds, feature }) => {
         assert.equal(feature.w, bounds.w);
         assert.ok(feature.y === bounds.y || feature.y + feature.h === bounds.y + bounds.h);
-        assert.ok(createInsideTest([feature])(layout.storages[i]));
     });
+    const assignments = layout.groups.flatMap(group => group.storageIndices);
+    assert.deepEqual(assignments.sort((a, b) => a - b), layout.storages.map((_, i) => i));
+    assert.ok(layout.groups.every(group => group.storageIndices.every(i => createInsideTest([group.bounds])(layout.storages[i]))));
     const sales = layout.groups.find(group => group.purpose === 'sales');
     const rv = layout.groups.find(group => group.purpose === 'rv');
     assert.ok(layout.pieces.slice(0, 2).flatMap(piece => piece.members).every(createInsideTest([sales.bounds])));

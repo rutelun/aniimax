@@ -152,6 +152,12 @@ test('storage can exchange an occupied position with buildings without losing a 
     const layout={pieces:members.map(m=>({members:[m]})),storages:[{x:0,y:0,w:2,h:2}],unplaced:[],tried:0};
     const cells=[{x:0,y:0,w:2,h:2},{x:10,y:0,w:8,h:8}];
     const before=structuredClone(layout);
+    let checked = 0;
+    const guarded = refineStorageNeighborhood(layout,pieces,cells,4,{
+        accept: () => { checked++; return false; },
+    });
+    assert.ok(checked > 0, 'profitable physical moves were checked against the plan');
+    assert.deepEqual(guarded, before, 'a route improvement cannot override the production check');
     const result=refineStorageNeighborhood(layout,pieces,cells);
     assert.ok(result.storages[0].x>=10);
     assert.equal(result.storages.length,1);

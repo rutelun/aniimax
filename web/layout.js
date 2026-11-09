@@ -639,7 +639,10 @@ export function refineSuppliedLayout(layout, pieces, cells, {storageTrials = 4} 
 // Move a storage together with up to four buildings occupying its proposed position.
 // Search only a bounded neighborhood; climate clusters and power infrastructure stay
 // fixed, and every accepted candidate retains all units and improves the complete cost.
-export function refineStorageNeighborhood(layout, pieces, cells, trials = 4) {
+export function refineStorageNeighborhood(layout, pieces, cells, trials = 4, {
+    storageCells = cells, canMoveStorage = () => true, canPlace = () => true,
+    accept = () => true, cost = layoutCost,
+} = {}) {
     if (!trials || !layout.storages.length || layout.unplaced.length || layout.power?.disconnected) return layout;
     const fixed = i => pieces[i].cluster || layout.pieces[i].members.length !== 1
         || layout.pieces[i].members.some(m=>m.generator);
@@ -655,7 +658,8 @@ export function refineStorageNeighborhood(layout, pieces, cells, trials = 4) {
             const key=`${x},${y}`;
             if(seen.has(key))return; seen.add(key);
             const candidate={...storage,x,y};
-            if(cells.reduce((sum,c)=>sum+overlapArea(candidate,c),0)<candidate.w*candidate.h-EPSILON)return;
+            if(storageCells.reduce((sum,c)=>sum+overlapArea(candidate,c),0)<candidate.w*candidate.h-EPSILON
+                || !canMoveStorage(layout, index, candidate))return;
             if(layout.storages.some((s,i)=>i!==index&&overlaps(s,candidate))
                 || (layout.power?.poles||[]).some(p=>overlaps(p,candidate)))return;
             const blocking=members.filter(m=>overlaps(m,candidate));
@@ -683,7 +687,7 @@ export function refineStorageNeighborhood(layout, pieces, cells, trials = 4) {
     proposals.sort((a,b)=>a.rank-b.rank||a.estimate-b.estimate);
     let best=layout;
     for(const {index,candidate} of proposals.slice(0,trials)){
-        if(best.storages.some((s,i)=>i!==index&&overlaps(s,candidate)))continue;
+        if(!canMoveStorage(best,index,candidate)||best.storages.some((s,i)=>i!==index&&overlaps(s,candidate)))continue;
         const blockers=best.pieces.flatMap((p,i)=>p.members.some(m=>overlaps(m,candidate))?[i]:[]);
         if(blockers.length>4||blockers.some(fixed))continue;
         const neighbors=best.pieces.flatMap((p,i)=>!fixed(i)?[{i,weight:p.members[0].weight||0,
@@ -692,11 +696,14 @@ export function refineStorageNeighborhood(layout, pieces, cells, trials = 4) {
         const movable=new Set([...blockers,...neighbors]);
         const initialLayout={...best,pieces:best.pieces.map((p,i)=>blockers.includes(i)?{...p,members:[]}:p)};
         const stores=best.storages.map((s,i)=>i===index?candidate:s);
+        const supply = suppliedPlacementOptions(best);
         const result=layOut(pieces,{storages:stores,cells,initialLayout,passes:1,exchangeBudget:6,
-            ...suppliedPlacementOptions(best),fixedPieces:new Set(pieces.flatMap((_,i)=>movable.has(i)?[]:[i]))});
+            ...supply,canPlace:(i,metadata,rectangles)=>canPlace(i,metadata,rectangles)
+                && supply.canPlace(i,metadata,rectangles),
+            fixedPieces:new Set(pieces.flatMap((_,i)=>movable.has(i)?[]:[i]))});
         result.storageAt={x:stores[0].x+stores[0].w/2,y:stores[0].y+stores[0].h/2};
         result.tried+=best.tried; result.power=best.power;
-        if(!result.unplaced.length&&layoutCost(result)<layoutCost(best)-EPSILON)best=result;
+        if(!result.unplaced.length&&cost(result)<cost(best)-EPSILON&&accept(result))best={...best,...result};
     }
     return best;
 }

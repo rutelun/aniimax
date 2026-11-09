@@ -4,6 +4,7 @@ import { alphabetScore, chainPurposes, productionDistance, productionGraph,
 import { miningRows, productionRows, productionZones, rawTheme, rawZones, rawZoneSpread, zoneLinkDistance } from './production-zones.js?v=zone-ranges';
 import { allocateHauling, haulingWorkload } from './hauling.js?v=hauling-workload';
 import { ANIIMO_WALK_SPEED, workerTravelDistances } from './worker-travel.js?v=auto-worker-travel';
+import { canMoveDistrictStorage, districtStorageIndices, improveDistrictStorage } from './district-storage.js?v=local-deliveries';
 
 const load = new URL(import.meta.url).search;
 const placement = import('./layout.js' + load);
@@ -17,6 +18,8 @@ const overlaps = (a, b) => a && b && a.x < b.x + b.w - 1e-6 && b.x < a.x + a.w -
     && a.y < b.y + b.h - 1e-6 && b.y < a.y + a.h - 1e-6;
 const membersOf = piece => piece.cluster ? [...piece.buildings, ...piece.plots] : piece.members;
 const pieceArea = piece => membersOf(piece).reduce((sum, rectangle) => sum + area(rectangle), 0);
+const miningDistricts = (layout, groups) => new Set(layout.pieces.flatMap(piece => piece.members)
+    .filter(member => member.facility === 'Mine').map(member => groups.findIndex(group => contains(group.bounds, member)))).size;
 const rvFacilities = new Set(['Woodworking Bench', 'Chimney Kiln']);
 const saleKey = (facility, item) => `${facility}|${item.replace(/^quick_/, '')}`;
 
@@ -178,7 +181,7 @@ export async function groupHomelandLayout(pieces, cells, { style, gap = 2, stora
 }
 
 async function tryRangeLayout(pieces, cells, { style, gap, storageCount, poleLimit, saleProducts, recipes, staffing, graph }) {
-    const [{ layOut, layoutTravelCost }, { connectPower, updatePowerConnections }] = await Promise.all([placement, wiring]);
+    const [{ layOut, layoutTravelCost, refineStorageNeighborhood }, { connectPower, updatePowerConnections }] = await Promise.all([placement, wiring]);
     const requiredArea = pieces.reduce((sum, piece) => sum + pieceArea(piece), 0);
     const sales = saleProducts && new Set(saleProducts.map(([facility, item]) => saleKey(facility, item)));
     const purposes = sales ? chainPurposes(pieces.map(piece => piecePurpose(piece, sales)), graph) : null;
@@ -204,7 +207,8 @@ async function tryRangeLayout(pieces, cells, { style, gap, storageCount, poleLim
     }
     const trips = graph.nodes.reduce((sum, node) => sum + (node.rect.weight || 0), 0) || 1;
     const compactness = (layout, placedGraph) => zoneLinkDistance(placedGraph) + layoutTravelCost(layout) / (trips * 2);
-    let best = null, successes = 0;
+    const keepsIncome = layout => layoutKeepsIncome(layout, staffing, recipes);
+    let best = null, consolidated = 0;
     for (const { groups, buildable, zoning, rows } of [...preferred.slice(0, 3), ...deferred.slice(0, 3), ...preferred.slice(3)].slice(0, 8)) {
         const storages = groups.map(group => group.storage);
         const belongs = (index, rects) => {
@@ -242,21 +246,29 @@ async function tryRangeLayout(pieces, cells, { style, gap, storageCount, poleLim
                 // The power repacker clones the layout, so the owning piece index
                 // must travel with the member to keep its placement restrictions.
                 layout.pieces.forEach((piece, i) => piece.members.forEach(member => { member.zonePiece = i; }));
-                const powered = connectPower(layout, buildable, poleLimit, true, (member, rectangle) =>
+                const wired = connectPower(layout, buildable, poleLimit, true, (member, rectangle) =>
                     valid(member.zonePiece, [rectangle]));
-                if (powered.power.disconnected || !layoutKeepsIncome(powered, staffing, recipes)) continue;
+                if (wired.power.disconnected) continue;
+                const mineZones = miningDistricts(wired, groups);
+                if (best && mineZones > best.mineZones) continue;
+                const storageZones = groups.map((group, i) => ({ ...group, range: zoning.ranges[i] }));
+                const powered = improveDistrictStorage(wired, storageZones, keepsIncome);
+                if (!keepsIncome(powered)) continue;
                 const placedGraph = productionGraph(powered.pieces, recipes, { includeIdle: true });
                 const score = compactness(powered, placedGraph) + .15 * zoning.score
                     + .18 * alphabetScore(groups, placedGraph).count + 1.5 * rawZoneSpread(powered, groups);
-                if (!best || score < best.score) best = { powered, placedGraph, groups, zoning, belongs, score, workshops };
-                successes++;
-                break search;
+                if (!best || mineZones < best.mineZones || score < best.score)
+                    best = { powered, placedGraph, groups, zoning, belongs, score, workshops, mineZones, storageZones };
+                if (mineZones <= 1) {
+                    consolidated++;
+                    break search;
+                }
             }
         }
-        if (successes === 2) break;
+        if (consolidated === 2) break;
     }
     if (!best) return null;
-    const { powered, placedGraph, groups, zoning, belongs, workshops } = best;
+    const { powered, placedGraph, groups, zoning, belongs, workshops, storageZones } = best;
     const maxChain = productionDistance(placedGraph);
     const maxLinks = productionLinkDistances(placedGraph).map(length => length + Math.max(1, length * .07));
     const costBefore = compactness(powered, placedGraph);
@@ -264,7 +276,32 @@ async function tryRangeLayout(pieces, cells, { style, gap, storageCount, poleLim
         canPlace: (index, rectangle) => belongs(index, [rectangle])
             && (!workshops[zoning.owners[index]] || contains(workshops[zoning.owners[index]], rectangle)),
         keepsIncome: layout => compactness(layout, placedGraph) <= costBefore + .35 && layoutKeepsIncome(layout, staffing, recipes) });
-    const placed = powered.pieces.flatMap(piece => piece.members);
+    const placedBeforeStorage = improveDistrictStorage(powered, storageZones, keepsIncome);
+    const order = alphabetScore(groups, placedGraph).count;
+    const links = productionLinkDistances(placedGraph);
+    const chainBeforeStorage = productionDistance(placedGraph);
+    const districtForPiece = placedBeforeStorage.pieces.map(piece => groups.findIndex(({ bounds }) =>
+        piece.members.every(member => contains(bounds, member))));
+    const finalLayout = refineStorageNeighborhood(placedBeforeStorage, pieces, groups.flatMap(group => group.buildable), 4, {
+        storageCells: groups.map(group => group.bounds),
+        canMoveStorage: (layout, index, trial) => canMoveDistrictStorage(layout, index, trial, storageZones),
+        canPlace: (i, _, rects) => {
+            const district = districtForPiece[i], owner = zoning.owners[i];
+            return district >= 0 && rects.every(rect => contains(groups[district].bounds, rect)
+                && (owner >= 0 ? !workshops[owner] || contains(workshops[owner], rect)
+                    : workshops.every(workshop => !overlaps(workshop, rect))));
+        },
+        cost: layoutTravelCost,
+        accept: layout => {
+            const graph = productionGraph(layout.pieces, recipes, { includeIdle: true });
+            return alphabetScore(groups, graph).count <= order
+                && productionDistance(graph) <= chainBeforeStorage + 1e-6
+                && productionLinkDistances(graph).every((length, i) => length <= links[i] + Math.max(1, links[i] * .07))
+                && keepsIncome(layout);
+        },
+    });
+    const assignedStores = districtStorageIndices(finalLayout.storages, groups);
+    const placed = finalLayout.pieces.flatMap(piece => piece.members);
     const labels = groups.map(({ bounds }, group) => {
         const indexes = zoning.owners.flatMap((owner, i) => owner === group ? [i] : []);
         const rv = indexes.some(i => membersOf(pieces[i]).some(member => rvFacilities.has(member.facility)));
@@ -278,11 +315,11 @@ async function tryRangeLayout(pieces, cells, { style, gap, storageCount, poleLim
         const themes = [...areas].sort((a, b) => b[1] - a[1]).map(([theme]) => theme);
         return { purpose: rv ? 'rv' : mixed ? 'mixed' : sold ? 'sales' : indexes.length && !sales ? 'mixed' : 'support', mixed, themes };
     });
-    const arranged = { ...powered, storageAt: { x: powered.storages[0].x + 1, y: powered.storages[0].y + 1 },
+    const arranged = { ...finalLayout,
         groupGap: gap, rangeMixedPurposes: labels.some(label => label.mixed),
         groups: groups.map(({ bounds, feature, reserved }, i) => ({
             bounds, feature, reserved, purpose: labels[i].purpose, range: zoning.ranges[i],
-            workshop: workshops[i], themes: labels[i].themes,
+            workshop: workshops[i], themes: labels[i].themes, storageIndices: assignedStores[i],
         })) };
     if (staffing?.movement) arranged.incomeWalking = incomeWalking(arranged, staffing, recipes);
     return updatePowerConnections(arranged);
@@ -318,8 +355,11 @@ async function tryGroupedLayout(pieces, cells, { style, gap, storageCount, poleL
             || sameGroup(member.layoutPurpose, [rectangle]) : null;
         const powered = connectPower(layout, buildable, poleLimit, true, canRelocate);
         if (powered.power.disconnected) return;
-        const arranged = { ...powered, storageAt: { x: storages[0].x + 1, y: storages[0].y + 1 },
-            groups: groups.map(({ bounds, feature, reserved }, i) => ({ bounds, feature, reserved, purpose: labels[i] })), groupGap: gap };
+        const moved = improveDistrictStorage(powered, groups, layout => layoutKeepsIncome(layout, staffing, recipes));
+        const assignedStores = districtStorageIndices(moved.storages, groups);
+        const arranged = { ...moved, groups: groups.map(({ bounds, feature, reserved }, i) => ({
+            bounds, feature, reserved, purpose: labels[i], storageIndices: assignedStores[i],
+        })), groupGap: gap };
         candidates.push({ arranged, route: layoutTravelCost(arranged) });
     };
     for (const shapes of groupShapes(cells, storageCount, style, gap)) {

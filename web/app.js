@@ -1,7 +1,7 @@
 // Aniimax Web Application
 
-import { currentLocale, sourceAttribute, translate } from './i18n.js?v=zone-ranges';
-import './math-translation.js?v=zone-ranges';
+import { currentLocale, sourceAttribute, translate } from './i18n.js?v=local-deliveries';
+import './math-translation.js?v=local-deliveries';
 
 import {
     FACILITIES, FACILITY_CATEGORIES, FACILITY_CATEGORY_BY_NAME, FACILITY_FOOTPRINTS, HOMELAND_PLOTS, HOMELAND_PLOT_SIZE,
@@ -1380,6 +1380,9 @@ const rangeLabel = range => range ? range[0] === range[1] ? range[0] : range.joi
 const resourceZoneName = theme => ({ fields: 'Crop fields', woodland: 'Tree groves', mining: 'Mining area',
     water: 'Water wells', aniimo: 'Aniimo Materials' })[theme];
 const resourceZoneTheme = group => group.range ? '' : group.themes?.[0] ?? '';
+const districtLabel = (group, index) => !group?.storageIndices ? `SU${index + 1}`
+    : group.storageIndices.length ? group.storageIndices.map(i => `SU${i + 1}`).join(' + ')
+        : translate('Zone {n}').replace('{n}', index + 1);
 
 function updateLayoutStyleControls() {
     const grouped = layoutStyle() !== 'delivery';
@@ -1556,7 +1559,7 @@ function renderBuildingIndex(layout) {
     }
     const members = layout.pieces.flatMap(piece => piece.members);
     const processors = new Set(recipeIndex.filter(recipe => recipe.ingredients?.length).map(recipe => recipe.name));
-    const byStorage = layout.storages.map(() => new Map());
+    const byDistrict = (layout.groups ?? layout.storages).map(() => new Map());
     members.forEach((member, index) => {
         const products = member.jobs?.map(job => job.item) ?? [member.crop];
         const workshop = FACILITY_CATEGORY_BY_NAME.get(member.facility) === 'Materials Processing';
@@ -1564,18 +1567,18 @@ function renderBuildingIndex(layout) {
         const storageIndex = layout.groups ? layout.groups.findIndex(({ bounds: { x, y, w, h } }) =>
             member.x >= x && member.y >= y && member.x + member.w <= x + w && member.y + member.h <= y + h)
             : layout.storages.indexOf(nearestStorage(member, layout.storages));
-        const names = byStorage[storageIndex];
+        const names = byDistrict[storageIndex];
         if (!names) return;
         if (!names.has(member.facility)) names.set(member.facility, { sites: [], products: new Set() });
         const entry = names.get(member.facility);
         entry.sites.push(index);
         products.filter(Boolean).forEach(item => entry.products.add(prettyItem(item)));
     });
-    const groups = byStorage.map((names, i) => {
+    const groups = byDistrict.map((names, i) => {
         if (!names.size) return '';
         const sorted = [...names].sort(([a], [b]) => a.localeCompare(b, 'en'));
         const range = rangeLabel(layout.groups?.[i]?.range);
-        return `<div class="layout-index-group"><strong>SU${i + 1}${range ? ` · ${range}` : ''}</strong><div>${sorted.map(([name, entry]) =>
+        return `<div class="layout-index-group"><strong>${escapeText(districtLabel(layout.groups?.[i], i))}${range ? ` · ${range}` : ''}</strong><div>${sorted.map(([name, entry]) =>
             `<button type="button" data-layout-sites="${entry.sites.join(',')}" aria-pressed="false" title="${escapeText([...entry.products].join(', '))}" translate="no">${escapeText(name)}</button>`).join('')}</div></div>`;
     }).filter(Boolean);
     document.getElementById('layout-index-nearest').hidden = !!layout.groups;
@@ -1694,7 +1697,7 @@ function renderHomelandLayout(plan) {
             powerSummary,
             layout.power.disconnected ? translate('Power connection not found for {n} buildings.').replace('{n}', layout.power.disconnected) : '',
             missingGenerators ? translate('The plan needs {n} more generators than can be placed at this RV level.').replace('{n}', missingGenerators) : '',
-            layout.groups ? translate('{n} storage groups with {gap}-tile gaps.').replace('{n}', layout.groups.length).replace('{gap}', layout.groupGap) : '',
+            layout.groups ? translate('{n} zones with {gap}-tile gaps.').replace('{n}', layout.groups.length).replace('{gap}', layout.groupGap) : '',
             noRoom.length ? `No room found in RV ${homeLevel}'s plots for: ${noRoom.join(', ')}.` : '',
             unplaced.length ? `Not placed, size unknown: ${unplaced.join(', ')}.` : '',
         ].filter(Boolean).join(' ');
@@ -1723,7 +1726,7 @@ function renderHomelandLayout(plan) {
             const parts = [group.range ? 'Workshops' : null,
                 !group.themes?.length && !group.range || ['sales', 'rv'].includes(group.purpose) ? groupPurposeName(group.purpose) : null,
                 ...(group.themes ?? []).map(resourceZoneName)].filter(Boolean);
-            return `<li data-purpose="${group.purpose}" data-theme="${resourceZoneTheme(group)}"><strong>SU${i + 1}${group.range ? ` · ${rangeLabel(group.range)}` : ''}</strong>
+            return `<li data-purpose="${group.purpose}" data-theme="${resourceZoneTheme(group)}"><strong>${escapeText(districtLabel(group, i))}${group.range ? ` · ${rangeLabel(group.range)}` : ''}</strong>
                 ${escapeText(parts.map(translate).join(' · '))}</li>`;
         }).join('');
         legend.hidden = !layout.groups;
