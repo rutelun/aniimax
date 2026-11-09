@@ -1,7 +1,7 @@
 // Aniimax Web Application
 
-import { currentLocale, sourceAttribute, translate } from './i18n.js?v=production-chains';
-import './math-translation.js?v=production-chains';
+import { currentLocale, sourceAttribute, translate } from './i18n.js?v=courtyard-space';
+import './math-translation.js?v=courtyard-space';
 
 import {
     FACILITIES, FACILITY_CATEGORIES, FACILITY_CATEGORY_BY_NAME, FACILITY_FOOTPRINTS, HOMELAND_PLOTS, HOMELAND_PLOT_SIZE,
@@ -1369,7 +1369,7 @@ function layoutHomeLevel() {
 
 function layoutStyle() {
     const value = document.getElementById('layout-style').value;
-    return value === 'courtyards' || value === 'avenues' ? value : 'delivery';
+    return ['courtyards', 'avenues', 'districts'].includes(value) ? value : 'delivery';
 }
 
 function groupPurposeName(purpose) {
@@ -1380,7 +1380,6 @@ function updateLayoutStyleControls() {
     const grouped = layoutStyle() !== 'delivery';
     document.getElementById('layout-group-spacing').hidden = !grouped;
     document.getElementById('layout-purpose-option').hidden = !grouped;
-    document.getElementById('layout-group-hint').hidden = !grouped;
 }
 
 function attachLayoutHandlers() {
@@ -1546,29 +1545,33 @@ function drawLayout(drawn) {
 
 function renderBuildingIndex(layout) {
     const panel = document.getElementById('layout-building-index');
-    if (!layout.groups?.length) {
+    if (!layout.groups?.length && layout.groupFallback !== 'space') {
         panel.hidden = true;
         return;
     }
     const members = layout.pieces.flatMap(piece => piece.members);
     const processors = new Set(recipeIndex.filter(recipe => recipe.ingredients?.length).map(recipe => recipe.name));
-    const groups = layout.groups.map((group, i) => {
-        const names = new Map();
-        members.forEach((member, index) => {
-            const products = member.jobs?.map(job => job.item) ?? [member.crop];
-            if (!(member.weight > 0) || !products.some(item => processors.has(item))) return;
-            const { x, y, w, h } = group.bounds;
-            if (member.x < x || member.y < y || member.x + member.w > x + w || member.y + member.h > y + h) return;
-            if (!names.has(member.facility)) names.set(member.facility, { sites: [], products: new Set() });
-            const entry = names.get(member.facility);
-            entry.sites.push(index);
-            products.filter(Boolean).forEach(item => entry.products.add(prettyItem(item)));
-        });
+    const byStorage = layout.storages.map(() => new Map());
+    members.forEach((member, index) => {
+        const products = member.jobs?.map(job => job.item) ?? [member.crop];
+        if (!(member.weight > 0) || !products.some(item => processors.has(item))) return;
+        const storageIndex = layout.groups ? layout.groups.findIndex(({ bounds: { x, y, w, h } }) =>
+            member.x >= x && member.y >= y && member.x + member.w <= x + w && member.y + member.h <= y + h)
+            : layout.storages.indexOf(nearestStorage(member, layout.storages));
+        const names = byStorage[storageIndex];
+        if (!names) return;
+        if (!names.has(member.facility)) names.set(member.facility, { sites: [], products: new Set() });
+        const entry = names.get(member.facility);
+        entry.sites.push(index);
+        products.filter(Boolean).forEach(item => entry.products.add(prettyItem(item)));
+    });
+    const groups = byStorage.map((names, i) => {
         if (!names.size) return '';
         const sorted = [...names].sort(([a], [b]) => a.localeCompare(b, 'en'));
         return `<div class="layout-index-group"><strong>SU${i + 1}</strong><div>${sorted.map(([name, entry]) =>
             `<button type="button" data-layout-sites="${entry.sites.join(',')}" aria-pressed="false" title="${escapeText([...entry.products].join(', '))}" translate="no">${escapeText(name)}</button>`).join('')}</div></div>`;
     }).filter(Boolean);
+    document.getElementById('layout-index-nearest').hidden = !!layout.groups;
     document.getElementById('layout-building-index-list').innerHTML = groups.join('');
     panel.hidden = !groups.length;
 }
@@ -1639,6 +1642,8 @@ function renderHomelandLayout(plan) {
     document.getElementById('layout-diagram').innerHTML = '';
     document.getElementById('layout-group-legend').hidden = true;
     document.getElementById('layout-building-index').hidden = true;
+    document.getElementById('layout-group-notice').hidden = true;
+    document.getElementById('layout-group-hint').hidden = true;
     updateLayoutStyleControls();
     // Worked out in a worker of its own: a large homeland takes a few seconds.
     const { pieces, unplaced } = homelandPieces(plan, lastPlanInput);
@@ -1683,12 +1688,19 @@ function renderHomelandLayout(plan) {
             layout.power.disconnected ? translate('Power connection not found for {n} buildings.').replace('{n}', layout.power.disconnected) : '',
             missingGenerators ? translate('The plan needs {n} more generators than can be placed at this RV level.').replace('{n}', missingGenerators) : '',
             layout.groups ? translate('{n} storage groups with {gap}-tile gaps.').replace('{n}', layout.groups.length).replace('{gap}', layout.groupGap) : '',
-            layout.groupFallback === 'storage' ? translate('Grouped maps need at least one Storage Unit. Showing the delivery layout.') : '',
-            layout.groupFallback === 'space' ? translate('The grouped map could not fit every facility and connect the grid. Showing the delivery layout.') : '',
-            layout.groupPurposeFallback ? translate('Separate sale and support groups did not fit. Showing mixed groups.') : '',
             noRoom.length ? `No room found in RV ${homeLevel}'s plots for: ${noRoom.join(', ')}.` : '',
             unplaced.length ? `Not placed, size unknown: ${unplaced.join(', ')}.` : '',
         ].filter(Boolean).join(' ');
+        const arrangementNotice = [
+            layout.groupFallback === 'storage' ? translate('Grouped maps need at least one Storage Unit. Showing the delivery layout.') : '',
+            layout.groupFallback === 'space' ? translate('The grouped map could not fit every facility and connect the grid. Showing the delivery layout.') : '',
+            layout.groupPurposeFallback ? translate('Separate sale and support groups did not fit. Showing mixed groups.') : '',
+            layout.groupGap < layout.requestedGroupGap ? translate('The selected gap did not fit. The map uses {gap} tile(s) between groups.')
+                .replace('{gap}', layout.groupGap) : '',
+        ].filter(Boolean).join(' ');
+        const notice = document.getElementById('layout-group-notice');
+        notice.textContent = arrangementNotice;
+        notice.hidden = !arrangementNotice;
         const summary = storages.length === 0
             ? translate('No Storage Units placed.')
             : trips > 0
@@ -1852,9 +1864,11 @@ function homelandSvg(layout, homeLevel) {
         <rect x="${p.x + 0.04}" y="${p.y + 0.04}" width="${p.w - 0.08}" height="${p.h - 0.08}" rx="0.2" />
         <text x="${p.x + p.w / 2}" y="${p.y + p.h / 2}" font-size="0.7">⚡${i + 1}</text></g>`).join('');
     const rectangle = (r, css) => `<rect class="${css}" x="${r.x}" y="${r.y}" width="${r.w}" height="${r.h}" />`;
-    const groupShapes = groups.map(group => `<g class="layout-district" data-purpose="${group.purpose}">
+    const districts = layout.groupStyle === 'districts';
+    const groupShapes = groups.map(group => `<g class="layout-district${districts ? ' layout-district-structured' : ''}" data-purpose="${group.purpose}">
         ${rectangle(group.bounds, 'layout-district-boundary')}
         ${group.reserved.map(r => rectangle(r, 'layout-decor')).join('')}
+        ${districts ? rectangle(group.feature, 'layout-district-frontage') : ''}
         </g>`).join('');
     return `<svg class="layout-svg" viewBox="${view}" data-base="${view}" role="img" aria-label="Homeland layout">
         <defs><pattern id="layout-locked" width="1" height="1" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">

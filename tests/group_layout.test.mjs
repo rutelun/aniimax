@@ -17,7 +17,7 @@ const pieces = [
 ];
 const saleProducts = [['Mine', 'copper_ore'], ['Well', 'fresh_water']];
 
-for (const style of ['courtyards', 'avenues']) test(`${style} keep decor clear and group sold output, RV processors and climate plots`, async () => {
+for (const style of ['courtyards', 'avenues', 'districts']) test(`${style} keep decor clear and group sold output, RV processors and climate plots`, async () => {
     const layout = await groupHomelandLayout(pieces, cells, { style, storageCount: 2, gap: 2, poleLimit: 3, saleProducts });
     assert.ok(layout);
     assert.deepEqual(layout.unplaced, []);
@@ -31,6 +31,11 @@ for (const style of ['courtyards', 'avenues']) test(`${style} keep decor clear a
     assert.ok(occupied.every(insideOpenLand));
     assert.ok(occupied.every((r, i) => occupied.slice(i + 1).every(other => !overlaps(r, other))));
     assert.ok(obstacles.every(r => reserved.every(space => !overlaps(r, space))));
+    if (style === 'districts') layout.groups.forEach(({ bounds, feature }, i) => {
+        assert.equal(feature.w, bounds.w);
+        assert.ok(feature.y === bounds.y || feature.y + feature.h === bounds.y + bounds.h);
+        assert.ok(createInsideTest([feature])(layout.storages[i]));
+    });
     const sales = layout.groups.find(group => group.purpose === 'sales');
     const rv = layout.groups.find(group => group.purpose === 'rv');
     assert.ok(layout.pieces.slice(0, 2).flatMap(piece => piece.members).every(createInsideTest([sales.bounds])));
@@ -44,4 +49,28 @@ test('a single store can keep its courtyard when separate purposes cannot fit', 
     assert.equal(layout.groupPurposeFallback, true);
     assert.deepEqual(layout.unplaced, []);
     assert.equal(await groupHomelandLayout(pieces, cells, { style: 'courtyards', storageCount: 0, gap: 2, poleLimit: 3 }), null);
+});
+
+test('a full-width gap can be kept by moving the courtyard plaza off center', async () => {
+    const lot = [{ x: 0, y: 0, w: 20, h: 15 }];
+    const facilities = [piece('Mine', 'copper_ore', { w: 7, h: 7, electric_level: 1 }),
+        piece('Generator', null, { generator: true, weight: 0 })];
+    const layout = await groupHomelandLayout(facilities, lot, { style: 'courtyards', storageCount: 1, gap: 3, poleLimit: 2 });
+    assert.equal(layout.groupGap, 3);
+    assert.equal(layout.power.disconnected, 0);
+    assert.deepEqual(layout.unplaced, []);
+    const group = layout.groups[0];
+    assert.notEqual(group.feature.x, 7);
+    const obstacles = [...layout.pieces.flatMap(p => p.members), ...layout.power.poles];
+    assert.ok(obstacles.every(r => group.reserved.every(space => !overlaps(r, space))));
+    assert.ok([...obstacles, ...layout.storages].every(r => Number.isInteger(r.x * 2) && Number.isInteger(r.y * 2)));
+});
+
+test('a smaller gap keeps the groups when the requested gap cannot fit', async () => {
+    const layout = await groupHomelandLayout([piece('Mine', 'shell', { w: 4, h: 4 })],
+        [{ x: 0, y: 0, w: 13, h: 10 }], { style: 'courtyards', storageCount: 1, gap: 3, poleLimit: 0 });
+    assert.equal(layout.requestedGroupGap, 3);
+    assert.equal(layout.groupGap, 2);
+    assert.equal(layout.groups.length, 1);
+    assert.deepEqual(layout.unplaced, []);
 });

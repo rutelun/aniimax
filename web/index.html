@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Aniimax - Aniimo Production Optimizer</title>
-    <link rel="stylesheet" href="style.css?v=production-chains">
+    <link rel="stylesheet" href="style.css?v=courtyard-space">
     <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
 </head>
 <body>
@@ -335,6 +335,7 @@
                                     <option value="delivery">Shortest deliveries</option>
                                     <option value="courtyards">Courtyards</option>
                                     <option value="avenues">Avenues</option>
+                                    <option value="districts">Districts</option>
                                 </select>
                             </div>
                             <div class="input-field" id="layout-group-spacing" hidden>
@@ -347,6 +348,7 @@
                             </div>
                             <label id="layout-purpose-option" hidden><input type="checkbox" id="layout-separate-sales" checked> Separate sale production</label>
                         </div>
+                        <p class="hint small layout-group-notice" id="layout-group-notice" role="status" hidden></p>
                         <p class="hint small" id="layout-group-hint" hidden>Hatched tiles are reserved for paths and decoration. Buildings and power poles leave this space clear.</p>
                         <div class="layout-controls">
                             <div class="input-field layout-storage-config" hidden>
@@ -367,8 +369,9 @@
                         </div>
                         <p class="hint layout-zoom-hint">Hold Ctrl and scroll over the layout to zoom. Drag to move around while zoomed; double-click to zoom back out.</p>
                         <ul class="layout-group-legend" id="layout-group-legend" aria-label="Storage groups" hidden></ul>
-                        <details class="explain" id="layout-building-index" hidden>
+                        <details class="explain" id="layout-building-index" open hidden>
                             <summary>Buildings A–Z (English names)</summary>
+                            <p class="hint small" id="layout-index-nearest" hidden>Listed by nearest Storage Unit on this map.</p>
                             <div id="layout-building-index-list"></div>
                         </details>
                         <div class="layout-diagram" id="layout-diagram"></div>
@@ -620,6 +623,6 @@
             }
         });
     </script>
-    <script type="module" src="app.js?v=income-aware-chains"></script>
+    <script type="module" src="app.js?v=courtyard-space"></script>
 </body>
 </html>

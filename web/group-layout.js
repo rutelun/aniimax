@@ -1,6 +1,6 @@
 // An optional physical layout with a Storage Unit and a clear feature in each group.
 import { alphabetScore, chainPurposes, compareProductionPlacement, productionDistance, productionGraph,
-    productionLinkDistances, refineProductionPlacement } from './production-layout.js?v=income-guard';
+    productionLinkDistances, refineProductionPlacement } from './production-layout.js?v=storage-ranges';
 import { allocateHauling, haulingWorkload } from './hauling.js?v=hauling-workload';
 import { ANIIMO_WALK_SPEED, workerTravelDistances } from './worker-travel.js?v=auto-worker-travel';
 
@@ -9,6 +9,7 @@ const placement = import('./layout.js' + load);
 const wiring = import('./power-layout.js' + load);
 const area = rectangle => rectangle.w * rectangle.h;
 const center = rectangle => [rectangle.x + rectangle.w / 2, rectangle.y + rectangle.h / 2];
+const halfTile = value => Math.round(value * 2) / 2;
 const contains = (outer, inner) => inner.x >= outer.x && inner.y >= outer.y
     && inner.x + inner.w <= outer.x + outer.w && inner.y + inner.h <= outer.y + outer.h;
 const membersOf = piece => piece.cluster ? [...piece.buildings, ...piece.plots] : piece.members;
@@ -92,11 +93,15 @@ function around(outer, hole) {
     ].filter(rectangle => rectangle.w > 0 && rectangle.h > 0);
 }
 
-function makeGroup(lot, style, gap) {
+function makeGroup(lot, style, gap, offset) {
     const edge = gap / 2;
     const bounds = { x: lot.x + edge, y: lot.y + edge, w: lot.w - gap, h: lot.h - gap };
-    const [x, y] = center(bounds);
-    const [w, h] = style === 'courtyards' ? [6, 6] : bounds.w >= bounds.h ? [bounds.w, 4] : [4, bounds.h];
+    const [w, h] = style === 'districts' ? [bounds.w, 3]
+        : style === 'courtyards' ? [6, 6] : bounds.w >= bounds.h ? [bounds.w, 4] : [4, bounds.h];
+    // Leave one larger continuous building area if a plaza in the middle splits
+    // the available space too much for a climate cluster or a large facility.
+    const x = halfTile(bounds.x + w / 2 + (bounds.w - w) * offset);
+    const y = halfTile(bounds.y + h / 2 + (bounds.h - h) * offset);
     const feature = { x: x - w / 2, y: y - h / 2, w, h };
     const storage = { x: x - 1, y: y - 1, w: 2, h: 2 };
     if (!contains(bounds, feature) || !contains(feature, storage)) return null;
@@ -134,6 +139,17 @@ export const layoutKeepsIncome = (layout, staffing, recipes) => incomeWalking(la
 
 export async function groupHomelandLayout(pieces, cells, { style, gap = 2, storageCount, poleLimit, saleProducts = null,
     recipes = [], staffing = null }) {
+    for (let actualGap = gap; actualGap >= 1; actualGap--) {
+        const arranged = await tryGroupedLayout(pieces, cells, {
+            style, gap: actualGap, storageCount, poleLimit, saleProducts, recipes, staffing,
+        });
+        if (arranged) return { ...arranged, groupStyle: style, requestedGroupGap: gap };
+    }
+    return null;
+}
+
+async function tryGroupedLayout(pieces, cells, { style, gap, storageCount, poleLimit, saleProducts,
+    recipes = [], staffing = null }) {
     if (storageCount < 1 || !cells.length) return null;
     const [{ layOut, layoutTravelCost }, { connectPower, updatePowerConnections }] = await Promise.all([placement, wiring]);
     const requiredArea = pieces.reduce((sum, piece) => sum + pieceArea(piece), 0);
@@ -142,16 +158,21 @@ export async function groupHomelandLayout(pieces, cells, { style, gap = 2, stora
     const splitRequested = purposes?.includes('sales') && purposes.some(purpose => purpose !== 'sales');
     const linked = splitRequested && recipes.length ? chainPurposes(purposes, productionGraph(pieces, recipes)) : null;
     const assignments = linked?.some((purpose, i) => purpose !== purposes[i]) ? [purposes, linked] : [purposes];
-    const seen = new Set();
     const candidates = [];
-    for (const aspect of style === 'courtyards' ? [1, 1.65] : [2, .65]) {
+    const partitions = [];
+    const seen = new Set();
+    const aspects = style === 'avenues' ? [2, .65] : [1, 1.65];
+    for (const aspect of aspects) {
         const lots = groupLots(cells, storageCount, aspect);
         const key = JSON.stringify(lots);
         if (seen.has(key)) continue;
         seen.add(key);
-        const groups = lots.map(lot => makeGroup(lot, style, gap)).filter(Boolean);
+        partitions.push(lots);
+    }
+    const tryPartition = (lots, offset) => {
+        const groups = lots.map(lot => makeGroup(lot, style, gap, offset)).filter(Boolean);
         const buildable = groups.flatMap(group => group.buildable);
-        if (!buildable.length || buildable.reduce((sum, rectangle) => sum + area(rectangle), 0) < requiredArea) continue;
+        if (!buildable.length || buildable.reduce((sum, rectangle) => sum + area(rectangle), 0) < requiredArea) return;
         for (const assignment of assignments) {
             const labels = splitRequested ? assignPurposes(groups, pieces, assignment) : groups.map(() => 'mixed');
             if (!labels) continue;
@@ -162,7 +183,7 @@ export async function groupHomelandLayout(pieces, cells, { style, gap = 2, stora
                 accepts(labels[i], purpose) && rectangles.every(rectangle => contains(group.bounds, rectangle)));
             const layout = layOut(pieces, { cells: buildable, storages, passes: 2,
                 clusterFits: (i, rectangles) => sameGroup(assignment?.[i], rectangles),
-                canPlace: (i, _, rectangles) => (!splitRequested && rectangles.length === 1) || sameGroup(assignment?.[i], rectangles) });
+                canPlace: splitRequested ? (i, _, rectangles) => sameGroup(assignment[i], rectangles) : undefined });
             if (layout.unplaced.length) continue;
             // Generators and poles also leave the reserved paths and plazas clear.
             if (splitRequested) layout.pieces.forEach((piece, i) => {
@@ -177,9 +198,13 @@ export async function groupHomelandLayout(pieces, cells, { style, gap = 2, stora
             candidates.push({ arranged, groups, assignment, route: layoutTravelCost(arranged),
                 canPlace: (i, rectangle) => sameGroup(assignment?.[i], [rectangle]) });
         }
+    };
+    for (const offset of style === 'districts' ? [0, 1] : [.5, .125, .875]) {
+        for (const lots of partitions) tryPartition(lots, offset);
+        if (candidates.length) break;
     }
     if (!candidates.length && splitRequested) {
-        const mixed = await groupHomelandLayout(pieces, cells, { style, gap, storageCount, poleLimit, recipes, staffing });
+        const mixed = await tryGroupedLayout(pieces, cells, { style, gap, storageCount, poleLimit, saleProducts: null, recipes, staffing });
         return mixed && { ...mixed, groupPurposeFallback: true };
     }
     if (!candidates.length) return null;
@@ -198,7 +223,7 @@ export async function groupHomelandLayout(pieces, cells, { style, gap = 2, stora
         const graph = productionGraph(candidate.arranged.pieces, recipes);
         const result = refineProductionPlacement(candidate.arranged, candidate.groups, graph, layoutTravelCost,
             { maxChain, maxLinks, canPlace: candidate.canPlace, keepsIncome });
-        if (result.excess > 1e-6 || result.order.count > baselineOrder.count || !keepsIncome(candidate.arranged)) continue;
+        if (result.excess > 1e-6 || !keepsIncome(candidate.arranged)) continue;
         if (!bestScore || compareProductionPlacement(result, bestScore) < 0) {
             best = candidate.arranged;
             bestScore = result;

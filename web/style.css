@@ -2668,6 +2668,10 @@ tr:hover .skip-row,
     padding: .55rem 0;
 }
 
+.layout-group-notice {
+    color: var(--warning);
+}
+
 .layout-group-legend {
     display: flex;
     flex-wrap: wrap;
@@ -2738,6 +2742,19 @@ tr:hover .skip-row,
     stroke: var(--district-color);
     stroke-width: .12;
     stroke-dasharray: .5 .22;
+}
+
+.layout-district-structured .layout-district-boundary {
+    stroke-width: .2;
+    stroke-dasharray: none;
+}
+
+.layout-district-frontage {
+    fill: var(--district-color);
+    fill-opacity: .16;
+    stroke: var(--district-color);
+    stroke-opacity: .5;
+    stroke-width: .08;
 }
 
 .layout-decor { fill: url(#layout-decor-hatch); }

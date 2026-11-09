@@ -984,6 +984,7 @@
   "Shortest deliveries",
   "Courtyards",
   "Avenues",
+  "Districts",
   "Space between groups",
   "1 tile",
   "2 tiles",
@@ -1002,5 +1003,7 @@
   "This plan needs {n} Aniimo including reserves.",
   "This RV level can host {n} Aniimo.",
   "A workload of 1.000 means one full-time Aniimo. Dedicated posts count as full shifts.",
-  "Buildings A–Z (English names)"
+  "Buildings A–Z (English names)",
+  "Listed by nearest Storage Unit on this map.",
+  "The selected gap did not fit. The map uses {gap} tile(s) between groups."
 ]

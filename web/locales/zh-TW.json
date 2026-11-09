@@ -1003,6 +1003,7 @@
   "Shortest deliveries": "最短運送路線",
   "Courtyards": "庭院",
   "Avenues": "林蔭道",
+  "Districts": "街區",
   "Space between groups": "群組間距",
   "1 tile": "1 格",
   "2 tiles": "2 格",
@@ -1021,5 +1022,7 @@
   "This plan needs {n} Aniimo including reserves.": "所需阿尼莫總數（含預估補員）為 {n}。",
   "This RV level can host {n} Aniimo.": "此露營車等級可容納 {n} 隻阿尼莫。",
   "A workload of 1.000 means one full-time Aniimo. Dedicated posts count as full shifts.": "工作量 1.000 相當於一隻全職阿尼莫。固定崗位計為完整班次。",
-  "Buildings A–Z (English names)": "建築 A–Z（英文名稱）"
+  "Buildings A–Z (English names)": "建築 A–Z（英文名稱）",
+  "Listed by nearest Storage Unit on this map.": "此地圖上的建築依最近的倉庫分組列出。",
+  "The selected gap did not fit. The map uses {gap} tile(s) between groups.": "空間不足以保留所選間距，地圖上群組之間的間距為 {gap} 格。"
 }

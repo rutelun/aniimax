@@ -12,7 +12,7 @@ self.onmessage = async (event) => {
     const storageCount = event.data.storageCount ?? 1;
     const poleLimit = event.data.poleLimit ?? 0;
     const { style, groupGap, saleProducts, recipes, staffing } = event.data;
-    const grouped = style === 'courtyards' || style === 'avenues';
+    const grouped = ['courtyards', 'avenues', 'districts'].includes(style);
     if (grouped && storageCount > 0) {
         const { groupHomelandLayout } = await import('./group-layout.js' + new URL(import.meta.url).search);
         const arranged = await groupHomelandLayout(pieces, cells, { style, gap: groupGap, storageCount, poleLimit, saleProducts, recipes, staffing });

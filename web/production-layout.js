@@ -78,17 +78,34 @@ function linkExcess(graph, limits) {
 // Read each district in tile rows. When reversals remain, prefer ones between
 // adjacent entries and then between physically closer buildings.
 export function alphabetScore(groups, { nodes }) {
-    const score = { count: 0, span: 0, distance: 0 };
+    const score = { spread: 0, interleaving: 0, count: 0, span: 0, distance: 0 };
+    const districts = [];
     for (const { bounds } of groups) {
         const ordered = nodes.filter(node => node.label && contains(bounds, node.rect)).sort((a, b) =>
             Math.floor(center(a.rect)[1] / 4) - Math.floor(center(b.rect)[1] / 4)
             || center(a.rect)[0] - center(b.rect)[0]);
+        const names = new Map();
+        for (const { label } of ordered) names.set(label, (names.get(label) ?? 0) + 1);
+        districts.push(names);
         for (let i = 0; i < ordered.length; i++) for (let j = 0; j < i; j++) {
             if (english.compare(ordered[j].label, ordered[i].label) <= 0) continue;
             score.count++;
             score.span += (i - j - 1) ** 2;
             score.distance += distance(ordered[j].rect, ordered[i].rect);
         }
+    }
+    // Prefer a single storage block for each facility type, and avoid interleaved
+    // ranges of names. Either alphabetical direction between two blocks is valid:
+    // a block's number has no bearing on the names that belong in it.
+    for (let i = 0; i < districts.length; i++) for (let j = 0; j < i; j++) {
+        let before = 0, after = 0;
+        for (const [a, copiesA] of districts[i]) for (const [b, copiesB] of districts[j]) {
+            const order = english.compare(a, b);
+            if (order < 0) before++;
+            else if (order > 0) after++;
+            else score.spread += copiesA * copiesB;
+        }
+        score.interleaving += Math.min(before, after);
     }
     return score;
 }
@@ -97,6 +114,7 @@ export const alphabetInversions = (groups, graph) => alphabetScore(groups, graph
 
 const difference = (a, b) => Math.abs(a - b) <= 1e-6 || a === b ? 0 : a - b;
 export const compareProductionPlacement = (a, b) => difference(a.excess, b.excess)
+    || a.order.spread - b.order.spread || a.order.interleaving - b.order.interleaving
     || a.order.count - b.order.count || a.order.span - b.order.span
     || difference(a.order.distance, b.order.distance) || difference(a.chain, b.chain) || difference(a.route, b.route);
 
@@ -147,17 +165,31 @@ export function refineProductionPlacement(layout, groups, graph, travelCost, { m
             tryMove(node, cx, s.y + s.h + margin);
         }
     };
+    const swap = (a, b) => {
+        const [x, y] = center(b.rect);
+        tryMove(a, Math.round((x - a.rect.w / 2) * 4) / 4, Math.round((y - a.rect.h / 2) * 4) / 4, b);
+    };
     for (let pass = 0; pass < 12; pass++) {
         best = null;
-        for (const group of groups) {
-            const local = movable.filter(node => contains(group.bounds, node.rect));
+        const districts = groups.map(group => movable.filter(node => contains(group.bounds, node.rect)));
+        for (const local of districts) {
             for (let i = 0; i < local.length; i++) for (let j = 0; j < i; j++) {
                 const a = local[i], b = local[j];
                 if (a.label === b.label) continue;
-                const [x, y] = center(b.rect);
-                tryMove(a, Math.round((x - a.rect.w / 2) * 4) / 4, Math.round((y - a.rect.h / 2) * 4) / 4, b);
+                swap(a, b);
                 near(a, b, [0]);
                 near(b, a, [0]);
+            }
+        }
+        if (current.order.spread || current.order.interleaving) {
+            for (let i = 0; i < districts.length; i++) for (let j = 0; j < i; j++) {
+                for (const a of districts[i]) for (const b of districts[j]) {
+                    if (a.label !== b.label) swap(a, b);
+                    else {
+                        near(a, b, [0, 1, 2]);
+                        near(b, a, [0, 1, 2]);
+                    }
+                }
             }
         }
         for (const { from, to } of graph.links) {

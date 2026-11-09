@@ -65,6 +65,28 @@ test('alphabetical order starts again at the next storage block', () => {
     const groups = [{ bounds: { x: 0, y: 0, w: 10, h: 15 } }, { bounds: { x: 12, y: 0, w: 10, h: 15 } }];
     const graph = productionGraph([piece('Simmering Pot', 'dough', 1, 1), stove()], recipes);
     assert.equal(alphabetScore(groups, graph).count, 0);
+    assert.equal(alphabetScore(groups, graph).interleaving, 0);
+    assert.deepEqual(alphabetScore([...groups].reverse(), graph), alphabetScore(groups, graph));
+});
+
+test('processors of the same type can regroup across storage blocks and separate their alphabetical ranges', () => {
+    const groups = [{ bounds: { x: 0, y: 0, w: 10, h: 8 }, reserved: [] },
+        { bounds: { x: 12, y: 0, w: 10, h: 8 }, reserved: [] }];
+    const layout = { pieces: [
+        piece('Blazing Stove', 'dough', 1, 1), piece('Simmering Pot', 'dough', 5, 1),
+        piece('Blazing Stove', 'dough', 13, 1), piece('Carousel Mill', 'dough', 17, 1),
+    ], storages: [{ x: 1, y: 5, w: 2, h: 2 }, { x: 13, y: 5, w: 2, h: 2 }],
+    power: { poles: [], coverage: [] } };
+    const graph = productionGraph(layout.pieces, recipes);
+    assert.equal(alphabetScore(groups, graph).spread, 1);
+    assert.equal(alphabetScore(groups, graph).interleaving, 1);
+    const options = { maxChain: 0, canPlace: () => true };
+    const limited = refineProductionPlacement(layout, groups, graph, layoutTravelCost, { ...options, keepsIncome: () => false });
+    assert.equal(limited.order.spread, 1);
+    const result = refineProductionPlacement(layout, groups, graph, layoutTravelCost, { ...options, keepsIncome: () => true });
+    assert.equal(result.order.spread, 0);
+    assert.equal(result.order.interleaving, 0);
+    assert.equal(result.order.count, 0);
 });
 
 test('distance can increase when the same production and income still fit the team', () => {

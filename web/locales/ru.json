@@ -984,6 +984,7 @@
   "Shortest deliveries": "Короткие маршруты",
   "Courtyards": "Дворы",
   "Avenues": "Аллеи",
+  "Districts": "Кварталы",
   "Space between groups": "Расстояние между группами",
   "1 tile": "1 клетка",
   "2 tiles": "2 клетки",
@@ -1002,5 +1003,7 @@
   "This plan needs {n} Aniimo including reserves.": "Плану нужно {n} Анимо с учётом резервных.",
   "This RV level can host {n} Aniimo.": "На этом уровне RV можно разместить {n} Анимо.",
   "A workload of 1.000 means one full-time Aniimo. Dedicated posts count as full shifts.": "Нагрузка 1,000 — полная смена одного Анимо. Постоянные назначения занимают всю смену.",
-  "Buildings A–Z (English names)": "Здания A–Z (английские названия)"
+  "Buildings A–Z (English names)": "Здания A–Z (английские названия)",
+  "Listed by nearest Storage Unit on this map.": "Здания в списке отнесены к ближайшему складу.",
+  "The selected gap did not fit. The map uses {gap} tile(s) between groups.": "Выбранный зазор не поместился. На карте между группами — {gap} кл."
 }
