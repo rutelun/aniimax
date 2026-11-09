@@ -16,7 +16,7 @@ import { assignFacilityStock, bufferedBatches, haulingWorkload, allocateHauling,
     haulingTravelSeconds, pickupStockLimit } from './hauling.js?v=facility-stock';
 import { changeOneMember, personalityInput, reserveLevelFourInputs, comparePlans, usefulUpgrade, keepBetterComparison } from './opportunity-comparison.js?v=income-aware-chains';
 import { comparisonConcurrency, startComparisonQueue } from './comparison-queue.js?v=parallel-comparisons';
-import { prepareOpportunities, startedProcessing, increasedProcessing } from './opportunity-effects.js?v=upgrade-constraints';
+import { prepareOpportunities, startedProcessing, increasedProcessing } from './opportunity-effects.js?v=auto-e-mode';
 
 let wasmReady = false;
 

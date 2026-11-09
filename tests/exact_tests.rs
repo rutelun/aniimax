@@ -65,7 +65,7 @@ fn production_staff_pruning_requires_sufficient_reserves_and_keeps_final_choices
         crew.add_reserve_workers([("Earth",1),("Lightning",1)],capacity);
         let mut counts=FacilityCounts::only(&[("Mine",1,1)]);counts.set_crew(crew.clone());counts.set_movement_seconds(5.0);
         let grid=Electricity{watts:600,percent:120,max_aniimo:limit};
-        counts.set_power(PowerPlan{grid:grid.clone(),grower_steps:GrowerSteps::default()});
+        counts.set_power(PowerPlan { grid: grid.clone(), grower_steps: GrowerSteps::default(), automatic: None });
         let mut items=crew_variants(original.clone(),&crew,&requirements,&GrowerSteps::default());
         add_electric_variants(&mut items,original.clone(),&counts,&requirements,&grid);
         let problem=write_lp(&items,"coins",&counts,&ModuleLevels::default(),Goal::Earn{floors:&[]});

@@ -4,6 +4,7 @@ const count = tiers => (tiers || []).reduce((n,t)=>n+t.count,0);
 const capacity = (input,recipe) => (input.facilities?.[recipe.facility] || [])
     .filter(t=>t.level >= (recipe.facility_level || 1)).reduce((n,t)=>n+t.count,0);
 const itemName = name => name.replace(/^quick_/, '');
+const hasElectricity = input => input.e_mode_rv >= 12 || !!input.electricity;
 
 function activeProduction(plan, recipes) {
     const byName = new Map(recipes.map(recipe => [recipe.name, recipe]));
@@ -58,13 +59,13 @@ export function opportunityEffect(base, candidate, recipes, plan = {}, allocated
         const processing = recipes.some(r=>r.facility===facility && (r.raw_materials || r.ingredients || []).length>0);
         if (!otherChanged && !modules.length && facilities.length===1 && processing && !eligibleAfter.some(r=>r.facility===facility)) skip = 'No reachable production chain uses this facility.';
         const oldCount = count(base.facilities[facility]), newCount = count(input.facilities[facility]);
-        if (!otherChanged && !modules.length && facilities.length===1 && processing && oldCount === newCount && !base.electricity && !input.electricity && sameRecipes && sameEligible
+        if (!otherChanged && !modules.length && facilities.length===1 && processing && oldCount === newCount && !hasElectricity(base) && !hasElectricity(input) && sameRecipes && sameEligible
             && eligibleAfter.filter(r=>r.facility===facility).every(r=>capacity(base,r) === capacity(input,r)))
             skip = 'Usable recipe capacity is unchanged at this level.';
         const assigned = (plan.coin_items || []).filter(s=>s.facility===facility && s.status==='producing')
             .reduce((n,s)=>n+s.facility_count,0);
         if (newCount > oldCount) lines.push({kind:'capacity',facility,assigned,owned:oldCount});
-        else if (!unlocked.length && input.electricity) lines.push({kind:'electric',facility});
+        else if (!unlocked.length && hasElectricity(input)) lines.push({kind:'electric',facility});
         else if (!unlocked.length) lines.push({kind:'level',facility});
     }
     if (unlocked.length) lines.unshift({kind:'unlocks',recipes:unlocked});

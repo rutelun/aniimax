@@ -453,7 +453,7 @@ self.onmessage = async (event) => {
                 fallbackReason = error && error.message ? error.message : String(error);
                 // The backup planner doesn't know the player's roster, so a roster plan stops here.
                 const input = JSON.parse(payload);
-                if (input.electricity || hasSeasonCropMinimums(input) || hasMaterialProcessors(input) || (!input.level_up_strategy && (input.crop_variety || input.season))) {
+                if (input.e_mode_rv >= 12 || input.electricity || hasSeasonCropMinimums(input) || hasMaterialProcessors(input) || (!input.level_up_strategy && (input.crop_variety || input.season))) {
                     result = JSON.stringify({ success: false, error: fallbackReason });
                 } else if (input.aniimo?.startsWith('roster')) {
                     console.warn('Exact planner failed on a roster:', error);

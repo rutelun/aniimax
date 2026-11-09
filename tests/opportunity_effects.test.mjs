@@ -34,8 +34,10 @@ test('higher-level capacity is retained even if another unit already unlocked th
     assert.equal(opportunityEffect(before,{input},recipes).skip,null);
     const unchanged={...base,facilities:{...base.facilities,Mill:[{count:1,level:2}]}};
     assert.equal(opportunityEffect(base,{input:unchanged},recipes).skip,'Usable recipe capacity is unchanged at this level.');
-    const powered={...base,electricity:{watts:600,percent:120}};
-    assert.equal(opportunityEffect(powered,{input:{...unchanged,electricity:powered.electricity}},recipes).skip,null);
+    const powered={...base,e_mode_rv:12};
+    const effect = opportunityEffect(powered,{input:{...unchanged,e_mode_rv:12}},recipes);
+    assert.equal(effect.skip,null);
+    assert.deepEqual(effect.lines,[{kind:'electric',facility:'Mill'}]);
 });
 
 test('candidate preparation preserves input and reports exact omission reasons',()=>{
