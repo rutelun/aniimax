@@ -996,5 +996,7 @@
   "No additional usable recipes at this module level.": "此模組等級不會增加可用配方。",
   "No reachable production chain uses this facility.": "沒有可用的生產鏈需要此設施。",
   "Usable recipe capacity is unchanged at this level.": "此等級不會改變可用配方的產能。",
-  "Starts production: {recipes}.": "開始生產：{recipes}。"
+  "Starts production: {recipes}.": "開始生產：{recipes}。",
+  "All current production of {ingredients} is allocated. {facility} uses these inputs.": "目前生產的 {ingredients} 已全數分配。{facility} 需要這些原料。",
+  "{item} at {facility} increases from {before} to {after} per day.": "{facility} 的 {item} 日產量從 {before} 提高到 {after}。"
 }

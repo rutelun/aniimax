@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {opportunityEffect,prepareOpportunities,startedProcessing} from '../web/opportunity-effects.js';
+import {opportunityEffect,prepareOpportunities,startedProcessing,increasedProcessing} from '../web/opportunity-effects.js';
 
 const recipes=[
     {name:'grain',facility:'Farm',facility_level:1},
@@ -59,4 +59,21 @@ test('comparison explanations report newly started processing, without double-co
     const step=(name,extra={})=>({status:'producing',item_name:name,facility_count:1,busy_units:.1,cycle_time:10,...extra});
     assert.deepEqual(startedProcessing({coin_items:[step('meal')]},{coin_items:[step('meal'),step('bread'),step('bread'),
         step('quick_wheat',{is_grower:true}),step('flour',{busy_units:0})]}),['bread']);
+});
+
+test('an exhausted ingredient is explained without excluding the opportunity', () => {
+    const input = { ...base, facilities: { ...base.facilities, Mill: [{ count: 2, level: 1 }] } };
+    const row = (item_name, facility, busy_units) => ({
+        item_name, facility, busy_units, status: 'producing', cycle_time: 10, facility_count: 1,
+    });
+    const before = { coin_items: [row('grain', 'Farm', .5), row('meal', 'Mill', .5)] };
+    const effect = opportunityEffect(base, { input }, recipes, before);
+    assert.equal(effect.skip, null);
+    assert.deepEqual(effect.lines.at(-1), { kind: 'allocated', facility: 'Mill', ingredients: ['grain'] });
+    const after = { coin_items: [row('grain', 'Farm', 1), row('meal', 'Mill', .4), row('meal', 'Mill', .4)] };
+    assert.deepEqual(increasedProcessing(before, after, recipes, effect.lines),
+        { item: 'meal', facility: 'Mill', before: .05, after: .08 });
+    assert.equal(opportunityEffect(base, { input }, recipes, {
+        coin_items: [row('grain', 'Farm', .6), row('meal', 'Mill', .5)],
+    }).lines.some(line => line.kind === 'allocated'), false);
 });

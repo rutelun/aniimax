@@ -15,7 +15,7 @@ import { ANIIMO_WALK_SPEED, workerTravelDistances } from './worker-travel.js?v=a
 import { haulingWorkload, allocateHauling, haulingBatchTrips } from './hauling.js?v=hauling-workload';
 import { changeOneMember, personalityInput, reserveLevelFourInputs, comparePlans, usefulUpgrade, keepBetterComparison } from './opportunity-comparison.js?v=protected-comparisons';
 import { comparisonConcurrency, startComparisonQueue } from './comparison-queue.js?v=parallel-comparisons';
-import { prepareOpportunities, startedProcessing } from './opportunity-effects.js?v=upgrade-effects';
+import { prepareOpportunities, startedProcessing, increasedProcessing } from './opportunity-effects.js?v=upgrade-constraints';
 
 let wasmReady = false;
 
@@ -983,14 +983,22 @@ function rankImprovementsFor(setup, requested = null, detailed = false) {
         payload:index=>({base:current.input,basePlan:plan,candidates:[current.candidates[index].input],detailed}),
         onProgress:active=>{
             if (runId !== rankRunId) return;
-            current.activeIndices = active.map(s=>s.index);
+            const indices = active.map(s => s.index);
+            const changed = indices.length !== current.activeIndices.length
+                || indices.some((index, i) => index !== current.activeIndices[i]);
+            current.activeIndices = indices;
             current.activeIndex = active[0]?.index ?? null;
             current.phase = active[0]?.step ? comparisonPhase(active[0].step) : '';
-            if (ranking === current) renderImprovements();
+            if (ranking === current) renderImprovements(changed);
         },
         onResult:(index,result)=>{
             if (runId !== rankRunId) return;
-            current.results[index] = keepBetterComparison(current.results[index],result,current.candidates[index].input);
+            const candidate = current.candidates[index];
+            const chosen = keepBetterComparison(current.results[index], result, candidate.input);
+            if (chosen === result && chosen.plan?.success && candidate.effect?.lines.length) {
+                chosen.processingChange = increasedProcessing(plan, chosen.plan, recipeIndex, candidate.effect.lines);
+            }
+            current.results[index] = chosen;
             if (ranking === current) renderImprovements();
         },
         onDone:failed=>{
@@ -1088,13 +1096,16 @@ function opportunityDescription(candidate) {
             .replace('{ability}',translate(effect.ability)).replace('{facilities}',effect.facilities.slice(0,4).map(translate).join(', '));
         if (effect.kind==='personality') return translate('Applies the matching personality bonus at {facilities}.')
             .replace('{facilities}',effect.facilities.slice(0,4).map(translate).join(', '));
+        if (effect.kind==='allocated') return translate('All current production of {ingredients} is allocated. {facility} uses these inputs.')
+            .replace('{facility}',translate(effect.facility))
+            .replace('{ingredients}',effect.ingredients.slice(0,4).map(name=>translate(prettyItem(name))).join(', '));
         return '';
     }).filter(Boolean);
-    return lines.slice(0,2).map(line=>`<p class="hint small">${escapeText(line)}</p>`).join('')
+    return lines.slice(0,3).map(line=>`<p class="hint small">${escapeText(line)}</p>`).join('')
         + (candidate.description ? `<p class="hint small">${candidate.description}</p>` : '');
 }
 
-function renderImprovements() {
+function renderImprovements(rebuild = true) {
     const card = document.getElementById('improve-card');
     if (!ranking || !lastPlan?.success) { card.style.display='none'; return; }
     card.style.display='block';
@@ -1108,6 +1119,7 @@ function renderImprovements() {
     check.disabled = ranking.running || checked === total;
     check.textContent = translate(checked ? 'Check remaining' : 'Check all improvements');
     document.getElementById('improve-stop-btn').hidden = !ranking.running;
+    if (!rebuild) return;
     const holder = document.getElementById('improve-list');
     const open = new Set([...holder.querySelectorAll('details[open][data-open-key]')].map(d=>d.dataset.openKey));
     const groups = new Map(), best = new Map();
@@ -1136,8 +1148,13 @@ function renderImprovements() {
         const started = resultIndex != null ? startedProcessing(ranking.plan,ranking.results[resultIndex]?.plan) : [];
         const productionNote = started.length ? `<p class="hint small">${escapeText(translate('Starts production: {recipes}.')
             .replace('{recipes}',started.slice(0,5).map(name=>translate(prettyItem(name))).join(', ')+(started.length>5?'…':'')))}</p>` : '';
+        const increased = resultIndex == null ? null : ranking.results[resultIndex].processingChange;
+        const rateNote = increased ? `<p class="hint small">${escapeText(translate('{item} at {facility} increases from {before} to {after} per day.')
+            .replace('{item}',translate(prettyItem(increased.item))).replace('{facility}',translate(increased.facility))
+            .replace('{before}',formatNumber(Math.round(increased.before * 86400)))
+            .replace('{after}',formatNumber(Math.round(increased.after * 86400))))}</p>` : '';
         const detail = comparison ? `<details class="comparison-result" data-open-key="${escapeText(resultKey)}"${open.has(resultKey)?' open':''}>
-            <summary>${translate('Before / after')}${found?` · ${translate(found.candidate.label)}`:''}</summary>${productionNote}${comparisonTable(comparison)}</details>`
+            <summary>${translate('Before / after')}${found?` · ${translate(found.candidate.label)}`:''}</summary>${productionNote}${rateNote}${comparisonTable(comparison)}</details>`
             : error ? `<p class="hint small">${translate('The search did not match the current plan. This does not show that the upgrade reduces production. Use Detailed search.')}</p>` : '';
         const button = `<span class="opportunity-actions"><button type="button" class="skip-add-btn" data-compare-group="${escapeText(key)}"${ranking.running?' disabled':''}>${translate('Quick compare')}</button>
             <button type="button" class="skip-add-btn" data-compare-detailed="${escapeText(key)}"${ranking.running?' disabled':''}>${translate('Detailed search')}</button></span>`;

@@ -977,5 +977,7 @@
   "No additional usable recipes at this module level.": "Этот уровень модуля не добавляет доступных рецептов.",
   "No reachable production chain uses this facility.": "Нет доступной производственной цепочки для этого здания.",
   "Usable recipe capacity is unchanged at this level.": "Этот уровень не меняет мощности доступных рецептов.",
-  "Starts production: {recipes}.": "Начинает производить: {recipes}."
+  "Starts production: {recipes}.": "Начинает производить: {recipes}.",
+  "All current production of {ingredients} is allocated. {facility} uses these inputs.": "Всё текущее производство этих ресурсов уже распределено ({ingredients}). Они нужны зданию «{facility}».",
+  "{item} at {facility} increases from {before} to {after} per day.": "Выпуск «{item}» в здании «{facility}» вырастет с {before} до {after} в день."
 }

@@ -16,7 +16,7 @@
 // and put back wherever is cheapest with the rest in place, until nothing moves. This is a
 // heuristic: it finds a good layout, not a proven best one.
 
-import { workerHubs, workerPlacementCost, workerLayoutCost } from './worker-travel.js?v=auto-worker-travel';
+import { workerHubs, workerPlacementCost, workerLayoutCost, workerTravelDistances } from './worker-travel.js?v=auto-worker-travel';
 
 const STEP = 0.25;
 const EPSILON = 1e-6;
@@ -571,6 +571,23 @@ export function layoutCost(layout) {
     }, 0) + workerLayoutCost(members);
 }
 
+// Compare complete alternatives using their estimated delivery and workplace routes.
+// Loaded and next-pickup legs have the same total distance within each storage pool.
+export function layoutTravelCost(layout) {
+    const members = layout.pieces.flatMap(piece => piece.members);
+    const deliveries = members.reduce((sum, member) => {
+        const store = nearestStorage(member, layout.storages);
+        if (!store) return sum;
+        return sum + 2 * (member.weight || 0) * Math.hypot(
+            member.x + member.w / 2 - store.x - store.w / 2,
+            member.y + member.h / 2 - store.y - store.h / 2);
+    }, 0);
+    const hubs = workerHubs(members);
+    let walking = 0;
+    for (const [worker, distance] of workerTravelDistances(members)) walking += distance * (hubs.get(worker)?.visits ?? 0);
+    return deliveries + walking;
+}
+
 // Power routing may move consumers after the hauling layout, freeing better positions.
 // Refine against the final infrastructure: poles and generators stay fixed, and consumers
 // may move only within connected supply zones. Climate and collision checks still apply.
@@ -663,9 +680,7 @@ export function refineStorageNeighborhood(layout, pieces, cells, trials = 4) {
     return best;
 }
 
-// Add useful storage locations, then alternate relocating storage and laying facilities out.
-// Each accepted step keeps every placed piece and reduces weighted hauling distance.
-function improveStorageLayout(layout, pieces, cells, storage, maximum) {
+function storageSites(cells, storage) {
     const candidates = [];
     const seen = new Set();
     for (const cell of cells) {
@@ -679,6 +694,52 @@ function improveStorageLayout(layout, pieces, cells, storage, maximum) {
             }
         }
     }
+    return candidates;
+}
+
+// Use the placed factories as demand points, but reserve all storage sites before
+// placing facilities again. A busy building can move away from a new store's footprint.
+export function* seededStorageLayouts(layout, pieces, cells, storage, maximum) {
+    const demand = layout.pieces.flatMap(piece => piece.members)
+        .filter(member => member.weight > 0)
+        .map(member => ({ x: member.x + member.w / 2, y: member.y + member.h / 2, weight: member.weight }));
+    if (maximum < 2 || demand.length < 2) return;
+    const sites = storageSites(cells, storage);
+    const distances = sites.map(site => demand.map(point =>
+        Math.hypot(site.x + site.w / 2 - point.x, site.y + site.h / 2 - point.y)));
+    const busiest = demand.reduce((best, point, i) => point.weight > demand[best].weight ? i : best, 0);
+    const key = stores => stores.map(site => `${site.x},${site.y}`).sort().join(';');
+    const tried = new Set([key(layout.storages)]);
+    // Start one set near all pickups, and one next to the busiest pickup.
+    for (const prioritizeBusiest of [false, true]) {
+        const stores = [];
+        const nearest = demand.map(() => Infinity);
+        while (stores.length < maximum) {
+            let best = -1, bestCost = Infinity;
+            for (let i = 0; i < sites.length; i++) {
+                if (stores.some(site => overlaps(site, sites[i]))) continue;
+                const cost = prioritizeBusiest && !stores.length ? distances[i][busiest]
+                    : demand.reduce((sum, point, j) => sum + point.weight * Math.min(nearest[j], distances[i][j]), 0);
+                if (cost < bestCost - EPSILON) { best = i; bestCost = cost; }
+            }
+            if (best < 0) break;
+            stores.push(sites[best]);
+            nearest.forEach((distance, i) => { nearest[i] = Math.min(distance, distances[best][i]); });
+        }
+        const signature = key(stores);
+        if (stores.length < 2 || tried.has(signature)) continue;
+        tried.add(signature);
+        const trial = layOut(pieces, { storage, storages: stores, cells, passes: 2 });
+        if (trial.unplaced.length) continue;
+        trial.storageAt = { x: stores[0].x + storage.w / 2, y: stores[0].y + storage.h / 2 };
+        yield trial;
+    }
+}
+
+// Add useful storage locations, then alternate relocating storage and laying facilities out.
+// Each accepted step keeps every placed piece and reduces weighted hauling distance.
+function improveStorageLayout(layout, pieces, cells, storage, maximum) {
+    const candidates = storageSites(cells, storage);
     const membersOf = current => current.pieces.flatMap(piece => piece.members);
     const costOf = (members, stores) => members.reduce((sum, member) => {
         const closest = nearestStorage(member, stores);

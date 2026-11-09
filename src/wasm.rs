@@ -3,6 +3,7 @@
 //! This module provides JavaScript-accessible functions for the production optimizer.
 
 use serde::{Deserialize, Serialize};
+use std::{cell::RefCell, rc::Rc};
 use wasm_bindgen::prelude::*;
 
 use crate::models::{FacilityCounts, ModuleLevels, ProductionEfficiency, ProductionItem};
@@ -1445,7 +1446,7 @@ pub fn find_plan(input_json: &str, on_progress: Option<js_sys::Function>) -> Str
 /// Empty when byproducts aren't prioritized.
 #[wasm_bindgen]
 pub fn exact_byproduct_problems(input_json: &str) -> String {
-    let Ok(prepared) = PreparedInput::from_json(input_json) else { return "[]".to_string() };
+    let Ok(prepared) = prepare_exact_input(input_json) else { return "[]".to_string() };
     if !prepared.input.prioritize_byproducts || prepared.input.currency != "coins" || prepared.input.level_up.is_some() {
         return "[]".to_string();
     }
@@ -1474,7 +1475,7 @@ pub fn exact_byproduct_problems(input_json: &str) -> String {
 #[wasm_bindgen]
 pub fn exact_priority_problem(input_json: &str, stage_json: &str, target: &str) -> String {
     let stage: JsStage = serde_json::from_str(stage_json).unwrap_or_default();
-    let lp = match PreparedInput::from_json(input_json) {
+    let lp = match prepare_exact_input(input_json) {
         Ok(prepared) => match (&prepared.input.level_up, stage.pace) {
             (Some(level_up), Some(pace)) => crate::exact::write_lp(
                 &prepared.items,
@@ -1502,7 +1503,7 @@ pub fn exact_priority_problem(input_json: &str, stage_json: &str, target: &str) 
 /// `lp` is empty for the coins strategy, or when the stock already covers the level-up.
 #[wasm_bindgen]
 pub fn exact_level_up_problem(input_json: &str) -> String {
-    let lp = match PreparedInput::from_json(input_json) {
+    let lp = match prepare_exact_input(input_json) {
         Ok(prepared) => match &prepared.input.level_up {
             Some(level_up) if prepared.input.currency == "coins" && !level_up.ready() => crate::exact::write_lp(
                 &prepared.items,
@@ -1583,7 +1584,7 @@ impl JsStage {
 /// `crop_variety` to earn as much as possible while keeping that coverage.
 #[wasm_bindgen]
 pub fn exact_crop_variety_problem(input_json: &str) -> String {
-    let Ok(prepared) = PreparedInput::from_json(input_json) else { return lp_json(&Default::default()) };
+    let Ok(prepared) = prepare_exact_input(input_json) else { return lp_json(&Default::default()) };
     lp_json(&crate::exact::write_lp(
         &prepared.items,
         &prepared.input.currency,
@@ -1605,7 +1606,7 @@ pub fn exact_crop_variety_problem(input_json: &str) -> String {
 #[wasm_bindgen]
 pub fn exact_problem(input_json: &str, stage_json: &str) -> String {
     let stage: JsStage = serde_json::from_str(stage_json).unwrap_or_default();
-    let lp = match PreparedInput::from_json(input_json) {
+    let lp = match prepare_exact_input(input_json) {
         Ok(prepared) if !prepared.input.currency.is_empty() => {
             let base = stage.goal(&prepared.input);
             let stock = stage.with_upgrade_materials(&base, &prepared.input);
@@ -1643,7 +1644,7 @@ struct JsSolverResult {
 /// returns, plus whether it's proven optimal.
 #[wasm_bindgen]
 pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> String {
-    let prepared = match PreparedInput::from_json(input_json) {
+    let prepared = match prepare_exact_input(input_json) {
         Ok(p) => p,
         Err(error) => return error,
     };
@@ -1795,6 +1796,23 @@ struct PreparedInput {
     crew: Option<crate::models::Crew>,
     requirements: crate::models::AniimoRequirements,
     grower_steps: crate::models::GrowerSteps,
+}
+
+thread_local! {
+    static EXACT_INPUT: RefCell<Option<(String, Rc<PreparedInput>)>> = const { RefCell::new(None) };
+}
+
+// All priority and material stages of a request use the same recipe and worker
+// variants. Keep one immutable prepared input per worker, keyed by the full request.
+fn prepare_exact_input(input_json: &str) -> Result<Rc<PreparedInput>, String> {
+    EXACT_INPUT.with(|cache| {
+        if let Some((_, prepared)) = cache.borrow().as_ref().filter(|(key, _)| key == input_json) {
+            return Ok(Rc::clone(prepared));
+        }
+        let prepared = Rc::new(PreparedInput::from_json(input_json)?);
+        cache.replace(Some((input_json.to_owned(), Rc::clone(&prepared))));
+        Ok(prepared)
+    })
 }
 
 impl PreparedInput {

@@ -137,7 +137,7 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
     const runModel = (problem,...args)=>searchModel(withProductionBounds(problem,certificates),...args);
     const solve = async (problem, goal) => {
         const certified = goal && await comparison?.bound(problem, goal);
-        if (certified) return certified;
+        if (certified && !certified.values) return certified;
         let seed = incumbent?.values;
         if (seed && incumbentKeys?.length === seed.length && problem.variable_keys?.length === problem.variables
             && (seed.length !== problem.variables || incumbentKeys.some((key,i)=>key!==problem.variable_keys[i]))) {
@@ -149,7 +149,8 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
             : undefined;
         const protectedProblem=comparison?.protect(problem,goal)||problem;
         let result;
-        if((!comparison || options.time_limit>=EXACT_TIME_LIMIT) && goal===(input.currency||'coins') && problem.production_only
+        if (certified) result = certified;
+        else if((!comparison || options.time_limit>=EXACT_TIME_LIMIT) && goal===(input.currency||'coins') && problem.production_only
             && problem.variables>=1000 && problem.integer_groups?.length){
             const initial=await runModel(protectedProblem,{...options,time_limit:Math.min(2,options.time_limit)},message,seed);
             if(initial?.proven)result=initial;
@@ -385,13 +386,19 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
     return finish(plan);
 }
 
+// A queue worker handles one alternative at a time. Share only proved results for
+// identical solver models across its requests. Incumbents and cuts stay per request.
+const comparisonMemo = { entries: new Map(), size: 0 };
+
 // Ranks changes the player could make with the same complete optimizer, preserving planting,
 // every priority, E-mode and RV material production. They run only on explicit request.
-async function rankImprovements(pkg, payload, report) {
+async function rankImprovements(pkg, payload, report, memo) {
     const { base, basePlan, candidates, detailed = false, warm_start = true } = JSON.parse(payload);
     const original = basePlan?.success ? basePlan : JSON.parse(await exactPlanJson(pkg, JSON.stringify(base)));
     report({ index: -1, plan: original });
-    const comparison = (await comparisonSearch).createComparisonSearch(original, solveModel, { detailed, warmStart: warm_start, baseInput:base });
+    const comparison = (await comparisonSearch).createComparisonSearch(original, solveModel, {
+        detailed, warmStart: warm_start, baseInput: base, memo,
+    });
     for (const [index, input] of candidates.entries()) {
         try {
             comparison.begin(input);
@@ -425,7 +432,7 @@ self.onmessage = async (event) => {
     try {
         const pkg = await ready;
         if (type === 'rank_improvements') {
-            await rankImprovements(pkg, payload, (result) => self.postMessage({ id, type: 'progress', count: result }));
+            await rankImprovements(pkg, payload, result => self.postMessage({ id, type: 'progress', count: result }), comparisonMemo);
             self.postMessage({ id, ok: true, result: null });
             return;
         }

@@ -977,5 +977,7 @@
   "No additional usable recipes at this module level.",
   "No reachable production chain uses this facility.",
   "Usable recipe capacity is unchanged at this level.",
-  "Starts production: {recipes}."
+  "Starts production: {recipes}.",
+  "All current production of {ingredients} is allocated. {facility} uses these inputs.",
+  "{item} at {facility} increases from {before} to {after} per day."
 ]

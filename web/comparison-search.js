@@ -3,11 +3,24 @@
 // the completed plan must still meet that goal and pass the native independent check.
 import {comparePlans} from './opportunity-comparison.js?v=protected-comparisons';
 
-export function createComparisonSearch(basePlan, solve, { detailed = false, warmStart = true, baseInput = null, now = () => performance.now() } = {}) {
-    const cache = new Map();
-    let cacheSize = 0, deadline = Infinity, useBounds = true, usedBounds = false, earlierImproved = false;
+function integerColumns(problem) {
+    const section = problem.lp.match(/\nGeneral\n([\s\S]*?)\nEnd/);
+    return [...(section?.[1] || '').matchAll(/\bx(\d+)\b/g)].map(match => Number(match[1]));
+}
+
+function respectsIntegrality(result, problem, integers) {
+    return result?.proven && result.values?.length === problem.variables
+        && integers.every(v => Math.abs(result.values[v] - Math.round(result.values[v])) <= 1e-7);
+}
+
+export function createComparisonSearch(basePlan, solve, {
+    detailed = false, warmStart = true, baseInput = null, now = () => performance.now(),
+    memo = { entries: new Map(), size: 0 },
+} = {}) {
+    const cache = memo.entries;
+    let deadline = Infinity, useBounds = true, usedBounds = false, earlierImproved = false;
     let splitMembers = new Set();
-    const stats = { cached: 0, bounded: 0, warm: 0, polished: 0 };
+    const stats = { cached: 0, bounded: 0, warm: 0, polished: 0, certified: 0 };
     const profile = basePlan.comparison_seed;
     // Building/parsing a large roster model is outside HiGHS' per-solve limit. Allow that
     // overhead; the one-second integer searches remain bounded independently.
@@ -21,7 +34,9 @@ export function createComparisonSearch(basePlan, solve, { detailed = false, warm
         const clipped = [...values]; zero.forEach(v=>clipped[v]=0); return clipped;
     };
     const run = async (problem, requested = options, message, incumbent) => {
-        const key = `${problem.variables}|${requested.mip_feasibility_tolerance ?? 'default'}|${JSON.stringify(problem.tiebreak || [])}|${problem.lp}`;
+        const tolerances = [requested.mip_feasibility_tolerance, requested.primal_feasibility_tolerance,
+            requested.dual_feasibility_tolerance];
+        const key = `${problem.variables}|${JSON.stringify(tolerances)}|${JSON.stringify(problem.tiebreak || [])}|${problem.lp}`;
         if (cache.has(key)) { stats.cached++; return cache.get(key); }
         const remaining = (deadline - now()) / 1000;
         if (remaining <= 0) throw new Error('Quick check reached its time budget. Use Detailed search for this alternative.');
@@ -35,8 +50,7 @@ export function createComparisonSearch(basePlan, solve, { detailed = false, warm
             // Refit continuous production/work times to the changed worker while keeping
             // the baseline's discrete placement. This is only a feasible start; the complete
             // unrestricted integer model below still has to find/prove the final optimum.
-            const section = problem.lp.match(/\nGeneral\n([\s\S]*?)\nEnd/);
-            const integers = [...(section?.[1] || '').matchAll(/\bx(\d+)\b/g)].map(m=>Number(m[1]));
+            const integers = integerColumns(problem);
             // Training one of several identical Aniimo splits that pool. Its old discrete
             // assignments may exceed the remaining count; repair only the split members,
             // retaining all other baseline choices as a small initial subproblem.
@@ -51,6 +65,21 @@ export function createComparisonSearch(basePlan, solve, { detailed = false, warm
                 if (polished?.values && integers.every(v=>Math.abs(polished.values[v]-Math.round(polished.values[v]))<1e-6)) {
                     seed = polished.values; stats.polished++;
                 }
+                if (problem.compareCurrency && respectsIntegrality(polished, problem, integers)) {
+                    const left = (deadline - now()) / 1000;
+                    if (left > .1) {
+                        const relaxed = { ...problem, lp: problem.lp.replace(/\nGeneral\n[\s\S]*?\nEnd/, '\nEnd') };
+                        const upper = await solve(relaxed, { ...requested, time_limit: Math.min(.25, left) });
+                        if (upper?.proven && Math.abs(upper.objective - polished.objective) <= 1e-9) {
+                            stats.certified++;
+                            return { ...polished, upper: upper.objective };
+                        }
+                        if (respectsIntegrality(upper, problem, integers)) {
+                            stats.certified++;
+                            return upper;
+                        }
+                    }
+                }
             }
         }
         if (seed?.length === problem.variables) seed = clipInactive(problem,seed);
@@ -59,11 +88,11 @@ export function createComparisonSearch(basePlan, solve, { detailed = false, warm
         const result = await solve(problem, { ...requested, time_limit: Math.min(requested.time_limit ?? options.time_limit, left) }, message, seed);
         // Never cache a timeout as an optimum, and bound memory for large homeland models.
         if (result?.proven && key.length <= 8_000_000) {
-            while (cacheSize + key.length > 8_000_000 && cache.size) {
+            while (memo.size + key.length > 8_000_000 && cache.size) {
                 const oldest = cache.keys().next().value;
-                cacheSize -= oldest.length; cache.delete(oldest);
+                memo.size -= oldest.length; cache.delete(oldest);
             }
-            cache.set(key, result); cacheSize += key.length;
+            cache.set(key, result); memo.size += key.length;
         }
         return result;
     };
@@ -101,7 +130,8 @@ export function createComparisonSearch(basePlan, solve, { detailed = false, warm
             // incumbent is not necessarily found in time; then this comparison is unknown.
             // Use the planner's own floor tolerance, including for scores and RV pace.
             const floor = goal === 'crop_variety' ? expected : expected * (1 - 1e-4);
-            return { ...problem, lp: problem.lp.replace('\nBounds\n',
+            return { ...problem, compareCurrency: problem.production_only && goal === (basePlan.currency || 'coins'),
+                lp: problem.lp.replace('\nBounds\n',
                 `\n comparison_baseline: ${objectiveText(problem)} >= ${floor}\nBounds\n`) };
         },
         observe(goal, result) {
@@ -122,7 +152,15 @@ export function createComparisonSearch(basePlan, solve, { detailed = false, warm
             const bound = await run(relaxed, { ...options, time_limit: .3 });
             if (!bound?.proven) return null;
             const upper = goal === 'crop_variety' ? Math.floor(bound.objective + 1e-7) : bound.objective;
-            if (Math.abs(upper - expected) > Math.max(1e-9, Math.abs(expected)*1e-7)) return null;
+            if (Math.abs(upper - expected) > Math.max(1e-9, Math.abs(expected)*1e-7)) {
+                // Some relaxed optima already use whole buildings. Retain the vector
+                // when the original objective has no secondary staffing penalties.
+                if (problem.production_only && respectsIntegrality(bound, problem, integerColumns(problem))) {
+                    stats.certified++;
+                    return bound;
+                }
+                return null;
+            }
             stats.bounded++;
             usedBounds = true;
             return { objective: expected, proven: true };

@@ -6,11 +6,27 @@ const ready = import('./layout.js' + new URL(import.meta.url).search);
 const powerReady = import('./power-layout.js' + new URL(import.meta.url).search);
 
 self.onmessage = async (event) => {
-    const { layOutHomeland, refineSuppliedLayout } = await ready;
+    const { layOutHomeland, refineSuppliedLayout, seededStorageLayouts, layoutTravelCost } = await ready;
     const { connectPower, updatePowerConnections } = await powerReady;
-    const layout = layOutHomeland(event.data.pieces, event.data.cells, { w: 2, h: 2 }, event.data.storageCount ?? 1);
-    const powered = connectPower(layout, event.data.cells, event.data.poleLimit ?? 0);
+    const { pieces, cells } = event.data;
+    const storageCount = event.data.storageCount ?? 1;
+    const poleLimit = event.data.poleLimit ?? 0;
+    const storage = { w: 2, h: 2 };
+    const layout = layOutHomeland(pieces, cells, storage, storageCount);
+    const powered = connectPower(layout, cells, poleLimit);
     // Routing can relocate electric facilities and vacate useful positions. Fill those holes
     // after routing too, without moving infrastructure or disconnecting any electric consumer.
-    self.postMessage(updatePowerConnections(refineSuppliedLayout(powered, event.data.pieces, event.data.cells)));
+    let best = updatePowerConnections(refineSuppliedLayout(powered, pieces, cells));
+    let cost = layoutTravelCost(best);
+    for (const trial of seededStorageLayouts(best, pieces, cells, storage, storageCount)) {
+        const supplied = connectPower(trial, cells, poleLimit);
+        if (supplied.power.disconnected) continue;
+        const refined = updatePowerConnections(refineSuppliedLayout(supplied, pieces, cells, { storageTrials: 0 }));
+        const score = layoutTravelCost(refined);
+        if (!refined.power.disconnected && (best.unplaced.length || best.power.disconnected || score < cost - 1e-6)) {
+            best = refined;
+            cost = score;
+        }
+    }
+    self.postMessage(best);
 };

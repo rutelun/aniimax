@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { layOut, layOutHomeland, nearestStorage, layoutCost, refineStorageNeighborhood } from '../web/layout.js';
+import { layOut, layOutHomeland, nearestStorage, layoutCost, refineStorageNeighborhood, seededStorageLayouts } from '../web/layout.js';
 import { storageUnitLimit } from '../web/facility-config.js';
 
 const cells = [{ x: 0, y: 0, w: 20, h: 15 }, { x: 20, y: 0, w: 20, h: 15 }];
@@ -32,6 +32,19 @@ test('multiple storage units shorten hauling and keep every placed facility clea
             && rectangle.x + rectangle.w <= 40 && rectangle.y + rectangle.h <= 15);
         assert.ok(rectangles.slice(index + 1).every(other => !overlap(rectangle, other)));
     });
+});
+
+test('multi-storage seeds reserve delivery destinations before packing buildings', () => {
+    const layout = layOutHomeland(pieces, cells);
+    const trials = [...seededStorageLayouts(layout, pieces, cells, { w: 2, h: 2 }, 3)];
+    assert.ok(trials.length >= 1 && trials.length <= 2);
+    for (const trial of trials) {
+        assert.equal(trial.storages.length, 3);
+        assert.deepEqual(trial.unplaced, []);
+        assert.ok(cost(trial) < cost(layout));
+        const rectangles = [...trial.storages, ...trial.pieces.flatMap(piece => piece.members)];
+        assert.ok(rectangles.every((rectangle, index) => rectangles.slice(index + 1).every(other => !overlap(rectangle, other))));
+    }
 });
 
 test('storage additions keep environment plots in their planned coverage', () => {

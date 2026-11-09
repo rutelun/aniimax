@@ -113,6 +113,39 @@ test('refitting a fixed layout supplies only an incumbent and cannot certify the
     assert.equal(result.objective,8);
 });
 
+test('a currency comparison skips integer search only when the repaired plan reaches the unrestricted bound', async () => {
+    const before = { currency: 'coins', rate_per_second: 10, comparison_seed: { keys: ['a', 'b'], values: [5, 0] } };
+    for (const [upper, expectedCalls] of [[10, 2], [11, 3]]) {
+        const calls = [];
+        const search = createComparisonSearch(before, async problem => {
+            calls.push(problem.lp);
+            if (calls.length === 1) return { values: [5, 0], objective: 10, proven: true };
+            if (calls.length === 2) return { values: [4.9, 0], objective: upper, proven: true };
+            return { values: [5, 0], objective: 10, proven: false };
+        });
+        search.begin();
+        const problem = { ...model, variable_keys: ['a', 'b'], production_only: true, tiebreak: [] };
+        const result = await search.solve(search.protect(problem, 'coins'));
+        assert.equal(calls.length, expectedCalls);
+        assert.equal(result.proven, expectedCalls === 2);
+        assert.match(calls[0], /warm_fix_0/);
+        assert.doesNotMatch(calls[1], /warm_fix_0|General/);
+        if (expectedCalls === 3) assert.match(calls[2], /General/);
+    }
+});
+
+test('one worker can reuse a proved model across alternatives with different warm starts', async () => {
+    const memo = { entries: new Map(), size: 0 };
+    let calls = 0;
+    const solve = async () => { calls++; return { proven: true, objective: 10, values: [5, 0] }; };
+    await createComparisonSearch({}, solve, { memo }).solve(model);
+    const other = createComparisonSearch(baseline, solve, { memo });
+    await other.solve(model);
+    assert.equal(calls, 1);
+    await other.solve(model, { primal_feasibility_tolerance: 1e-10 });
+    assert.equal(calls, 2);
+});
+
 test('large rosters receive preparation time without increasing the per-solve search limit',async()=>{
     let time=0,limit;
     const keys=Array.from({length:6646},(_,i)=>`job:${i}`);
