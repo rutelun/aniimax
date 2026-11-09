@@ -30,6 +30,13 @@ const CLUSTER_TRIES = 24;
 const CLUSTER_PACKS = 2;
 const CLUSTER_PACK_MOST = 12;
 
+const climateBox = b => ({ x: b.x + b.w / 2 - RADIUS, y: b.y + b.h / 2 - RADIUS, w: 2 * RADIUS, h: 2 * RADIUS });
+function matchesClimate(rect, squares, zone) {
+    if (squares.length === 1) return overlaps(rect, squares[0]);
+    return overlaps(rect, squares[zone === 2 ? 1 : 0])
+        && (zone === 1 ? overlaps(rect, squares[1]) : !overlaps(rect, squares[zone === 0 ? 1 : 0]));
+}
+
 // Quarter-tile rectangles can query a summed-area table instead of intersecting every
 // open plot on every placement. Non-grid or overlapping input retains the area check.
 export function createInsideTest(cells) {
@@ -268,15 +275,9 @@ export function layOut(pieces, options = {}) {
     const tryCluster = (i, shape, x, y, pack, clear, distanceToStorage) => {
         tried++;
         const buildings = shape.buildings.map(b => ({ x: b.x + x, y: b.y + y, w: b.w, h: b.h }));
-        const own = buildings.map(b => ({ x: b.x + b.w / 2 - RADIUS, y: b.y + b.h / 2 - RADIUS, w: 2 * RADIUS, h: 2 * RADIUS }));
+        const own = buildings.map(climateBox);
         if (!clear(buildings, own)) return null;
-        const allowed = (r, zone) => {
-            if(shape.pair){
-                if(!overlaps(r,own[zone===2?1:0]) || zone===1&&!overlaps(r,own[1])
-                    || zone!==1&&overlaps(r,own[zone===0?1:0]))return false;
-            }else if(!overlaps(r,own[0]))return false;
-            return !inOtherSquare(r,i);
-        };
+        const allowed = (r, zone) => matchesClimate(r, own, zone) && !inOtherSquare(r, i);
         const costOf = rects => shape.plots.reduce((sum, p, j) => sum + p.weight * distanceToStorage(rects[j].x + p.w / 2, rects[j].y + p.h / 2), 0)
             + (hasWorkerRoutes ? workerPlacementCost(shape.plots, rects, activeWorkerHubs) : 0);
         let plots = null;
@@ -706,6 +707,116 @@ export function refineStorageNeighborhood(layout, pieces, cells, trials = 4, {
         if(!result.unplaced.length&&cost(result)<cost(best)-EPSILON&&accept(result))best={...best,...result};
     }
     return best;
+}
+
+// Repack the climate blocks against the final storage positions, preserving
+// their coupled coverage and leaving all the other buildings in place.
+export function refineDistrictClimate(layout, pieces, cells, { canPlace, accept }) {
+    if (!pieces.some(piece => piece.cluster) || !layout.storages.length) return layout;
+    const supplied = suppliedPlacementOptions(layout);
+    const repacked = layOut(pieces, { cells, storages: layout.storages, initialLayout: layout, passes: 1,
+        ...supplied,
+        fixedPieces: new Set(pieces.flatMap((piece, i) => piece.cluster ? [] : [i])),
+        clusterFits: (i, rects) => {
+            const metadata = [...pieces[i].buildings, ...pieces[i].plots];
+            return canPlace(i, metadata, rects) && supplied.canPlace(i, metadata, rects);
+        },
+    });
+    const candidate = { ...layout, ...repacked, tried: (layout.tried || 0) + repacked.tried };
+    return !candidate.unplaced.length && layoutTravelCost(candidate) < layoutTravelCost(layout) - EPSILON
+        && accept(candidate) ? candidate : layout;
+}
+
+// Revisit pickup sites throughout the district. Climate plots can move or
+// exchange footprints only if they retain exactly their required coverage.
+export function refineDistrictDeliveries(layout, groups, {
+    canPlace = () => true, accept = () => true, passes = 2,
+} = {}) {
+    if (!layout.storages.length) return layout;
+    const result = { ...layout, pieces: layout.pieces.map(piece => ({
+        ...piece, members: piece.members.map(member => ({ ...member })),
+    })) };
+    const distance = r => {
+        const store = nearestStorage(r, result.storages);
+        return Math.hypot(r.x + r.w / 2 - store.x - store.w / 2, r.y + r.h / 2 - store.y - store.h / 2);
+    };
+    const districtOf = r => groups.findIndex(({ bounds: b }) =>
+        r.x >= b.x && r.y >= b.y && r.x + r.w <= b.x + b.w && r.y + r.h <= b.y + b.h);
+    const climates = result.pieces.map(piece => piece.cluster ? piece.members.slice(0, piece.buildings.length).map(climateBox) : []);
+    const fixed = [...result.storages, ...(result.power?.poles ?? [])];
+    const entries = result.pieces.flatMap((piece, i) => piece.members.map((rect, j) => ({
+        i, rect, district: districtOf(rect), climate: !!piece.cluster && j >= piece.buildings.length,
+        movable: !rect.generator && rect.facility !== 'Mine'
+            && (piece.cluster ? j >= piece.buildings.length : piece.members.length === 1),
+    })));
+    const local = groups.map((_, i) => entries.filter(entry => entry.district === i));
+    const supplied = suppliedPlacementOptions(result);
+    const valid = (entry, rect, swap) => {
+        const { i, district, climate } = entry;
+        if (districtOf(rect) !== district || groups[district].reserved.some(r => overlaps(r, rect))) return false;
+        if (!canPlace(i, [entry.rect], [rect]) || !supplied.canPlace(i, [entry.rect], [rect])) return false;
+        if (climate && !matchesClimate(rect, climates[i], entry.rect.zone)) return false;
+        if ((climate || entry.rect.sensitive) && climates.some((squares, j) => (!climate || j !== i)
+            && squares.some(square => overlaps(square, rect)))) return false;
+        return !fixed.some(r => overlaps(r, rect)) && !local[district].some(other =>
+            other !== entry && other !== swap && overlaps(other.rect, rect));
+    };
+    const sites = new Map();
+    const sitesFor = entry => {
+        const { w, h } = entry.rect, key = `${entry.district}:${w}:${h}`;
+        if (!sites.has(key)) {
+            const { bounds, reserved } = groups[entry.district], options = [];
+            for (let x = Math.ceil(bounds.x * 2) / 2; x + w <= bounds.x + bounds.w + EPSILON; x += .5)
+                for (let y = Math.ceil(bounds.y * 2) / 2; y + h <= bounds.y + bounds.h + EPSILON; y += .5) {
+                    const spot = { x, y, w, h };
+                    if (!reserved.some(r => overlaps(r, spot)) && !fixed.some(r => overlaps(r, spot)))
+                        options.push({ spot, distance: distance(spot) });
+                }
+            sites.set(key, options.sort((a, b) => a.distance - b.distance));
+        }
+        return sites.get(key);
+    };
+    let cost = layoutTravelCost(result);
+    const tryMove = (entry, next, swap = null) => {
+        const old = { x: entry.rect.x, y: entry.rect.y };
+        const back = swap && { x: swap.rect.x, y: swap.rect.y };
+        if (!valid(entry, next, swap) || (swap && !valid(swap, { ...swap.rect, ...old }, entry))) return false;
+        Object.assign(entry.rect, { x: next.x, y: next.y });
+        if (swap) Object.assign(swap.rect, old);
+        const nextCost = layoutTravelCost(result);
+        if (nextCost < cost - EPSILON && accept(result)) {
+            cost = nextCost;
+            return true;
+        }
+        Object.assign(entry.rect, old);
+        if (swap) Object.assign(swap.rect, back);
+        return false;
+    };
+    const targets = entries.filter(entry => entry.movable && entry.district >= 0 && entry.rect.weight > 0);
+    for (let pass = 0; pass < passes; pass++) {
+        let changed = false;
+        targets.sort((a, b) => b.rect.weight * distance(b.rect) - a.rect.weight * distance(a.rect));
+        for (const entry of targets) {
+            const rect = entry.rect, original = distance(rect), candidates = [];
+            for (const { spot, distance: away } of sitesFor(entry)) {
+                if (away >= original - EPSILON) break;
+                if (!valid(entry, spot)) continue;
+                candidates.push({ spot, saving: (original - away) * rect.weight });
+                if (candidates.length === 4) break;
+            }
+            for (const other of local[entry.district]) {
+                const s = other.rect;
+                if (other === entry || !other.movable || s.w !== rect.w || s.h !== rect.h) continue;
+                const saving = (original - distance(s)) * (rect.weight - (s.weight || 0));
+                if (saving > EPSILON && valid(entry, s, other) && valid(other, rect, entry))
+                    candidates.push({ spot: s, swap: other, saving });
+            }
+            candidates.sort((a, b) => b.saving - a.saving);
+            if (candidates.slice(0, 6).some(({ spot, swap }) => tryMove(entry, spot, swap))) changed = true;
+        }
+        if (!changed) break;
+    }
+    return result;
 }
 
 function storageSites(cells, storage) {

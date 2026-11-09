@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { layOut, layOutHomeland, nearestStorage, layoutCost, refineStorageNeighborhood, seededStorageLayouts } from '../web/layout.js';
+import { layOut, layOutHomeland, nearestStorage, layoutCost, refineDistrictDeliveries,
+    refineStorageNeighborhood, seededStorageLayouts } from '../web/layout.js';
 import { storageUnitLimit } from '../web/facility-config.js';
 
 const cells = [{ x: 0, y: 0, w: 20, h: 15 }, { x: 20, y: 0, w: 20, h: 15 }];
@@ -168,4 +169,34 @@ test('storage can exchange an occupied position with buildings without losing a 
     const rectangles=[...result.storages,...result.pieces.flatMap(p=>p.members)];
     assert.ok(rectangles.every((r,i)=>rectangles.slice(i+1).every(other=>!overlap(r,other))));
     assert.ok(rectangles.every(r=>cells.some(c=>r.x>=c.x&&r.y>=c.y&&r.x+r.w<=c.x+c.w&&r.y+r.h<=c.y+c.h)));
+});
+
+test('district delivery polish swaps compatible climate slots but rejects losing required coverage', () => {
+    const groups = [{ bounds: { x: 0, y: 0, w: 18, h: 12 }, reserved: [] }];
+    const heat = { x: 2, y: 2, w: 1, h: 1 };
+    const cool = { x: 9, y: 2, w: 1, h: 1 };
+    const pearl = { x: 4, y: 5, w: 2, h: 2, weight: 8, facility: 'Tidewhisper Sandcastle', zone: 1 };
+    const layout = (x, zone) => ({
+        storages: [{ x: 12, y: 5, w: 2, h: 2 }],
+        pieces: [{ cluster: true, buildings: [heat, cool], members: [heat, cool, pearl,
+            { x, y: 5, w: 2, h: 2, weight: 2, facility: 'Starfall Hammock', zone }] }],
+    });
+    const useSlots = (x) => ({ canPlace: (_, __, [rect]) => rect.y === 5 && (rect.x === 4 || rect.x === x) });
+    const compatible = layout(6, 1);
+    const swapped = refineDistrictDeliveries(compatible, groups, useSlots(6));
+    assert.deepEqual(swapped.pieces[0].members.slice(2).map(r => r.x), [6, 4]);
+    const incompatible = layout(10, 2);
+    assert.deepEqual(refineDistrictDeliveries(incompatible, groups, useSlots(10)), incompatible);
+});
+
+test('district delivery polish moves distant wells toward final storage and respects the plan guard', () => {
+    const groups = [{ bounds: { x: 0, y: 0, w: 20, h: 12 }, reserved: [] }];
+    const layout = {
+        storages: [{ x: 2, y: 4, w: 2, h: 2 }],
+        pieces: [{ members: [{ x: 14, y: 5, w: 2, h: 2, weight: 4, facility: 'Well' }] }],
+    };
+    assert.deepEqual(refineDistrictDeliveries(layout, groups, { accept: () => false }), layout);
+    const closer = refineDistrictDeliveries(layout, groups);
+    assert.ok(cost(closer) <= cost(layout) * .2);
+    assert.equal(overlap(closer.pieces[0].members[0], layout.storages[0]), false);
 });

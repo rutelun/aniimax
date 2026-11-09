@@ -181,7 +181,8 @@ export async function groupHomelandLayout(pieces, cells, { style, gap = 2, stora
 }
 
 async function tryRangeLayout(pieces, cells, { style, gap, storageCount, poleLimit, saleProducts, recipes, staffing, graph }) {
-    const [{ layOut, layoutTravelCost, refineStorageNeighborhood }, { connectPower, updatePowerConnections }] = await Promise.all([placement, wiring]);
+    const [{ layOut, layoutTravelCost, refineStorageNeighborhood, refineDistrictClimate, refineDistrictDeliveries },
+        { connectPower, updatePowerConnections }] = await Promise.all([placement, wiring]);
     const requiredArea = pieces.reduce((sum, piece) => sum + pieceArea(piece), 0);
     const sales = saleProducts && new Set(saleProducts.map(([facility, item]) => saleKey(facility, item)));
     const purposes = sales ? chainPurposes(pieces.map(piece => piecePurpose(piece, sales)), graph) : null;
@@ -282,24 +283,27 @@ async function tryRangeLayout(pieces, cells, { style, gap, storageCount, poleLim
     const chainBeforeStorage = productionDistance(placedGraph);
     const districtForPiece = placedBeforeStorage.pieces.map(piece => groups.findIndex(({ bounds }) =>
         piece.members.every(member => contains(bounds, member))));
-    const finalLayout = refineStorageNeighborhood(placedBeforeStorage, pieces, groups.flatMap(group => group.buildable), 4, {
+    const buildable = groups.flatMap(group => group.buildable);
+    const canPlace = (i, _, rects) => {
+        const district = districtForPiece[i], owner = zoning.owners[i];
+        return district >= 0 && rects.every(rect => contains(groups[district].bounds, rect)
+            && (owner >= 0 ? !workshops[owner] || contains(workshops[owner], rect)
+                : workshops.every(workshop => !overlaps(workshop, rect))));
+    };
+    const accept = layout => {
+        const graph = productionGraph(layout.pieces, recipes, { includeIdle: true });
+        return alphabetScore(groups, graph).count <= order
+            && productionDistance(graph) <= chainBeforeStorage + 1e-6
+            && productionLinkDistances(graph).every((length, i) => length <= links[i] + Math.max(1, links[i] * .07))
+            && keepsIncome(layout);
+    };
+    const placedStorage = refineStorageNeighborhood(placedBeforeStorage, pieces, buildable, 4, {
         storageCells: groups.map(group => group.bounds),
         canMoveStorage: (layout, index, trial) => canMoveDistrictStorage(layout, index, trial, storageZones),
-        canPlace: (i, _, rects) => {
-            const district = districtForPiece[i], owner = zoning.owners[i];
-            return district >= 0 && rects.every(rect => contains(groups[district].bounds, rect)
-                && (owner >= 0 ? !workshops[owner] || contains(workshops[owner], rect)
-                    : workshops.every(workshop => !overlaps(workshop, rect))));
-        },
-        cost: layoutTravelCost,
-        accept: layout => {
-            const graph = productionGraph(layout.pieces, recipes, { includeIdle: true });
-            return alphabetScore(groups, graph).count <= order
-                && productionDistance(graph) <= chainBeforeStorage + 1e-6
-                && productionLinkDistances(graph).every((length, i) => length <= links[i] + Math.max(1, links[i] * .07))
-                && keepsIncome(layout);
-        },
+        canPlace, cost: layoutTravelCost, accept,
     });
+    const repackedClimate = refineDistrictClimate(placedStorage, pieces, buildable, { canPlace, accept });
+    const finalLayout = refineDistrictDeliveries(repackedClimate, groups, { canPlace, accept });
     const assignedStores = districtStorageIndices(finalLayout.storages, groups);
     const placed = finalLayout.pieces.flatMap(piece => piece.members);
     const labels = groups.map(({ bounds }, group) => {
