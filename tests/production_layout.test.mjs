@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { layoutTravelCost } from '../web/layout.js';
-import { alphabetInversions, chainPurposes, productionDistance, productionGraph, refineProductionPlacement } from '../web/production-layout.js';
+import { alphabetInversions, chainPurposes, productionDistance, productionGraph, productionLinkDistances,
+    refineProductionPlacement } from '../web/production-layout.js';
 
 const piece = (facility, crop, x, y, extra = {}) => ({
     members: [{ facility, crop, x, y, w: 2, h: 2, weight: 10, ...extra }],
@@ -34,4 +35,21 @@ test('a linked mill moves closer and after the stove in English building order w
     assert.ok(result.route <= limit);
     const powered = layout.pieces[1].members[0];
     assert.ok(powered.x + powered.w >= 13.25 && powered.x <= 18.75);
+});
+
+test('a busier consumer cannot pull a shared intermediate far away from its other customer', () => {
+    const layout = { pieces: [mill(), piece('Blazing Stove', 'bread', 17, 1, { weight: 100 }),
+        piece('Simmering Pot', 'dough', 4, 1)], storages: [{ x: 12, y: 9, w: 2, h: 2 }],
+        power: { poles: [], coverage: [] } };
+    const groups = [{ bounds: { x: 0, y: 0, w: 25, h: 15 }, reserved: [] }];
+    const graph = productionGraph(layout.pieces, recipes), [far, near] = productionLinkDistances(graph);
+    const options = { limit: Infinity, maxChain: productionDistance(graph), maxOrder: Infinity,
+        canPlace: index => index === 0 };
+    const unbounded = structuredClone(layout);
+    const unboundedGraph = productionGraph(unbounded.pieces, recipes);
+    refineProductionPlacement(unbounded, groups, unboundedGraph, layoutTravelCost, options);
+    assert.ok(productionLinkDistances(unboundedGraph)[1] > near + 2);
+    const result = refineProductionPlacement(layout, groups, graph, layoutTravelCost, { ...options, maxLinks: [far + 2, near + 2] });
+    assert.ok(result.excess < 1e-6);
+    assert.ok(productionLinkDistances(graph)[1] <= near + 2);
 });

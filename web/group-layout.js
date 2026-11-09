@@ -1,5 +1,6 @@
 // An optional physical layout with a Storage Unit and a clear feature in each group.
-import { alphabetInversions, chainPurposes, productionDistance, productionGraph, refineProductionPlacement } from './production-layout.js?v=chains';
+import { alphabetInversions, chainPurposes, productionDistance, productionGraph, productionLinkDistances,
+    refineProductionPlacement } from './production-layout.js?v=chain-limits';
 
 const load = new URL(import.meta.url).search;
 const placement = import('./layout.js' + load);
@@ -157,14 +158,16 @@ export async function groupHomelandLayout(pieces, cells, { style, gap = 2, stora
     const limit = baseline.route * ROUTE_ALLOWANCE;
     const baselineGraph = productionGraph(baseline.arranged.pieces, recipes);
     const maxChain = productionDistance(baselineGraph), maxOrder = alphabetInversions(baseline.groups, baselineGraph);
+    // Protect individual links too, so a large gain on one chain cannot scatter another.
+    const maxLinks = productionLinkDistances(baselineGraph).map(length => length + Math.max(2, length * .1));
     let best = baseline.arranged, chain = maxChain, order = maxOrder;
     let route = baseline.route;
     for (const candidate of candidates) {
         if (candidate.route > limit + 1e-6) continue;
         const graph = productionGraph(candidate.arranged.pieces, recipes);
         const result = refineProductionPlacement(candidate.arranged, candidate.groups, graph, layoutTravelCost,
-            { limit, maxChain, maxOrder, canPlace: candidate.canPlace });
-        if (result.chain > maxChain + 1e-6 || result.order > maxOrder) continue;
+            { limit, maxChain, maxOrder, maxLinks, canPlace: candidate.canPlace });
+        if (result.chain > maxChain + 1e-6 || result.order > maxOrder || result.excess > 1e-6) continue;
         const betterChain = result.chain < chain - 1e-6;
         const sameChain = Math.abs(result.chain - chain) <= 1e-6;
         if (betterChain || (sameChain && (result.order < order || (result.order === order && result.route < route)))) {

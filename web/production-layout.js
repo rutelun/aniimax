@@ -67,6 +67,14 @@ export function chainPurposes(purposes, { links }) {
 export const productionDistance = ({ links }) => links.reduce((sum, { from, to, weight }) =>
     sum + weight * distance(from.rect, to.rect), 0);
 
+export const productionLinkDistances = ({ links }) => links.map(({ from, to }) => distance(from.rect, to.rect));
+
+function linkExcess(graph, limits) {
+    if (!limits) return 0;
+    if (limits.length !== graph.links.length) return Infinity;
+    return productionLinkDistances(graph).reduce((sum, value, i) => sum + Math.max(0, value - limits[i]), 0);
+}
+
 // Let the eye scan each district in tile rows, then from left to right.
 export function alphabetInversions(groups, { nodes }) {
     return groups.reduce((total, { bounds }) => {
@@ -82,7 +90,7 @@ export function alphabetInversions(groups, { nodes }) {
 
 // Keep a hard route budget. Geometry and the pole positions stay fixed except for
 // ordinary processors moving into free space or exchanging equal-sized sites.
-export function refineProductionPlacement(layout, groups, graph, travelCost, { limit, maxChain, maxOrder, canPlace }) {
+export function refineProductionPlacement(layout, groups, graph, travelCost, { limit, maxChain, maxOrder, maxLinks, canPlace }) {
     const movable = graph.nodes.filter(node => node.label && node.movable);
     const occupied = [...layout.pieces.flatMap(piece => piece.members), ...layout.storages, ...layout.power.poles];
     const zones = layout.power.coverage.filter(zone => zone.connected);
@@ -92,6 +100,7 @@ export function refineProductionPlacement(layout, groups, graph, travelCost, { l
         && (node.rect.electric_level == null || zones.some(zone => overlaps(zone, r, .25 - 1e-6)));
     const position = (r, x, y) => { r.x = x; r.y = y; };
     let chain = productionDistance(graph), order = alphabetInversions(groups, graph), route = travelCost(layout);
+    let excess = linkExcess(graph, maxLinks);
     const epsilon = 1e-6;
     const tryMove = (a, x, y, b, sorting) => {
         const r = a.rect, oldX = r.x, oldY = r.y;
@@ -106,13 +115,16 @@ export function refineProductionPlacement(layout, groups, graph, travelCost, { l
         if (s) position(s, back.x, back.y);
         const nextChain = productionDistance(graph);
         const nextOrder = alphabetInversions(groups, graph);
-        if (sorting ? nextOrder < order && nextChain <= Math.max(chain, maxChain) + epsilon
-            : nextChain < chain - epsilon && nextOrder <= Math.max(order, maxOrder)) {
+        const nextExcess = linkExcess(graph, maxLinks);
+        const improves = sorting ? nextOrder < order && nextChain <= Math.max(chain, maxChain) + epsilon
+            : nextChain < chain - epsilon && nextOrder <= Math.max(order, maxOrder);
+        if (improves && nextExcess <= excess + epsilon) {
             const nextRoute = travelCost(layout);
             if (nextRoute <= limit + epsilon) {
                 chain = nextChain;
                 order = nextOrder;
                 route = nextRoute;
+                excess = nextExcess;
                 return;
             }
         }
@@ -149,5 +161,5 @@ export function refineProductionPlacement(layout, groups, graph, travelCost, { l
             near(b, a, true);
         }
     }
-    return { chain, order, route };
+    return { chain, order, route, excess };
 }
