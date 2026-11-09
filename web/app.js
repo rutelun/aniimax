@@ -13,7 +13,7 @@ import { createShareUrl, readShareHash, urlWithoutShare } from './share-config.j
 import { nearestStorage } from './layout.js?v=storage-power';
 import { ANIIMO_WALK_SPEED, workerTravelDistances } from './worker-travel.js?v=auto-worker-travel';
 import { haulingWorkload, allocateHauling, haulingBatchTrips } from './hauling.js?v=hauling-workload';
-import { changeOneMember, personalityInput, reserveLevelFourInputs, comparePlans, usefulUpgrade, keepBetterComparison } from './opportunity-comparison.js?v=protected-comparisons';
+import { changeOneMember, personalityInput, reserveLevelFourInputs, comparePlans, usefulUpgrade, keepBetterComparison } from './opportunity-comparison.js?v=checked-workload';
 import { comparisonConcurrency, startComparisonQueue } from './comparison-queue.js?v=parallel-comparisons';
 import { prepareOpportunities, startedProcessing, increasedProcessing } from './opportunity-effects.js?v=upgrade-constraints';
 
@@ -1212,12 +1212,10 @@ function homelandPieces(plan, input) {
     });
     const blocks = new Map();
     units.forEach(({ mode, unit }, i) => {
-        const key = unit.partner ? `${unit.building}|${unit.partner.join(',')}|${i}` : `#${i}`;
-        // A pair's zones are one place: gather them under the first zone that names the pair.
-        const pairKey = unit.partner ? [...blocks.keys()].find(k => k.startsWith(`${unit.building}|${unit.partner.join(',')}|`) && !blocks.get(k).parts.some(part => part.zone === unit.zone)) : null;
-        const block = blocks.get(pairKey) || { mode, unit, parts: [] };
+        const key = unit.pairKey ?? `#${i}`;
+        const block = blocks.get(key) || { mode, unit, parts: [] };
         block.parts.push({ zone: unit.zone ?? 0, layout: unit.layout, rows: unit.rows });
-        blocks.set(pairKey || key, block);
+        blocks.set(key, block);
     });
     const placedInBlocks = {};
     // Each is a cluster for `layOut`: its buildings, and the plots they cover, which may go
@@ -1515,6 +1513,33 @@ function drawLayout(drawn) {
     startLayoutSim(on ? diagram.querySelector('.layout-svg') : null, layoutFlows(drawn.layout), stock);
 }
 
+function layoutOptionsFor(plan, homeLevel) {
+    const limit = storageUnitLimit(homeLevel);
+    const storageCount = Math.min(limit, Math.max(0, Math.floor(numberOrDefault(
+        document.getElementById('layout-storage-count').value, limit))));
+    const style = layoutStyle();
+    const groupGap = Math.min(3, Math.max(1, numberOrDefault(document.getElementById('layout-group-gap').value, 2)));
+    const separateSales = style !== 'delivery' && document.getElementById('layout-separate-sales').checked;
+    const saleProducts = separateSales ? (plan.income_streams || [])
+        .filter(stream => stream.item_name && stream.rate_per_second > 1e-9 && stream.sell_value > 0)
+        .map(stream => [stream.facility, stream.item_name]) : null;
+    return {
+        key: `${homeLevel}:${storageCount}:${style}:${groupGap}:${separateSales}`,
+        storageCount, poleLimit: powerPoleLimit(homeLevel), style, groupGap, saleProducts,
+        cells: homelandPlots().filter(p => p.number <= homeLevel).map(({ x, y, w, h }) => ({ x, y, w, h })),
+    };
+}
+
+function rememberLayout(plan, key, layout) {
+    let cached = layoutsByPlan.get(plan);
+    if (!cached) {
+        cached = new Map();
+        layoutsByPlan.set(plan, cached);
+    }
+    if (!cached.has(key) && cached.size >= 4) cached.delete(cached.keys().next().value);
+    cached.set(key, layout);
+}
+
 function renderHomelandLayout(plan) {
     const card = document.getElementById('layout-card');
     if (!plan?.success || !lastPlanInput) {
@@ -1540,29 +1565,18 @@ function renderHomelandLayout(plan) {
     layoutRv.placeholder = String(layoutRv.min);
     if (!isSimpleMode() && layoutRv.value !== '') layoutRv.value = homeLevel;
     const storageLimit = storageUnitLimit(homeLevel);
+    const { key: layoutKey, ...layoutOptions } = layoutOptionsFor(plan, homeLevel);
     const storageInput = document.getElementById('layout-storage-count');
     storageInput.max = storageLimit;
     storageInput.placeholder = String(storageLimit);
-    const storageCount = Math.min(storageLimit, Math.max(0, Math.floor(numberOrDefault(storageInput.value, storageLimit))));
-    if (storageInput.value !== '') storageInput.value = storageCount;
+    if (storageInput.value !== '') storageInput.value = layoutOptions.storageCount;
     document.getElementById('layout-storage-limit').textContent = translate('Maximum at RV {level}: {n}')
         .replace('{level}', homeLevel).replace('{n}', storageLimit);
-    const cells = homelandPlots().filter(p => p.number <= homeLevel);
     if (layoutWorker) layoutWorker.terminate();
     layoutWorker = null;
-    const style = layoutStyle();
-    const groupGap = Math.min(3, Math.max(1, numberOrDefault(document.getElementById('layout-group-gap').value, 2)));
-    const separateSales = style !== 'delivery' && document.getElementById('layout-separate-sales').checked;
-    const layoutKey = `${homeLevel}:${storageCount}:${style}:${groupGap}:${separateSales}`;
-    let cachedLayouts = layoutsByPlan.get(plan);
-    if (!cachedLayouts) {
-        cachedLayouts = new Map();
-        layoutsByPlan.set(plan, cachedLayouts);
-    }
     const applyLayout = layout => {
         if (runId !== layoutRunId) return;
-        if (!cachedLayouts.has(layoutKey) && cachedLayouts.size >= 4) cachedLayouts.delete(cachedLayouts.keys().next().value);
-        cachedLayouts.set(layoutKey, layout);
+        rememberLayout(plan, layoutKey, layout);
         const storages = layout.storages;
         // Buildings carry nothing themselves.
         const members = layout.pieces.flatMap(p => p.members).map(m => ({ ...m, weight: m.weight || 0 }));
@@ -1611,7 +1625,7 @@ function renderHomelandLayout(plan) {
         renderAniimoSummary(plan);
         if (!refineWorkerMovement(layout, plan)) rankImprovementsFor(selectedAniimoSetup());
     };
-    const cached = cachedLayouts.get(layoutKey);
+    const cached = layoutsByPlan.get(plan)?.get(layoutKey);
     if (cached) {
         // Keep the same asynchronous boundary as a worker response while displayPlan renders.
         queueMicrotask(() => applyLayout(cached));
@@ -1632,11 +1646,7 @@ function renderHomelandLayout(plan) {
         setStep('layout', 'fail');
         rankImprovementsFor(selectedAniimoSetup());
     };
-    const saleProducts = separateSales ? (plan.income_streams || [])
-        .filter(stream => stream.item_name && stream.rate_per_second > 1e-9 && stream.sell_value > 0)
-        .map(stream => [stream.facility, stream.item_name]) : null;
-    solver.postMessage({ pieces, cells: cells.map(({ x, y, w, h }) => ({ x, y, w, h })),
-        storageCount, poleLimit: powerPoleLimit(homeLevel), style, groupGap, saleProducts });
+    solver.postMessage({ pieces, ...layoutOptions });
 }
 
 // Stops a layout still being worked out, so it can't land over a newer plan.
@@ -2348,11 +2358,18 @@ async function fillRosterFrom(setup) {
     const status = document.getElementById('roster-fill-status');
     status.textContent = 'Working out the source team…';
     try {
-        const plan = plansBySetup[setup] || JSON.parse(await callWorker('find_plan',
-            JSON.stringify({ ...lastPlanInput, ...aniimoInput(setup) })));
+        const sourceInput = { ...lastPlanInput, ...aniimoInput(setup) };
+        const plan = plansBySetup[setup] || JSON.parse(await callWorker('find_plan', JSON.stringify(sourceInput)));
         if (runId !== planRunId || version !== rosterFillVersion) return;
-        const { kept } = plan.success ? aniimoTeam(plan) : { kept: [] };
-        if (!kept.length) {
+        if (!plan.success) {
+            status.textContent = 'No working team to copy from this plan.';
+            return;
+        }
+        const { kept } = aniimoTeam(plan);
+        const haulingLevel = setup === 'minimum' ? 1 : 3;
+        const haulingBusy = await measureSourceTeamHauling(plan, sourceInput, haulingLevel);
+        if (runId !== planRunId || version !== rosterFillVersion) return;
+        if (!kept.length && haulingBusy <= 1e-6) {
             status.textContent = 'No working team to copy from this plan.';
             return;
         }
@@ -2365,12 +2382,35 @@ async function fillRosterFrom(setup) {
             else cards.set(key, { ...newRosterAniimo({ [g.ability]: g.level }, personalities), count: g.count, family: g.family || null });
         });
         roster = [...cards.values()];
-        if (plan.hauling_busy > 1e-9) roster.push({ ...newRosterAniimo({ Hauling: 3 }), count: Math.ceil(plan.hauling_busy - 1e-6) });
+        if (haulingBusy > 1e-6) roster.push({ ...newRosterAniimo({ Hauling: haulingLevel }), count: Math.ceil(haulingBusy - 1e-6) });
         rosterChanged();
     } catch (error) {
         if (runId === planRunId && version === rosterFillVersion) status.textContent = 'No working team to copy from this plan.';
         console.warn('Could not copy the planned Aniimo team:', error);
     }
+}
+
+async function measureSourceTeamHauling(plan, input, level) {
+    const { key, ...options } = layoutOptionsFor(plan, layoutHomeLevel());
+    let layout = layoutsByPlan.get(plan)?.get(key);
+    if (!layout) {
+        const { pieces } = homelandPieces(plan, input);
+        layout = await new Promise((resolve, reject) => {
+            const solver = new Worker(WORKER_URL.replace('worker.js', 'layout-worker.js'), { type: 'module' });
+            const finish = (error, result) => {
+                clearTimeout(timer);
+                solver.terminate();
+                if (error) reject(error);
+                else resolve(result);
+            };
+            const timer = setTimeout(() => finish(new Error('Could not measure the source team delivery routes')), 30_000);
+            solver.onerror = event => finish(new Error(event.message || 'The layout worker stopped'));
+            solver.onmessage = event => finish(null, event.data);
+            solver.postMessage({ pieces, ...options });
+        });
+        rememberLayout(plan, key, layout);
+    }
+    return haulingWorkload(layout, plan.coin_items || [], haulingRouteBound(), recipeIndex).busyByLevel[level];
 }
 
 function attachRosterHandlers() {
@@ -2469,7 +2509,8 @@ function rosterWorkload(plan) {
             if (!where[member].has(place)) where[member].set(place, 1);
         });
     });
-    return { members, busy, walking, where };
+    const checked = plan.roster_workload;
+    return { members, busy: checked?.length ? members.map((_, i) => checked[i] ?? 0) : busy, walking, where };
 }
 
 function renderRosterSummary(plan) {
@@ -2480,10 +2521,7 @@ function renderRosterSummary(plan) {
         where[member].set(translate('Hauling to Storage Units ({minutes} min/h)').replace('{minutes}', (share * 60).toFixed(1)), 1);
     });
     const have = roster.reduce((sum, a) => sum + a.count, 0);
-    const assigned = members.map((a, i) => {
-        const needed = Math.max(where[i].size > 0 ? 1 : 0, Math.ceil(busy[i] - 1e-6));
-        return Math.min(a.count, needed);
-    });
+    const assigned = busy.map(load => Math.max(0, Math.ceil(load - 1e-6)));
     const working = assigned.slice(0, roster.length).reduce((sum, n) => sum + n, 0);
     const reserves = assigned.slice(roster.length).reduce((sum, n) => sum + n, 0);
     const rows = members.map((aniimo, i) => {
@@ -2502,10 +2540,17 @@ function renderRosterSummary(plan) {
     }).join('');
     const summary = document.getElementById('roster-summary');
     const reserveNote = reserves > 0 ? `<p class="hint small">Additional Aniimo needed for this plan: ${reserves}</p>` : '';
+    const total = working + reserves;
+    const cap = ANIIMO_MAX[layoutHomeLevel() - 1];
+    const totalNote = translate('This plan needs {n} Aniimo including reserves.').replace('{n}', formatNumber(total));
+    const capNote = cap && total > cap ? `<p class="hint small">${translate('This RV level can host {n} Aniimo.').replace('{n}', cap)}</p>` : '';
     summary.innerHTML = rows
         ? `<h3>Aniimo assignments</h3>
            <p class="hint small">${working} of your ${have} Aniimo have work in this plan.</p>
            ${reserveNote}
+           <p class="hint small">${totalNote}</p>
+           ${capNote}
+           <p class="hint small">${translate('A workload of 1.000 means one full-time Aniimo. Dedicated posts count as full shifts.')}</p>
            ${plan.hauling_busy != null ? `<p class="hint small">${translate(HAULING_ESTIMATE_HINT)}</p>` : ''}
            ${workerTravelEnabled() ? '' : `<p class="hint small">${translate('Worker travel is off: workload excludes travel between work buildings. Delivery routes are included.')}</p>`}
            <table class="aniimo-table roster-assignment-table"><thead><tr><th>Aniimo</th><th>Assigned</th><th>In roster</th><th>Busy on average</th><th>Where</th></tr></thead><tbody>${rows}</tbody></table>`
@@ -3748,7 +3793,7 @@ function aniimoTeam(plan) {
                 groups.set(key, { label: key, ability: task.ability, level: task.level, bonus: task.personality_bonus, personality, family, busy: 0, where: new Map(), jobs: new Map() });
             }
             const g = groups.get(key);
-            g.busy += task.busy;
+            g.busy += RESIDENT_FACILITIES.has(step.facility) ? step.facility_count : task.busy;
             // A growing job reads as the job itself, however many crops it covers.
             if ((task.jobs || []).length) {
                 // Where a job happens matters: reaping is Farmland's, logging Woodland's.
@@ -3780,15 +3825,15 @@ function aniimoTeam(plan) {
     const pairUnits = new Map();
     (plan.environment_assignments || []).forEach(a => {
         if (a.partner) {
-            const key = `${a.building}|${a.partner[0]}`;
+            const key = environmentPairKey(a);
             const seen = pairUnits.get(key);
-            pairUnits.set(key, { units: Math.max(seen ? seen.units : 0, a.units), modes: a.pair_modes || [a.mode, a.mode] });
+            pairUnits.set(key, { building: a.building, partner: a.partner[0],
+                units: Math.max(seen?.units ?? 0, a.units), modes: a.pair_modes || [a.mode, a.mode] });
             return;
         }
         needsAniimo(a.building, a.units, `${a.building} (${a.mode})`);
     });
-    pairUnits.forEach(({ units, modes }, key) => {
-        const [building, partner] = key.split('|');
+    pairUnits.forEach(({ building, partner, units, modes }) => {
         needsAniimo(building, units, `${building} (${modes[0]})`);
         needsAniimo(partner, units, `${partner} (${modes[1]})`);
     });
@@ -3843,7 +3888,8 @@ function renderAniimoSummary(plan) {
     const container = document.getElementById('aniimo-summary');
     const collapsedSummary = document.getElementById('aniimo-collapsed-summary');
     const { kept, total: assigned } = aniimoTeam(plan);
-    if (!kept.length) {
+    const haulingCount = Math.max(0, Math.ceil((plan.hauling_busy || 0) - 1e-6));
+    if (!kept.length && !haulingCount) {
         container.innerHTML = '<p class="hint">Nothing in this plan needs an Aniimo.</p>';
         collapsedSummary.textContent = 'No Aniimo needed.';
         const count = document.getElementById('aniimo-count');
@@ -3861,8 +3907,8 @@ function renderAniimoSummary(plan) {
             return `<tr><td data-label="Aniimo">${abilityTag(g.ability)} ${aniimoNeeds(g)}</td><td data-label="How many">${g.count}</td><td data-label="Busy on average">${g.busy.toFixed(1)}</td><td data-label="Where">${where}</td></tr>`;
         })
         .join('');
-    const haulingCount = Math.max(0, Math.ceil((plan.hauling_busy || 0) - 1e-6));
-    const haulingRow = haulingCount ? `<tr><td data-label="Aniimo">${abilityTag('Hauling')} any level</td><td data-label="How many">${haulingCount}</td><td data-label="Busy on average">${plan.hauling_busy.toFixed(3)}</td><td data-label="Where">${translate('Hauling to Storage Units ({minutes} min/h)').replace('{minutes}', (plan.hauling_busy * 60).toFixed(1))}</td></tr>` : '';
+    const haulingLevel = selectedSetupTab() === 'minimum' ? 1 : 3;
+    const haulingRow = haulingCount ? `<tr><td data-label="Aniimo">${abilityTag('Hauling')} Lv.${haulingLevel}</td><td data-label="How many">${haulingCount}</td><td data-label="Busy on average">${plan.hauling_busy.toFixed(3)}</td><td data-label="Where">${translate('Hauling to Storage Units ({minutes} min/h)').replace('{minutes}', (plan.hauling_busy * 60).toFixed(1))}</td></tr>` : '';
 
     // The count above says how many; this is only said when it's more than the homeland holds.
     const cap = homelandHolds;
@@ -3936,15 +3982,21 @@ function renderAniimoSummary(plan) {
 // a single row across units when its count exceeds one unit's remaining capacity; the exact
 // split is arbitrary (any unit can host any plot of the crops sharing its mode), only the
 // per-unit totals (and the diagram's exact positions) are load-bearing.
+function environmentPairKey(assignment) {
+    return assignment.pair_id != null ? `pair:${assignment.pair_id}`
+        : JSON.stringify([assignment.building, assignment.partner, assignment.pair_modes]);
+}
+
 function splitByEnvironmentUnit(rows, assignmentsForMode) {
     const units = [];
     assignmentsForMode.forEach(a => {
-        (a.layouts || []).forEach(layout => {
+        (a.layouts || []).forEach((layout, i) => {
             const remaining = {};
             layout.forEach(p => {
                 remaining[p.facility] = (remaining[p.facility] || 0) + 1;
             });
-            units.push({ building: a.building, remaining, rows: [], layout, partner: a.partner || null, zone: a.zone ?? null, pairModes: a.pair_modes || null });
+            units.push({ building: a.building, remaining, rows: [], layout, partner: a.partner || null, zone: a.zone ?? null,
+                pairModes: a.pair_modes || null, pairKey: a.partner ? `${environmentPairKey(a)}:${i}` : null });
         });
     });
 
@@ -4302,7 +4354,7 @@ function renderFacilityPlan(plan) {
                 singles.push({ mode, unit });
                 return;
             }
-            const key = `${unit.building}|${unit.partner[0]}|${unit.partner[1]},${unit.partner[2]}`;
+            const key = unit.pairKey;
             if (!pairs.has(key)) pairs.set(key, { unit, zones: [] });
             pairs.get(key).zones.push({ mode, layout: unit.layout, rows: unit.rows, zone: unit.zone });
         });

@@ -998,5 +998,8 @@
   "{n} storage groups with {gap}-tile gaps.",
   "Grouped maps need at least one Storage Unit. Showing the delivery layout.",
   "The grouped map could not fit every facility and connect the grid. Showing the delivery layout.",
-  "Separate sale and support groups did not fit. Showing mixed groups."
+  "Separate sale and support groups did not fit. Showing mixed groups.",
+  "This plan needs {n} Aniimo including reserves.",
+  "This RV level can host {n} Aniimo.",
+  "A workload of 1.000 means one full-time Aniimo. Dedicated posts count as full shifts."
 ]

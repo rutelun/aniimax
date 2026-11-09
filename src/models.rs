@@ -1049,6 +1049,8 @@ pub struct EnvironmentAssignment {
     /// What each of the pair is set to, e.g. `("Scorching", "Cool")`, so both coverage squares can
     /// be drawn in their own colours.
     pub pair_modes: Option<(String, String)>,
+    /// Identifies which zones describe the same physical group of building pairs.
+    pub pair_id: Option<usize>,
 }
 
 /// The provably-optimal simultaneous use of every owned facility for one target, a currency

@@ -890,12 +890,20 @@ fn crew_staffs_environment_buildings() {
     let farmer: &[(&str, u32)] = &[("Earth", 1), ("Grass", 1), ("Dark", 1)];
     let (without, _) = solve_with_crew(&counts, crew_of(&[(1, farmer)]));
     assert!(without.environment.is_empty() && without.staffing.is_empty(), "no one to staff it: {:?}", without.environment);
-    let (with, _) = solve_with_crew(&counts, crew_of(&[(1, farmer), (1, &[("Fire", 1)])]));
+    let crew = crew_of(&[(1, farmer), (1, &[("Fire", 1)])]);
+    let (with, items) = solve_with_crew(&counts, crew.clone());
     assert_eq!(with.environment.iter().map(|e| e.count).sum::<u32>(), 1);
     assert_eq!(with.staffing.len(), 1);
     assert_eq!(with.staffing[0].1, 1, "staffed by the Fire Aniimo");
     assert!((with.staffing[0].2 - 1.0).abs() < 1e-9);
     assert!(with.rate_per_second > without.rate_per_second);
+    let mut half_shifts = with.clone();
+    half_shifts.staffing = vec![("Heat Furnace".into(), 1, 0.5), ("Heat Furnace".into(), 1, 0.5)];
+    let mut staffed_counts = counts.clone();
+    staffed_counts.set_crew(crew);
+    staffed_counts.set_grower_steps(aniimax::data::load_grower_steps(Path::new("data")).unwrap());
+    let error = check_plan(&half_shifts, &items, "coins", &staffed_counts, &ModuleLevels::default(), None).unwrap_err();
+    assert!(error.contains("requires whole dedicated Aniimo"), "{error}");
 }
 
 // Nobody to sow or reap: no crop can be grown at all.
@@ -1246,7 +1254,8 @@ fn hauling_shares_the_couriers_production_time_and_is_checked() {
     let free = solve_exact(&items, "coins", &counts, &modules, Goal::Earn { floors: &[] }, None, None).unwrap();
     counts.set_hauling(0.0, [("Mine|courier_output".into(), 10.0)].into());
     let delivered = solve_exact(&items, "coins", &counts, &modules, Goal::Earn { floors: &[] }, None, None).unwrap();
-    check_plan(&delivered, &items, "coins", &counts, &modules, None).unwrap();
+    let (_, workload) = aniimax::exact::check_plan_with_workload(&delivered, &items, "coins", &counts, &modules, None).unwrap();
+    assert!((workload[0] - 0.5).abs() < 1e-6);
     assert!((delivered.rate_per_second - free.rate_per_second / 2.0).abs() < 1e-6);
     assert!((delivered.hauling_staffing[0].1 - 0.5).abs() < 1e-6);
     let mut invalid = delivered.clone(); invalid.hauling_staffing.clear();

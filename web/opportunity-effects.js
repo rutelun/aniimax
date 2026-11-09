@@ -1,4 +1,4 @@
-import {availableRecipes} from './opportunity-comparison.js?v=protected-comparisons';
+import {availableRecipes} from './opportunity-comparison.js?v=checked-workload';
 
 const count = tiers => (tiers || []).reduce((n,t)=>n+t.count,0);
 const capacity = (input,recipe) => (input.facilities?.[recipe.facility] || [])

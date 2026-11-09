@@ -61,12 +61,16 @@ export function workerUsage(plan, input) {
         if (member != null && Number.isFinite(share) && share > 0) busy.set(member, (busy.get(member) || 0) + share);
     };
     const residents = new Set(input.roster.residents || []);
-    for (const step of plan.coin_items || []) if (step.status === 'producing') {
-        add(step.crew, residents.has(step.facility) ? step.facility_count : step.busy_units ?? step.facility_count);
+    if (plan.roster_workload?.length) {
+        plan.roster_workload.forEach((share, member) => add(member, share));
+    } else {
+        for (const step of plan.coin_items || []) if (step.status === 'producing') {
+            add(step.crew, residents.has(step.facility) ? step.facility_count : step.busy_units ?? step.facility_count);
+        }
+        for (const [, member, share] of plan.staffing || []) add(member, share);
+        for (const [, , member, share] of plan.crop_assignments || []) add(member, share);
+        for (const [member, travel, idle] of plan.movement_staffing || []) add(member, travel + idle);
     }
-    for (const [, member, share] of plan.staffing || []) add(member, share);
-    for (const [, , member, share] of plan.crop_assignments || []) add(member, share);
-    for (const [member, travel, idle] of plan.movement_staffing || []) add(member, travel + idle);
     for (const [member, share] of plan.delivery_assignments || plan.hauling_staffing || []) add(member, share);
     const heads = n => Math.max(0, Math.ceil(n - 1e-6));
     return { busy, working: [...busy.values()].reduce((n, b) => n + heads(b), 0),

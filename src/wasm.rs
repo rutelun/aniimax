@@ -1168,6 +1168,8 @@ pub struct JsEnvironmentAssignment {
     /// What each of the pair is set to, e.g. `("Scorching", "Cool")`.
     #[serde(default)]
     pub pair_modes: Option<(String, String)>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pair_id: Option<usize>,
 }
 
 impl From<crate::models::EnvironmentAssignment> for JsEnvironmentAssignment {
@@ -1179,6 +1181,7 @@ impl From<crate::models::EnvironmentAssignment> for JsEnvironmentAssignment {
             partner: a.partner,
             zone: a.zone,
             pair_modes: a.pair_modes,
+            pair_id: a.pair_id,
             covered: a
                 .covered
                 .into_iter()
@@ -1202,6 +1205,7 @@ impl From<JsEnvironmentAssignment> for crate::models::EnvironmentAssignment {
             partner: a.partner,
             zone: a.zone,
             pair_modes: a.pair_modes,
+            pair_id: a.pair_id,
             covered: a.covered.into_iter().map(|c| (c.facility, c.count)).collect(),
             layouts: a
                 .layouts
@@ -1278,6 +1282,9 @@ pub struct JsProductionPlan {
     pub movement_staffing: Vec<(usize, f64, f64)>,
     #[serde(default)]
     pub hauling_staffing: Vec<(usize, f64)>,
+    /// Independently checked days of non-delivery work per roster pool.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub roster_workload: Vec<f64>,
     /// Item, facility, member, visits/hour, whether this is crop work.
     #[serde(default)]
     pub mobile_work: Vec<(String, String, usize, f64, bool)>,
@@ -1351,6 +1358,7 @@ fn empty_production_plan(success: bool, error: Option<String>) -> JsProductionPl
         crop_assignments: Vec::new(),
         movement_staffing: Vec::new(),
         hauling_staffing: Vec::new(),
+        roster_workload: Vec::new(),
         mobile_work: Vec::new(),
     }
 }
@@ -1674,12 +1682,13 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
     }
     // Independent re-check of every limit before trusting the plan; the caller falls back to the
     // heuristic planner if this ever fails.
-    if let Err(problem) =
-        crate::exact::check_plan(&exact, &prepared.items, &currency, &prepared.facility_counts, &prepared.module_levels, level_up)
-    {
-        return serde_json::to_string(&empty_production_plan(false, Some(format!("Exact plan failed its check: {problem}"))))
-            .unwrap_or_default();
-    }
+    let (_, roster_workload) = match crate::exact::check_plan_with_workload(
+        &exact, &prepared.items, &currency, &prepared.facility_counts, &prepared.module_levels, level_up,
+    ) {
+        Ok(checked) => checked,
+        Err(problem) => return serde_json::to_string(&empty_production_plan(false, Some(format!("Exact plan failed its check: {problem}"))))
+            .unwrap_or_default(),
+    };
     let proof = (exact.proven_optimal, exact.upper_bound);
     let report_at = |target, seconds| {
         let net = crate::exact::net_rates(&exact, &prepared.items);
@@ -1701,6 +1710,7 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
     js.crop_assignments = exact.crop_staffing.clone();
     js.movement_staffing = exact.movement_staffing.clone();
     js.hauling_staffing = exact.hauling_staffing.clone();
+    js.roster_workload = roster_workload;
     js.mobile_work = exact.work_routes.iter().filter(|route| route.mobile).filter_map(|route| {
         let item = prepared.items.iter().find(|item| item.name == route.recipe)?;
         let visits = route.crop.as_ref().map_or(1, |(ability, level)| prepared.grower_steps.get(&item.name).iter()
@@ -2009,6 +2019,7 @@ impl PreparedInput {
             crop_assignments: Vec::new(),
             movement_staffing: Vec::new(),
             hauling_staffing: Vec::new(),
+            roster_workload: Vec::new(),
             mobile_work: Vec::new(),
         }
     }

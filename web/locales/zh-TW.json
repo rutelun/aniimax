@@ -1017,5 +1017,8 @@
   "{n} storage groups with {gap}-tile gaps.": "共有 {n} 個倉庫群組，間距為 {gap} 格。",
   "Grouped maps need at least one Storage Unit. Showing the delivery layout.": "群組地圖至少需要一座倉庫。現顯示運送配置。",
   "The grouped map could not fit every facility and connect the grid. Showing the delivery layout.": "群組地圖無法容納所有設施並接通電網。現顯示運送配置。",
-  "Separate sale and support groups did not fit. Showing mixed groups.": "空間不足以分開出售區和支援區。現顯示混合群組。"
+  "Separate sale and support groups did not fit. Showing mixed groups.": "空間不足以分開出售區和支援區。現顯示混合群組。",
+  "This plan needs {n} Aniimo including reserves.": "所需阿尼莫總數（含預估補員）為 {n}。",
+  "This RV level can host {n} Aniimo.": "此露營車等級可容納 {n} 隻阿尼莫。",
+  "A workload of 1.000 means one full-time Aniimo. Dedicated posts count as full shifts.": "工作量 1.000 相當於一隻全職阿尼莫。固定崗位計為完整班次。"
 }

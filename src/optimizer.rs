@@ -4323,6 +4323,7 @@ pub fn find_production_plan_with_progress(
                 partner: None,
                 zone: None,
                 pair_modes: None,
+                pair_id: None,
             }
         })
         .collect();

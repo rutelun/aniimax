@@ -990,15 +990,19 @@ fn build_model<'a>(
             let ability = if building == GENERATOR { Some("Lightning") } else { crew.environment.get(&building).map(String::as_str) };
             let Some(ability) = ability else { continue };
             let mut staffed: Vec<(usize, f64)> = used.into_iter().map(|(v, n)| (v, -n)).collect();
-            for (member, aniimo) in crew.members.iter().enumerate() {
-                if !crew.can_work(member, ability, 1) {
-                    continue;
-                }
-                let staff = model.add(0.0, (0.0, aniimo.count as f64), building == GENERATOR, VarKind::Staff { building: building.clone(), member });
+            let mut eligible = crew.members.iter().enumerate()
+                .filter(|(member, _)| crew.can_work(*member, ability, 1)).peekable();
+            while let Some((member, aniimo)) = eligible.next() {
+                let maximum = if building == GENERATOR { aniimo.count }
+                    else { aniimo.count.min(facility_counts.get_count(&building)) };
+                // The last climate pool's count is fixed to an integer by the equality:
+                // the buildings and every other pool's dedicated assignments are whole.
+                let integer = building == GENERATOR || eligible.peek().is_some();
+                let staff = model.add(0.0, (0.0, maximum as f64), integer, VarKind::Staff { building: building.clone(), member });
                 staffed.push((staff, 1.0));
                 busy[member].push((staff, 1.0));
             }
-            model.constrain(staffed, ComparisonOp::Ge, 0.0);
+            model.constrain(staffed, ComparisonOp::Eq, 0.0);
         }
         let team_limit = facility_counts.power().and_then(|power| power.grid.max_aniimo.map(|n| (power, n)));
         if facility_counts.movement_seconds() > 0.0 {
@@ -1579,6 +1583,20 @@ pub fn check_plan(
     module_levels: &ModuleLevels,
     level_up: Option<&LevelUp>,
 ) -> Result<f64, String> {
+    check_plan_with_workload(plan, items, currency, facility_counts, module_levels, level_up)
+        .map(|(earned, _)| earned)
+}
+
+/// Also return each roster pool's checked workload before delivery. The map can
+/// then add its measured courier assignments without re-counting presentation rows.
+pub fn check_plan_with_workload(
+    plan: &ExactPlan,
+    items: &[ProductionItem],
+    currency: &str,
+    facility_counts: &FacilityCounts,
+    module_levels: &ModuleLevels,
+    level_up: Option<&LevelUp>,
+) -> Result<(f64, Vec<f64>), String> {
     const TOLERANCE: f64 = 1e-6;
     let all: HashMap<&str, &ProductionItem> = items.iter().map(|i| (i.name.as_str(), i)).collect();
     let mut earned = 0.0;
@@ -1728,6 +1746,7 @@ pub fn check_plan(
     }
     // With the player's own Aniimo: no member works more than its day, and every environment
     // building set up has a member with its ability on it all day.
+    let mut roster_workload = Vec::new();
     if let Some(crew) = facility_counts.crew() {
         let mut busy = vec![0.0; crew.members.len()];
         for (name, &rate) in &plan.recipe_rates {
@@ -1749,14 +1768,21 @@ pub fn check_plan(
             if !crew.can_work(*member, ability, 1) {
                 return Err(format!("{building} staffed by roster member {member}, who can't do the {ability} job"));
             }
+            if !share.is_finite() || *share < 0.0 || (share - share.round()).abs() > TOLERANCE {
+                return Err(format!("{building} requires whole dedicated Aniimo"));
+            }
             busy[*member] += share;
             *staffed.entry(building.as_str()).or_default() += share;
         }
         for (&building, &used) in &buildings_used {
+            if !crew.environment.contains_key(building) { continue; }
             let have = staffed.get(building).copied().unwrap_or(0.0);
-            if used as f64 > have + TOLERANCE {
-                return Err(format!("{used} {building} set up but only {have} staffed"));
+            if (used as f64 - have).abs() > TOLERANCE {
+                return Err(format!("{used} {building} set up but {have} staffed"));
             }
+        }
+        if staffed.iter().any(|(&building, &used)| building != GENERATOR && used > TOLERANCE && !buildings_used.contains_key(building)) {
+            return Err("workers assigned to a climate building that is not in use".into());
         }
         if staffed.get(GENERATOR).copied().unwrap_or(0.0) + TOLERANCE < required_generators as f64 {
             return Err(format!("{required_generators} Lightning Aniimo required for power"));
@@ -1779,6 +1805,7 @@ pub fn check_plan(
             }
         }
         if facility_counts.movement_seconds() > 0.0 { check_movement(plan, &all, facility_counts, &mut busy)?; }
+        roster_workload = busy.clone();
         let mut delivered = BTreeMap::<&str, f64>::new();
         let mut haul_busy = BTreeMap::<usize, f64>::new();
         for (name, member, rate) in &plan.hauling_routes {
@@ -1831,7 +1858,7 @@ pub fn check_plan(
     if (earned - plan.rate_per_second).abs() > 1e-6 * earned.abs().max(1.0) {
         return Err(format!("plan says {} but its sales and costs add up to {earned}", plan.rate_per_second));
     }
-    Ok(earned)
+    Ok((earned, roster_workload))
 }
 
 /// A model written out for an external solver.
@@ -2504,7 +2531,7 @@ fn production_plan(
     // draw both buildings. Worked out before the buildings standing on their own, so the plots
     // they cover are taken off what those still have to cover.
     let mut pair_assignments: Vec<EnvironmentAssignment> = Vec::new();
-    for pair in &exact.pairs {
+    for (pair_id, pair) in exact.pairs.iter().enumerate() {
         // Only what the plan actually grows: a zone whose plots went unused isn't worth drawing,
         // and a pair with nothing in the zone they share is really two separate buildings.
         let used: [Vec<(String, u32)>; 3] = std::array::from_fn(|zone| {
@@ -2586,6 +2613,7 @@ fn production_plan(
                     partner: None,
                     zone: None,
                     pair_modes: None,
+                    pair_id: None,
                 });
             }
             continue;
@@ -2607,6 +2635,7 @@ fn production_plan(
                 partner: Some((pair.buildings.1.clone(), pair.offset.dx, pair.offset.dy)),
                 zone: Some(zone as u8),
                 pair_modes: Some((pair.modes.0.clone(), pair.modes.1.clone())),
+                pair_id: Some(pair_id),
             });
         }
     }
@@ -2674,6 +2703,7 @@ fn production_plan(
                 partner: None,
                 zone: None,
                 pair_modes: None,
+                pair_id: None,
             }
         })
         .filter(|a| !a.covered.is_empty())

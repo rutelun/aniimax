@@ -13,6 +13,16 @@ const plan = (coins=10,wood=2) => ({success:true,proven_optimal:true,rate_per_se
     comparison_scores:{crop_variety:26,material_pace:.3,material_work:3},
     level_up_preview:{seconds:1_000,requirements:[{name:'standard_planks',per_second:.1}]},coin_items:[]});
 
+test('comparison totals use checked shifts and add the actual courier work once', () => {
+    const checked = { roster_workload: [1.9, .2], coin_items: [{ status: 'producing', crew: 0, busy_units: .1 }],
+        staffing: [['Cooling Unit', 0, 1]], hauling_staffing: [[0, .01]],
+        delivery_assignments: [[0, .2]] };
+    const usage = workerUsage(checked, input());
+    assert.equal(usage.working, 4);
+    assert.equal(usage.additional, 1);
+    assert.ok(Math.abs(usage.hours - 55.2) < 1e-9);
+});
+
 test('only one copy is trained, preserving its family, other ability and original input', () => {
     const original=input(), saved=structuredClone(original);
     const changed=changeOneMember(original,0,{abilities:{Artisanship:4,Water:3}});
