@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Aniimax - Aniimo Production Optimizer</title>
-    <link rel="stylesheet" href="style.css?v=fast-opportunities">
+    <link rel="stylesheet" href="style.css?v=storage-groups">
     <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
 </head>
 <body>
@@ -328,6 +328,26 @@
                             <p>Storage Units share the Home warehouse. The animation shows deliveries to the nearest unit and recipes waiting for ingredients. Carrying time is illustrative. The layout is a heuristic arrangement.</p>
                             <p>⚡ marks E-mode buildings. Yellow lines show the power grid; G marks a generator and numbered bolts mark poles. Generator coverage is 11×11 tiles and pole coverage is 7×7. Red badges mean a connection was not found. Pole placement follows the RV limit.</p>
                         </details>
+                        <div class="layout-arrangement">
+                            <div class="input-field">
+                                <label for="layout-style">Map style</label>
+                                <select id="layout-style">
+                                    <option value="delivery">Shortest deliveries</option>
+                                    <option value="courtyards">Courtyards</option>
+                                    <option value="avenues">Avenues</option>
+                                </select>
+                            </div>
+                            <div class="input-field" id="layout-group-spacing" hidden>
+                                <label for="layout-group-gap">Space between groups</label>
+                                <select id="layout-group-gap">
+                                    <option value="1">1 tile</option>
+                                    <option value="2" selected>2 tiles</option>
+                                    <option value="3">3 tiles</option>
+                                </select>
+                            </div>
+                            <label id="layout-purpose-option" hidden><input type="checkbox" id="layout-separate-sales" checked> Separate sale production</label>
+                        </div>
+                        <p class="hint small" id="layout-group-hint" hidden>Hatched tiles are reserved for paths and decoration. Buildings and power poles leave this space clear.</p>
                         <div class="layout-controls">
                             <div class="input-field layout-storage-config" hidden>
                                 <label for="layout-rv-level">Layout RV level</label>
@@ -346,6 +366,7 @@
                             <span class="layout-sim" id="layout-sim" hidden><span id="layout-clock">0h 00m</span><button type="button" class="toggle-button small" id="layout-replay">Replay</button></span>
                         </div>
                         <p class="hint layout-zoom-hint">Hold Ctrl and scroll over the layout to zoom. Drag to move around while zoomed; double-click to zoom back out.</p>
+                        <ul class="layout-group-legend" id="layout-group-legend" aria-label="Storage groups" hidden></ul>
                         <div class="layout-diagram" id="layout-diagram"></div>
                     </div>
 
@@ -595,6 +616,6 @@
             }
         });
     </script>
-    <script type="module" src="app.js?v=bounded-priorities"></script>
+    <script type="module" src="app.js?v=storage-groups"></script>
 </body>
 </html>

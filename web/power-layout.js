@@ -48,7 +48,7 @@ export function updatePowerConnections(layout) {
     return layout;
 }
 
-export function connectPower(layout, cells, maximum, repack = true) {
+export function connectPower(layout, cells, maximum, repack = true, canRelocate = null) {
     const members = layout.pieces.flatMap(p => p.members);
     const generators = members.filter(m => m.generator);
     const consumers = members.filter(m => m.electric_level != null);
@@ -61,6 +61,7 @@ export function connectPower(layout, cells, maximum, repack = true) {
         for (const cell of destinations.length ? cells : []) {
             for (let y = cell.y; y < cell.y + cell.h; y += 0.5) for (let x = cell.x; x < cell.x + cell.w; x += 0.5) {
                 const r = { x, y, w: generator.w, h: generator.h };
+                if (canRelocate && !canRelocate(generator, r)) continue;
                 const area = cells.reduce((sum, c) => sum + Math.max(0, Math.min(x + r.w, c.x + c.w) - Math.max(x, c.x))
                     * Math.max(0, Math.min(y + r.h, c.y + c.h) - Math.max(y, c.y)), 0);
                 if (area < r.w * r.h - EPS || obstacles.some(o => overlap(r, o, EPS * 2))) continue;
@@ -160,6 +161,7 @@ export function connectPower(layout, cells, maximum, repack = true) {
                 let spot = null;
                 for (const cell of cells) for (let y = cell.y; y < cell.y + cell.h; y += 0.5) for (let x = cell.x; x < cell.x + cell.w; x += 0.5) {
                     const r = { x, y, w: m.w, h: m.h };
+                    if (canRelocate && !canRelocate(m, r)) continue;
                     const c = center(r);
                     const cost = (c.x - anchor.x) ** 2 + (c.y - anchor.y) ** 2;
                     if (spot && cost >= spot.cost) continue;
@@ -172,7 +174,7 @@ export function connectPower(layout, cells, maximum, repack = true) {
                 m.x = spot.x; m.y = spot.y; occupied.push(m);
             }
             if (!fits) continue;
-            connectPower(trial, cells, maximum, false);
+            connectPower(trial, cells, maximum, false, canRelocate);
             if (trial.power.disconnected < best.power.disconnected || (trial.power.disconnected === best.power.disconnected
                 && trial.power.poles.length < best.power.poles.length)) best = trial;
             if (!best.power.disconnected) break;

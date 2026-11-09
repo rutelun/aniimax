@@ -424,6 +424,7 @@ function getPersistedFieldIds() {
         'ecological-module-level', 'kitchen-module-level',
         'resource-detector-level', 'crafting-module-level',
         'rate-unit', 'season-on', 'season-event', 'layout-sim-on', 'layout-recipes', 'layout-storage-count', 'layout-rv-level',
+        'layout-style', 'layout-group-gap', 'layout-separate-sales',
         'aniimo-best', 'aniimo-minimum', 'aniimo-custom', 'worker-travel-on'
     ];
 }
@@ -1362,7 +1363,32 @@ function layoutHomeLevel() {
         Math.floor(numberOrDefault(document.getElementById('layout-rv-level').value, minimum))));
 }
 
+function layoutStyle() {
+    const value = document.getElementById('layout-style').value;
+    return value === 'courtyards' || value === 'avenues' ? value : 'delivery';
+}
+
+function groupPurposeName(purpose) {
+    return { sales: 'For sale', support: 'Supply and support', rv: 'RV upgrade and support', mixed: 'Mixed production' }[purpose];
+}
+
+function updateLayoutStyleControls() {
+    const grouped = layoutStyle() !== 'delivery';
+    document.getElementById('layout-group-spacing').hidden = !grouped;
+    document.getElementById('layout-purpose-option').hidden = !grouped;
+    document.getElementById('layout-group-hint').hidden = !grouped;
+}
+
 function attachLayoutHandlers() {
+    ['layout-style', 'layout-group-gap', 'layout-separate-sales'].forEach(id => document.getElementById(id).addEventListener('change', () => {
+        updateLayoutStyleControls();
+        if (!lastPlan?.success) return;
+        stopRanking();
+        delete rankingsBySetup[selectedAniimoSetup()];
+        travelRefinements = 0;
+        haulingRefinements = 0;
+        renderHomelandLayout(lastPlan);
+    }));
     ['layout-storage-count', 'layout-rv-level'].forEach(id => document.getElementById(id).addEventListener('input', () => {
         clearTimeout(layoutStorageTimer);
         layoutStorageTimer = setTimeout(() => {
@@ -1503,6 +1529,8 @@ function renderHomelandLayout(plan) {
     card.style.display = 'block';
     document.getElementById('layout-summary').textContent = 'Laying out…';
     document.getElementById('layout-diagram').innerHTML = '';
+    document.getElementById('layout-group-legend').hidden = true;
+    updateLayoutStyleControls();
     // Worked out in a worker of its own: a large homeland takes a few seconds.
     const { pieces, unplaced } = homelandPieces(plan, lastPlanInput);
     const homeLevel = layoutHomeLevel();
@@ -1522,10 +1550,19 @@ function renderHomelandLayout(plan) {
     const cells = homelandPlots().filter(p => p.number <= homeLevel);
     if (layoutWorker) layoutWorker.terminate();
     layoutWorker = null;
-    const layoutKey = `${homeLevel}:${storageCount}`;
+    const style = layoutStyle();
+    const groupGap = Math.min(3, Math.max(1, numberOrDefault(document.getElementById('layout-group-gap').value, 2)));
+    const separateSales = style !== 'delivery' && document.getElementById('layout-separate-sales').checked;
+    const layoutKey = `${homeLevel}:${storageCount}:${style}:${groupGap}:${separateSales}`;
+    let cachedLayouts = layoutsByPlan.get(plan);
+    if (!cachedLayouts) {
+        cachedLayouts = new Map();
+        layoutsByPlan.set(plan, cachedLayouts);
+    }
     const applyLayout = layout => {
         if (runId !== layoutRunId) return;
-        layoutsByPlan.set(plan, { key: layoutKey, layout });
+        if (!cachedLayouts.has(layoutKey) && cachedLayouts.size >= 4) cachedLayouts.delete(cachedLayouts.keys().next().value);
+        cachedLayouts.set(layoutKey, layout);
         const storages = layout.storages;
         // Buildings carry nothing themselves.
         const members = layout.pieces.flatMap(p => p.members).map(m => ({ ...m, weight: m.weight || 0 }));
@@ -1547,6 +1584,10 @@ function renderHomelandLayout(plan) {
             powerSummary,
             layout.power.disconnected ? translate('Power connection not found for {n} buildings.').replace('{n}', layout.power.disconnected) : '',
             missingGenerators ? translate('The plan needs {n} more generators than can be placed at this RV level.').replace('{n}', missingGenerators) : '',
+            layout.groups ? translate('{n} storage groups with {gap}-tile gaps.').replace('{n}', layout.groups.length).replace('{gap}', layout.groupGap) : '',
+            layout.groupFallback === 'storage' ? translate('Grouped maps need at least one Storage Unit. Showing the delivery layout.') : '',
+            layout.groupFallback === 'space' ? translate('The grouped map could not fit every facility and connect the grid. Showing the delivery layout.') : '',
+            layout.groupPurposeFallback ? translate('Separate sale and support groups did not fit. Showing mixed groups.') : '',
             noRoom.length ? `No room found in RV ${homeLevel}'s plots for: ${noRoom.join(', ')}.` : '',
             unplaced.length ? `Not placed, size unknown: ${unplaced.join(', ')}.` : '',
         ].filter(Boolean).join(' ');
@@ -1558,6 +1599,11 @@ function renderHomelandLayout(plan) {
                     .replace('{distance}', (walked / trips).toFixed(1))
                 : translate('Nothing in this plan is carried to storage.');
         document.getElementById('layout-summary').textContent = `${summary}${notes ? ` ${notes}` : ''}`;
+        const legend = document.getElementById('layout-group-legend');
+        legend.innerHTML = (layout.groups || []).map((group, i) => `<li data-purpose="${group.purpose}"><strong>SU${i + 1}</strong>
+            ${escapeText(translate(groupPurposeName(group.purpose)))}</li>`).join('');
+        legend.hidden = !layout.groups;
+        document.getElementById('layout-group-hint').hidden = !layout.groups;
         lastLayout = { layout, homeLevel };
         drawLayout(lastLayout);
         setStep('layout', 'done');
@@ -1565,10 +1611,10 @@ function renderHomelandLayout(plan) {
         renderAniimoSummary(plan);
         if (!refineWorkerMovement(layout, plan)) rankImprovementsFor(selectedAniimoSetup());
     };
-    const cached = layoutsByPlan.get(plan);
-    if (cached?.key === layoutKey) {
+    const cached = cachedLayouts.get(layoutKey);
+    if (cached) {
         // Keep the same asynchronous boundary as a worker response while displayPlan renders.
-        queueMicrotask(() => applyLayout(cached.layout));
+        queueMicrotask(() => applyLayout(cached));
         return;
     }
     const solver = new Worker(WORKER_URL.replace('worker.js', 'layout-worker.js'), { type: 'module' });
@@ -1586,7 +1632,11 @@ function renderHomelandLayout(plan) {
         setStep('layout', 'fail');
         rankImprovementsFor(selectedAniimoSetup());
     };
-    solver.postMessage({ pieces, cells: cells.map(({ x, y, w, h }) => ({ x, y, w, h })), storageCount, poleLimit: powerPoleLimit(homeLevel) });
+    const saleProducts = separateSales ? (plan.income_streams || [])
+        .filter(stream => stream.item_name && stream.rate_per_second > 1e-9 && stream.sell_value > 0)
+        .map(stream => [stream.facility, stream.item_name]) : null;
+    solver.postMessage({ pieces, cells: cells.map(({ x, y, w, h }) => ({ x, y, w, h })),
+        storageCount, poleLimit: powerPoleLimit(homeLevel), style, groupGap, saleProducts });
 }
 
 // Stops a layout still being worked out, so it can't land over a newer plan.
@@ -1629,7 +1679,9 @@ function homelandSvg(layout, homeLevel) {
     // The whole homeland, its plots marked out and the ones not open yet shaded.
     const plots = homelandPlots();
     // Zoomed to what's placed, a couple of tiles around it, unless the whole homeland is asked for.
-    const placed = [...layout.storages, ...layout.pieces.flatMap(p => p.members), ...(layout.power?.poles || [])];
+    const groups = layout.groups || [];
+    const placed = [...layout.storages, ...layout.pieces.flatMap(p => p.members), ...(layout.power?.poles || []),
+        ...groups.flatMap(group => group.reserved)];
     if (!placed.length) return '';
     const whole = layoutShowsWhole;
     const minX = whole ? -1 : Math.floor(Math.min(...placed.map(r => r.x))) - 2;
@@ -1704,11 +1756,20 @@ function homelandSvg(layout, homeLevel) {
     const poleShapes = (power?.poles || []).map((p, i) => `<g class="layout-power-pole" ${tipAttrs('Crackle Power Pole', { detail: `${i + 1} · 7×7` })}>
         <rect x="${p.x + 0.04}" y="${p.y + 0.04}" width="${p.w - 0.08}" height="${p.h - 0.08}" rx="0.2" />
         <text x="${p.x + p.w / 2}" y="${p.y + p.h / 2}" font-size="0.7">⚡${i + 1}</text></g>`).join('');
+    const rectangle = (r, css) => `<rect class="${css}" x="${r.x}" y="${r.y}" width="${r.w}" height="${r.h}" />`;
+    const groupShapes = groups.map(group => `<g class="layout-district" data-purpose="${group.purpose}">
+        ${rectangle(group.bounds, 'layout-district-boundary')}
+        ${group.reserved.map(r => rectangle(r, 'layout-decor')).join('')}
+        </g>`).join('');
     return `<svg class="layout-svg" viewBox="${view}" data-base="${view}" role="img" aria-label="Homeland layout">
         <defs><pattern id="layout-locked" width="1" height="1" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
-            <line x1="0" y1="0" x2="0" y2="1" class="layout-hatch" /></pattern></defs>
+            <line x1="0" y1="0" x2="0" y2="1" class="layout-hatch" /></pattern>
+            <pattern id="layout-decor-hatch" width="0.65" height="0.65" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+                <line x1="0" y1="0" x2="0" y2="0.65" class="layout-decor-stripe" />
+            </pattern></defs>
         <g class="env-grid">${lines.join('')}</g>
         <g class="layout-plots">${plotShapes}</g>
+        <g class="layout-districts" pointer-events="none">${groupShapes}</g>
         <g class="layout-coverage">${coverageShapes}</g>
         <g class="layout-power-zones" pointer-events="none">${powerZones}</g>
         <g class="layout-power-links" pointer-events="none">${powerLines}</g>

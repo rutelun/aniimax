@@ -2656,6 +2656,68 @@ tr:hover .skip-row,
     gap: 0.4rem 1rem;
 }
 
+.layout-arrangement {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: end;
+    gap: .75rem 1rem;
+    margin: .9rem 0 .5rem;
+}
+
+.layout-arrangement > label {
+    padding: .55rem 0;
+}
+
+.layout-group-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .35rem .6rem;
+    list-style: none;
+    padding: 0;
+    margin: .7rem 0;
+    font-size: .8rem;
+}
+
+.layout-arrangement [hidden],
+.layout-group-legend[hidden] {
+    display: none;
+}
+
+.layout-district,
+.layout-group-legend li {
+    --district-color: var(--accent);
+}
+
+[data-purpose="sales"] { --district-color: #54bb9d; }
+[data-purpose="support"] { --district-color: #82a8e5; }
+[data-purpose="rv"] { --district-color: #d3a670; }
+
+.layout-group-legend li {
+    border: 1px solid color-mix(in srgb, var(--district-color) 55%, var(--border));
+    background: color-mix(in srgb, var(--district-color) 9%, var(--surface));
+    border-radius: .4rem;
+    padding: .25rem .45rem;
+}
+
+.layout-group-legend strong {
+    margin-right: .2rem;
+}
+
+.layout-district-boundary {
+    fill: var(--district-color);
+    fill-opacity: .08;
+    stroke: var(--district-color);
+    stroke-width: .12;
+    stroke-dasharray: .5 .22;
+}
+
+.layout-decor { fill: url(#layout-decor-hatch); }
+.layout-decor-stripe {
+    stroke: var(--accent);
+    stroke-opacity: .32;
+    stroke-width: .12;
+}
+
 .layout-diagram.no-sim .layout-flows,
 .layout-diagram.no-sim .layout-rings {
     display: none;

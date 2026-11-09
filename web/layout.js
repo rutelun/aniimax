@@ -280,7 +280,9 @@ export function layOut(pieces, options = {}) {
             if (packed && costOf(packed) < costOf(plots) - EPSILON) plots = packed;
         }
         if (!plots) return null;
-        return { cost: costOf(plots), x, y, shape, rects: [...buildings, ...plots], squares: own, sensitive: plots };
+        const rects = [...buildings, ...plots];
+        if (options.clusterFits && !options.clusterFits(i, rects)) return null;
+        return { cost: costOf(plots), x, y, shape, rects, squares: own, sensitive: plots };
     };
 
     const placeCluster = i => {
@@ -363,7 +365,7 @@ export function layOut(pieces, options = {}) {
     const shapeOf = i => (pieces[i].cluster ? null : JSON.stringify(pieces[i].members.map(m => [m.x, m.y, m.w, m.h, !!m.sensitive, m.electric_level != null])));
     for (const i of order) {
         if (placed.has(i)) continue;
-        const shape = shapeOf(i);
+        const shape = options.canPlace ? null : shapeOf(i);
         const spot = shape !== null && noRoom.has(shape) ? null : place(i);
         if (!spot) {
             if (shape !== null) noRoom.add(shape);

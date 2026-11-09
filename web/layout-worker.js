@@ -11,6 +11,16 @@ self.onmessage = async (event) => {
     const { pieces, cells } = event.data;
     const storageCount = event.data.storageCount ?? 1;
     const poleLimit = event.data.poleLimit ?? 0;
+    const { style, groupGap, saleProducts } = event.data;
+    const grouped = style === 'courtyards' || style === 'avenues';
+    if (grouped && storageCount > 0) {
+        const { groupHomelandLayout } = await import('./group-layout.js' + new URL(import.meta.url).search);
+        const arranged = await groupHomelandLayout(pieces, cells, { style, gap: groupGap, storageCount, poleLimit, saleProducts });
+        if (arranged) {
+            self.postMessage(arranged);
+            return;
+        }
+    }
     const storage = { w: 2, h: 2 };
     const layout = layOutHomeland(pieces, cells, storage, storageCount);
     const powered = connectPower(layout, cells, poleLimit);
@@ -28,5 +38,5 @@ self.onmessage = async (event) => {
             cost = score;
         }
     }
-    self.postMessage(best);
+    self.postMessage(grouped ? { ...best, groupFallback: storageCount === 0 ? 'storage' : 'space' } : best);
 };
