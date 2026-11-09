@@ -1,7 +1,7 @@
 // Aniimax Web Application
 
-import { currentLocale, sourceAttribute, translate } from './i18n.js?v=courtyard-space';
-import './math-translation.js?v=courtyard-space';
+import { currentLocale, sourceAttribute, translate } from './i18n.js?v=zone-ranges';
+import './math-translation.js?v=zone-ranges';
 
 import {
     FACILITIES, FACILITY_CATEGORIES, FACILITY_CATEGORY_BY_NAME, FACILITY_FOOTPRINTS, HOMELAND_PLOTS, HOMELAND_PLOT_SIZE,
@@ -1376,6 +1376,11 @@ function groupPurposeName(purpose) {
     return { sales: 'For sale', support: 'Supply and support', rv: 'RV upgrade and support', mixed: 'Mixed production' }[purpose];
 }
 
+const rangeLabel = range => range ? range[0] === range[1] ? range[0] : range.join('–') : '';
+const resourceZoneName = theme => ({ fields: 'Crop fields', woodland: 'Tree groves', mining: 'Mining area',
+    water: 'Water wells', aniimo: 'Aniimo Materials' })[theme];
+const resourceZoneTheme = group => group.range ? '' : group.themes?.[0] ?? '';
+
 function updateLayoutStyleControls() {
     const grouped = layoutStyle() !== 'delivery';
     document.getElementById('layout-group-spacing').hidden = !grouped;
@@ -1554,7 +1559,8 @@ function renderBuildingIndex(layout) {
     const byStorage = layout.storages.map(() => new Map());
     members.forEach((member, index) => {
         const products = member.jobs?.map(job => job.item) ?? [member.crop];
-        if (!(member.weight > 0) || !products.some(item => processors.has(item))) return;
+        const workshop = FACILITY_CATEGORY_BY_NAME.get(member.facility) === 'Materials Processing';
+        if (!workshop && (!(member.weight > 0) || !products.some(item => processors.has(item)))) return;
         const storageIndex = layout.groups ? layout.groups.findIndex(({ bounds: { x, y, w, h } }) =>
             member.x >= x && member.y >= y && member.x + member.w <= x + w && member.y + member.h <= y + h)
             : layout.storages.indexOf(nearestStorage(member, layout.storages));
@@ -1568,7 +1574,8 @@ function renderBuildingIndex(layout) {
     const groups = byStorage.map((names, i) => {
         if (!names.size) return '';
         const sorted = [...names].sort(([a], [b]) => a.localeCompare(b, 'en'));
-        return `<div class="layout-index-group"><strong>SU${i + 1}</strong><div>${sorted.map(([name, entry]) =>
+        const range = rangeLabel(layout.groups?.[i]?.range);
+        return `<div class="layout-index-group"><strong>SU${i + 1}${range ? ` · ${range}` : ''}</strong><div>${sorted.map(([name, entry]) =>
             `<button type="button" data-layout-sites="${entry.sites.join(',')}" aria-pressed="false" title="${escapeText([...entry.products].join(', '))}" translate="no">${escapeText(name)}</button>`).join('')}</div></div>`;
     }).filter(Boolean);
     document.getElementById('layout-index-nearest').hidden = !!layout.groups;
@@ -1694,7 +1701,9 @@ function renderHomelandLayout(plan) {
         const arrangementNotice = [
             layout.groupFallback === 'storage' ? translate('Grouped maps need at least one Storage Unit. Showing the delivery layout.') : '',
             layout.groupFallback === 'space' ? translate('The grouped map could not fit every facility and connect the grid. Showing the delivery layout.') : '',
+            layout.groupFallback === 'ranges' ? translate('No layout with non-overlapping letter ranges was found for this plan. Showing the delivery layout.') : '',
             layout.groupPurposeFallback ? translate('Separate sale and support groups did not fit. Showing mixed groups.') : '',
+            layout.rangeMixedPurposes ? translate('Some sale and support workshops share a block to keep letter ranges intact.') : '',
             layout.groupGap < layout.requestedGroupGap ? translate('The selected gap did not fit. The map uses {gap} tile(s) between groups.')
                 .replace('{gap}', layout.groupGap) : '',
         ].filter(Boolean).join(' ');
@@ -1710,8 +1719,13 @@ function renderHomelandLayout(plan) {
                 : translate('Nothing in this plan is carried to storage.');
         document.getElementById('layout-summary').textContent = `${summary}${notes ? ` ${notes}` : ''}`;
         const legend = document.getElementById('layout-group-legend');
-        legend.innerHTML = (layout.groups || []).map((group, i) => `<li data-purpose="${group.purpose}"><strong>SU${i + 1}</strong>
-            ${escapeText(translate(groupPurposeName(group.purpose)))}</li>`).join('');
+        legend.innerHTML = (layout.groups || []).map((group, i) => {
+            const parts = [group.range ? 'Workshops' : null,
+                !group.themes?.length && !group.range || ['sales', 'rv'].includes(group.purpose) ? groupPurposeName(group.purpose) : null,
+                ...(group.themes ?? []).map(resourceZoneName)].filter(Boolean);
+            return `<li data-purpose="${group.purpose}" data-theme="${resourceZoneTheme(group)}"><strong>SU${i + 1}${group.range ? ` · ${rangeLabel(group.range)}` : ''}</strong>
+                ${escapeText(parts.map(translate).join(' · '))}</li>`;
+        }).join('');
         legend.hidden = !layout.groups;
         document.getElementById('layout-group-hint').hidden = !layout.groups;
         lastLayout = { layout, homeLevel };
@@ -1865,9 +1879,10 @@ function homelandSvg(layout, homeLevel) {
         <text x="${p.x + p.w / 2}" y="${p.y + p.h / 2}" font-size="0.7">⚡${i + 1}</text></g>`).join('');
     const rectangle = (r, css) => `<rect class="${css}" x="${r.x}" y="${r.y}" width="${r.w}" height="${r.h}" />`;
     const districts = layout.groupStyle === 'districts';
-    const groupShapes = groups.map(group => `<g class="layout-district${districts ? ' layout-district-structured' : ''}" data-purpose="${group.purpose}">
+    const groupShapes = groups.map(group => `<g class="layout-district${districts ? ' layout-district-structured' : ''}" data-purpose="${group.purpose}" data-theme="${resourceZoneTheme(group)}">
         ${rectangle(group.bounds, 'layout-district-boundary')}
         ${group.reserved.map(r => rectangle(r, 'layout-decor')).join('')}
+        ${group.workshop ? rectangle(group.workshop, 'layout-workshop-zone') : ''}
         ${districts ? rectangle(group.feature, 'layout-district-frontage') : ''}
         </g>`).join('');
     return `<svg class="layout-svg" viewBox="${view}" data-base="${view}" role="img" aria-label="Homeland layout">

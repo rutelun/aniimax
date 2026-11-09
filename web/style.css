@@ -2688,13 +2688,18 @@ tr:hover .skip-row,
 }
 
 .layout-district,
-.layout-group-legend li {
+.layout-group-legend {
     --district-color: var(--accent);
 }
 
 [data-purpose="sales"] { --district-color: #54bb9d; }
 [data-purpose="support"] { --district-color: #82a8e5; }
 [data-purpose="rv"] { --district-color: #d3a670; }
+[data-theme="fields"] { --district-color: #c29c69; }
+[data-theme="woodland"] { --district-color: #71ba7d; }
+[data-theme="mining"] { --district-color: #b0a86c; }
+[data-theme="water"] { --district-color: #62b9d3; }
+[data-theme="aniimo"] { --district-color: #ab92d0; }
 
 .layout-group-legend li {
     border: 1px solid color-mix(in srgb, var(--district-color) 55%, var(--border));
@@ -2718,6 +2723,10 @@ tr:hover .skip-row,
     display: flex;
     flex-wrap: wrap;
     gap: .35rem;
+}
+
+.layout-index-group > strong {
+    flex: 0 0 auto;
 }
 
 .layout-index-group button {
@@ -2755,6 +2764,14 @@ tr:hover .skip-row,
     stroke: var(--district-color);
     stroke-opacity: .5;
     stroke-width: .08;
+}
+
+.layout-workshop-zone {
+    fill: var(--district-color);
+    fill-opacity: .13;
+    stroke: var(--district-color);
+    stroke-opacity: .65;
+    stroke-width: .09;
 }
 
 .layout-decor { fill: url(#layout-decor-hatch); }

@@ -1,3 +1,5 @@
+import { FACILITY_CATEGORY_BY_NAME } from './facility-config.js?v=leisure-families';
+
 const canonical = item => item.replace(/^quick_/, '');
 const center = r => [r.x + r.w / 2, r.y + r.h / 2];
 const distance = (a, b) => Math.hypot(a.x + a.w / 2 - b.x - b.w / 2, a.y + a.h / 2 - b.y - b.h / 2);
@@ -6,19 +8,20 @@ const overlaps = (a, b, margin = 1e-6) => Math.min(a.x + a.w, b.x + b.w) - Math.
 const contains = (a, b) => b.x >= a.x && b.y >= a.y && b.x + b.w <= a.x + a.w && b.y + b.h <= a.y + a.h;
 const english = new Intl.Collator('en');
 
-export function productionGraph(pieces, recipes) {
+export function productionGraph(pieces, recipes, { includeIdle = false } = {}) {
     const byItem = new Map(recipes.map(recipe => [recipe.item, recipe]));
     const nodes = pieces.flatMap((piece, index) => {
         const members = piece.members ?? [...piece.buildings, ...piece.plots];
         return members.flatMap(rect => {
-            if (!(rect.weight > 0)) return [];
+            const workshop = includeIdle && FACILITY_CATEGORY_BY_NAME.get(rect.facility) === 'Materials Processing';
+            if (!(rect.weight > 0) && !workshop) return [];
             const jobs = (rect.jobs?.map(job => [job.item, job.rate * 3600])
                 ?? [[rect.crop, rect.batchWeight ?? rect.weight]])
                 .flatMap(([item, batches]) => byItem.has(item) && batches > 0 ? [{ ...byItem.get(item), batches }] : []);
             const processing = jobs.filter(job => job.takes.length);
-            return jobs.length ? [{ index, rect, jobs, processing,
+            return jobs.length || workshop ? [{ index, rect, jobs, processing,
                 movable: !piece.cluster && members.length === 1 && !rect.sensitive && !rect.building && !rect.generator,
-                label: processing.length ? rect.facility : '' }] : [];
+                label: processing.length || workshop ? rect.facility : '' }] : [];
         });
     });
     const supplies = new Map();
@@ -32,15 +35,17 @@ export function productionGraph(pieces, recipes) {
         addSupply(job.makes, node, job.batches * job.yield);
         if (job.byproduct?.[1] > 0) addSupply(job.byproduct[0], node, job.batches * job.byproduct[1]);
     }
-    const links = [];
+    const links = [], supplyLinks = [];
     for (const to of nodes) for (const job of to.processing) for (const [item] of job.takes) {
         const sources = [...(supplies.get(canonical(item)) ?? [])].filter(([from]) => from !== to);
         const total = sources.reduce((sum, [, output]) => sum + output, 0);
-        for (const [from, output] of sources) if (from.processing.length) {
-            links.push({ from, to, weight: job.batches * output / total / job.takes.length });
+        for (const [from, output] of sources) {
+            const link = { from, to, weight: job.batches * output / total / job.takes.length };
+            if (from.processing.length) links.push(link);
+            else supplyLinks.push(link);
         }
     }
-    return { nodes, links };
+    return { nodes, links, supplyLinks };
 }
 
 export function chainPurposes(purposes, { links }) {

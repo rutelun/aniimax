@@ -115,8 +115,9 @@ export function layOut(pieces, options = {}) {
     const weightOf = piece => membersOf(piece).reduce((sum, m) => sum + m.weight, 0);
     const areaOf = piece => membersOf(piece).reduce((sum, m) => sum + m.w * m.h, 0);
     const order = pieces
-        .map((piece, i) => ({ i, density: weightOf(piece) / Math.max(areaOf(piece), EPSILON) }))
-        .sort((a, b) => b.density - a.density || areaOf(pieces[b.i]) - areaOf(pieces[a.i]))
+        .map((piece, i) => ({ i, priority: options.placementPriority?.[i] ?? 0,
+            density: weightOf(piece) / Math.max(areaOf(piece), EPSILON) }))
+        .sort((a, b) => b.priority - a.priority || b.density - a.density || areaOf(pieces[b.i]) - areaOf(pieces[a.i]))
         .map(p => p.i);
 
     // Spots to try: the open cells' extent, or with none given, well past what everything needs.
@@ -132,6 +133,21 @@ export function layOut(pieces, options = {}) {
     const offsets = latticeByDistance(extent, STEP, distanceToStorage);
     // Environment buildings stand on whole tiles, which is plenty for them and far fewer to try.
     const clusterOffsets = latticeByDistance(extent, 1, distanceToStorage);
+    const defaultProfile = { distanceToStorage, offsets, clusterOffsets };
+    const profiles = new Map();
+    const profileFor = i => {
+        const zone = options.preferredStorages?.[i];
+        const target = options.preferredTargets?.[i];
+        if (!target && (!storageCenters[zone] || storages.length < 2)) return defaultProfile;
+        const key = target ?? zone;
+        if (!profiles.has(key)) {
+            const [sx, sy] = target ? [target.x, target.y] : storageCenters[zone];
+            const distance = cacheGridDistance(extent, (x, y) => .45 * distanceToStorage(x, y) + .55 * Math.hypot(x - sx, y - sy));
+            profiles.set(key, { distanceToStorage: distance, offsets: latticeByDistance(extent, STEP, distance),
+                clusterOffsets: latticeByDistance(extent, 1, distance) });
+        }
+        return profiles.get(key);
+    };
 
     // What's down: rectangles by piece, found through a coarse grid; coverage squares by cluster;
     // and the rectangles that must stay out of every square.
@@ -193,6 +209,7 @@ export function layOut(pieces, options = {}) {
     if (options.obstacles?.length) occupy('obstacles', { rects: options.obstacles });
 
     const placeRigid = i => {
+        const { distanceToStorage, offsets } = profileFor(i);
         let best = null;
         for (const shape of shapes[i]) {
             const travelRadius = hasWorkerRoutes && shape.members.some(m => m.workers?.length) ? 6 : 0;
@@ -248,7 +265,7 @@ export function layOut(pieces, options = {}) {
     // A cluster's buildings at `(x, y)` in orientation `shape`, with its plots in the plan's own
     // arrangement (turned with it), the busiest crops on the plots nearest the Storage Unit; with
     // `pack`, also packed afresh nearest the Storage Unit within their zones, if that's cheaper.
-    const tryCluster = (i, shape, x, y, pack, clear) => {
+    const tryCluster = (i, shape, x, y, pack, clear, distanceToStorage) => {
         tried++;
         const buildings = shape.buildings.map(b => ({ x: b.x + x, y: b.y + y, w: b.w, h: b.h }));
         const own = buildings.map(b => ({ x: b.x + b.w / 2 - RADIUS, y: b.y + b.h / 2 - RADIUS, w: 2 * RADIUS, h: 2 * RADIUS }));
@@ -286,6 +303,7 @@ export function layOut(pieces, options = {}) {
     };
 
     const placeCluster = i => {
+        const { distanceToStorage, clusterOffsets } = profileFor(i);
         let best = null;
         // Whether buildings standing here are clear, with their squares clear of every other
         // building's square and every crop that must stay uncovered. A lone building stands in
@@ -305,7 +323,7 @@ export function layOut(pieces, options = {}) {
             for (const [ox, oy] of clusterOffsets) {
                 if (fits >= CLUSTER_TRIES) break;
                 const pack = fits < CLUSTER_PACKS && shape.plots.length <= CLUSTER_PACK_MOST;
-                const spot = tryCluster(i, shape, Math.round(ox - shape.cx), Math.round(oy - shape.cy), pack, clear);
+                const spot = tryCluster(i, shape, Math.round(ox - shape.cx), Math.round(oy - shape.cy), pack, clear, distanceToStorage);
                 if (!spot) continue;
                 fits++;
                 if (!best || spot.cost < best.cost - EPSILON) best = spot;
@@ -325,7 +343,8 @@ export function layOut(pieces, options = {}) {
         refreshWorkerHubs(i);
         return pieces[i].cluster ? placeCluster(i) : placeRigid(i);
     };
-    const positionCost = spot => {
+    const positionCost = (spot, i) => {
+        const { distanceToStorage } = profileFor(i);
         const metadata = spot.shape.members || [...spot.shape.buildings, ...spot.shape.plots];
         return metadata.reduce((sum, m, j) => sum + (m.weight || 0)
             * distanceToStorage(spot.rects[j].x + spot.rects[j].w / 2, spot.rects[j].y + spot.rects[j].h / 2), 0)
@@ -353,7 +372,7 @@ export function layOut(pieces, options = {}) {
             if (piece.cluster) spot.squares = shape.buildings.map(b => ({
                 x: b.x + x + b.w / 2 - RADIUS, y: b.y + y + b.h / 2 - RADIUS, w: 2 * RADIUS, h: 2 * RADIUS,
             }));
-            spot.cost = positionCost(spot);
+            spot.cost = positionCost(spot, i);
             placed.set(i, spot);
             occupy(i, spot);
             break;
@@ -386,7 +405,7 @@ export function layOut(pieces, options = {}) {
             const spot = place(i);
             // Use precisely the candidate's objective, including compactness for idle units.
             // Also refresh worker hubs: neighboring workplaces may have moved since scoring.
-            const oldCost = positionCost(previous);
+            const oldCost = positionCost(previous, i);
             if (spot && spot.cost < oldCost - 1e-9) {
                 placed.set(i, spot);
                 moved = true;
@@ -471,7 +490,7 @@ export function layOut(pieces, options = {}) {
                     currentCost = cost;
                     for (const j of saved.keys()) {
                         refreshWorkerHubs(j);
-                        placed.get(j).cost = positionCost(placed.get(j));
+                        placed.get(j).cost = positionCost(placed.get(j), j);
                     }
                     break;
                 }

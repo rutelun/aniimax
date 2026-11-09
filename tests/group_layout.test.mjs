@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { groupHomelandLayout } from '../web/group-layout.js';
 import { createInsideTest } from '../web/layout.js';
+import { productionGraph } from '../web/production-layout.js';
 
 const cells = [{ x: 0, y: 0, w: 20, h: 15 }, { x: 20, y: 0, w: 20, h: 15 }];
 const overlaps = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
@@ -73,4 +74,39 @@ test('a smaller gap keeps the groups when the requested gap cannot fit', async (
     assert.equal(layout.groupGap, 2);
     assert.equal(layout.groups.length, 1);
     assert.deepEqual(layout.unplaced, []);
+});
+
+test('workshops use disjoint letter ranges, and mines share a separate resource district', async () => {
+    const lots = Array.from({ length: 4 }, (_, i) => ({ x: i % 2 * 20, y: Math.floor(i / 2) * 15, w: 20, h: 15 }));
+    const factories = ['Aniipod Maker', 'Blazing Stove', 'Bouncy Brew Keg', 'Carousel Mill',
+        'Chimney Kiln', 'Jukebox Dryer', 'Simmering Pot', 'Woodworking Bench'];
+    const processors = factories.map((facility, i) => piece(facility, i === 2 ? null : `product_${i}`,
+        { w: 4, h: 4, weight: i === 2 ? 0 : 1 }));
+    const mines = Array.from({ length: 4 }, (_, i) => piece('Mine', i ? 'copper_ore' : 'shell', { w: 5, h: 5, electric_level: 1 }));
+    const inputs = [...processors, ...mines, piece('Generator', null, { generator: true, weight: 0 })];
+    const recipes = [
+        ...factories.flatMap((_, i) => i === 2 ? [] : [{ item: `product_${i}`, makes: `product_${i}`, yield: 1, takes: [[i % 2 ? 'copper_ore' : 'shell', 1]] }]),
+        ...['copper_ore', 'shell'].map(item => ({ item, makes: item, yield: 1, takes: [] })),
+    ];
+    const layout = await groupHomelandLayout(inputs, lots, { style: 'districts', storageCount: 4, gap: 2, poleLimit: 5, recipes });
+    assert.equal(layout.groupGap, 2);
+    assert.equal(layout.power.disconnected, 0);
+    assert.deepEqual(layout.unplaced, []);
+    const ranges = layout.groups.flatMap(group => group.range ? [group.range] : []).sort();
+    assert.ok(ranges.length >= 2);
+    assert.ok(ranges.every((range, i) => !i || ranges[i - 1][1] < range[0]));
+    const district = member => layout.groups.findIndex(group => createInsideTest([group.bounds])(member));
+    const nodes = productionGraph(layout.pieces, recipes, { includeIdle: true }).nodes;
+    for (const { label, rect } of nodes.filter(node => node.label)) {
+        const initial = label[0], [first, last] = layout.groups[district(rect)].range;
+        assert.ok(initial >= first && initial <= last);
+    }
+    const [mineZone, ...others] = layout.pieces.slice(processors.length, processors.length + mines.length).map(p => district(p.members[0]));
+    assert.ok(others.every(zone => zone === mineZone));
+    assert.equal(layout.groups[mineZone].range, null);
+    assert.deepEqual(layout.groups[mineZone].themes, ['mining']);
+    const workshopAreas = layout.groups.flatMap(group => group.workshop ? [group.workshop] : []);
+    assert.ok(workshopAreas.length >= 2);
+    assert.ok(layout.pieces.slice(processors.length).flatMap(p => p.members)
+        .every(member => workshopAreas.every(workshop => !overlaps(workshop, member))));
 });

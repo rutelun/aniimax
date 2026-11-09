@@ -2,6 +2,8 @@
 // takes a few seconds: posts back what `layOutHomeland` returns for the pieces and open cells
 // it's sent. Loaded with the page's own load tag (see `WORKER_URL` in app.js), passed on to
 // layout.js so a cached older copy is never used with newer page code.
+import { FACILITY_CATEGORY_BY_NAME } from './facility-config.js?v=leisure-families';
+
 const ready = import('./layout.js' + new URL(import.meta.url).search);
 const powerReady = import('./power-layout.js' + new URL(import.meta.url).search);
 
@@ -38,5 +40,8 @@ self.onmessage = async (event) => {
             cost = score;
         }
     }
-    self.postMessage(grouped ? { ...best, groupFallback: storageCount === 0 ? 'storage' : 'space' } : best);
+    const needsRanges = recipes?.some(recipe => recipe.takes.length) || (recipes?.length > 0 && pieces.some(piece =>
+        piece.members?.some(member => FACILITY_CATEGORY_BY_NAME.get(member.facility) === 'Materials Processing')));
+    const fallback = storageCount === 0 ? 'storage' : needsRanges ? 'ranges' : 'space';
+    self.postMessage(grouped ? { ...best, groupFallback: fallback } : best);
 };
