@@ -1,4 +1,4 @@
-import {availableRecipes} from './opportunity-comparison.js?v=checked-workload';
+import {availableRecipes} from './opportunity-comparison.js?v=income-aware-chains';
 
 const count = tiers => (tiers || []).reduce((n,t)=>n+t.count,0);
 const capacity = (input,recipe) => (input.facilities?.[recipe.facility] || [])

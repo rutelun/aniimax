@@ -13,7 +13,7 @@ import { createShareUrl, readShareHash, urlWithoutShare } from './share-config.j
 import { nearestStorage } from './layout.js?v=storage-power';
 import { ANIIMO_WALK_SPEED, workerTravelDistances } from './worker-travel.js?v=auto-worker-travel';
 import { haulingWorkload, allocateHauling, haulingBatchTrips } from './hauling.js?v=hauling-workload';
-import { changeOneMember, personalityInput, reserveLevelFourInputs, comparePlans, usefulUpgrade, keepBetterComparison } from './opportunity-comparison.js?v=checked-workload';
+import { changeOneMember, personalityInput, reserveLevelFourInputs, comparePlans, usefulUpgrade, keepBetterComparison } from './opportunity-comparison.js?v=income-aware-chains';
 import { comparisonConcurrency, startComparisonQueue } from './comparison-queue.js?v=parallel-comparisons';
 import { prepareOpportunities, startedProcessing, increasedProcessing } from './opportunity-effects.js?v=upgrade-constraints';
 
@@ -965,6 +965,12 @@ function rankImprovementsFor(setup, requested = null, detailed = false) {
             base.roster = { ...base.roster, hauling_seconds: plan.hauling_estimates,
                 hauling_default_seconds: haulingRouteBound() };
         }
+        if (base.roster && plan.layout_walking?.length && lastLayout) {
+            const distances = workerTravelDistances(lastLayout.layout.pieces.flatMap(piece => piece.members));
+            for (const [member] of plan.layout_walking) {
+                base.roster.movement_by_member[member] = distances.get(member) / ANIIMO_WALK_SPEED;
+            }
+        }
         const prepared = improvementCandidates(base,setup);
         current = { setup, plan, input: base, base: {plan}, candidates: prepared.candidates, omitted: prepared.omitted,
             results: [], running:false, started:false, paused:false, activeIndex:null, activeIndices:[], phase:'' };
@@ -1567,7 +1573,7 @@ function renderBuildingIndex(layout) {
     panel.hidden = !groups.length;
 }
 
-function layoutOptionsFor(plan, homeLevel) {
+function layoutOptionsFor(plan, homeLevel, setup = selectedSetupTab()) {
     const limit = storageUnitLimit(homeLevel);
     const storageCount = Math.min(limit, Math.max(0, Math.floor(numberOrDefault(
         document.getElementById('layout-storage-count').value, limit))));
@@ -1580,9 +1586,29 @@ function layoutOptionsFor(plan, homeLevel) {
     const recipes = style === 'delivery' ? [] : [...new Set((plan.coin_items || [])
         .filter(step => step.status === 'producing' && step.item_name).map(step => step.item_name))]
         .map(item => ({ item, ...recipeTerms(item) }));
+    let staffing = null;
+    if (recipes.length) {
+        const ownedPlan = setup === 'custom';
+        const team = ownedPlan ? rosterWorkload({ ...plan, layout_walking: [],
+            assumed_aniimo: haulingBaseByPlan.get(plan) ?? plan.assumed_aniimo }) : null;
+        const rvLimit = ANIIMO_MAX[homeLevel - 1] ?? Infinity;
+        const visits = {};
+        for (const [, , member, count] of plan.mobile_work || []) visits[member] = (visits[member] || 0) + count;
+        staffing = {
+            limit: ownedPlan ? Math.min(rvLimit, lastPlanInput?.electricity?.max_aniimo ?? Infinity) : rvLimit,
+            members: team?.members,
+            busy: team?.busy,
+            minimumWorkers: ownedPlan ? 0 : aniimoTeam({ ...plan, hauling_busy: 0 }).total,
+            movement: ownedPlan && workerTravelEnabled() && plan.mobile_work?.length
+                ? { defaultDistance: movementDefaultDistance, byMember: movementDistances, visits } : null,
+            haulingLevel: setup === 'minimum' ? 1 : 3,
+            haulingBound: haulingRouteBound(),
+            steps: (plan.coin_items || []).filter(step => step.status === 'producing'),
+        };
+    }
     return {
         key: `${homeLevel}:${storageCount}:${style}:${groupGap}:${separateSales}`,
-        storageCount, poleLimit: powerPoleLimit(homeLevel), style, groupGap, saleProducts, recipes,
+        storageCount, poleLimit: powerPoleLimit(homeLevel), style, groupGap, saleProducts, recipes, staffing,
         cells: homelandPlots().filter(p => p.number <= homeLevel).map(({ x, y, w, h }) => ({ x, y, w, h })),
     };
 }
@@ -1679,6 +1705,7 @@ function renderHomelandLayout(plan) {
         lastLayout = { layout, homeLevel };
         drawLayout(lastLayout);
         setStep('layout', 'done');
+        plan.layout_walking = layout.incomeWalking ?? [];
         if (assignLayoutHauling(layout, plan)) return;
         renderAniimoSummary(plan);
         if (!refineWorkerMovement(layout, plan)) rankImprovementsFor(selectedAniimoSetup());
@@ -2281,6 +2308,7 @@ function assignLayoutHauling(layout, plan) {
 
 function refineWorkerMovement(layout, plan) {
     if (!workerTravelEnabled() || selectedSetupTab() !== 'custom' || !plan.mobile_work?.length) return false;
+    if (Array.isArray(layout.incomeWalking)) return false;
     const measured = workerTravelDistances(layout.pieces.flatMap(p => p.members));
     // A shorter measured route is already covered by the model's walking allowance. It
     // must not restart every priority and material solve just to save a few walking seconds.
@@ -2449,7 +2477,7 @@ async function fillRosterFrom(setup) {
 }
 
 async function measureSourceTeamHauling(plan, input, level) {
-    const { key, ...options } = layoutOptionsFor(plan, layoutHomeLevel());
+    const { key, ...options } = layoutOptionsFor(plan, layoutHomeLevel(), level === 1 ? 'minimum' : 'best');
     let layout = layoutsByPlan.get(plan)?.get(key);
     if (!layout) {
         const { pieces } = homelandPieces(plan, input);
@@ -2568,7 +2596,13 @@ function rosterWorkload(plan) {
         });
     });
     const checked = plan.roster_workload;
-    return { members, busy: checked?.length ? members.map((_, i) => checked[i] ?? 0) : busy, walking, where };
+    const workload = checked?.length ? members.map((_, i) => checked[i] ?? 0) : busy;
+    for (const [member, extra] of plan.layout_walking || []) {
+        if (!members[member]) continue;
+        workload[member] += extra;
+        walking[member] += extra;
+    }
+    return { members, busy: workload, walking, where };
 }
 
 function renderRosterSummary(plan) {

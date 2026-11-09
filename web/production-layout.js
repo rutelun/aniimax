@@ -75,22 +75,33 @@ function linkExcess(graph, limits) {
     return productionLinkDistances(graph).reduce((sum, value, i) => sum + Math.max(0, value - limits[i]), 0);
 }
 
-// Let the eye scan each district in tile rows, then from left to right.
-export function alphabetInversions(groups, { nodes }) {
-    return groups.reduce((total, { bounds }) => {
+// Read each district in tile rows. When reversals remain, prefer ones between
+// adjacent entries and then between physically closer buildings.
+export function alphabetScore(groups, { nodes }) {
+    const score = { count: 0, span: 0, distance: 0 };
+    for (const { bounds } of groups) {
         const ordered = nodes.filter(node => node.label && contains(bounds, node.rect)).sort((a, b) =>
             Math.floor(center(a.rect)[1] / 4) - Math.floor(center(b.rect)[1] / 4)
             || center(a.rect)[0] - center(b.rect)[0]);
         for (let i = 0; i < ordered.length; i++) for (let j = 0; j < i; j++) {
-            if (english.compare(ordered[j].label, ordered[i].label) > 0) total++;
+            if (english.compare(ordered[j].label, ordered[i].label) <= 0) continue;
+            score.count++;
+            score.span += (i - j - 1) ** 2;
+            score.distance += distance(ordered[j].rect, ordered[i].rect);
         }
-        return total;
-    }, 0);
+    }
+    return score;
 }
 
-// Keep a hard route budget. Geometry and the pole positions stay fixed except for
-// ordinary processors moving into free space or exchanging equal-sized sites.
-export function refineProductionPlacement(layout, groups, graph, travelCost, { limit, maxChain, maxOrder, maxLinks, canPlace }) {
+export const alphabetInversions = (groups, graph) => alphabetScore(groups, graph).count;
+
+const difference = (a, b) => Math.abs(a - b) <= 1e-6 || a === b ? 0 : a - b;
+export const compareProductionPlacement = (a, b) => difference(a.excess, b.excess)
+    || a.order.count - b.order.count || a.order.span - b.order.span
+    || difference(a.order.distance, b.order.distance) || difference(a.chain, b.chain) || difference(a.route, b.route);
+
+// Search the feasible swaps and moves, keeping the best one on each pass.
+export function refineProductionPlacement(layout, groups, graph, travelCost, { maxChain, maxLinks, canPlace, keepsIncome }) {
     const movable = graph.nodes.filter(node => node.label && node.movable);
     const occupied = [...layout.pieces.flatMap(piece => piece.members), ...layout.storages, ...layout.power.poles];
     const zones = layout.power.coverage.filter(zone => zone.connected);
@@ -99,10 +110,13 @@ export function refineProductionPlacement(layout, groups, graph, travelCost, { l
         && canPlace(node.index, r)
         && (node.rect.electric_level == null || zones.some(zone => overlaps(zone, r, .25 - 1e-6)));
     const position = (r, x, y) => { r.x = x; r.y = y; };
-    let chain = productionDistance(graph), order = alphabetInversions(groups, graph), route = travelCost(layout);
-    let excess = linkExcess(graph, maxLinks);
-    const epsilon = 1e-6;
-    const tryMove = (a, x, y, b, sorting) => {
+    const measure = route => {
+        const chain = productionDistance(graph);
+        return { chain, order: alphabetScore(groups, graph), route,
+            excess: linkExcess(graph, maxLinks) + Math.max(0, chain - maxChain) };
+    };
+    let current = measure(travelCost(layout)), best;
+    const tryMove = (a, x, y, b) => {
         const r = a.rect, oldX = r.x, oldY = r.y;
         const s = b?.rect, sx = s?.x, sy = s?.y;
         if (oldX === x && oldY === y) return;
@@ -113,53 +127,47 @@ export function refineProductionPlacement(layout, groups, graph, travelCost, { l
         if (occupied.some(other => other !== r && other !== s && (overlaps(other, target) || (back && overlaps(other, back))))) return;
         position(r, x, y);
         if (s) position(s, back.x, back.y);
-        const nextChain = productionDistance(graph);
-        const nextOrder = alphabetInversions(groups, graph);
-        const nextExcess = linkExcess(graph, maxLinks);
-        const improves = sorting ? nextOrder < order && nextChain <= Math.max(chain, maxChain) + epsilon
-            : nextChain < chain - epsilon && nextOrder <= Math.max(order, maxOrder);
-        if (improves && nextExcess <= excess + epsilon) {
-            const nextRoute = travelCost(layout);
-            if (nextRoute <= limit + epsilon) {
-                chain = nextChain;
-                order = nextOrder;
-                route = nextRoute;
-                excess = nextExcess;
-                return;
-            }
+        const previous = best?.score ?? current;
+        const next = measure(previous.route);
+        if (compareProductionPlacement(next, previous) <= 0 && keepsIncome(layout)) {
+            next.route = travelCost(layout);
+            if (compareProductionPlacement(next, previous) < 0) best = { r, x, y, s, back, score: next };
         }
         position(r, oldX, oldY);
         if (s) position(s, sx, sy);
     };
-    const near = (node, other, sorting) => {
+    const near = (node, other, margins) => {
         const r = node.rect, s = other.rect;
         const [x, y] = center(s);
         const cx = Math.round((x - r.w / 2) * 4) / 4, cy = Math.round((y - r.h / 2) * 4) / 4;
-        for (const margin of sorting ? [0] : [0, 1, 2]) {
-            tryMove(node, s.x - r.w - margin, cy, null, sorting);
-            tryMove(node, s.x + s.w + margin, cy, null, sorting);
-            tryMove(node, cx, s.y - r.h - margin, null, sorting);
-            tryMove(node, cx, s.y + s.h + margin, null, sorting);
+        for (const margin of margins) {
+            tryMove(node, s.x - r.w - margin, cy);
+            tryMove(node, s.x + s.w + margin, cy);
+            tryMove(node, cx, s.y - r.h - margin);
+            tryMove(node, cx, s.y + s.h + margin);
         }
     };
-    for (const { from, to } of [...graph.links].sort((a, b) => b.weight - a.weight)) {
-        for (const [node, other] of [[from, to], [to, from]]) {
-            if (!node.movable) continue;
-            near(node, other, false);
+    for (let pass = 0; pass < 12; pass++) {
+        best = null;
+        for (const group of groups) {
+            const local = movable.filter(node => contains(group.bounds, node.rect));
+            for (let i = 0; i < local.length; i++) for (let j = 0; j < i; j++) {
+                const a = local[i], b = local[j];
+                if (a.label === b.label) continue;
+                const [x, y] = center(b.rect);
+                tryMove(a, Math.round((x - a.rect.w / 2) * 4) / 4, Math.round((y - a.rect.h / 2) * 4) / 4, b);
+                near(a, b, [0]);
+                near(b, a, [0]);
+            }
         }
-    }
-    // Reorder within a group, leaving most of any chain improvement intact.
-    maxChain = Math.min(maxChain, chain * 1.12);
-    for (const group of groups) {
-        const local = movable.filter(node => contains(group.bounds, node.rect));
-        for (let i = 0; i < local.length; i++) for (let j = 0; j < i; j++) {
-            const a = local[i], b = local[j];
-            if (a.label === b.label || !contains(group.bounds, a.rect) || !contains(group.bounds, b.rect)) continue;
-            const [x, y] = center(b.rect);
-            tryMove(a, Math.round((x - a.rect.w / 2) * 4) / 4, Math.round((y - a.rect.h / 2) * 4) / 4, b, true);
-            near(a, b, true);
-            near(b, a, true);
+        for (const { from, to } of graph.links) {
+            if (from.movable) near(from, to, [0, 1, 2]);
+            if (to.movable) near(to, from, [0, 1, 2]);
         }
+        if (!best) break;
+        position(best.r, best.x, best.y);
+        if (best.s) position(best.s, best.back.x, best.back.y);
+        current = best.score;
     }
-    return { chain, order, route, excess };
+    return current;
 }

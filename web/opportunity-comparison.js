@@ -71,6 +71,7 @@ export function workerUsage(plan, input) {
         for (const [, , member, share] of plan.crop_assignments || []) add(member, share);
         for (const [member, travel, idle] of plan.movement_staffing || []) add(member, travel + idle);
     }
+    for (const [member, share] of plan.layout_walking || []) add(member, share);
     for (const [member, share] of plan.delivery_assignments || plan.hauling_staffing || []) add(member, share);
     const heads = n => Math.max(0, Math.ceil(n - 1e-6));
     return { busy, working: [...busy.values()].reduce((n, b) => n + heads(b), 0),

@@ -1,11 +1,12 @@
 // An optional physical layout with a Storage Unit and a clear feature in each group.
-import { alphabetInversions, chainPurposes, productionDistance, productionGraph, productionLinkDistances,
-    refineProductionPlacement } from './production-layout.js?v=chain-limits';
+import { alphabetScore, chainPurposes, compareProductionPlacement, productionDistance, productionGraph,
+    productionLinkDistances, refineProductionPlacement } from './production-layout.js?v=income-guard';
+import { allocateHauling, haulingWorkload } from './hauling.js?v=hauling-workload';
+import { ANIIMO_WALK_SPEED, workerTravelDistances } from './worker-travel.js?v=auto-worker-travel';
 
 const load = new URL(import.meta.url).search;
 const placement = import('./layout.js' + load);
 const wiring = import('./power-layout.js' + load);
-const ROUTE_ALLOWANCE = 1.03;
 const area = rectangle => rectangle.w * rectangle.h;
 const center = rectangle => [rectangle.x + rectangle.w / 2, rectangle.y + rectangle.h / 2];
 const contains = (outer, inner) => inner.x >= outer.x && inner.y >= outer.y
@@ -102,7 +103,37 @@ function makeGroup(lot, style, gap) {
     return { bounds, storage, feature, buildable: around(bounds, feature), reserved: [...around(lot, bounds), feature] };
 }
 
-export async function groupHomelandLayout(pieces, cells, { style, gap = 2, storageCount, poleLimit, saleProducts = null, recipes = [] }) {
+// Moving buildings preserves income when the existing production plan can still run.
+// Use the same workload and route checks as the app so a move cannot trigger a lower-output solve.
+function incomeWalking(layout, staffing, recipes) {
+    if (!staffing) return [];
+    const { movement, limit, minimumWorkers, members, busy, steps, haulingBound, haulingLevel } = staffing;
+    const walking = [], occupied = busy?.slice();
+    if (movement) {
+        const distances = workerTravelDistances(layout.pieces.flatMap(piece => piece.members));
+        for (const [member, distance] of distances) {
+            const extra = distance - (movement.byMember[member] ?? movement.defaultDistance);
+            if (extra <= 1e-6) continue;
+            const visits = movement.visits[member];
+            if (!(visits > 0) || !members?.[member]) return null;
+            const workload = extra * visits / (ANIIMO_WALK_SPEED * 3600);
+            occupied[member] += workload;
+            if (occupied[member] > members[member].count + 1e-6) return null;
+            walking.push([member, workload]);
+        }
+    }
+    if (!Number.isFinite(limit)) return walking;
+    const cargo = recipes.map(recipe => ({ name: recipe.item, yieldAmount: recipe.yield, byproductAmount: recipe.byproduct?.[1] }));
+    const work = haulingWorkload(layout, steps, haulingBound, cargo);
+    if (!members) return minimumWorkers + Math.ceil(work.busyByLevel[haulingLevel] - 1e-6) <= limit ? walking : null;
+    if (occupied.reduce((sum, load) => sum + Math.max(0, Math.ceil(load - 1e-6)), 0) > limit) return null;
+    return allocateHauling(members, occupied, work, limit).unassigned <= 1e-6 ? walking : null;
+}
+
+export const layoutKeepsIncome = (layout, staffing, recipes) => incomeWalking(layout, staffing, recipes) !== null;
+
+export async function groupHomelandLayout(pieces, cells, { style, gap = 2, storageCount, poleLimit, saleProducts = null,
+    recipes = [], staffing = null }) {
     if (storageCount < 1 || !cells.length) return null;
     const [{ layOut, layoutTravelCost }, { connectPower, updatePowerConnections }] = await Promise.all([placement, wiring]);
     const requiredArea = pieces.reduce((sum, piece) => sum + pieceArea(piece), 0);
@@ -148,32 +179,31 @@ export async function groupHomelandLayout(pieces, cells, { style, gap = 2, stora
         }
     }
     if (!candidates.length && splitRequested) {
-        const mixed = await groupHomelandLayout(pieces, cells, { style, gap, storageCount, poleLimit, recipes });
+        const mixed = await groupHomelandLayout(pieces, cells, { style, gap, storageCount, poleLimit, recipes, staffing });
         return mixed && { ...mixed, groupPurposeFallback: true };
     }
     if (!candidates.length) return null;
     candidates.sort((a, b) => a.route - b.route);
     const baseline = candidates.find(candidate => candidate.assignment === purposes) ?? candidates[0];
     if (!recipes.length) return baseline.arranged;
-    const limit = baseline.route * ROUTE_ALLOWANCE;
+    const keepsIncome = layout => layoutKeepsIncome(layout, staffing, recipes);
     const baselineGraph = productionGraph(baseline.arranged.pieces, recipes);
-    const maxChain = productionDistance(baselineGraph), maxOrder = alphabetInversions(baseline.groups, baselineGraph);
+    const maxChain = productionDistance(baselineGraph);
     // Protect individual links too, so a large gain on one chain cannot scatter another.
     const maxLinks = productionLinkDistances(baselineGraph).map(length => length + Math.max(2, length * .1));
-    let best = baseline.arranged, chain = maxChain, order = maxOrder;
-    let route = baseline.route;
+    const baselineOrder = alphabetScore(baseline.groups, baselineGraph);
+    let best = baseline.arranged;
+    let bestScore = keepsIncome(best) ? { chain: maxChain, order: baselineOrder, route: baseline.route, excess: 0 } : null;
     for (const candidate of candidates) {
-        if (candidate.route > limit + 1e-6) continue;
         const graph = productionGraph(candidate.arranged.pieces, recipes);
         const result = refineProductionPlacement(candidate.arranged, candidate.groups, graph, layoutTravelCost,
-            { limit, maxChain, maxOrder, maxLinks, canPlace: candidate.canPlace });
-        if (result.chain > maxChain + 1e-6 || result.order > maxOrder || result.excess > 1e-6) continue;
-        const betterChain = result.chain < chain - 1e-6;
-        const sameChain = Math.abs(result.chain - chain) <= 1e-6;
-        if (betterChain || (sameChain && (result.order < order || (result.order === order && result.route < route)))) {
+            { maxChain, maxLinks, canPlace: candidate.canPlace, keepsIncome });
+        if (result.excess > 1e-6 || result.order.count > baselineOrder.count || !keepsIncome(candidate.arranged)) continue;
+        if (!bestScore || compareProductionPlacement(result, bestScore) < 0) {
             best = candidate.arranged;
-            ({ chain, order, route } = result);
+            bestScore = result;
         }
     }
+    if (bestScore && staffing?.movement) best.incomeWalking = incomeWalking(best, staffing, recipes);
     return updatePowerConnections(best);
 }
