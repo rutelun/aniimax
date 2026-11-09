@@ -1,7 +1,7 @@
 // Aniimax Web Application
 
-import { currentLocale, sourceAttribute, translate } from './i18n.js?v=facility-stock';
-import './math-translation.js?v=facility-stock';
+import { currentLocale, sourceAttribute, translate } from './i18n.js?v=workshop-blocks';
+import './math-translation.js?v=workshop-blocks';
 
 import {
     FACILITIES, FACILITY_CATEGORIES, FACILITY_CATEGORY_BY_NAME, FACILITY_FOOTPRINTS, HOMELAND_PLOTS, HOMELAND_PLOT_SIZE,
@@ -1709,7 +1709,7 @@ function renderHomelandLayout(plan) {
         const arrangementNotice = [
             layout.groupFallback === 'storage' ? translate('Grouped maps need at least one Storage Unit. Showing the delivery layout.') : '',
             layout.groupFallback === 'space' ? translate('The grouped map could not fit every facility and connect the grid. Showing the delivery layout.') : '',
-            layout.groupFallback === 'ranges' ? translate('No layout with non-overlapping letter ranges was found for this plan. Showing the delivery layout.') : '',
+            layout.groupFallback === 'ranges' ? translate('No separate workshop blocks could fit with this plan. Showing the delivery layout.') : '',
             layout.groupPurposeFallback ? translate('Separate sale and support groups did not fit. Showing mixed groups.') : '',
             layout.rangeMixedPurposes ? translate('Some sale and support workshops share a block to keep letter ranges intact.') : '',
             layout.groupGap < layout.requestedGroupGap ? translate('The selected gap did not fit. The map uses {gap} tile(s) between groups.')

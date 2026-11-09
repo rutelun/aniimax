@@ -13,7 +13,8 @@ export function districtStorageIndices(stores, groups) {
 
 export function canMoveDistrictStorage(layout, index, trial, groups) {
     const origin = districtOf(layout.storages[index], groups), target = districtOf(trial, groups);
-    return target >= 0 && (target === origin || !groups[origin]?.range
+    return target >= 0 && (!groups[target].workshop || !overlaps(trial, groups[target].workshop))
+        && (target === origin || !groups[origin]?.range
         || layout.storages.some((store, i) => i !== index && districtOf(store, groups) === origin));
 }
 
@@ -26,11 +27,11 @@ export function improveDistrictStorage(layout, groups, keepsIncome = () => true)
     if (!storages.length || !sources.length) return layout;
     const obstacles = [...buildings, ...(layout.power?.poles ?? [])];
     const trials = [];
-    groups.forEach(({ bounds }, zone) => {
+    groups.forEach(({ bounds, workshop }, zone) => {
         for (let y = Math.ceil(bounds.y * 2) / 2; y + 2 <= bounds.y + bounds.h + EPS; y += .5) {
             for (let x = Math.ceil(bounds.x * 2) / 2; x + 2 <= bounds.x + bounds.w + EPS; x += .5) {
                 const r = { x, y, w: 2, h: 2, zone };
-                if (!obstacles.some(other => overlaps(r, other))) trials.push(r);
+                if ((!workshop || !overlaps(r, workshop)) && !obstacles.some(other => overlaps(r, other))) trials.push(r);
             }
         }
     });

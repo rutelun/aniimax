@@ -78,7 +78,7 @@ test('a smaller gap keeps the groups when the requested gap cannot fit', async (
     assert.deepEqual(layout.unplaced, []);
 });
 
-test('workshops use disjoint letter ranges, and mines share a separate resource district', async () => {
+test('one workshop holds all processors when they fit, with mines and infrastructure outside', async () => {
     const lots = Array.from({ length: 4 }, (_, i) => ({ x: i % 2 * 20, y: Math.floor(i / 2) * 15, w: 20, h: 15 }));
     const factories = ['Aniipod Maker', 'Blazing Stove', 'Bouncy Brew Keg', 'Carousel Mill',
         'Chimney Kiln', 'Jukebox Dryer', 'Simmering Pot', 'Woodworking Bench'];
@@ -95,8 +95,7 @@ test('workshops use disjoint letter ranges, and mines share a separate resource 
     assert.equal(layout.power.disconnected, 0);
     assert.deepEqual(layout.unplaced, []);
     const ranges = layout.groups.flatMap(group => group.range ? [group.range] : []).sort();
-    assert.ok(ranges.length >= 2);
-    assert.ok(ranges.every((range, i) => !i || ranges[i - 1][1] < range[0]));
+    assert.deepEqual(ranges, [['A', 'W']]);
     const district = member => layout.groups.findIndex(group => createInsideTest([group.bounds])(member));
     const nodes = productionGraph(layout.pieces, recipes, { includeIdle: true }).nodes;
     for (const { label, rect } of nodes.filter(node => node.label)) {
@@ -108,7 +107,28 @@ test('workshops use disjoint letter ranges, and mines share a separate resource 
     assert.equal(layout.groups[mineZone].range, null);
     assert.deepEqual(layout.groups[mineZone].themes, ['mining']);
     const workshopAreas = layout.groups.flatMap(group => group.workshop ? [group.workshop] : []);
-    assert.ok(workshopAreas.length >= 2);
-    assert.ok(layout.pieces.slice(processors.length).flatMap(p => p.members)
+    assert.equal(workshopAreas.length, 1);
+    assert.ok(layout.pieces.slice(0, processors.length).flatMap(p => p.members).every(createInsideTest(workshopAreas)));
+    assert.ok([...layout.pieces.slice(processors.length).flatMap(p => p.members), ...layout.storages, ...layout.power.poles]
         .every(member => workshopAreas.every(workshop => !overlaps(workshop, member))));
+});
+
+test('oversized workshop uses adjacent letter ranges without letting trees enter either block', async () => {
+    const lots = [0, 20, 40].map(x => ({ x, y: 0, w: 20, h: 15 }));
+    const facilities = ['Aniipod Maker', 'Blazing Stove', 'Carousel Mill', 'Chimney Kiln',
+        'Crafting Table', 'Jukebox Dryer', 'Woodworking Bench'];
+    const processors = facilities.map((name, i) => piece(name, `goods_${i}`, { w: 5, h: 5 }));
+    const recipes = facilities.map((_, i) => ({ item: `goods_${i}`, makes: `goods_${i}`, yield: 1, takes: [['coconut', 1]] }));
+    const layout = await groupHomelandLayout([...processors, piece('Woodland', 'coconut', { w: 4, h: 4 })], lots,
+        { style: 'districts', storageCount: 3, gap: 2, poleLimit: 0, recipes });
+    assert.equal(layout.groupGap, 2);
+    const zones = layout.groups.filter(group => group.workshop);
+    assert.equal(zones.length, 2);
+    const [a, b] = zones;
+    assert.equal(b.bounds.x - a.bounds.x, 20);
+    const ranges = zones.map(group => group.range).sort();
+    assert.ok(ranges[0][1] < ranges[1][0]);
+    assert.ok(layout.pieces.slice(0, processors.length).flatMap(p => p.members)
+        .every(member => zones.some(zone => createInsideTest([zone.workshop])(member))));
+    assert.ok(zones.every(zone => !overlaps(zone.workshop, layout.pieces.at(-1).members[0])));
 });

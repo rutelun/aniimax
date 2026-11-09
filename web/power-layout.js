@@ -48,7 +48,7 @@ export function updatePowerConnections(layout) {
     return layout;
 }
 
-export function connectPower(layout, cells, maximum, repack = true, canRelocate = null) {
+export function connectPower(layout, cells, maximum, repack = true, canRelocate = null, canPlacePole = null) {
     const members = layout.pieces.flatMap(p => p.members);
     const generators = members.filter(m => m.generator);
     const consumers = members.filter(m => m.electric_level != null);
@@ -89,6 +89,7 @@ export function connectPower(layout, cells, maximum, repack = true, canRelocate 
         if (seen.has(key)) continue;
         seen.add(key);
         const r = { x, y, w: 1.5, h: 1.5, pole: true, facility: 'Crackle Power Pole' };
+        if (canPlacePole && !canPlacePole(r)) continue;
         const area = cells.reduce((sum, cell) => sum + Math.max(0, Math.min(x + r.w, cell.x + cell.w) - Math.max(x, cell.x))
             * Math.max(0, Math.min(y + r.h, cell.y + cell.h) - Math.max(y, cell.y)), 0);
         if (area < r.w * r.h - EPS || blocked.some(b => overlap(r, b, EPS * 2))) continue;
@@ -174,7 +175,7 @@ export function connectPower(layout, cells, maximum, repack = true, canRelocate 
                 m.x = spot.x; m.y = spot.y; occupied.push(m);
             }
             if (!fits) continue;
-            connectPower(trial, cells, maximum, false, canRelocate);
+            connectPower(trial, cells, maximum, false, canRelocate, canPlacePole);
             if (trial.power.disconnected < best.power.disconnected || (trial.power.disconnected === best.power.disconnected
                 && trial.power.poles.length < best.power.poles.length)) best = trial;
             if (!best.power.disconnected) break;

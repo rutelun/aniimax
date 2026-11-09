@@ -1,10 +1,10 @@
 // An optional physical layout with a Storage Unit and a clear feature in each group.
 import { alphabetScore, chainPurposes, productionDistance, productionGraph,
     productionLinkDistances, refineProductionPlacement } from './production-layout.js?v=zone-ranges';
-import { miningRows, productionRows, productionZones, rawTheme, rawZones, rawZoneSpread, zoneLinkDistance } from './production-zones.js?v=zone-ranges';
+import { miningRows, productionRows, productionZones, rawTheme, rawZones, rawZoneSpread, zoneLinkDistance } from './production-zones.js?v=workshop-blocks';
 import { allocateHauling, haulingWorkload } from './hauling.js?v=facility-stock';
 import { ANIIMO_WALK_SPEED, workerTravelDistances } from './worker-travel.js?v=auto-worker-travel';
-import { canMoveDistrictStorage, districtStorageIndices, improveDistrictStorage } from './district-storage.js?v=local-deliveries';
+import { canMoveDistrictStorage, districtStorageIndices, improveDistrictStorage } from './district-storage.js?v=workshop-blocks';
 
 const load = new URL(import.meta.url).search;
 const placement = import('./layout.js' + load);
@@ -20,6 +20,23 @@ const membersOf = piece => piece.cluster ? [...piece.buildings, ...piece.plots] 
 const pieceArea = piece => membersOf(piece).reduce((sum, rectangle) => sum + area(rectangle), 0);
 const miningDistricts = (layout, groups) => new Set(layout.pieces.flatMap(piece => piece.members)
     .filter(member => member.facility === 'Mine').map(member => groups.findIndex(group => contains(group.bounds, member)))).size;
+const workshopSeparation = workshops => {
+    const waiting = workshops.filter(Boolean);
+    if (waiting.length < 2) return 0;
+    const connected = [waiting.shift()];
+    let total = 0;
+    while (waiting.length) {
+        let next = -1, shortest = Infinity;
+        waiting.forEach((b, i) => connected.forEach(a => {
+            const gap = Math.hypot(Math.max(0, a.x - b.x - b.w, b.x - a.x - a.w),
+                Math.max(0, a.y - b.y - b.h, b.y - a.y - a.h));
+            if (gap < shortest) { shortest = gap; next = i; }
+        }));
+        total += shortest;
+        connected.push(waiting.splice(next, 1)[0]);
+    }
+    return total;
+};
 const rvFacilities = new Set(['Woodworking Bench', 'Chimney Kiln']);
 const saleKey = (facility, item) => `${facility}|${item.replace(/^quick_/, '')}`;
 
@@ -155,7 +172,8 @@ function* groupShapes(cells, storageCount, style, gap) {
         seen.add(key);
         partitions.push(lots);
     }
-    for (const offset of style === 'districts' ? [0, 1] : [.5, .125, .875]) {
+    const offsets = style === 'districts' ? [0, 1] : style === 'avenues' ? [.5, .125, .875, 0, 1] : [.5, .125, .875];
+    for (const offset of offsets) {
         yield partitions.map(lots => lots.map(lot => makeGroup(lot, style, gap, offset)).filter(Boolean));
     }
 }
@@ -192,79 +210,83 @@ async function tryRangeLayout(pieces, cells, { style, gap, storageCount, poleLim
     for (const shapes of groupShapes(cells, storageCount, style, gap)) for (const groups of shapes) {
         const buildable = groups.flatMap(group => group.buildable);
         if (buildable.reduce((sum, r) => sum + area(r), 0) < requiredArea) continue;
-        for (const zoning of productionZones(pieces, groups, graph, purposes, 6)) {
+        for (const zoning of productionZones(pieces, groups, graph, purposes, 10)) {
             const rows = productionRows(pieces, groups, zoning, graph);
+            if (!rows.complete) continue;
             candidates.push({ groups, buildable, zoning, variant, rows,
-                rank: zoning.score + .25 * variant - .5 * rows.fixedPieces.size });
+                rank: zoning.score + .25 * variant });
         }
         variant++;
     }
-    candidates.sort((a, b) => a.rank - b.rank);
-    // Check a few different physical shapes before spending more attempts on the same one.
-    const preferred = [], deferred = [], tried = new Set();
+    candidates.sort((a, b) => a.zoning.workshopCount - b.zoning.workshopCount || a.rank - b.rank);
+    // Exhaust the compact options first, but sample several physical shapes.
+    const byCount = new Map();
     for (const candidate of candidates) {
-        const key = candidate.variant;
-        (tried.has(key) ? deferred : preferred).push(candidate);
-        tried.add(key);
+        const count = candidate.zoning.workshopCount;
+        if (!byCount.has(count)) byCount.set(count, { first: [], more: [], variants: new Set() });
+        const { first, more, variants } = byCount.get(count);
+        (variants.has(candidate.variant) ? more : first).push(candidate);
+        variants.add(candidate.variant);
     }
+    const shortlist = [...byCount.values()].flatMap(({ first, more }) =>
+        [...first.slice(0, 4), ...more.slice(0, 2), ...first.slice(4)].slice(0, 7)).slice(0, 12);
     const trips = graph.nodes.reduce((sum, node) => sum + (node.rect.weight || 0), 0) || 1;
     const compactness = (layout, placedGraph) => zoneLinkDistance(placedGraph) + layoutTravelCost(layout) / (trips * 2);
     const keepsIncome = layout => layoutKeepsIncome(layout, staffing, recipes);
     let best = null, consolidated = 0;
-    for (const { groups, buildable, zoning, rows } of [...preferred.slice(0, 3), ...deferred.slice(0, 3), ...preferred.slice(3)].slice(0, 8)) {
+    for (const { groups, buildable, zoning, rows } of shortlist) {
+        if (best?.mineZones <= 1 && zoning.workshopCount > best.zoning.workshopCount) break;
         const storages = groups.map(group => group.storage);
         const belongs = (index, rects) => {
             const owner = zoning.owners[index];
             return owner >= 0 ? rects.every(rect => contains(groups[owner].bounds, rect))
                 : rects.length === 1 || groups.some(group => rects.every(rect => contains(group.bounds, rect)));
         };
-        const { workshops: plannedWorkshops, ...rowOptions } = rows;
-        search: for (const useRows of rowOptions.fixedPieces.size ? [true, false] : [false]) {
-            const workshops = useRows ? plannedWorkshops : groups.map(() => null);
-            const raw = rawZones(pieces, groups, zoning.owners, workshops, graph);
-            const mining = miningRows(pieces, groups, raw, workshops);
-            const modes = [...(raw.fits && raw.homes.some(home => home >= 0) ? ['all'] : []),
-                ...(raw.miningFits ? ['mines'] : []), 'flexible'];
-            for (const mode of modes) {
-                const valid = (i, rects) => {
-                    if (!belongs(i, rects)) return false;
-                    const owner = zoning.owners[i];
-                    if (owner >= 0) return !workshops[owner] || rects.every(rect => contains(workshops[owner], rect));
-                    const pin = mode === 'all' || mode === 'mines' && raw.names[i] === 'mining';
-                    return (!pin || raw.homes[i] < 0 || rects.every(rect => contains(groups[raw.homes[i]].bounds, rect)))
-                        && rects.every(rect => workshops.every(workshop => !overlaps(workshop, rect)));
-                };
-                const seed = useRows ? { initialLayout: { pieces: rowOptions.initialLayout.pieces.slice() },
-                    fixedPieces: new Set(rowOptions.fixedPieces) } : { initialLayout: { pieces: [] }, fixedPieces: new Set() };
-                if (mode !== 'flexible') for (const [i, spot] of mining) {
-                    seed.initialLayout.pieces[i] = { members: [spot] };
-                    seed.fixedPieces.add(i);
-                }
-                const layout = layOut(pieces, { ...seed, cells: buildable, storages, passes: 1,
-                    preferredStorages: zoning.owners, preferredTargets: raw.targets,
-                    placementPriority: pieces.map((piece, i) => piece.cluster ? 3 : zoning.owners[i] >= 0 ? 2 : raw.homes[i] >= 0 ? 1 : 0),
-                    clusterFits: valid, canPlace: (i, _, rects) => valid(i, rects) });
-                if (layout.unplaced.length) continue;
-                // The power repacker clones the layout, so the owning piece index
-                // must travel with the member to keep its placement restrictions.
-                layout.pieces.forEach((piece, i) => piece.members.forEach(member => { member.zonePiece = i; }));
-                const wired = connectPower(layout, buildable, poleLimit, true, (member, rectangle) =>
-                    valid(member.zonePiece, [rectangle]));
-                if (wired.power.disconnected) continue;
-                const mineZones = miningDistricts(wired, groups);
-                if (best && mineZones > best.mineZones) continue;
-                const storageZones = groups.map((group, i) => ({ ...group, range: zoning.ranges[i] }));
-                const powered = improveDistrictStorage(wired, storageZones, keepsIncome);
-                if (!keepsIncome(powered)) continue;
-                const placedGraph = productionGraph(powered.pieces, recipes, { includeIdle: true });
-                const score = compactness(powered, placedGraph) + .15 * zoning.score
-                    + .18 * alphabetScore(groups, placedGraph).count + 1.5 * rawZoneSpread(powered, groups);
-                if (!best || mineZones < best.mineZones || score < best.score)
-                    best = { powered, placedGraph, groups, zoning, belongs, score, workshops, mineZones, storageZones };
-                if (mineZones <= 1) {
-                    consolidated++;
-                    break search;
-                }
+        const { workshops, ...rowOptions } = rows;
+        const raw = rawZones(pieces, groups, zoning.owners, workshops, graph);
+        const mining = miningRows(pieces, groups, raw, workshops);
+        const modes = [...(raw.fits && raw.homes.some(home => home >= 0) ? ['all'] : []),
+            ...(raw.miningFits ? ['mines'] : []), 'flexible'];
+        for (const mode of modes) {
+            const valid = (i, rects) => {
+                if (!belongs(i, rects)) return false;
+                const owner = zoning.owners[i];
+                if (owner >= 0) return !workshops[owner] || rects.every(rect => contains(workshops[owner], rect));
+                const pin = mode === 'all' || mode === 'mines' && raw.names[i] === 'mining';
+                return (!pin || raw.homes[i] < 0 || rects.every(rect => contains(groups[raw.homes[i]].bounds, rect)))
+                    && rects.every(rect => workshops.every(workshop => !overlaps(workshop, rect)));
+            };
+            const seed = { initialLayout: { pieces: rowOptions.initialLayout.pieces.slice() },
+                fixedPieces: new Set(rowOptions.fixedPieces) };
+            if (mode !== 'flexible') for (const [i, spot] of mining) {
+                seed.initialLayout.pieces[i] = { members: [spot] };
+                seed.fixedPieces.add(i);
+            }
+            const layout = layOut(pieces, { ...seed, cells: buildable, storages, passes: 1,
+                preferredStorages: zoning.owners, preferredTargets: raw.targets,
+                placementPriority: pieces.map((piece, i) => piece.cluster ? 3 : zoning.owners[i] >= 0 ? 2 : raw.homes[i] >= 0 ? 1 : 0),
+                clusterFits: valid, canPlace: (i, _, rects) => valid(i, rects) });
+            if (layout.unplaced.length) continue;
+            // The power repacker clones the layout, so the owning piece index
+            // must travel with the member to keep its placement restrictions.
+            layout.pieces.forEach((piece, i) => piece.members.forEach(member => { member.zonePiece = i; }));
+            const wired = connectPower(layout, buildable, poleLimit, true, (member, rectangle) =>
+                valid(member.zonePiece, [rectangle]), rectangle => workshops.every(workshop => !overlaps(workshop, rectangle)));
+            if (wired.power.disconnected) continue;
+            const mineZones = miningDistricts(wired, groups);
+            if (best && mineZones > best.mineZones) continue;
+            const storageZones = groups.map((group, i) => ({ ...group, range: zoning.ranges[i], workshop: workshops[i] }));
+            const powered = improveDistrictStorage(wired, storageZones, keepsIncome);
+            if (!keepsIncome(powered)) continue;
+            const placedGraph = productionGraph(powered.pieces, recipes, { includeIdle: true });
+            const score = compactness(powered, placedGraph) + .15 * zoning.score + .45 * workshopSeparation(workshops)
+                + .18 * alphabetScore(groups, placedGraph).count + 1.5 * rawZoneSpread(powered, groups);
+            if (!best || mineZones < best.mineZones || zoning.workshopCount < best.zoning.workshopCount
+                || (zoning.workshopCount === best.zoning.workshopCount && score < best.score))
+                best = { powered, placedGraph, groups, zoning, belongs, score, workshops, mineZones, storageZones };
+            if (mineZones <= 1) {
+                consolidated++;
+                break;
             }
         }
         if (consolidated === 2) break;

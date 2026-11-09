@@ -28,7 +28,7 @@ const clearOf = (cell, obstacle) => {
 export function productionZones(pieces, groups, graph, purposes, limit = 8) {
     const letters = [...new Set(graph.nodes.filter(n => n.label).map(n => letter(n.label)))].sort();
     if (!groups.length) return [];
-    if (!letters.length) return [{ score: 0, owners: pieces.map(() => -1), ranges: groups.map(() => null) }];
+    if (!letters.length) return [{ score: 0, workshopCount: 0, owners: pieces.map(() => -1), ranges: groups.map(() => null) }];
     const byPiece = pieces.map(() => []);
     for (const node of graph.nodes) if (node.label) byPiece[node.index].push(letters.indexOf(letter(node.label)));
     const locked = new Set();
@@ -52,8 +52,6 @@ export function productionZones(pieces, groups, graph, purposes, limit = 8) {
     const distances = groups.map(a => groups.map(b => distance(a.storage, b.storage)));
     const fits = groups.map(group => pieces.map(piece => members(piece).every(r =>
         (r.w <= group.bounds.w && r.h <= group.bounds.h) || (r.h <= group.bounds.w && r.w <= group.bounds.h))));
-    const processorCount = buckets.reduce((sum, bucket) => sum + bucket.length, 0);
-    const targetCount = Math.min(groups.length, letters.length, Math.ceil(processorCount / 6));
     const frontier = letters.map(() => []);
     frontier.push([]);
     frontier[0].push({ used: 0, owners: [], spans: [], score: 0, rv: -1 });
@@ -79,19 +77,22 @@ export function productionZones(pieces, groups, graph, purposes, limit = 8) {
                 for (const state of states) {
                     if (state.used & (1 << zone)) continue;
                     let score = state.score + local;
+                    if (state.spans.length) {
+                        const previous = state.spans.at(-1)[2];
+                        score += 7 + .28 * distances[previous][zone];
+                    }
                     if (rvArea && state.rv >= 0) score += 4 + distances[zone][state.rv] * .12;
                     for (let j = start; j < end; j++) for (const [i, rate] of edges[j]) {
                         if (i < start) score += rate * (8 + distances[zone][state.owners[i]]);
                     }
                     const spans = [...state.spans, [start, end, zone]];
-                    if (end === letters.length) score += 3 * Math.abs(targetCount - spans.length);
                     frontier[end].push({ used: state.used | (1 << zone), owners: [...state.owners, ...Array(end - start).fill(zone)],
                         spans, score, rv: state.rv >= 0 ? state.rv : rvArea ? zone : -1 });
                 }
             }
         }
     }
-    const best = frontier[letters.length].sort((a, b) => a.score - b.score);
+    const best = frontier[letters.length].sort((a, b) => a.spans.length - b.spans.length || a.score - b.score);
     // Keep alternative cuts as well as alternative positions for the best cut.
     const chosen = [], skipped = [], byCut = new Map();
     for (const state of best) {
@@ -105,6 +106,7 @@ export function productionZones(pieces, groups, graph, purposes, limit = 8) {
     }
     return [...chosen, ...skipped].slice(0, limit).map(state => ({
         score: state.score,
+        workshopCount: state.spans.length,
         owners: byPiece.map(indices => indices.length ? state.owners[indices[0]] : -1),
         ranges: groups.map((_, i) => {
             const span = state.spans.find(([, , zone]) => zone === i);
@@ -232,6 +234,36 @@ export function miningRows(pieces, groups, raw, workshops) {
     return best ? best.spots.map((spot, i) => [indices[i], spot]) : [];
 }
 
+// A dense workshop may fit in one rectangle without fitting in ordered rows.
+// Keep the workshop closed to other buildings in that case too.
+function compactWorkshop(indices, pieces, width, height) {
+    let free = [{ x: 0, y: 0, w: width, h: height }];
+    const packed = [];
+    const order = [...indices].sort((a, b) => area(members(pieces[b])[0]) - area(members(pieces[a])[0]));
+    for (const index of order) {
+        const { w, h } = members(pieces[index])[0];
+        let best = null;
+        for (const cell of free) for (const [rw, rh] of w === h ? [[w, h]] : [[w, h], [h, w]]) {
+            if (rw > cell.w || rh > cell.h) continue;
+            const score = Math.min(cell.w - rw, cell.h - rh) * (width + height) + cell.y + cell.x * .1;
+            if (!best || score < best.score) best = { score, rect: { x: cell.x, y: cell.y, w: rw, h: rh } };
+        }
+        if (!best) return null;
+        const { rect } = best;
+        packed.push([index, rect]);
+        free = free.flatMap(cell => !overlaps(cell, rect) ? [cell] : [
+            { ...cell, w: rect.x - cell.x },
+            { ...cell, h: rect.y - cell.y },
+            { x: rect.x + rect.w, y: cell.y, w: cell.x + cell.w - rect.x - rect.w, h: cell.h },
+            { x: cell.x, y: rect.y + rect.h, w: cell.w, h: cell.y + cell.h - rect.y - rect.h },
+        ].filter(r => r.w > 0 && r.h > 0));
+        free = free.filter((r, i) => !free.some((other, j) => i !== j && r.x >= other.x && r.y >= other.y
+            && r.x + r.w <= other.x + other.w && r.y + r.h <= other.y + other.h
+            && (area(r) < area(other) || j < i)));
+    }
+    return packed;
+}
+
 // In a clear part of each block, try a compact row layout before letting the
 // general packer fill the remaining area with suppliers and support facilities.
 export function productionRows(pieces, groups, { owners }, graph) {
@@ -249,17 +281,17 @@ export function productionRows(pieces, groups, { owners }, graph) {
         for (const cell of group.buildable) {
             const widths = [...new Set([cell.w, Math.min(cell.w, Math.ceil(Math.sqrt(sum) * 1.35)),
                 Math.min(cell.w, Math.ceil(Math.sqrt(sum) * 1.8))])];
-            for (const width of widths) {
+            for (const width of widths) for (const aisle of [.5, 0]) {
                 const rows = [];
                 for (const j of indices) {
                     const r = members(pieces[j])[0];
                     if (r.w > width || r.h > cell.h) { rows.length = 0; break; }
                     let row = rows.at(-1);
-                    if (!row || row.w + r.w + .5 > width) {
+                    if (!row || row.w + r.w + aisle > width) {
                         row = { w: 0, h: 0, pieces: [] };
                         rows.push(row);
                     }
-                    const x = row.w ? row.w + .5 : 0;
+                    const x = row.w ? row.w + aisle : 0;
                     row.pieces.push({ index: j, x, w: r.w, h: r.h });
                     row.w = x + r.w;
                     row.h = Math.max(row.h, r.h);
@@ -268,7 +300,7 @@ export function productionRows(pieces, groups, { owners }, graph) {
                 rows[0].y = 0;
                 for (let r = 1; r < rows.length; r++) {
                     const previous = rows[r - 1], row = rows[r];
-                    row.y = previous.y + Math.max(previous.h + .5, 4 + (previous.h - row.h) / 2);
+                    row.y = previous.y + (aisle ? Math.max(previous.h + aisle, 4 + (previous.h - row.h) / 2) : previous.h);
                 }
                 const last = rows.at(-1), height = last.y + last.h;
                 if (height > cell.h) continue;
@@ -278,9 +310,20 @@ export function productionRows(pieces, groups, { owners }, graph) {
                 const packed = rows.flatMap(row => row.pieces.map(({ index, x, w, h }) => [index,
                     { x: left + x, y: snap(top + row.y + (row.h - h) / 2), w, h }]));
                 const score = packed.reduce((total, [, r]) => total + distance(r, storage), 0) / indices.length
-                    + .18 * (usedWidth + height);
+                    + .18 * (usedWidth + height) + (aisle ? 0 : 2);
                 if (!best || score < best.score) best = { packed, score, bounds: { x: left, y: top, w: usedWidth, h: height } };
             }
+        }
+        if (!best) for (const cell of group.buildable) {
+            const compact = compactWorkshop(indices, pieces, cell.w, cell.h);
+            if (!compact) continue;
+            const w = Math.max(...compact.map(([, r]) => r.x + r.w));
+            const h = Math.max(...compact.map(([, r]) => r.y + r.h));
+            const x = snap(Math.max(cell.x, Math.min(cell.x + cell.w - w, storage.x + 1 - w / 2)));
+            const y = snap(Math.max(cell.y, Math.min(cell.y + cell.h - h, storage.y + 1 - h / 2)));
+            const packed = compact.map(([index, r]) => [index, { ...r, x: r.x + x, y: r.y + y }]);
+            const score = packed.reduce((total, [, r]) => total + distance(r, storage), 0) / indices.length + .18 * (w + h);
+            if (!best || score < best.score) best = { packed, score, bounds: { x, y, w, h } };
         }
         if (!best) continue;
         workshops[i] = best.bounds;
@@ -289,7 +332,7 @@ export function productionRows(pieces, groups, { owners }, graph) {
             fixedPieces.add(index);
         }
     }
-    return { initialLayout: layout, fixedPieces, workshops };
+    return { initialLayout: layout, fixedPieces, workshops, complete: fixedPieces.size === owners.filter(i => i >= 0).length };
 }
 
 export function rawZoneSpread(layout, groups) {

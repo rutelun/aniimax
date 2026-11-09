@@ -1006,7 +1006,7 @@
   "Zone {n}": "Зона {n}",
   "Grouped maps need at least one Storage Unit. Showing the delivery layout.": "Для групп нужен хотя бы один склад. Показана карта с короткими маршрутами.",
   "The grouped map could not fit every facility and connect the grid. Showing the delivery layout.": "Не удалось разместить все здания и подключить электричество. Показана карта с короткими маршрутами.",
-  "No layout with non-overlapping letter ranges was found for this plan. Showing the delivery layout.": "Для этого плана не удалось найти расстановку с непересекающимися диапазонами букв. Показана карта с короткими маршрутами.",
+  "No separate workshop blocks could fit with this plan. Showing the delivery layout.": "Не удалось выделить отдельные блоки мастерских для этого плана. Показана карта с короткими маршрутами.",
   "Some sale and support workshops share a block to keep letter ranges intact.": "Часть станков для продажи и обеспечения находится в одном блоке, чтобы диапазоны букв не пересекались.",
   "Separate sale and support groups did not fit. Showing mixed groups.": "Отдельные группы для продажи и поддержки не поместились. Показаны смешанные группы.",
   "This plan needs {n} Aniimo including reserves.": "Плану нужно {n} Анимо с учётом резервных.",
