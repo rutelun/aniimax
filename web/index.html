@@ -58,6 +58,12 @@
                 </div>
 
                 <div id="advanced-config">
+                    <div class="input-row">
+                        <div class="input-field">
+                            <label for="layout-rv-level">RV level</label>
+                            <input type="number" id="layout-rv-level" min="1" max="20" step="1" placeholder="Auto">
+                        </div>
+                    </div>
                     <h3>Facilities</h3>
                     <p class="hint">Set the count and level for each facility you have.</p>
                     <div class="fill-row">
@@ -184,24 +190,6 @@
                 </details>
                 <div class="season" id="electricity-section">
                     <label><input type="checkbox" id="electricity-on"> E-mode</label>
-                    <div id="electricity-config" hidden>
-                        <p class="hint small">Use the power available on your connected grid. Each 600 W of load needs one Lightning Aniimo. In My Aniimo, the worker limit includes delivery.</p>
-                        <div class="stock-grid">
-                            <div class="input-field">
-                                <label for="electricity-watts">Available power (W)</label>
-                                <input type="number" id="electricity-watts" min="0" max="4294967295" step="1" value="0">
-                            </div>
-                            <div class="input-field">
-                                <label for="electricity-percent">Grid supply (%)</label>
-                                <input type="number" id="electricity-percent" min="1" max="120" step="1" value="120" required>
-                            </div>
-                            <div class="input-field">
-                                <label for="electricity-aniimo-limit">Max working Aniimo</label>
-                                <input type="number" id="electricity-aniimo-limit" min="0" max="4294967295" step="1" placeholder="No limit">
-                            </div>
-                        </div>
-                        <p class="hint small">Normal work and E-mode are compared across the whole plan. Best and Minimum use E-mode when it matches or beats normal recipe speed.</p>
-                    </div>
                 </div>
                 <button id="optimize-btn" class="optimize-btn">
                     <span class="btn-text">Find the best plan</span>
@@ -237,6 +225,12 @@
                             <div class="ability-levels" id="ability-levels"></div>
                             <div id="worker-travel-option" class="checkbox-field" hidden>
                                 <label><input type="checkbox" id="worker-travel-on"> <span>Account for Aniimo travel</span> <span class="hint small">(very slow)</span></label>
+                            </div>
+                            <div id="roster-worker-limit" class="input-row" hidden>
+                                <div class="input-field">
+                                    <label for="electricity-aniimo-limit">Max working Aniimo</label>
+                                    <input type="number" id="electricity-aniimo-limit" min="0" max="4294967295" step="1" placeholder="No limit">
+                                </div>
                             </div>
                             <div class="roster-editor" id="roster-editor" hidden></div>
                         </div>
@@ -351,10 +345,6 @@
                         <p class="hint small layout-group-notice" id="layout-group-notice" role="status" hidden></p>
                         <p class="hint small" id="layout-group-hint" hidden>Hatched tiles are reserved for paths and decoration. Buildings and power poles leave this space clear.</p>
                         <div class="layout-controls">
-                            <div class="input-field layout-storage-config" hidden>
-                                <label for="layout-rv-level">Layout RV level</label>
-                                <input type="number" id="layout-rv-level" min="1" max="20" step="1">
-                            </div>
                             <div class="input-field layout-storage-config">
                                 <label for="layout-storage-count">Storage Units available</label>
                                 <input type="number" id="layout-storage-count" min="0" step="1" aria-describedby="layout-storage-limit">
@@ -623,6 +613,6 @@
             }
         });
     </script>
-    <script type="module" src="app.js?v=workshop-blocks"></script>
+    <script type="module" src="app.js?v=auto-e-mode"></script>
 </body>
 </html>

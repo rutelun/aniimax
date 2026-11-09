@@ -18,6 +18,7 @@ function page() {
     const context = {
         document: { getElementById: element, querySelectorAll: () => [] },
         selectedSetupTab: () => state.tab, levelledAbilities: () => [],
+        maxWorkingAniimo: () => null,
         Worker: class {
             constructor() { workers.push(this); }
             postMessage(message) { this.request = message; }

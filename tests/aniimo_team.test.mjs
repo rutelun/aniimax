@@ -25,7 +25,7 @@ test('Best and Minimum need a resident per unit and count every separate climate
         coin_items: [{ facility: 'Tidewhisper Sandcastle', item_name: 'salt', facility_count: 2,
             aniimo_tasks: [{ ability: 'Leisure', level: 1, busy: .3 }] }],
         environment_assignments: climate,
-        power_generators: 1,
+        power_generator_levels: [[2, 2]],
         hauling_busy: .4,
     };
     const team = aniimoTeam(plan);
@@ -33,4 +33,5 @@ test('Best and Minimum need a resident per unit and count every separate climate
         assert.equal(team.kept.find(group => group.ability === ability)?.count, count);
     }
     assert.equal(team.total, 8);
+    assert.equal(team.kept.find(group => group.ability === 'Lightning').level, 2);
 });

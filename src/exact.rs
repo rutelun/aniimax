@@ -43,7 +43,7 @@ use crate::coverage::{
     building_size, pair_options_over_offsets, Offset, PairOption, PairSizes, Zone, ENVIRONMENT_GATED_FACILITIES,
 };
 use crate::models::{byproduct_item, FacilityCounts, ModuleLevels, ProductionItem};
-use crate::power::{electric_level, generator_workers, watts_per_level, GENERATOR, WATTS_PER_GENERATOR_ANIIMO};
+use crate::power::{electric_level, watts_per_level, GENERATOR};
 
 /// Whether plans may place two environment buildings to overlap, for the zone their temperatures
 /// make together. Confirmed in game: a plot reached by Scorching and Cool reads Warm and grows a
@@ -745,6 +745,7 @@ fn build_model<'a>(
     let mut by_facility: BTreeMap<&str, Vec<(u32, usize)>> = BTreeMap::new();
     let mut powered: BTreeMap<(&str, u32), Vec<(usize, bool)>> = BTreeMap::new();
     let mut generator_count = None;
+    let mut roster_power_draw = None;
     for &(recipe, units) in &units_of {
         if let Some(level) = electric_level(&recipe.name) {
             powered.entry((recipe.facility.as_str(), level)).or_default().push((units, takes_turns(recipe)));
@@ -774,9 +775,13 @@ fn build_model<'a>(
         }
         if !draw.is_empty() {
             model.constrain(draw.clone(), ComparisonOp::Le, power.grid.watts as f64);
-            let generators = model.add(0.0, (0.0, generator_workers(power.grid.watts as f64) as f64), true, VarKind::PowerGenerators);
-            draw.push((generators, -WATTS_PER_GENERATOR_ANIIMO));
-            model.constrain(draw, ComparisonOp::Le, 0.0);
+            let generators = model.add(0.0, (0.0, power.generator_limit() as f64), true, VarKind::PowerGenerators);
+            if power.automatic.is_some() && facility_counts.crew().is_some() {
+                roster_power_draw = Some(draw);
+            } else {
+                draw.push((generators, -power.max_generator_output()));
+                model.constrain(draw, ComparisonOp::Le, 0.0);
+            }
             generator_count = Some(generators);
         }
     }
@@ -993,7 +998,9 @@ fn build_model<'a>(
             let mut eligible = crew.members.iter().enumerate()
                 .filter(|(member, _)| crew.can_work(*member, ability, 1)).peekable();
             while let Some((member, aniimo)) = eligible.next() {
-                let maximum = if building == GENERATOR { aniimo.count }
+                let maximum = if building == GENERATOR {
+                    aniimo.count.min(facility_counts.power().unwrap().generator_limit())
+                }
                     else { aniimo.count.min(facility_counts.get_count(&building)) };
                 // The last climate pool's count is fixed to an integer by the equality:
                 // the buildings and every other pool's dedicated assignments are whole.
@@ -1001,8 +1008,16 @@ fn build_model<'a>(
                 let staff = model.add(0.0, (0.0, maximum as f64), integer, VarKind::Staff { building: building.clone(), member });
                 staffed.push((staff, 1.0));
                 busy[member].push((staff, 1.0));
+                if building == GENERATOR {
+                    if let Some(draw) = &mut roster_power_draw {
+                        draw.push((staff, -facility_counts.power().unwrap().generator_output(aniimo.level("Lightning"))));
+                    }
+                }
             }
             model.constrain(staffed, ComparisonOp::Eq, 0.0);
+        }
+        if let Some(draw) = roster_power_draw {
+            model.constrain(draw, ComparisonOp::Le, 0.0);
         }
         let team_limit = facility_counts.power().and_then(|power| power.grid.max_aniimo.map(|n| (power, n)));
         if facility_counts.movement_seconds() > 0.0 {
@@ -1640,7 +1655,7 @@ pub fn check_plan_with_workload(
     }
     let rates: Vec<(&ProductionItem, f64)> = plan.recipe_rates.iter().filter_map(|(n, &r)| Some((*all.get(n.as_str())?, r))).collect();
     let electric = electric_usage(plan, &all);
-    let mut required_generators = 0;
+    let mut required_power = 0.0;
     if !electric.is_empty() {
         let power = facility_counts.power().ok_or("E-mode requires a power grid")?;
         let mut rated = 0.0;
@@ -1656,7 +1671,7 @@ pub fn check_plan_with_workload(
         if watts > power.grid.watts as f64 + TOLERANCE {
             return Err("E-mode demand exceeds available power".to_string());
         }
-        required_generators = generator_workers(watts);
+        required_power = watts;
     }
     for (crop, &minimum) in facility_counts.season_crop_minimums() {
         let mut growing = 0;
@@ -1762,6 +1777,7 @@ pub fn check_plan_with_workload(
             };
         }
         let mut staffed: HashMap<&str, f64> = HashMap::new();
+        let mut generated = 0.0;
         for (building, member, share) in &plan.staffing {
             let ability = if building == GENERATOR { Some("Lightning") } else { crew.environment.get(building).map(String::as_str) };
             let ability = ability.ok_or(format!("{building} needs no Aniimo"))?;
@@ -1773,6 +1789,10 @@ pub fn check_plan_with_workload(
             }
             busy[*member] += share;
             *staffed.entry(building.as_str()).or_default() += share;
+            if building == GENERATOR {
+                let power = facility_counts.power().ok_or("Crackle Generator staffed without a power grid")?;
+                generated += share * power.generator_output(crew.members[*member].level("Lightning"));
+            }
         }
         for (&building, &used) in &buildings_used {
             if !crew.environment.contains_key(building) { continue; }
@@ -1784,8 +1804,13 @@ pub fn check_plan_with_workload(
         if staffed.iter().any(|(&building, &used)| building != GENERATOR && used > TOLERANCE && !buildings_used.contains_key(building)) {
             return Err("workers assigned to a climate building that is not in use".into());
         }
-        if staffed.get(GENERATOR).copied().unwrap_or(0.0) + TOLERANCE < required_generators as f64 {
-            return Err(format!("{required_generators} Lightning Aniimo required for power"));
+        if let Some(power) = facility_counts.power() {
+            if staffed.get(GENERATOR).copied().unwrap_or(0.0) > power.generator_limit() as f64 + TOLERANCE {
+                return Err("Too many Crackle Generators for this RV level".into());
+            }
+        }
+        if generated + TOLERANCE < required_power {
+            return Err("Assigned Lightning Aniimo do not generate enough power".into());
         }
         if let Some(steps) = facility_counts.grower_steps() {
             let mut assigned: BTreeMap<(&str, u32), f64> = BTreeMap::new();
@@ -1905,7 +1930,7 @@ fn production_staff_zeros(model: &Model<'_>, counts: &FacilityCounts) -> Vec<usi
     let recipes: Vec<_> = model.kinds.iter().filter_map(|kind|match kind { VarKind::Rate(r)=>Some(*r),_=>None }).collect();
     let workplaces: std::collections::BTreeSet<_> = recipes.iter().map(|r|r.facility.as_str())
         .chain(crew.environment.keys().map(String::as_str).filter(|&f|f!=GENERATOR)).collect();
-    let generators = counts.power().map_or(0,|p|generator_workers(p.grid.watts as f64));
+    let generators = counts.power().map_or(0, |p| p.generator_limit());
     let capacity = workplaces.into_iter().fold(generators,|sum,f|sum.saturating_add(counts.get_count(f)));
     let reserves: BTreeMap<_,_> = crew.members.iter().enumerate().skip(first).filter_map(|(member,a)| {
         if a.count < capacity || a.abilities.len()!=1 || a.abilities.values().any(|&level|level==0) || a.level("Hauling")>0 { return None; }
@@ -1923,7 +1948,15 @@ fn production_staff_zeros(model: &Model<'_>, counts: &FacilityCounts) -> Vec<usi
     model.kinds.iter().enumerate().filter_map(|(v,kind)| {
         let VarKind::Staff{building,member} = kind else { return None };
         let ability = if building==GENERATOR {"Lightning"} else {crew.environment.get(building)?.as_str()};
-        reserves.get(ability).is_some_and(|chosen|chosen!=member).then_some(v)
+        let chosen = *reserves.get(ability)?;
+        if building == GENERATOR && counts.power().is_some_and(|p| {
+            p.generator_output(crew.members[chosen].level(ability))
+                < p.generator_output(crew.members[*member].level(ability))
+        }) {
+            // A reserve Lightning Lv.3 cannot replace an owned Lv.4 at full Lv.5 output.
+            return None;
+        }
+        (chosen != *member).then_some(v)
     }).collect()
 }
 

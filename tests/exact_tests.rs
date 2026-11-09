@@ -368,7 +368,7 @@ fn test_electricity_uses_the_actual_building_level_and_keeps_faster_workers() {
     let mut counts = FacilityCounts::only(&[("Mine", 1, 1)]);
     counts.add_tier("Mine", 1, 2);
     let grid = Electricity { watts: 36, percent: 120, max_aniimo: None };
-    counts.set_power(PowerPlan { grid: grid.clone(), grower_steps: GrowerSteps::default() });
+    counts.set_power(PowerPlan { grid: grid.clone(), grower_steps: GrowerSteps::default(), automatic: None });
     let mut items = originals.clone();
     requirements.apply(&AniimoSetup::Minimum, &mut items);
     add_electric_variants(&mut items, originals.clone(), &counts, &requirements, &grid);
@@ -404,12 +404,53 @@ fn test_electricity_counts_lightning_workers_toward_the_roster_limit() {
         let grid = Electricity { watts: 650, percent: 100, max_aniimo: Some(limit) };
         let mut items = aniimax::models::crew_variants(originals.clone(), &crew, &requirements, &steps);
         add_electric_variants(&mut items, originals.clone(), &counts, &requirements, &grid);
-        counts.set_power(PowerPlan { grid, grower_steps: steps.clone() });
+        counts.set_power(PowerPlan { grid, grower_steps: steps.clone(), automatic: None });
         let plan = solve_exact(&items, "coins", &counts, &modules, Goal::Earn { floors: &[] }, None, None).unwrap();
         assert_eq!(plan.units.get("rock__electric1"), Some(&mines));
         assert_eq!(aniimax::exact::rated_power_draw(&plan, &items), watts);
         assert_eq!(plan.staffing, vec![(GENERATOR.into(), 0, limit as f64)]);
         check_plan(&plan, &items, "coins", &counts, &modules, None).unwrap();
+    }
+}
+
+#[test]
+fn test_automatic_electricity_uses_rv_limits_and_assigned_lightning_output() {
+    use aniimax::models::{crew_variants, GrowerSteps};
+    use aniimax::power::{add_electric_variants, Electricity, GeneratorLimits, PowerPlan, GENERATOR};
+    assert!(GeneratorLimits::for_rv(11, 4).is_none());
+    for (rv, count, tier, output) in [(12, 1, 1, 600), (14, 1, 2, 800), (15, 2, 2, 800),
+        (16, 2, 3, 1000), (18, 3, 4, 1200), (20, 3, 5, 1500)] {
+        let limits = GeneratorLimits::for_rv(rv, 4).unwrap();
+        assert_eq!(limits.count, count);
+        assert_eq!(limits.generator(4), (tier, output));
+    }
+    let automatic = GeneratorLimits::for_rv(20, 4).unwrap();
+    assert_eq!(automatic.generator(3), (5, 1285));
+    assert_eq!(automatic.staffing(1400.0), vec![4]);
+    assert_eq!(automatic.staffing(2100.0), vec![1, 4]);
+
+    let Some(mut originals) = load_items() else { return };
+    originals.retain(|item| item.name == "rock");
+    let requirements = load_aniimo_requirements(Path::new("data")).unwrap();
+    let automatic = GeneratorLimits::for_rv(14, 4).unwrap();
+    let steps = GrowerSteps::default();
+    let grid = Electricity { watts: 800, percent: 120, max_aniimo: None };
+    let modules = ModuleLevels::default();
+    // 600 W supports 16 of these mines at 120%. The stronger worker supports 20.
+    for (lightning, mines) in [(1, 16), (2, 20)] {
+        let crew = crew_of(&[(2, &[("Lightning", lightning)])]);
+        let mut counts = FacilityCounts::only(&[("Mine", 20, 1)]);
+        counts.set_crew(crew.clone());
+        counts.set_power(PowerPlan { grid: grid.clone(), grower_steps: steps.clone(), automatic: Some(automatic) });
+        let mut items = crew_variants(originals.clone(), &crew, &requirements, &steps);
+        add_electric_variants(&mut items, originals.clone(), &counts, &requirements, &grid);
+        let plan = solve_exact(&items, "coins", &counts, &modules, Goal::Earn { floors: &[] }, None, None).unwrap();
+        assert_eq!(plan.units.get("rock__electric1"), Some(&mines));
+        assert_eq!(plan.staffing, vec![(GENERATOR.into(), 0, 1.0)]);
+        check_plan(&plan, &items, "coins", &counts, &modules, None).unwrap();
+        let mut invalid = plan.clone();
+        invalid.staffing[0].2 = 2.0;
+        assert!(check_plan(&invalid, &items, "coins", &counts, &modules, None).is_err());
     }
 }
 
@@ -429,7 +470,7 @@ fn test_roster_uses_electricity_when_its_faster_worker_is_already_busy() {
         counts.set_crew(crew.clone());
         let mut items = crew_variants(originals.clone(), &crew, &requirements, &steps);
         add_electric_variants(&mut items, originals.clone(), &counts, &requirements, &grid);
-        counts.set_power(PowerPlan { grid: grid.clone(), grower_steps: steps.clone() });
+        counts.set_power(PowerPlan { grid: grid.clone(), grower_steps: steps.clone(), automatic: None });
         let plan = solve_exact(&items, "coins", &counts, &modules, Goal::Earn { floors: &[] }, None, None).unwrap();
         assert_eq!(plan.units.get("rock__by0"), Some(&1));
         assert_eq!(plan.units.get("rock__electric1").copied().unwrap_or(0), mine_count - 1);
@@ -965,7 +1006,7 @@ fn crop_jobs_share_roster_time_without_a_team_limit() {
             counts.set_crew(crew.clone());
             counts.set_grower_steps(steps.clone());
             if electricity { counts.set_power(PowerPlan {
-                grid: Electricity { watts: 600, percent: 100, max_aniimo: None }, grower_steps: steps.clone(),
+                grid: Electricity { watts: 600, percent: 100, max_aniimo: None }, grower_steps: steps.clone(), automatic: None,
             }); }
             let modules = ModuleLevels::default();
             let floors = [("aniimo_exp".to_string(), 0.1)];
@@ -1281,6 +1322,7 @@ fn delivery_work_is_assigned_to_hauling_aniimo_only() {
         counts.set_power(aniimax::power::PowerPlan {
             grid: aniimax::power::Electricity { watts: 0, percent: 100, max_aniimo: Some(limit) },
             grower_steps: GrowerSteps::default(),
+            automatic: None,
         });
         let limited = solve_exact(&items, "coins", &counts, &modules, Goal::Earn { floors: &[] }, None, None).unwrap();
         check_plan(&limited, &items, "coins", &counts, &modules, None).unwrap();
@@ -1301,6 +1343,7 @@ fn hauling_level_changes_delivery_capacity_under_a_shared_headcount_limit() {
     counts.set_power(aniimax::power::PowerPlan {
         grid: aniimax::power::Electricity { watts: 0, percent: 100, max_aniimo: Some(2) },
         grower_steps: GrowerSteps::default(),
+        automatic: None,
     });
     let modules = ModuleLevels::default();
     let plan = solve_exact(&items, "coins", &counts, &modules, Goal::Earn { floors: &[] }, None, None).unwrap();

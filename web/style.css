@@ -1762,14 +1762,6 @@ details.explain p {
     margin-top: 0.6rem;
 }
 
-#electricity-config .stock-grid {
-    align-items: end;
-}
-
-#electricity-config .input-field {
-    min-width: 0;
-}
-
 #level-up-config .stock-grid .input-field {
     max-width: none;
 }

@@ -1,5 +1,5 @@
 // Connects the math window retypeset (see math-retypeset.js) to the page and its language changes.
-import { languageReady, translateTree } from './i18n.js?v=workshop-blocks';
+import { languageReady, translateTree } from './i18n.js?v=auto-e-mode';
 import { createMathRetypeset } from './math-retypeset.js';
 
 const queueRetypeset = createMathRetypeset({

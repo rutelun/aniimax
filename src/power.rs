@@ -22,6 +22,69 @@ pub struct Electricity {
 pub struct PowerPlan {
     pub grid: Electricity,
     pub grower_steps: GrowerSteps,
+    pub automatic: Option<GeneratorLimits>,
+}
+
+/// RV permits up to this many generators, upgraded as far as the Power Module allows.
+/// Output/workload are the five generator recipes in game build 3584014.
+#[derive(Debug, Clone, Copy)]
+pub struct GeneratorLimits {
+    pub count: u32,
+    tier: usize,
+    lightning: u32,
+}
+
+const GENERATOR_TIERS: [(u32, u32, u32, u32); 5] = [
+    // RV unlock, recommended Lightning, watts, workload
+    (12, 1, 600, 60), (14, 2, 800, 60), (16, 3, 1000, 75),
+    (18, 3, 1200, 90), (20, 3, 1500, 105),
+];
+
+impl GeneratorLimits {
+    pub fn for_rv(rv: u32, lightning: u32) -> Option<Self> {
+        let tier = GENERATOR_TIERS.iter().rposition(|&(unlock, ..)| unlock <= rv)?;
+        let count = if rv >= 18 { 3 } else if rv >= 15 { 2 } else { 1 };
+        Some(Self { count, tier, lightning: lightning.clamp(1, 4) })
+    }
+
+    /// Choose the strongest available generator recipe supported by this worker.
+    pub fn generator(self, lightning: u32) -> (u32, u32) {
+        let Some(tier) = GENERATOR_TIERS[..=self.tier].iter().rposition(|&(_, required, ..)| required <= lightning) else {
+            return (0, 0);
+        };
+        let (_, _, watts, workload) = GENERATOR_TIERS[tier];
+        let work_rate = 45 + 15 * lightning.min(4);
+        // Round down so the planner never budgets more power than is generated.
+        (tier as u32 + 1, watts * work_rate.min(workload) / workload)
+    }
+
+    pub fn max_output(self) -> u32 { self.generator(self.lightning).1 }
+
+    /// The fewest generators, then the lowest Lightning levels that cover the demand.
+    pub fn staffing(self, watts: f64) -> Vec<u32> {
+        let max = self.max_output() as f64;
+        let count = ((watts - 1e-6) / max).ceil().max(0.0) as u32;
+        let mut remaining = watts;
+        (0..count).rev().map(|others| {
+            let level = (1..=self.lightning)
+                .find(|&level| self.generator(level).1 as f64 + others as f64 * max + 1e-6 >= remaining)
+                .unwrap_or(self.lightning);
+            remaining -= self.generator(level).1 as f64;
+            level
+        }).collect()
+    }
+}
+
+impl PowerPlan {
+    pub fn generator_limit(&self) -> u32 {
+        self.automatic.map_or_else(|| generator_workers(self.grid.watts as f64), |g| g.count)
+    }
+    pub fn generator_output(&self, lightning: u32) -> f64 {
+        self.automatic.map_or(WATTS_PER_GENERATOR_ANIIMO, |g| g.generator(lightning).1 as f64)
+    }
+    pub fn max_generator_output(&self) -> f64 {
+        self.automatic.map_or(WATTS_PER_GENERATOR_ANIIMO, |g| g.max_output() as f64)
+    }
 }
 
 pub fn electric_level(name: &str) -> Option<u32> {

@@ -1,7 +1,7 @@
 // Aniimax Web Application
 
-import { currentLocale, sourceAttribute, translate } from './i18n.js?v=workshop-blocks';
-import './math-translation.js?v=workshop-blocks';
+import { currentLocale, sourceAttribute, translate } from './i18n.js?v=auto-e-mode';
+import './math-translation.js?v=auto-e-mode';
 
 import {
     FACILITIES, FACILITY_CATEGORIES, FACILITY_CATEGORY_BY_NAME, FACILITY_FOOTPRINTS, HOMELAND_PLOTS, HOMELAND_PLOT_SIZE,
@@ -144,7 +144,7 @@ let planRunId = 0;
 function selectedAniimoSetup() {
     const tab = selectedSetupTab();
     if (tab === 'minimum') return 'minimum';
-    if (tab === 'custom') return `roster:${JSON.stringify({ members: roster.map(({ name, ...aniimo }) => aniimo), travel: workerTravelEnabled(), movementDistance: workerTravelEnabled() ? movementDefaultDistance : 0, movementDistances: workerTravelEnabled() ? movementDistances : {}, haulingSeconds, haulingDefaultSeconds })}`;
+    if (tab === 'custom') return `roster:${JSON.stringify({ members: roster.map(({ name, ...aniimo }) => aniimo), maxWorkers: maxWorkingAniimo(), travel: workerTravelEnabled(), movementDistance: workerTravelEnabled() ? movementDefaultDistance : 0, movementDistances: workerTravelEnabled() ? movementDistances : {}, haulingSeconds, haulingDefaultSeconds })}`;
     return bestAniimoSetup();
 }
 
@@ -420,7 +420,7 @@ function getPersistedFieldIds() {
     return [
         'target-amount', 'current-amount',
         'strategy-level-up', 'strategy-priorities', 'crop-variety', 'level-up-target',
-        'electricity-on', 'electricity-watts', 'electricity-percent', 'electricity-aniimo-limit',
+        'electricity-on', 'electricity-aniimo-limit',
         'mode-simple', 'mode-advanced', 'home-level',
         'ecological-module-level', 'kitchen-module-level',
         'resource-detector-level', 'crafting-module-level',
@@ -718,6 +718,7 @@ function fillAdvancedFrom(homeLevel) {
     document.getElementById('kitchen-module-level').value = modules.kitchen_module;
     document.getElementById('resource-detector-level').value = modules.resource_detector;
     document.getElementById('crafting-module-level').value = modules.crafting_module;
+    document.getElementById('layout-rv-level').value = homeLevel;
     followLevelUpTarget(homeLevel);
     renderStrategy();
     saveInputsToStorage();
@@ -1312,7 +1313,7 @@ function homelandPieces(plan, input) {
     });
     const generators = Math.min(plan.power_generators || 0, generatorLimit(layoutHomeLevel()));
     for (let i = 0; i < generators; i++) pieces.push({ members: [{ x: 0, y: 0, w: 2, h: 2,
-        weight: 0, facility: 'Crackle Generator', generator: true }] });
+        weight: 0, facility: 'Crackle Generator', generator: true, generatorTier: plan.power_generator_levels?.[i]?.[0] }] });
     const physical = pieces.flatMap(p => p.cluster ? p.plots : p.members);
     for (const [item, facility, worker, visits, cropWork] of (workerTravelEnabled() ? plan.mobile_work || [] : [])) {
         const targets = physical.filter(m => m.facility === facility && (m.jobs
@@ -1364,9 +1365,9 @@ function homelandPlots() {
 
 // The RV level the layout is for: the one given in Simple mode, else the lowest that allows
 // everything entered (see `homeLevelCovering`).
-function layoutHomeLevel() {
+function layoutHomeLevel(input = lastPlanInput) {
     if (isSimpleMode()) return selectedHomeLevel();
-    const minimum = homeLevelCovering(lastPlanInput);
+    const minimum = homeLevelCovering(input);
     return Math.min(MAX_HOME_LEVEL, Math.max(minimum,
         Math.floor(numberOrDefault(document.getElementById('layout-rv-level').value, minimum))));
 }
@@ -1428,7 +1429,7 @@ function attachLayoutHandlers() {
         haulingRefinements = 0;
         renderHomelandLayout(lastPlan);
     }));
-    ['layout-storage-count', 'layout-rv-level'].forEach(id => document.getElementById(id).addEventListener('input', () => {
+    document.getElementById('layout-storage-count').addEventListener('input', () => {
         clearTimeout(layoutStorageTimer);
         layoutStorageTimer = setTimeout(() => {
             stopRanking();
@@ -1443,7 +1444,7 @@ function attachLayoutHandlers() {
             }
             if (lastPlan?.success) renderHomelandLayout(lastPlan);
         }, 300);
-    }));
+    });
     document.getElementById('layout-whole').addEventListener('change', (e) => {
         layoutShowsWhole = e.target.checked;
         if (lastLayout) drawLayout(lastLayout);
@@ -1612,7 +1613,7 @@ function layoutOptionsFor(plan, homeLevel, setup = selectedSetupTab()) {
         const visits = {};
         for (const [, , member, count] of plan.mobile_work || []) visits[member] = (visits[member] || 0) + count;
         staffing = {
-            limit: ownedPlan ? Math.min(rvLimit, lastPlanInput?.electricity?.max_aniimo ?? Infinity) : rvLimit,
+            limit: ownedPlan ? Math.min(rvLimit, maxWorkingAniimo() ?? Infinity) : rvLimit,
             members: team?.members,
             busy: team?.busy,
             minimumWorkers: ownedPlan ? 0 : aniimoTeam({ ...plan, hauling_busy: 0 }).total,
@@ -1663,11 +1664,6 @@ function renderHomelandLayout(plan) {
     // Worked out in a worker of its own: a large homeland takes a few seconds.
     const { pieces, unplaced } = homelandPieces(plan, lastPlanInput);
     const homeLevel = layoutHomeLevel();
-    const layoutRv = document.getElementById('layout-rv-level');
-    layoutRv.closest('.input-field').hidden = isSimpleMode();
-    layoutRv.min = homeLevelCovering(lastPlanInput);
-    layoutRv.placeholder = String(layoutRv.min);
-    if (!isSimpleMode() && layoutRv.value !== '') layoutRv.value = homeLevel;
     const storageLimit = storageUnitLimit(homeLevel);
     const { key: layoutKey, ...layoutOptions } = layoutOptionsFor(plan, homeLevel);
     const storageInput = document.getElementById('layout-storage-count');
@@ -1836,7 +1832,8 @@ function homelandSvg(layout, homeLevel) {
         const electric = m.electric_level != null;
         const electricDetail = electric ? ` · ${translate('E-mode · Building Lv.{level}').replace('{level}', m.electric_level)} · ${translate(m.power_connected ? 'Connected to power' : 'No power connection')}` : '';
         const tip = tipAttrs(m.facility, {
-            detail: m.jobs ? m.jobs.map(j => prettyItem(j.item)).join(', ') : m.crop ? prettyItem(m.crop) : m.building && m.mode ? m.mode : 'Idle',
+            detail: m.generatorTier ? translate('Building Lv.{level}').replace('{level}', m.generatorTier)
+                : m.jobs ? m.jobs.map(j => prettyItem(j.item)).join(', ') : m.crop ? prettyItem(m.crop) : m.building && m.mode ? m.mode : 'Idle',
             stats: [
                 m.weight > 0 && storage ? `${formatRate(m.weight)} trips/hour · ${away.toFixed(1)} tiles from storage` : '',
                 m.stockLimit ? translate('Local output stock: {n} items').replace('{n}', m.stockLimit) : '',
@@ -2324,7 +2321,7 @@ function assignLayoutHauling(layout, plan) {
     if (!haulingBaseByPlan.has(plan)) haulingBaseByPlan.set(plan, [...(plan.assumed_aniimo || [])]);
     plan.assumed_aniimo = [...haulingBaseByPlan.get(plan)];
     const { members, busy } = rosterWorkload(plan);
-    const limit = lastPlanInput?.electricity?.max_aniimo ?? Infinity;
+    const limit = maxWorkingAniimo() ?? Infinity;
     const allocation = allocateHauling(members, busy, work, limit);
     if (allocation.unassigned > 1e-6) {
         if (haulingDefaultSeconds >= bound && plan.hauling_staffing?.length) {
@@ -2730,22 +2727,25 @@ let seasonBudgets = {};
 function renderElectricity() {
     const available = !isSimpleMode() || selectedHomeLevel() >= 12;
     document.getElementById('electricity-section').hidden = !available;
-    document.getElementById('electricity-config').hidden = !available || !document.getElementById('electricity-on').checked;
 }
 
-function electricityInput() {
-    if (document.getElementById('electricity-config').hidden) return null;
-    const limit = document.getElementById('electricity-aniimo-limit').value;
-    return {
-        watts: Number(document.getElementById('electricity-watts').value),
-        percent: Number(document.getElementById('electricity-percent').value),
-        max_aniimo: limit === '' ? null : Number(limit),
-    };
+function eModeRv(input) {
+    if (!document.getElementById('electricity-on').checked) return null;
+    const rv = layoutHomeLevel(input);
+    return rv >= 12 ? rv : null;
+}
+
+function maxWorkingAniimo() {
+    const limit = document.getElementById('electricity-aniimo-limit');
+    return limit.value === '' || !limit.validity.valid ? null : Number(limit.value);
 }
 
 function attachElectricityHandlers() {
     document.getElementById('electricity-section').addEventListener('input', () => {
         renderElectricity();
+        if (lastPlanInput) clearPlanResults();
+    });
+    document.getElementById('layout-rv-level').addEventListener('input', () => {
         if (lastPlanInput) clearPlanResults();
     });
 }
@@ -3020,7 +3020,9 @@ let aniimoLevels = {};
 // What to send the solver for `setup`: the per-ability levels, or the player's roster (see
 // `aniimo_setup_from` and `JsRoster` in wasm.rs).
 function aniimoInput(setup) {
-    if (setup.startsWith('roster')) return { aniimo: 'roster', roster: rosterPayload(), aniimo_levels: {} };
+    if (setup.startsWith('roster')) return {
+        aniimo: 'roster', roster: rosterPayload(), aniimo_levels: {}, max_working_aniimo: maxWorkingAniimo(),
+    };
     const levels = {};
     levelledAbilities().forEach(ability => { levels[ability] = bestAniimoLevel(ability); });
     return { aniimo: setup.split(':')[0], aniimo_levels: levels };
@@ -3068,6 +3070,7 @@ function showAniimoSetup() {
     document.getElementById('aniimo-setup-panel').hidden = tab === 'minimum';
     document.getElementById('ability-levels').hidden = tab !== 'best';
     document.getElementById('roster-editor').hidden = tab !== 'custom';
+    document.getElementById('roster-worker-limit').hidden = tab !== 'custom';
     document.getElementById('worker-travel-option').hidden = tab !== 'custom';
     document.getElementById('aniimo-setup-hint').textContent = tab === 'custom'
         ? 'The plan shares your Aniimo’s available hours between jobs.'
@@ -3552,7 +3555,7 @@ function getPlanInputValues() {
             season: activeSeasonId(),
             season_currency_per_day: seasonCurrencyPerDay(),
             season_crop_minimums: activeSeasonCropMinimums(),
-            electricity: electricityInput(),
+            e_mode_rv: eModeRv({ facilities, modules }),
             facilities,
             modules
         };
@@ -3583,7 +3586,7 @@ function getPlanInputValues() {
         season: activeSeasonId(),
         season_currency_per_day: seasonCurrencyPerDay(),
         season_crop_minimums: activeSeasonCropMinimums(),
-        electricity: electricityInput(),
+        e_mode_rv: eModeRv({ facilities, modules }),
         facilities,
         modules
     };
@@ -3949,12 +3952,12 @@ function aniimoTeam(plan) {
     });
     // Environment buildings in use each keep an Aniimo busy (abilities confirmed in game; whether
     // level or personality matters isn't known yet, so any level is shown).
-    const needsAniimo = (building, units, place) => {
+    const needsAniimo = (building, units, place, level) => {
         const ability = ENVIRONMENT_BUILDING_ABILITY[building];
         if (!ability || !units) return;
-        const key = `${ability} (environment)`;
+        const key = `${ability} (environment:${level || 0})`;
         if (!groups.has(key)) {
-            groups.set(key, { label: `${ability} any level`, ability, level: 1, bonus: false, busy: 0, where: new Map(), jobs: new Map(), environment: true });
+            groups.set(key, { label: level ? `${ability} Lv.${level}` : `${ability} any level`, ability, level: level || 1, bonus: false, busy: 0, where: new Map(), jobs: new Map(), environment: true });
         }
         const g = groups.get(key);
         g.busy += units;
@@ -3977,7 +3980,9 @@ function aniimoTeam(plan) {
         needsAniimo(building, units, `${building} (${modes[0]})`);
         needsAniimo(partner, units, `${partner} (${modes[1]})`);
     });
-    needsAniimo('Crackle Generator', plan.power_generators, 'Crackle Generator');
+    for (const [tier, lightning] of plan.power_generator_levels || []) {
+        needsAniimo('Crackle Generator', 1, `Crackle Generator Lv.${tier}`, lightning);
+    }
     // Each row gets its own Aniimo, which is the clearer team to keep. Only when that asks for
     // more than the homeland holds does work that takes any level (the Farmland and Woodland jobs)
     // move into another row's spare time, so a plot's watering is a job of its own where there's
@@ -4695,7 +4700,8 @@ function displayPlan(plan) {
     resultsContent.style.display = 'block';
     const power = document.getElementById('power-used');
     power.hidden = plan.power_used == null;
-    power.textContent = plan.power_used == null ? '' : `${translate('Power used')}: ${formatNumber(plan.power_used)} / ${formatNumber(lastPlanInput?.electricity?.watts ?? 0)} W`;
+    power.textContent = plan.power_used == null ? '' : translate('E-mode load: {draw} W · Generation: {output} W · Supply: 120%')
+        .replace('{draw}', formatNumber(plan.power_used)).replace('{output}', formatNumber(plan.power_generated ?? 0));
     resultsContent.classList.remove('setup-only');
     // A level-up plan's own card says how long it takes; the goal is for coin plans.
     goalSection.style.display = plan.level_up ? 'none' : 'block';
@@ -4776,7 +4782,8 @@ async function runFindPlan() {
     haulingDefaultSeconds = 0;
     haulingRefinements = 0;
     const invalid = (seasonActive() && document.querySelector('#season-crop-minimum-fields input:invalid'))
-        || (!document.getElementById('electricity-config').hidden && document.querySelector('#electricity-config input:invalid'));
+        || (!isSimpleMode() && document.querySelector('#layout-rv-level:invalid'))
+        || (selectedSetupTab() === 'custom' && document.querySelector('#electricity-aniimo-limit:invalid'));
     if (invalid) {
         invalid.reportValidity();
         return;
@@ -5242,6 +5249,11 @@ async function initApp() {
     });
     ['aniimo-best', 'aniimo-minimum', 'aniimo-custom'].forEach(id =>
         document.getElementById(id).addEventListener('change', showAniimoSetup));
+    document.getElementById('electricity-aniimo-limit').addEventListener('change', event => {
+        if (!event.target.reportValidity()) return;
+        saveInputsToStorage();
+        switchAniimoSetup();
+    });
     document.getElementById('worker-travel-on').addEventListener('change', () => {
         travelRefinements = 0;
         movementDistances = {};

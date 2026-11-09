@@ -777,6 +777,11 @@ pub struct JsPlanInput {
     pub season_crop_minimums: std::collections::BTreeMap<String, u32>,
     #[serde(default)]
     pub electricity: Option<crate::power::Electricity>,
+    /// RV level for automatic E-mode. Absent when the checkbox is off.
+    #[serde(default)]
+    pub e_mode_rv: Option<u32>,
+    #[serde(default)]
+    pub max_working_aniimo: Option<u32>,
 }
 
 /// The player's Aniimo, and what the page knows of the facilities they work (see
@@ -1273,6 +1278,10 @@ pub struct JsProductionPlan {
     pub power_used: Option<f64>,
     #[serde(default)]
     pub power_generators: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub power_generator_levels: Vec<(u32, u32)>,
+    #[serde(default)]
+    pub power_generated: Option<u32>,
     #[serde(default)]
     pub crop_staffing: bool,
     /// Crop task capacity actually reserved by the solver: ability, required level, member, days/day.
@@ -1354,6 +1363,8 @@ fn empty_production_plan(success: bool, error: Option<String>) -> JsProductionPl
         assumed_aniimo: Vec::new(),
         power_used: None,
         power_generators: 0,
+        power_generator_levels: Vec::new(),
+        power_generated: None,
         crop_staffing: false,
         crop_assignments: Vec::new(),
         movement_staffing: Vec::new(),
@@ -1719,8 +1730,32 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
             route.rate * visits as f64 * 3600.0, route.crop.is_some()))
     }).collect();
     if let Some(power) = prepared.facility_counts.power() {
-        js.power_used = Some(crate::exact::rated_power_draw(&exact, &prepared.items) * power.grid.percent as f64 / 100.0);
-        js.power_generators = crate::power::generator_workers(js.power_used.unwrap_or(0.0));
+        let draw = crate::exact::rated_power_draw(&exact, &prepared.items);
+        let needed = draw * power.grid.percent as f64 / 100.0;
+        if let Some(automatic) = power.automatic.filter(|_| draw > 0.0) {
+            let staff = if let Some(crew) = &prepared.crew {
+                exact.staffing.iter().filter(|(building, ..)| building == crate::power::GENERATOR)
+                    .flat_map(|(_, member, count)| {
+                        std::iter::repeat_n(crew.members[*member].level("Lightning"), count.round() as usize)
+                    }).collect()
+            } else {
+                automatic.staffing(needed)
+            };
+            let mut generated = 0;
+            for lightning in staff {
+                let (level, watts) = automatic.generator(lightning);
+                generated += watts;
+                js.power_generator_levels.push((level, lightning));
+            }
+            js.power_generator_levels.sort_unstable();
+            js.power_used = Some(draw);
+            js.power_generated = Some(generated);
+            js.power_generators = js.power_generator_levels.len() as u32;
+        } else if power.automatic.is_none() && draw > 0.0 {
+            js.power_used = Some(needed);
+            js.power_generated = Some(power.grid.watts);
+            js.power_generators = crate::power::generator_workers(needed);
+        }
     }
     if prepared.input.season.is_some() {
         js.season_points = Some(crate::exact::target_rate(&exact, &prepared.items, crate::models::SEASON_POINTS));
@@ -1855,14 +1890,32 @@ impl PreparedInput {
         let grower_steps = embedded_grower_steps();
         let mut facility_counts = facility_counts;
         facility_counts.set_grower_steps(grower_steps.clone());
-        let mut grid = input.electricity.clone().filter(|grid| grid.watts > 0 || grid.max_aniimo.is_some());
+        let aniimo_mode = input.aniimo.as_deref().unwrap_or("").split(':').next().unwrap_or("");
+        let lightning = match aniimo_mode {
+            "best" | "best3" => input.aniimo_levels.get("Lightning").copied()
+                .unwrap_or(if aniimo_mode == "best3" { 3 } else { 4 }),
+            // Minimum can request the lowest workers for the generators actually needed.
+            _ => 4,
+        };
+        let automatic = input.e_mode_rv.and_then(|rv| crate::power::GeneratorLimits::for_rv(rv, lightning));
+        let mut grid = automatic.map(|limits| crate::power::Electricity {
+            watts: limits.count * limits.max_output(),
+            percent: 120,
+            max_aniimo: None,
+        }).or_else(|| input.electricity.clone());
+        if let Some(limit) = input.max_working_aniimo.filter(|_| aniimo_mode == "roster") {
+            grid.get_or_insert(crate::power::Electricity { watts: 0, percent: 120, max_aniimo: None })
+                .max_aniimo = Some(limit);
+        }
         if let Some(grid) = &mut grid {
             grid.percent = grid.percent.clamp(1, 120);
             if !input.aniimo.as_deref().is_some_and(|setup| setup.starts_with("roster")) {
                 grid.max_aniimo = None;
             }
         }
-        let power_originals = grid.as_ref().map(|_| items.clone());
+        let power = grid.filter(|grid| grid.watts > 0 || grid.max_aniimo.is_some())
+            .map(|grid| crate::power::PowerPlan { grid, grower_steps: grower_steps.clone(), automatic });
+        let power_originals = power.as_ref().filter(|p| p.grid.watts > 0).map(|_| items.clone());
         if input.season.is_some() {
             facility_counts.set_season_crop_minimums(input.season_crop_minimums.clone());
         }
@@ -1879,7 +1932,7 @@ impl PreparedInput {
                 });
                 let environment = roster.environment.iter()
                     .filter(|(building, _)| building.as_str() != crate::power::GENERATOR);
-                let generators = grid.as_ref().map_or(0, |power| crate::power::generator_workers(power.watts as f64));
+                let generators = power.as_ref().map_or(0, |power| power.generator_limit());
                 let workplaces: std::collections::BTreeSet<_> = available.clone()
                     .map(|item| item.facility.as_str())
                     .chain(environment.clone().map(|(building, _)| building.as_str()))
@@ -1915,9 +1968,11 @@ impl PreparedInput {
             (None, Some(setup)) => requirements.apply(setup, &mut items),
             (None, None) => workers_from(&input.workers).apply(&requirements, &mut items),
         }
-        if let Some(grid) = grid {
-            crate::power::add_electric_variants(&mut items, power_originals.unwrap_or_default(), &facility_counts, &requirements, &grid);
-            facility_counts.set_power(crate::power::PowerPlan { grid, grower_steps: grower_steps.clone() });
+        if let Some(power) = power {
+            if let Some(originals) = power_originals {
+                crate::power::add_electric_variants(&mut items, originals, &facility_counts, &requirements, &power.grid);
+            }
+            facility_counts.set_power(power);
         }
         Ok(PreparedInput { input, facility_counts, module_levels, items, setup, crew, requirements, grower_steps })
     }
@@ -2015,6 +2070,8 @@ impl PreparedInput {
             assumed_aniimo,
             power_used: None,
             power_generators: 0,
+            power_generator_levels: Vec::new(),
+            power_generated: None,
             crop_staffing: false,
             crop_assignments: Vec::new(),
             movement_staffing: Vec::new(),

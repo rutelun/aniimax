@@ -15,6 +15,7 @@ function page() {
     let updates = 0;
     const context = {workerTravelDistances,haulingTravelSeconds,workerTravelEnabled:()=>true,selectedSetupTab:()=> 'custom',
         homelandPlots:()=>[{number:1,x:0,y:0,w:100,h:60}],layoutHomeLevel:()=>1,ANIIMO_WALK_SPEED:4,
+        maxWorkingAniimo:()=>1,
         stopRanking(){},switchAniimoSetup:()=>updates++,showError:message=>assert.fail(message),
         recipeIndex:[],rosterWorkload:()=>({members:[],busy:[]}),
         haulingWorkload:()=>({seconds:{'Mine|rock':1},busyByLevel:{3:1}}),
@@ -23,7 +24,7 @@ function page() {
     const run = code => runInNewContext(code,context);
     run(`let movementDistances={},movementDefaultDistance=20,travelRefinements=0;
         let haulingDefaultSeconds=0,haulingRefinements=0,haulingSeconds={};
-        const haulingBaseByPlan=new WeakMap(); const lastPlanInput={electricity:{max_aniimo:1}};
+        const haulingBaseByPlan=new WeakMap(); const lastPlanInput={};
         ${movementCode} ${haulingCode}`);
     return {context,run,updates:()=>updates};
 }
