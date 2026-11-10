@@ -3,9 +3,10 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {searchMaterials} from '../web/material-search.js';
 import {productionObjective,productionCertificate,withProductionBounds} from '../web/priority-search.js';
+import {autoMaximizeSeasonPoints,hasSeasonCropMinimums} from '../web/season-planning.js';
 
 const source = await readFile(new URL('../web/worker.js', import.meta.url), 'utf8');
-const pipeline = source.slice(source.indexOf('function hasSeasonCropMinimums'), source.indexOf('// Ranks changes the player could make'));
+const pipeline = source.slice(source.indexOf('function hasMaterialProcessors'), source.indexOf('// Ranks changes the player could make'));
 
 function planner(materialResult, priorities = ['coins'], extra = {}) {
     const calls = [], checks = [], progress = [];
@@ -16,7 +17,8 @@ function planner(materialResult, priorities = ['coins'], extra = {}) {
         return problem.lp === 'materials' ? materialResult : result();
     };
     const pkg = {
-        exact_byproduct_problems: () => '[]', exact_level_up_problem: () => '{}',
+        exact_byproduct_problems: () => '[]', exact_crop_variety_problem: () => '{}',
+        exact_level_up_problem: payload => JSON.parse(payload).level_up ? '{"lp":"level-up","variables":2}' : '{}',
         exact_priority_problem: (_, stage, target) => JSON.stringify({lp:`priority:${target}`,variables:2}),
         exact_problem: (_, stage) => {
             const settings = JSON.parse(stage);
@@ -28,12 +30,39 @@ function planner(materialResult, priorities = ['coins'], extra = {}) {
             return JSON.stringify({success:true,rate_per_second:10});
         },
     };
-    const run = new Function('solveModel', 'materialSearch','prioritySearch', `const SOLVE_OPTIONS={time_limit:30}, STRICT_OPTIONS={}, SEASON_POINTS='season_points';
+    const run = new Function('solveModel', 'materialSearch','prioritySearch','autoMaximizeSeasonPoints','hasSeasonCropMinimums', `const SOLVE_OPTIONS={time_limit:30}, STRICT_OPTIONS={}, SEASON_POINTS='season_points';
         const newHighs=async()=>({solve:()=>({})}), incumbentSolver=Promise.resolve({polishSolution:(_,__,r)=>r});
-        ${pipeline}; return exactPlanJson;`)(solveModel, Promise.resolve({searchMaterials}),Promise.resolve({productionObjective,productionCertificate,withProductionBounds}));
+        ${pipeline}; return exactPlanJson;`)(solveModel, Promise.resolve({searchMaterials}),Promise.resolve({productionObjective,productionCertificate,withProductionBounds}),autoMaximizeSeasonPoints,hasSeasonCropMinimums);
     return {calls,checks,progress, result, run:()=>run(pkg, JSON.stringify({currency:'coins',priorities,
         facilities:{'Woodworking Bench':[{count:2,level:2}]},...extra}), (...event)=>progress.push(event))};
 }
+
+test('reserved event crops do not add a points floor to an RV level-up plan', async () => {
+    const base = {
+        season:'magical_wonder_night', level_up_strategy:true,
+        level_up:{cost:[['coins',100]],stock:[]},
+        facilities:{'Woodworking Bench':[],'Chimney Kiln':[]},
+    };
+    const reserved = planner(null, [], {...base, season_crop_minimums:{magic_pumpkin:4,memory_lanternfruit:4}});
+    await reserved.run();
+    assert.ok(reserved.calls.some(({problem}) => problem.lp === 'level-up'));
+    assert.ok(reserved.checks.every(({stage}) => stage.pace === 10 && !stage.floors.length));
+    assert.ok(!reserved.calls.some(({problem}) => problem.lp === 'priority:season_points'));
+
+    const noMinimum = planner(null, [], {...base, season_crop_minimums:{magic_pumpkin:0}});
+    await noMinimum.run();
+    assert.deepEqual(noMinimum.checks.at(-1).stage.floors,[['season_points',10]]);
+});
+
+test('an explicit points priority still runs with reserved event crops', async () => {
+    const p = planner(null, ['season_points','coins'], {
+        season:'magical_wonder_night',season_crop_minimums:{magic_pumpkin:4,memory_lanternfruit:4},
+        facilities:{'Woodworking Bench':[],'Chimney Kiln':[]},
+    });
+    await p.run();
+    assert.deepEqual(p.calls.map(({problem}) => problem.lp),['priority:season_points','priority:coins']);
+    assert.deepEqual(p.checks.at(-1).stage.floors,[['season_points',10],['coins',10]]);
+});
 
 test('reuses the last coin priority, seeds material search and deduplicates its coin floor', async () => {
     const p = planner({objective:2,values:[.5,1],proven:true});
@@ -100,9 +129,9 @@ test('initial planning remaps the incumbent when a new priority inserts or reord
         exact_problem:()=>JSON.stringify({lp:'final',variables:3,variable_keys:['rate','sold:coins','sold:wood']}),
         exact_plan:()=>JSON.stringify({success:true,rate_per_second:1}),
     };
-    const run=new Function('solveModel','prioritySearch',`const SOLVE_OPTIONS={time_limit:30},STRICT_OPTIONS={},SEASON_POINTS='season_points';
+    const run=new Function('solveModel','prioritySearch','autoMaximizeSeasonPoints','hasSeasonCropMinimums',`const SOLVE_OPTIONS={time_limit:30},STRICT_OPTIONS={},SEASON_POINTS='season_points';
         const newHighs=async()=>({solve:()=>({})}), incumbentSolver=Promise.resolve({polishSolution:(_,__,r)=>r});
-        ${pipeline};return exactPlanJson;`)(solveModel,Promise.resolve({productionObjective,productionCertificate,withProductionBounds}));
+        ${pipeline};return exactPlanJson;`)(solveModel,Promise.resolve({productionObjective,productionCertificate,withProductionBounds}),autoMaximizeSeasonPoints,hasSeasonCropMinimums);
     await run(pkg,JSON.stringify({currency:'coins',priorities:['coins','Wood Blocks'],facilities:{'Woodworking Bench':[],'Chimney Kiln':[]}}));
     assert.deepEqual(calls[1].seed,[0,.3,.2]);
     assert.deepEqual(calls[2].seed,[.3,.2,.4]);
@@ -122,9 +151,9 @@ test('a proved earlier currency maximum passes directly to materials; unproved o
             exact_problem:(_,stage)=>JSON.stringify(JSON.parse(stage).maximize_material_work&&!available ? {}
                 : {...model(JSON.parse(stage).maximize_material_work?'materials':'final'),stage:JSON.parse(stage)}),
             exact_plan:()=>JSON.stringify({success:true,rate_per_second:10})};
-        const run=new Function('solveModel','prioritySearch','materialSearch',`const SOLVE_OPTIONS={time_limit:30},STRICT_OPTIONS={},SEASON_POINTS='season_points';
+        const run=new Function('solveModel','prioritySearch','materialSearch','autoMaximizeSeasonPoints','hasSeasonCropMinimums',`const SOLVE_OPTIONS={time_limit:30},STRICT_OPTIONS={},SEASON_POINTS='season_points';
             const newHighs=async()=>({solve:()=>({})}),incumbentSolver=Promise.resolve({polishSolution:(_,__,r)=>r});
-            ${pipeline};return exactPlanJson;`)(solveModel,Promise.resolve({productionObjective,productionCertificate,withProductionBounds}),Promise.resolve({searchMaterials}));
+            ${pipeline};return exactPlanJson;`)(solveModel,Promise.resolve({productionObjective,productionCertificate,withProductionBounds}),Promise.resolve({searchMaterials}),autoMaximizeSeasonPoints,hasSeasonCropMinimums);
         await run(pkg,JSON.stringify({currency:'coins',priorities:['coins','Wood Blocks'],
             facilities:{'Woodworking Bench':[{count:processors?1:0}],'Chimney Kiln':[]}}));
         assert.equal(calls.some(p=>p.label==='final'),expected,`proved=${proved}, processors=${processors}`);

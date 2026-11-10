@@ -58,7 +58,7 @@
   "E-mode · Building Lv.{level}": "電力模式 · 設施等級 {level}",
   "Minimum for normal mode": "一般模式最低需求",
   "Minimum Plots per Event Crop": "各種當季作物的最低地塊數",
-  "The plan reserves at least this many plots. A tight seed budget can reduce the harvest rate.": "規劃至少會保留這麼多地塊。種子預算不足時，收穫頻率可能下降。",
+  "The plan grows these crops on at least this many plots. A tight seed budget can reduce the harvest rate. To maximize event points, select them under Priorities.": "規劃會種植這些作物，並至少使用指定數量的地塊。種子預算不足時，收穫頻率可能下降。若要讓活動點數最大化，請在優先項目中勾選活動點數。",
   "The minimum event crop plots cannot be met. Check plot levels, growing conditions, and the seed budget.": "無法達到當季作物的最低地塊數。請檢查地塊等級、種植條件和種子預算。",
   "Switch on what you want and drag to rank it. The plan makes as much of the first as it can, then as much of the next as that allows, and so on. Whatever's left always goes to Home Coins.": "開啟你想要的項目，並拖曳排序。規劃會先盡量多產出第一項，再在此前提下盡量多產出下一項，依此類推。剩下的產能一律用來賺取家園幣。",
   "Gets everything your next RV level costs as soon as possible, then earns as many Home Coins as that leaves room for.": "盡快備齊下一個露營車等級所需的一切，再用剩餘產能賺取最多的家園幣。",

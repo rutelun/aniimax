@@ -5,7 +5,7 @@ import { performance } from 'node:perf_hooks';
 
 const workerUrl = new URL('../web/worker.js', import.meta.url);
 const source = await readFile(workerUrl, 'utf8');
-const runtimeCode = source.slice(source.indexOf('let highsBytes = null;'), source.indexOf('function hasSeasonCropMinimums'))
+const runtimeCode = source.slice(source.indexOf('let highsBytes = null;'), source.indexOf('function hasMaterialProcessors'))
     .replaceAll('import.meta.url', 'workerUrl')
     .replace("import('./vendor/highs/highs.mjs' + load)", 'import(highsUrl)');
 

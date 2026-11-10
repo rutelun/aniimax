@@ -58,7 +58,7 @@
   "E-mode · Building Lv.{level}",
   "Minimum for normal mode",
   "Minimum Plots per Event Crop",
-  "The plan reserves at least this many plots. A tight seed budget can reduce the harvest rate.",
+  "The plan grows these crops on at least this many plots. A tight seed budget can reduce the harvest rate. To maximize event points, select them under Priorities.",
   "The minimum event crop plots cannot be met. Check plot levels, growing conditions, and the seed budget.",
   "Switch on what you want and drag to rank it. The plan makes as much of the first as it can, then as much of the next as that allows, and so on. Whatever's left always goes to Home Coins.",
   "Gets everything your next RV level costs as soon as possible, then earns as many Home Coins as that leaves room for.",

@@ -58,7 +58,7 @@
   "E-mode · Building Lv.{level}": "Электрорежим · здание ур. {level}",
   "Minimum for normal mode": "Минимум для обычного режима",
   "Minimum Plots per Event Crop": "Минимум грядок для каждой ивентовой культуры",
-  "The plan reserves at least this many plots. A tight seed budget can reduce the harvest rate.": "План выделяет как минимум столько грядок. Если семян мало, урожай собирается реже.",
+  "The plan grows these crops on at least this many plots. A tight seed budget can reduce the harvest rate. To maximize event points, select them under Priorities.": "План сажает эти культуры как минимум на указанном числе грядок. Если семян мало, урожай собирается реже. Чтобы максимизировать очки события, включите их в приоритетах.",
   "The minimum event crop plots cannot be met. Check plot levels, growing conditions, and the seed budget.": "Заданный минимум ивентовых грядок недостижим. Проверь уровни грядок, условия выращивания и бюджет семян.",
   "Switch on what you want and drag to rank it. The plan makes as much of the first as it can, then as much of the next as that allows, and so on. Whatever's left always goes to Home Coins.": "Включите нужные цели и перетащите их в порядке важности. План сначала максимально выполняет первую цель, затем следующую с учётом предыдущей и так далее. Остаток всегда идёт на монеты дома.",
   "Gets everything your next RV level costs as soon as possible, then earns as many Home Coins as that leaves room for.": "План как можно скорее соберёт всё для следующего уровня автодома, а оставшиеся мощности направит на монеты дома.",

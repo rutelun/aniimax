@@ -1,7 +1,8 @@
 // Aniimax Web Application
 
-import { currentLocale, sourceAttribute, translate } from './i18n.js?v=auto-e-mode';
-import './math-translation.js?v=auto-e-mode';
+import { currentLocale, sourceAttribute, translate } from './i18n.js?v=optional-season-points';
+import './math-translation.js?v=optional-season-points';
+import { autoMaximizeSeasonPoints } from './season-planning.js?v=optional-season-points';
 
 import {
     FACILITIES, FACILITY_CATEGORIES, FACILITY_CATEGORY_BY_NAME, FACILITY_FOOTPRINTS, HOMELAND_PLOTS, HOMELAND_PLOT_SIZE,
@@ -2187,13 +2188,12 @@ let progress = null;
 function startProgress(input, runId) {
     const levelUp = !!input.level_up && planContext.levelUp && !planContext.ready && !planContext.unavailable;
     const priorities = input.priorities || [];
-    const seasonFirst = !!(input.level_up_strategy && input.season);
+    const seasonFirst = autoMaximizeSeasonPoints(input);
     const planting = !input.level_up_strategy && (input.crop_variety || input.season);
     // A level-up's solves (the soonest level-up, the most Home Coins at that pace, spare Bench
     // and Kiln time) are one step, and every plan's last is its final solve and the re-check
     // of it against every limit: the worker's steps map onto these (see `setStep`).
-    // During a season a level-up plan also makes the most of its points (see worker.js): after the
-    // pace when there's a level-up to plan, otherwise before the coins.
+    // If the worker runs a separate points solve, show it after the level-up pace (if any).
     const season = seasonFirst ? [{ key: 'season', label: `Most ${seasonById(input.season).points}` }] : [];
     const steps = [
         ...(planting ? [{ key: 'crop_variety', label: input.crop_variety ? 'Crop and Tree Variety' : 'Season Crops' }] : []),

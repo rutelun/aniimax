@@ -8,6 +8,8 @@
 // code with an older cached solver.
 // The message handler below is installed right away and waits on this, so no request can arrive
 // before there's a handler for it.
+import { autoMaximizeSeasonPoints, hasSeasonCropMinimums } from './season-planning.js?v=optional-season-points';
+
 const load = new URL(import.meta.url).search;
 const incumbentSolver = import('./highs-solve.js' + load);
 const materialSearch = import('./material-search.js' + load);
@@ -87,10 +89,6 @@ async function solveModel(problem, options = SOLVE_OPTIONS, infeasibleMessage, i
     return { values, proven, objective: result.ObjectiveValue + tiebreakOf(problem, values), upper:result.UpperBound };
 }
 
-function hasSeasonCropMinimums(input) {
-    return Boolean(input.season && Object.values(input.season_crop_minimums || {}).some(count => count > 0));
-}
-
 function hasMaterialProcessors(input) {
     return ['Woodworking Bench', 'Chimney Kiln'].some(facility =>
         (input.facilities?.[facility] ?? [{ count: 1 }]).some(tier => tier.count > 0));
@@ -112,8 +110,8 @@ function tiebreakOf(problem, values) {
 // each as the ones before it allow, then earns coins with what's left.
 // For the level-up strategy, it first finds the soonest level-up and requires the plan to keep
 // that pace; if the facilities can't make the level-up at all, the plan is for coins and says so.
-// During a season it then makes the most season points that pace allows, which the coin solve
-// keeps.
+// If no seasonal plots are reserved, the level-up strategy also maximizes season points at
+// that pace before optimizing coins.
 // Returns the plan's JSON, or throws with the reason it couldn't, so the caller can fall back to
 // `find_plan` and say why. `step(key, state, proven)` reports each solve as it starts and ends,
 // and whether it proved its answer, for the page's progress card: `priority:<target>`,
@@ -236,14 +234,7 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
             levelUpNote = 'unreachable';
         }
     }
-    // During a season, a level-up plan makes as much of the season as that pace leaves room for
-    // (or, with the level-up out of reach, already in stock or past RV 20, as the homeland can),
-    // and the coin solve after it keeps those points. `level_up_strategy` says the player picked
-    // the level-up strategy even when there's no level-up left to plan (`level_up` is null at RV
-    // 20); the Priorities strategy ranks the points itself instead. Without this, season items only made it into a level-up
-    // plan when they happened to pay the most coins: the Harvest Moon Festival's did, Magical
-    // Wonder Night's (behind a Sunlamp, worth less) never do.
-    if (input.level_up_strategy && input.season) {
+    if (autoMaximizeSeasonPoints(input)) {
         step('season', 'start');
         const most = await solve(JSON.parse(exact_priority_problem(payload, JSON.stringify(stage), SEASON_POINTS)), SEASON_POINTS);
         step('season', 'done', most?.proven);
