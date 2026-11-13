@@ -145,6 +145,8 @@ pub struct ExactPlan {
     /// Hauling days/day assigned to each roster member, sharing its production capacity.
     pub hauling_staffing: Vec<(usize, f64)>,
     pub hauling_routes: Vec<(String, usize, f64)>,
+    /// Recipe variant, site group and occupied units (time shares for turn recipes).
+    pub fixed_sites: Vec<(String, usize, f64)>,
 }
 
 #[derive(Debug, Clone)]
@@ -298,6 +300,8 @@ enum VarKind<'a> {
     WorkRoute { recipe: &'a ProductionItem, member: usize, crop: Option<(String, u32)>, mobile: bool, seconds: f64, travel: f64 },
     ActiveAniimo { member: usize },
     HaulingStaff { recipe: &'a ProductionItem, member: usize, seconds: f64 },
+    FixedSite { recipe: &'a ProductionItem, group: usize },
+    FixedTurnUnits { group: usize, electric: bool },
 }
 
 /// One linear constraint: `(variable, coefficient)` terms, comparison, right-hand side.
@@ -559,6 +563,59 @@ fn check_movement(plan: &ExactPlan, all: &HashMap<&str, &ProductionItem>, counts
 }
 
 /// Builds the model for `items` (production times already set for the Aniimo working them).
+fn fixed_site_accepts(recipe: &ProductionItem, all: &HashMap<&str, &ProductionItem>,
+    group: &crate::models::FixedSiteGroup) -> bool {
+    if recipe.facility != group.facility || recipe.facility_level > group.level {
+        return false;
+    }
+    if electric_level(&recipe.name).is_some_and(|level| !group.powered || group.level != level) {
+        return false;
+    }
+    match recipe.environment.as_deref() {
+        Some("Adequate") => group.lit,
+        Some(mode) => group.temperature.as_deref() == Some(mode),
+        None if recipe.name.contains(crate::models::UNCOVERED_SUFFIX) =>
+            all.get(crate::models::base_item_name(&recipe.name)).is_some_and(|base| {
+                // The uncovered rates in the catalog are measured at neutral temperature.
+                base.environment.is_some() && group.temperature.is_none()
+            }),
+        None => true,
+    }
+}
+
+fn add_fixed_sites<'a>(model: &mut Model<'a>, all: &HashMap<&str, &ProductionItem>,
+    rates: &[(&'a ProductionItem, usize)], units: &[(&'a ProductionItem, usize)],
+    groups: &[crate::models::FixedSiteGroup]) {
+    let mut dedicated = vec![Vec::new(); groups.len()];
+    let mut turns = BTreeMap::<(usize, bool), Vec<(usize, f64)>>::new();
+    for (&(recipe, rate), &(_, unit)) in rates.iter().zip(units) {
+        let shares = takes_turns(recipe);
+        let mut assigned = vec![(unit, -1.0)];
+        if shares {
+            model.constrain(vec![(rate, recipe.production_time), (unit, -1.0)], ComparisonOp::Eq, 0.0);
+        }
+        for (group, site) in groups.iter().enumerate().filter(|(_, site)| fixed_site_accepts(recipe, all, site)) {
+            let place = model.add(0.0, (0.0, site.count as f64), !shares, VarKind::FixedSite { recipe, group });
+            assigned.push((place, 1.0));
+            if shares {
+                turns.entry((group, electric_level(&recipe.name).is_some())).or_default().push((place, 1.0));
+            } else {
+                dedicated[group].push((place, 1.0));
+            }
+        }
+        model.constrain(assigned, ComparisonOp::Eq, 0.0);
+    }
+    for ((group, electric), mut terms) in turns {
+        let reserved = model.add(0.0, (0.0, groups[group].count as f64), true, VarKind::FixedTurnUnits { group, electric });
+        terms.push((reserved, -1.0));
+        model.constrain(terms, ComparisonOp::Le, 0.0);
+        dedicated[group].push((reserved, 1.0));
+    }
+    for (site, terms) in groups.iter().zip(dedicated).filter(|(_, terms)| !terms.is_empty()) {
+        model.constrain(terms, ComparisonOp::Le, site.count as f64);
+    }
+}
+
 fn build_model<'a>(
     items: &'a [ProductionItem],
     currency: &str,
@@ -577,6 +634,7 @@ fn build_model<'a>(
         }
     }
     let all: HashMap<&str, &ProductionItem> = items.iter().map(|i| (i.name.as_str(), i)).collect();
+    let fixed = facility_counts.fixed_homeland();
     let recipes: Vec<&ProductionItem> = items
         .iter()
         .filter(|item| {
@@ -584,6 +642,7 @@ fn build_model<'a>(
                 && facility_counts.can_produce(&item.facility, item.facility_level)
                 && item.module_requirement.as_ref().is_none_or(|(m, l)| module_levels.can_use(m, *l))
                 && item.production_time > 0.0
+                && fixed.is_none_or(|layout| layout.groups.iter().any(|site| fixed_site_accepts(item, &all, site)))
         })
         .collect();
     let mut model = Model {
@@ -610,6 +669,9 @@ fn build_model<'a>(
         model.constrain(vec![(rate, recipe.production_time), (units, -1.0)], ComparisonOp::Le, 0.0);
         rate_of.push((recipe, rate));
         units_of.push((recipe, units));
+    }
+    if let Some(fixed) = fixed {
+        add_fixed_sites(&mut model, &all, &rate_of, &units_of, &fixed.groups);
     }
     // The season currency the player can spend on seeds a day.
     if let Some((budget, spent)) = season_budget(&rate_of) {
@@ -821,7 +883,7 @@ fn build_model<'a>(
         });
         types
     };
-    for &(building, modes) in ENVIRONMENT_BUILDINGS {
+    for &(building, modes) in ENVIRONMENT_BUILDINGS.iter().filter(|_| fixed.is_none()) {
         let owned = facility_counts.get_count(building);
         if owned == 0 {
             continue;
@@ -847,7 +909,7 @@ fn build_model<'a>(
     // Two buildings placed to overlap: where both reach, their temperatures add, giving a third
     // zone. Only worth a variable when that zone is a mode some crop actually wants and neither
     // building already provides it on its own.
-    for (i, &(first, first_modes)) in ENVIRONMENT_BUILDINGS.iter().enumerate().take(if OVERLAP_ZONES { usize::MAX } else { 0 }) {
+    for (i, &(first, first_modes)) in ENVIRONMENT_BUILDINGS.iter().enumerate().take(if OVERLAP_ZONES && fixed.is_none() { usize::MAX } else { 0 }) {
         for &(second, second_modes) in &ENVIRONMENT_BUILDINGS[i..] {
             let (owned_first, owned_second) = (facility_counts.get_count(first), facility_counts.get_count(second));
             let most = if first == second { owned_first / 2 } else { owned_first.min(owned_second) };
@@ -903,7 +965,7 @@ fn build_model<'a>(
     for (building, terms) in usage {
         model.constrain(terms, ComparisonOp::Le, facility_counts.get_count(building) as f64);
     }
-    for (key, plots) in &needs_cover {
+    for (key, plots) in needs_cover.iter().filter(|_| fixed.is_none()) {
         let mut terms: Vec<(usize, f64)> = plots.iter().map(|v| (*v, 1.0)).collect();
         for &(count, covered) in cover_terms.get(key).map(Vec::as_slice).unwrap_or(&[]) {
             terms.push((count, -covered));
@@ -990,6 +1052,11 @@ fn build_model<'a>(
         if let Some(generators) = generator_count {
             set_up.entry(GENERATOR.into()).or_default().insert(generators, 1.0);
         }
+        if let Some(fixed) = fixed {
+            for building in fixed.climate.keys() {
+                set_up.entry(building.clone()).or_default();
+            }
+        }
         for (building, used) in set_up {
             // A building with no ability listed needs no Aniimo (as `check_plan` takes it).
             let ability = if building == GENERATOR { Some("Lightning") } else { crew.environment.get(&building).map(String::as_str) };
@@ -1014,7 +1081,12 @@ fn build_model<'a>(
                     }
                 }
             }
-            model.constrain(staffed, ComparisonOp::Eq, 0.0);
+            let already_active = fixed.and_then(|layout| layout.climate.get(&building)).copied().unwrap_or(0);
+            if staffed.is_empty() && already_active > 0 {
+                let absent = model.add(0.0, (0.0, 0.0), false, VarKind::UnavailableCrop);
+                staffed.push((absent, 1.0));
+            }
+            model.constrain(staffed, ComparisonOp::Eq, already_active as f64);
         }
         if let Some(draw) = roster_power_draw {
             model.constrain(draw, ComparisonOp::Le, 0.0);
@@ -1484,6 +1556,7 @@ fn plan_from(model: &Model, value: f64, upper_bound: f64, proven_optimal: bool, 
     let mut crop_staffing = Vec::new();
     let mut hauling_staffing = BTreeMap::<usize, f64>::new();
     let mut hauling_routes = Vec::new();
+    let mut fixed_sites = Vec::new();
     let mut work_routes = Vec::new();
     let mut work_posts = Vec::new();
     let mut local_used = BTreeMap::<(String, usize), f64>::new();
@@ -1506,6 +1579,9 @@ fn plan_from(model: &Model, value: f64, upper_bound: f64, proven_optimal: bool, 
             }
             VarKind::Rate(recipe) if v > 1e-9 => {
                 recipe_rates.insert(recipe.name.clone(), v);
+            }
+            VarKind::FixedSite { recipe, group } if v > 1e-9 => {
+                fixed_sites.push((recipe.name.clone(), *group, v));
             }
             VarKind::Units(recipe) if takes_turns(recipe) && v > 1e-9 => {
                 // The units it runs on at least part of the time.
@@ -1554,6 +1630,7 @@ fn plan_from(model: &Model, value: f64, upper_bound: f64, proven_optimal: bool, 
     }
     // Units set to a recipe that doesn't run are just idle.
     units.retain(|name, _| recipe_rates.contains_key(name));
+    fixed_sites.retain(|(name, ..)| recipe_rates.contains_key(name));
     // A feasible external solution may reserve an unused dedicated post, especially when
     // a later objective replaces its staffing tie-break. Idle machines are omitted above;
     // omit posts with no local work too, rather than inventing a worker at a missing machine.
@@ -1584,6 +1661,7 @@ fn plan_from(model: &Model, value: f64, upper_bound: f64, proven_optimal: bool, 
         movement_staffing,
         hauling_staffing: hauling_staffing.into_iter().collect(),
         hauling_routes,
+        fixed_sites,
     }
 }
 
@@ -1614,6 +1692,45 @@ pub fn check_plan_with_workload(
 ) -> Result<(f64, Vec<f64>), String> {
     const TOLERANCE: f64 = 1e-6;
     let all: HashMap<&str, &ProductionItem> = items.iter().map(|i| (i.name.as_str(), i)).collect();
+    let fixed = facility_counts.fixed_homeland();
+    if let Some(layout) = fixed {
+        let mut assigned = BTreeMap::<&str, f64>::new();
+        let mut used = vec![0.0; layout.groups.len()];
+        let mut turns = BTreeMap::<(usize, bool), f64>::new();
+        for (name, group, amount) in &plan.fixed_sites {
+            let recipe = all.get(name.as_str()).ok_or("Unknown recipe in existing layout")?;
+            let site = layout.groups.get(*group).ok_or("Unknown site group in existing layout")?;
+            if !amount.is_finite() || *amount <= 0.0 || !fixed_site_accepts(recipe, &all, site) {
+                return Err(format!("{name} cannot run at site group {group}"));
+            }
+            if takes_turns(recipe) {
+                *turns.entry((*group, electric_level(name).is_some())).or_default() += amount;
+            } else {
+                if (amount - amount.round()).abs() > TOLERANCE {
+                    return Err(format!("{name} needs a whole facility"));
+                }
+                used[*group] += amount;
+            }
+            *assigned.entry(name).or_default() += amount;
+        }
+        for ((group, _), amount) in turns {
+            used[group] += (amount - TOLERANCE).ceil().max(0.0);
+        }
+        if used.iter().zip(&layout.groups).any(|(&used, site)| used > site.count as f64 + TOLERANCE) {
+            return Err("An existing facility was assigned more than once".into());
+        }
+        for (name, rate) in &plan.recipe_rates {
+            let recipe = all.get(name.as_str()).ok_or("Unknown recipe in existing layout")?;
+            let required = if takes_turns(recipe) {
+                rate * recipe.production_time
+            } else {
+                plan.units.get(name).copied().unwrap_or(0) as f64
+            };
+            if (assigned.get(name.as_str()).copied().unwrap_or(0.0) - required).abs() > TOLERANCE {
+                return Err(format!("{name} does not fit the existing layout"));
+            }
+        }
+    }
     let mut earned = 0.0;
     let mut made: HashMap<&str, f64> = HashMap::new();
     let mut plots_needing: HashMap<(&str, &str), u32> = HashMap::new();
@@ -1729,6 +1846,9 @@ pub fn check_plan_with_workload(
         }
     }
     let mut buildings_used: HashMap<&str, u32> = HashMap::new();
+    if let Some(fixed) = fixed {
+        buildings_used.extend(fixed.climate.iter().map(|(building, &count)| (building.as_str(), count)));
+    }
     let mut covered: HashMap<(&str, &str), u32> = HashMap::new();
     for env in &plan.environment {
         *buildings_used.entry(env.building.as_str()).or_default() += env.count;
@@ -1874,7 +1994,7 @@ pub fn check_plan_with_workload(
     }
     // The measurement build lets a building mix arrangements, which no whole layout can hold, so
     // its plans are deliberately unbuildable and only their rate is of interest.
-    for ((facility, environment), plots) in plots_needing {
+    for ((facility, environment), plots) in plots_needing.into_iter().filter(|_| fixed.is_none()) {
         let have = covered.get(&(facility, environment)).copied().unwrap_or(0);
         if plots > have && !coverage_relaxed() {
             return Err(format!("{plots} {facility} plots need {environment} but {have} are covered"));
@@ -2003,6 +2123,8 @@ fn warm_start_keys(model: &Model<'_>, items: &[ProductionItem], counts: &Facilit
                 format!("route:{}:{}:{crop:?}:{mobile}", recipe_key(recipe), member_key(*member)),
             VarKind::ActiveAniimo { member } => format!("active:{}", member_key(*member)),
             VarKind::HaulingStaff { recipe, member, .. } => format!("haul:{}:{}", recipe_key(recipe), member_key(*member)),
+            VarKind::FixedSite { recipe, group } => format!("site:{group}:{}", recipe_key(recipe)),
+            VarKind::FixedTurnUnits { group, electric } => format!("site_turns:{group}:{electric}"),
         };
         let ordinal = duplicates.entry(key.clone()).or_default();
         let unique = format!("{key}#{ordinal}");

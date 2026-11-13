@@ -2892,6 +2892,50 @@ tr:hover .skip-row,
     margin-top: 0.5rem;
 }
 
+.roster-tools {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
+    align-items: start;
+    gap: 0.6rem;
+}
+.roster-tools .input-field { min-width: 0; }
+.roster-tools > button { margin-top: 1.5rem; }
+.roster-cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
+    gap: 0.4rem;
+}
+.roster-cards .roster-card { padding: 0.4rem 0.6rem; min-width: 0; }
+.roster-cards .roster-card[open] { grid-column: 1 / -1; }
+.roster-card-summary { cursor: pointer; font-size: 0.85rem; }
+.roster-card-meta { float: right; display: inline-flex; gap: 0.6rem; opacity: 0.8; }
+.roster-card-tags { display: flex; flex-wrap: wrap; gap: 0.25rem 0.5rem; margin-top: 0.25rem; }
+.roster-card-tags > span { font-size: 0.75rem; white-space: nowrap; }
+.roster-card-fields { margin-top: 0.65rem; }
+.roster-card:not([open]) .roster-card-fields { display: none; }
+.roster-catalog-results {
+    display: grid;
+    gap: 0.25rem;
+    margin-top: 0.3rem;
+}
+.roster-catalog-results[hidden] { display: none; }
+.roster-catalog-results button {
+    display: grid;
+    text-align: left;
+    gap: 0.15rem;
+    padding: 0.4rem 0.6rem;
+    border: 1px solid var(--border);
+    border-radius: 0.4rem;
+    background: var(--surface-2);
+    color: inherit;
+    cursor: pointer;
+}
+.roster-catalog-results button:hover, .roster-catalog-results button:focus-visible { border-color: currentColor; }
+@media (max-width: 570px) {
+    .roster-tools { grid-template-columns: minmax(0, 1fr); }
+    .roster-tools > button { margin-top: 0; justify-self: start; }
+}
+
 .roster-card {
     min-width: 0;
     border: 1px solid var(--border);
@@ -3180,3 +3224,28 @@ tr:hover .skip-row,
         animation: none;
     }
 }
+.existing-toolbar { align-items: end; flex-wrap: wrap; }
+.existing-toolbar input[type="number"] { width: 6rem; }
+.existing-toolbar select { max-width: 100%; }
+.existing-map {
+    display: block;
+    width: 100%;
+    max-height: 38rem;
+    background: #161b22;
+    border: 1px solid #3a4656;
+    border-radius: 0.5rem;
+    cursor: crosshair;
+}
+.existing-map .existing-open { fill: #202b34; stroke: #6f859c; stroke-width: 0.09; }
+.existing-map .existing-locked { fill: #33272c; stroke: #865462; stroke-width: 0.09; }
+.existing-map pattern path { fill: none; stroke: #869aaf; stroke-opacity: 0.28; stroke-width: 0.055; }
+.existing-map .existing-plot-label { fill: #abbdd1; font-size: 0.8px; pointer-events: none; }
+.existing-map .existing-climate { fill: #bda45935; stroke: #d8c176; stroke-width: 0.08; pointer-events: none; }
+.existing-map g[data-existing-site] { cursor: pointer; outline: none; }
+.existing-map g[data-existing-site] rect { fill: #315c66; stroke: #89cbbf; stroke-width: 0.08; }
+.existing-map g[data-existing-site] text { fill: white; font-size: 0.65px; text-anchor: middle; dominant-baseline: central; pointer-events: none; }
+.existing-map g.invalid rect { fill: #803543; stroke: #ffc4c9; }
+.existing-map g.selected rect, .existing-map g:focus-visible rect { stroke: #fff4b5; stroke-width: 0.2; }
+.existing-preview { max-width: 100%; margin-top: 0.5rem; }
+#existing-plan-assignments { margin-top: 1rem; overflow-x: auto; }
+#existing-plan-assignments table { min-width: 32rem; }

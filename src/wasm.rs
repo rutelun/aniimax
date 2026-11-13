@@ -782,6 +782,8 @@ pub struct JsPlanInput {
     pub e_mode_rv: Option<u32>,
     #[serde(default)]
     pub max_working_aniimo: Option<u32>,
+    #[serde(default)]
+    pub fixed_homeland: Option<crate::models::FixedHomeland>,
 }
 
 /// The player's Aniimo, and what the page knows of the facilities they work (see
@@ -844,6 +846,9 @@ impl JsRoster {
 impl JsPlanInput {
     /// Builds a [`FacilityCounts`] from the `facilities` map.
     fn facility_counts(&self) -> FacilityCounts {
+        if let Some(layout) = &self.fixed_homeland {
+            return FacilityCounts::from_fixed_homeland(layout.clone());
+        }
         let mut fc = FacilityCounts::new();
         for (name, tiers) in &self.facilities {
             fc.set_tiers(name, tiers.iter().map(|t| (t.count, t.level)).collect());
@@ -1297,6 +1302,20 @@ pub struct JsProductionPlan {
     /// Item, facility, member, visits/hour, whether this is crop work.
     #[serde(default)]
     pub mobile_work: Vec<(String, String, usize, f64, bool)>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fixed_site_jobs: Vec<JsFixedSiteJob>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JsFixedSiteJob {
+    group: usize,
+    item: String,
+    units: f64,
+    rate: f64,
+    cycle: f64,
+    crew: Option<usize>,
+    electric_level: Option<u32>,
+    turns: bool,
 }
 
 /// What a plan makes of one priority.
@@ -1371,6 +1390,7 @@ fn empty_production_plan(success: bool, error: Option<String>) -> JsProductionPl
         hauling_staffing: Vec::new(),
         roster_workload: Vec::new(),
         mobile_work: Vec::new(),
+        fixed_site_jobs: Vec::new(),
     }
 }
 
@@ -1688,7 +1708,7 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
     ) else {
         return no_plan();
     };
-    if exact.rate_per_second <= 0.0 && level_up.is_none() {
+    if exact.rate_per_second <= 0.0 && level_up.is_none() && prepared.input.fixed_homeland.is_none() {
         return no_plan();
     }
     // Independent re-check of every limit before trusting the plan; the caller falls back to the
@@ -1722,6 +1742,26 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
     js.movement_staffing = exact.movement_staffing.clone();
     js.hauling_staffing = exact.hauling_staffing.clone();
     js.roster_workload = roster_workload;
+    if prepared.input.fixed_homeland.is_some() {
+        let items: std::collections::HashMap<_, _> = prepared.items.iter().map(|item| (item.name.as_str(), item)).collect();
+        let mut total_units = std::collections::HashMap::<&str, f64>::new();
+        for (name, _, units) in &exact.fixed_sites {
+            *total_units.entry(name).or_default() += units;
+        }
+        js.fixed_site_jobs = exact.fixed_sites.iter().map(|(name, group, units)| {
+            let item = items[name.as_str()];
+            JsFixedSiteJob {
+                group: *group,
+                item: crate::models::base_item_name(name).into(),
+                units: *units,
+                rate: exact.recipe_rates[name] * units / total_units[name.as_str()],
+                cycle: item.production_time,
+                crew: item.crew,
+                electric_level: crate::power::electric_level(name),
+                turns: crate::exact::takes_turns(item),
+            }
+        }).collect();
+    }
     js.mobile_work = exact.work_routes.iter().filter(|route| route.mobile).filter_map(|route| {
         let item = prepared.items.iter().find(|item| item.name == route.recipe)?;
         let visits = route.crop.as_ref().map_or(1, |(ability, level)| prepared.grower_steps.get(&item.name).iter()
@@ -1897,7 +1937,11 @@ impl PreparedInput {
             // Minimum can request the lowest workers for the generators actually needed.
             _ => 4,
         };
-        let automatic = input.e_mode_rv.and_then(|rv| crate::power::GeneratorLimits::for_rv(rv, lightning));
+        let automatic = input.e_mode_rv.and_then(|rv| crate::power::GeneratorLimits::for_rv(rv, lightning))
+            .and_then(|limits| match &input.fixed_homeland {
+                Some(layout) => limits.with_placed(layout.generators, layout.generator_level.unwrap_or(0)),
+                None => Some(limits),
+            });
         let mut grid = automatic.map(|limits| crate::power::Electricity {
             watts: limits.count * limits.max_output(),
             percent: 120,
@@ -1946,9 +1990,11 @@ impl PreparedInput {
                     .chain(environment.filter(|(building, _)| facility_counts.get_count(building) > 0)
                         .map(|(_, ability)| (ability.as_str(), 1)))
                     .chain((generators > 0).then_some(("Lightning", 1)));
-                crew.add_reserve_workers(jobs, capacity);
-                crew.add_reserve_families(available.filter_map(|item| requirements.family(&item.name)), capacity);
-                if roster.hauling_default_seconds > 0.0 || roster.hauling_seconds.values().any(|&s| s > 0.0) {
+                if input.fixed_homeland.is_none() {
+                    crew.add_reserve_workers(jobs, capacity);
+                    crew.add_reserve_families(available.filter_map(|item| requirements.family(&item.name)), capacity);
+                }
+                if input.fixed_homeland.is_none() && (roster.hauling_default_seconds > 0.0 || roster.hauling_seconds.values().any(|&s| s > 0.0)) {
                     crew.assumed_from.get_or_insert(crew.members.len());
                     crew.members.push(crate::models::RosterAniimo {
                         count: capacity.saturating_mul(100).max(1),
@@ -2078,6 +2124,7 @@ impl PreparedInput {
             hauling_staffing: Vec::new(),
             roster_workload: Vec::new(),
             mobile_work: Vec::new(),
+            fixed_site_jobs: Vec::new(),
         }
     }
 }

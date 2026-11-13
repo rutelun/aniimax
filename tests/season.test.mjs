@@ -19,8 +19,9 @@ function appFunction(name, next) {
 }
 
 // `seasonAvailable` run against the season the selector resolves to (`null` with none running).
-function seasonAvailable(season, { simple, homeLevel }) {
-    const context = { currentSeason: () => season, isSimpleMode: () => simple, selectedHomeLevel: () => homeLevel };
+function seasonAvailable(season, { simple, homeLevel, existingLevel = null }) {
+    const context = { currentSeason: () => season, isSimpleMode: () => simple, selectedHomeLevel: () => homeLevel,
+        existingLayoutEnabled: () => existingLevel !== null, existingRv: () => existingLevel };
     runInNewContext(`${appFunction('seasonAvailable', 'function seasonActive()')}\nresult = seasonAvailable();`, context);
     return context.result;
 }
@@ -55,6 +56,8 @@ test('a running season is offered from its RV level', () => {
     assert.equal(seasonAvailable(season, { simple: true, homeLevel: season.minHomeLevel }), true);
     // Advanced mode has no RV level to go by, so a running season is always on offer there.
     assert.equal(seasonAvailable(season, { simple: false, homeLevel: 1 }), true);
+    assert.equal(seasonAvailable(season, { simple: false, existingLevel: season.minHomeLevel - 1 }), false);
+    assert.equal(seasonAvailable(season, { simple: false, existingLevel: season.minHomeLevel }), true);
 });
 
 test('every season has what the page shows of it', () => {

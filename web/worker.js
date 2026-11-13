@@ -122,6 +122,7 @@ function tiebreakOf(problem, values) {
 async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, comparison = null) {
     const { exact_byproduct_problems, exact_priority_problem, exact_level_up_problem, exact_problem, exact_plan } = pkg;
     const input = JSON.parse(payload);
+    const maximizeBenchAndKiln = input.maximize_material_work ?? !input.fixed_homeland;
     const stage = { floors: [] };
     let incumbent = null;
     let incumbentKeys = null;
@@ -254,7 +255,7 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
         solved = lastCurrencySolve;
     }
     if (!solved && !comparison && provenCurrencyMaximum != null && !stage.pace && !input.level_up_strategy
-        && hasMaterialProcessors(input) && incumbent?.values && incumbentKeys?.length === incumbent.values.length
+        && maximizeBenchAndKiln && hasMaterialProcessors(input) && incumbent?.values && incumbentKeys?.length === incumbent.values.length
         && problem.variable_keys?.length === problem.variables
         && JSON.parse(exact_problem(payload,JSON.stringify({...stage,maximize_material_work:true}))).lp) {
         // The currency already has a proved maximum as an earlier priority. The material
@@ -310,7 +311,7 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
             solved = stocked;
         }
         const workJson = JSON.stringify({ ...workStage, maximize_material_work: true });
-        const workProblem = JSON.parse(exact_problem(payload, workJson));
+        const workProblem = maximizeBenchAndKiln ? JSON.parse(exact_problem(payload, workJson)) : {};
         if (workProblem.lp) {
             step('materials', 'start');
             const worked = await (await materialSearch).searchMaterials(workProblem, solved.values, runModel, options);
@@ -326,6 +327,11 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
             } else {
                 throw new Error('no plan found for the Woodworking Bench and Chimney Kiln workload');
             }
+        } else if (materialPace != null) {
+            // Preserve useful upgrade output without filling the remaining machine time.
+            stageJson = JSON.stringify({ ...workStage, material_pace: undefined, maximize_upgrade_materials: true });
+            problem = JSON.parse(exact_problem(payload, stageJson));
+            step('materials', 'done', solved.proven);
         }
     }
     const finish = (plan, stock = null, seedProblem = problem, seedSolved = solved) => {
@@ -444,7 +450,7 @@ self.onmessage = async (event) => {
                 fallbackReason = error && error.message ? error.message : String(error);
                 // The backup planner doesn't know the player's roster, so a roster plan stops here.
                 const input = JSON.parse(payload);
-                if (input.e_mode_rv >= 12 || input.electricity || hasSeasonCropMinimums(input) || hasMaterialProcessors(input) || (!input.level_up_strategy && (input.crop_variety || input.season))) {
+                if (input.fixed_homeland || input.e_mode_rv >= 12 || input.electricity || hasSeasonCropMinimums(input) || hasMaterialProcessors(input) || (!input.level_up_strategy && (input.crop_variety || input.season))) {
                     result = JSON.stringify({ success: false, error: fallbackReason });
                 } else if (input.aniimo?.startsWith('roster')) {
                     console.warn('Exact planner failed on a roster:', error);

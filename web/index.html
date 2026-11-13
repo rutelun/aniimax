@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Aniimax - Aniimo Production Optimizer</title>
-    <link rel="stylesheet" href="style.css?v=zone-ranges">
+    <link rel="stylesheet" href="style.css?v=roster-picker">
     <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
 </head>
 <body>
@@ -58,6 +58,7 @@
                 </div>
 
                 <div id="advanced-config">
+                    <div id="advanced-facility-settings">
                     <div class="input-row">
                         <div class="input-field">
                             <label for="layout-rv-level">RV level</label>
@@ -77,6 +78,7 @@
                          grouped into category sections (Materials / Environment / Materials
                          Processing), so new facilities can be added without editing this file. -->
                     <div class="facilities-container" id="facilities-grid"></div>
+                    </div>
 
                     <h3>Item Upgrade Modules</h3>
                     <p class="hint">Set the level for each upgrade module you have unlocked (0 = not unlocked).</p>
@@ -116,12 +118,44 @@
                     </div>
                 </div>
 
+                <section id="existing-homeland" class="season">
+                    <h3><label><input type="checkbox" id="existing-homeland-on"> Use my existing layout</label></h3>
+                    <div id="existing-editor" hidden>
+                        <p class="hint">Mark your buildings on the map and set their levels. Click an empty tile to place the selected building, or click a building to edit it. The plan uses My Aniimo.</p>
+                        <p class="hint small" id="existing-modules-hint">Simple mode uses the module levels for this RV. In Advanced mode you can enter your module levels.</p>
+                        <div class="input-row existing-toolbar">
+                            <label class="input-field">RV level <input type="number" id="existing-rv" value="14" min="1" max="20" step="1" required></label>
+                            <label class="input-field">Building <select id="existing-type"></select></label>
+                            <label class="input-field">Level <select id="existing-level"></select></label>
+                            <label class="input-field" id="existing-mode-control" hidden>Climate mode <select id="existing-mode"></select></label>
+                            <label id="existing-rotate-control" hidden><input type="checkbox" id="existing-rotate"> Rotate</label>
+                        </div>
+                        <div id="existing-selection" class="input-row existing-toolbar" hidden>
+                            <strong id="existing-selected"></strong>
+                            <label class="input-field">X <input type="number" id="existing-x" min="0" max="80" step="0.25" required></label>
+                            <label class="input-field">Y <input type="number" id="existing-y" min="0" max="60" step="0.25" required></label>
+                            <button type="button" class="toggle-button" id="existing-apply">Apply changes</button>
+                            <button type="button" class="toggle-button" id="existing-move">Move on map</button>
+                            <button type="button" class="toggle-button" id="existing-remove">Remove building</button>
+                        </div>
+                        <p id="existing-count" class="hint small" aria-live="polite"></p>
+                        <svg id="existing-map" class="existing-map" aria-label="Existing Homeland editor"></svg>
+                        <p id="existing-status" class="hint small" role="status"></p>
+                        <details class="explain">
+                            <summary>Use a screenshot as a reference</summary>
+                            <label class="input-field">Screenshot <input type="file" id="existing-photo" accept="image/png,image/jpeg,image/webp"></label>
+                            <img id="existing-preview" class="existing-preview" alt="Your Homeland screenshot" hidden>
+                        </details>
+                    </div>
+                </section>
+
                 <div class="strategy">
                     <h3>Strategy</h3>
                     <div class="tabs" role="radiogroup" aria-label="Strategy">
                         <label><input type="radio" name="strategy" id="strategy-level-up" value="level-up" checked> Level up</label>
                         <label><input type="radio" name="strategy" id="strategy-priorities" value="priorities"> Priorities</label>
                     </div>
+                    <label class="checkbox-field"><input type="checkbox" id="material-work-on" checked> Maximize spare Bench and Kiln production</label>
 
                     <div id="priorities-config" style="display: none;">
                         <label><input type="checkbox" id="crop-variety"> Crop and Tree Variety</label>
@@ -191,6 +225,10 @@
                 <div class="season" id="electricity-section">
                     <label><input type="checkbox" id="electricity-on"> E-mode</label>
                 </div>
+                <details id="roster-config" class="explain roster-config">
+                    <summary>My Aniimo <span id="roster-config-count"></span></summary>
+                    <div class="roster-editor" id="roster-editor"></div>
+                </details>
                 <button id="optimize-btn" class="optimize-btn">
                     <span class="btn-text">Find the best plan</span>
                     <span class="btn-loading" style="display: none;">Solving...</span>
@@ -232,7 +270,7 @@
                                     <input type="number" id="electricity-aniimo-limit" min="0" max="4294967295" step="1" placeholder="No limit">
                                 </div>
                             </div>
-                            <div class="roster-editor" id="roster-editor" hidden></div>
+                            <button type="button" class="toggle-button" id="edit-roster-btn" hidden>Edit My Aniimo</button>
                         </div>
                         <p class="aniimo-count" id="aniimo-count" hidden><span id="aniimo-count-have">0</span><span class="aniimo-count-of" id="aniimo-count-of"></span></p>
                         <p class="collapsed-summary" id="aniimo-collapsed-summary"></p>
@@ -322,7 +360,7 @@
                             <p>Storage Units share the Home warehouse. The animation shows deliveries to the nearest unit and recipes waiting for ingredients. Carrying time is illustrative. The layout is a heuristic arrangement.</p>
                             <p>⚡ marks E-mode buildings. Yellow lines show the power grid; G marks a generator and numbered bolts mark poles. Generator coverage is 11×11 tiles and pole coverage is 7×7. Red badges mean a connection was not found. Pole placement follows the RV limit.</p>
                         </details>
-                        <div class="layout-arrangement">
+                        <div class="layout-arrangement" id="layout-arrangement">
                             <div class="input-field">
                                 <label for="layout-style">Map style</label>
                                 <select id="layout-style">
@@ -365,6 +403,7 @@
                             <div id="layout-building-index-list"></div>
                         </details>
                         <div class="layout-diagram" id="layout-diagram"></div>
+                        <div id="existing-plan-assignments" hidden></div>
                     </div>
 
                     <div class="card production-steps" id="goal-section">
@@ -613,6 +652,6 @@
             }
         });
     </script>
-    <script type="module" src="app.js?v=optional-season-points"></script>
+    <script type="module" src="app.js?v=roster-picker"></script>
 </body>
 </html>

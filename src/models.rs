@@ -1239,6 +1239,26 @@ pub struct FacilityCounts {
     member_movement: std::collections::BTreeMap<usize, f64>,
     hauling_seconds: std::collections::BTreeMap<String, f64>,
     hauling_default_seconds: f64,
+    fixed_homeland: Option<FixedHomeland>,
+}
+
+/// Physical capacity grouped by interchangeable sites in an existing homeland.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct FixedHomeland {
+    pub groups: Vec<FixedSiteGroup>,
+    pub climate: std::collections::BTreeMap<String, u32>,
+    pub generators: u32,
+    pub generator_level: Option<u32>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct FixedSiteGroup {
+    pub facility: String,
+    pub level: u32,
+    pub count: u32,
+    pub temperature: Option<String>,
+    pub lit: bool,
+    pub powered: bool,
 }
 
 impl Default for FacilityCounts {
@@ -1254,6 +1274,7 @@ impl Default for FacilityCounts {
             member_movement: Default::default(),
             hauling_seconds: Default::default(),
             hauling_default_seconds: 0.0,
+            fixed_homeland: None,
         }
     }
 }
@@ -1270,6 +1291,22 @@ fn facility_stock_limit(facility: &str, level: u32) -> u32 {
 }
 
 impl FacilityCounts {
+    pub fn from_fixed_homeland(layout: FixedHomeland) -> Self {
+        let mut counts = Self::only(&[]);
+        for site in &layout.groups {
+            counts.add_tier(&site.facility, site.count, site.level);
+        }
+        for (building, &count) in &layout.climate {
+            counts.set(building, count, 1);
+        }
+        counts.fixed_homeland = Some(layout);
+        counts
+    }
+
+    pub fn fixed_homeland(&self) -> Option<&FixedHomeland> {
+        self.fixed_homeland.as_ref()
+    }
+
     pub fn set_hauling(&mut self, default_seconds: f64, values: std::collections::BTreeMap<String, f64>) {
         self.hauling_default_seconds = if default_seconds.is_finite() { default_seconds.clamp(0.0, 86400.0) } else { 0.0 };
         self.hauling_seconds = values.into_iter().filter(|(_, s)| s.is_finite() && *s >= 0.0)

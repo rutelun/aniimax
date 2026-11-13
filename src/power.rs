@@ -47,6 +47,13 @@ impl GeneratorLimits {
         Some(Self { count, tier, lightning: lightning.clamp(1, 4) })
     }
 
+    pub fn with_placed(self, count: u32, level: u32) -> Option<Self> {
+        if count == 0 || level == 0 {
+            return None;
+        }
+        Some(Self { count: count.min(self.count), tier: self.tier.min(level as usize - 1), ..self })
+    }
+
     /// Choose the strongest available generator recipe supported by this worker.
     pub fn generator(self, lightning: u32) -> (u32, u32) {
         let Some(tier) = GENERATOR_TIERS[..=self.tier].iter().rposition(|&(_, required, ..)| required <= lightning) else {
