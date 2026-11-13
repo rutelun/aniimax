@@ -4,12 +4,16 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Aniimax - Aniimo Production Optimizer</title>
-    <link rel="stylesheet" href="style.css?v=roster-picker">
+    <link rel="stylesheet" href="style.css?v=planner-workspace">
     <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
 </head>
 <body>
+    <a class="skip-to-planner" href="#planner-settings">Skip to planner</a>
     <header>
-        <h1>aniimax</h1>
+        <div class="brand">
+            <h1>aniimax</h1>
+            <p class="subtitle">aniimo homeland production optimizer</p>
+        </div>
         <div class="header-buttons">
             <select id="language-switch" class="toggle-button" aria-label="Language"></select>
             <button class="toggle-button" onclick="showFacilities()" id="facilitiesToggle">facilities</button>
@@ -18,15 +22,37 @@
             <button class="toggle-button" onclick="toggleTheme()" id="themeToggle">light</button>
         </div>
     </header>
-    <p class="subtitle">aniimo homeland production optimizer</p>
     <p class="disclaimer"><span class="disclaimer-icon" aria-hidden="true">⚠</span>A few recipes, facility levels and counts haven't been confirmed in game yet; they're marked where they're used.</p>
 
     <div class="container">
 
-        <main>
-            <section class="card config-section">
+        <main class="planner-workspace">
+            <div class="planner-bar">
+                <nav class="planner-navigation" aria-label="Planner navigation">
+                    <a href="#planner-settings">Setup</a>
+                    <a href="#roster-config">My Aniimo</a>
+                    <span class="planner-results-controls" id="planner-results-controls" hidden>
+                        <label class="visually-hidden" for="planner-jump">Jump to result</label>
+                        <select id="planner-jump">
+                            <option value="">Results</option>
+                            <option value="plan-overview">Plan summary</option>
+                            <option value="aniimo-card">Aniimo Team</option>
+                            <option value="facility-plan-card">Production</option>
+                            <option value="layout-card">Homeland Layout</option>
+                            <option value="improve-card">Opportunities</option>
+                            <option value="goal-section">Set a Goal</option>
+                        </select>
+                        <button type="button" id="planner-jump-go" class="skip-add-btn">Go</button>
+                    </span>
+                </nav>
+                <button id="optimize-btn" type="button" class="optimize-btn" disabled>
+                    <span class="btn-text">Loading optimizer…</span>
+                    <span class="btn-loading" style="display: none;">Solving...</span>
+                </button>
+            </div>
+            <section class="card config-section" id="planner-settings" aria-labelledby="planner-heading">
                 <div class="card-head">
-                    <h2>Your Homeland</h2>
+                    <h2 id="planner-heading" tabindex="-1">Your Homeland</h2>
                     <div class="config-actions">
                         <button type="button" id="share-config-btn" class="toggle-button small">Share setup</button>
                         <button type="button" id="clear-saved-btn" class="toggle-button small" title="Your inputs are saved in this browser automatically.">Clear saved values</button>
@@ -38,6 +64,8 @@
                 </div>
                 <p id="share-config-status" class="hint small" role="status" aria-live="polite"></p>
 
+                <div class="planner-settings-grid">
+                <div class="planner-settings-primary">
                 <div class="tabs" role="radiogroup" aria-label="Input mode">
                     <label><input type="radio" name="config-mode" id="mode-simple" value="simple" checked> Simple</label>
                     <label><input type="radio" name="config-mode" id="mode-advanced" value="advanced"> Advanced</label>
@@ -67,6 +95,11 @@
                     </div>
                     <h3>Facilities</h3>
                     <p class="hint">Set the count and level for each facility you have.</p>
+                    <div class="input-field facility-search">
+                        <label for="facility-search">Find a facility</label>
+                        <input id="facility-search" type="search" placeholder="Search by building name" autocomplete="off">
+                    </div>
+                    <p id="facility-search-empty" class="hint small" hidden>No matching facilities.</p>
                     <div class="fill-row">
                         <label for="fill-level">Fill from RV level</label>
                         <select id="fill-level"></select>
@@ -148,7 +181,9 @@
                         </details>
                     </div>
                 </section>
+                </div>
 
+                <div class="planner-settings-options">
                 <div class="strategy">
                     <h3>Strategy</h3>
                     <div class="tabs" role="radiogroup" aria-label="Strategy">
@@ -226,23 +261,46 @@
                     <label><input type="checkbox" id="electricity-on"> E-mode</label>
                     <p class="hint small" id="electricity-best-minimum-note" hidden>Best and Minimum compare E-mode with normal production and count the Lightning Aniimo needed to run the generators.</p>
                 </div>
+                </div>
+                </div>
+                <div class="planner-team-settings">
+                    <h3>Plan with</h3>
+                    <div class="tabs compact" role="radiogroup" aria-label="Aniimo setup">
+                        <label title="The best Aniimo you have, with each facility's personality"><input type="radio" name="aniimo-setup" id="aniimo-best" value="best" checked> Best</label>
+                        <label title="The lowest ability level each recipe accepts: the least you can get by with"><input type="radio" name="aniimo-setup" id="aniimo-minimum" value="minimum"> Minimum</label>
+                        <label title="Plan with the Aniimo you actually have"><input type="radio" name="aniimo-setup" id="aniimo-custom" value="custom"> My Aniimo</label>
+                    </div>
+                    <div class="aniimo-setup-panel" id="aniimo-setup-panel">
+                        <p class="hint small" id="aniimo-setup-hint"></p>
+                        <details class="explain" id="ability-level-settings">
+                            <summary>Ability levels</summary>
+                            <div class="ability-levels" id="ability-levels"></div>
+                        </details>
+                        <div id="worker-travel-option" class="checkbox-field" hidden>
+                            <label><input type="checkbox" id="worker-travel-on"> <span>Account for Aniimo travel</span> <span class="hint small">(very slow)</span></label>
+                        </div>
+                        <div id="roster-worker-limit" class="input-row" hidden>
+                            <div class="input-field">
+                                <label for="electricity-aniimo-limit">Max working Aniimo</label>
+                                <input type="number" id="electricity-aniimo-limit" min="0" max="4294967295" step="1" placeholder="No limit">
+                            </div>
+                        </div>
+                    </div>
+                </div>
                 <details id="roster-config" class="explain roster-config">
                     <summary>My Aniimo <span id="roster-config-count"></span></summary>
                     <div class="roster-editor" id="roster-editor"></div>
                 </details>
-                <button id="optimize-btn" class="optimize-btn">
-                    <span class="btn-text">Find the best plan</span>
-                    <span class="btn-loading" style="display: none;">Solving...</span>
-                </button>
                 <div id="progress-bar-container" class="progress-bar-container" style="display: none;">
                     <div id="progress-bar-fill" class="progress-bar-fill"></div>
                 </div>
                 <p id="progress-bar-caption" class="hint small" style="display: none;"></p>
-                <div class="card solve-progress" id="solve-progress" style="display: none;" aria-live="polite"></div>
+                <div class="card solve-progress" id="solve-progress" style="display: none;"></div>
+                <p id="planner-status" class="visually-hidden" role="status"></p>
             </section>
 
             <section class="results-section" id="results-section" style="display: none;">
-                <div id="error-message" class="card error-message" style="display: none;"></div>
+                <div id="error-message" class="card error-message" style="display: none;" role="alert" tabindex="-1"></div>
 
                 <div id="results-content">
                     <p class="hint small" id="power-used" hidden></p>
@@ -252,27 +310,9 @@
                                 <span class="chevron" aria-hidden="true"></span>
                                 <h2>Aniimo Team</h2>
                             </button>
-                            <div class="tabs compact" role="radiogroup" aria-label="Aniimo setup">
-                                <label title="The best Aniimo you have, with each facility's personality"><input type="radio" name="aniimo-setup" id="aniimo-best" value="best" checked> Best</label>
-                                <label title="The lowest ability level each recipe accepts: the least you can get by with"><input type="radio" name="aniimo-setup" id="aniimo-minimum" value="minimum"> Minimum</label>
-                                <label title="Plan with the Aniimo you actually have"><input type="radio" name="aniimo-setup" id="aniimo-custom" value="custom"> My Aniimo</label>
-                            </div>
+                            <button type="button" class="toggle-button small" id="edit-roster-btn" hidden>Edit My Aniimo</button>
                         </div>
                         <div id="roster-summary" hidden></div>
-                        <div class="aniimo-setup-panel" id="aniimo-setup-panel">
-                            <p class="hint small" id="aniimo-setup-hint"></p>
-                            <div class="ability-levels" id="ability-levels"></div>
-                            <div id="worker-travel-option" class="checkbox-field" hidden>
-                                <label><input type="checkbox" id="worker-travel-on"> <span>Account for Aniimo travel</span> <span class="hint small">(very slow)</span></label>
-                            </div>
-                            <div id="roster-worker-limit" class="input-row" hidden>
-                                <div class="input-field">
-                                    <label for="electricity-aniimo-limit">Max working Aniimo</label>
-                                    <input type="number" id="electricity-aniimo-limit" min="0" max="4294967295" step="1" placeholder="No limit">
-                                </div>
-                            </div>
-                            <button type="button" class="toggle-button" id="edit-roster-btn" hidden>Edit My Aniimo</button>
-                        </div>
                         <p class="aniimo-count" id="aniimo-count" hidden><span id="aniimo-count-have">0</span><span class="aniimo-count-of" id="aniimo-count-of"></span></p>
                         <p class="collapsed-summary" id="aniimo-collapsed-summary"></p>
                         <div class="ability-strip" id="aniimo-abilities" aria-label="Aniimo needed per ability"></div>
@@ -280,14 +320,14 @@
                         <div id="aniimo-body" hidden>
                             <details class="explain">
                                 <summary>How the team is worked out</summary>
-                                <p><strong>Best</strong>: the best Aniimo you have of each ability (pick its level above), with each facility's personality. <strong>My Aniimo</strong>: the Aniimo you list; each works what its abilities allow, for the hours it has. <strong>Minimum</strong>: the lowest ability level each recipe accepts, with no personality bonus. The plan below follows whichever is picked.</p>
+                                <p><strong>Best</strong>: the best Aniimo you have of each ability, with each facility's personality. Choose their levels in the setup. <strong>My Aniimo</strong>: the Aniimo you list; each works what its abilities allow, for the hours it has. <strong>Minimum</strong>: the lowest ability level each recipe accepts, with no personality bonus. The plan follows whichever is picked.</p>
                                 <p>An Aniimo can take any job needing its ability at or below its level while it has hours to spare, as long as no two of its facilities want opposite personalities. It has four personalities, one from each pair, shown as letters over its portrait: Instinctive or Energetic (I/E), Nimble or Practical (N/S), Faithful or Tenacious (F/T), Playful or Judicious (P/J). Facilities with a resident Aniimo (Sandcastle, Dewy House and the like) need one each, and so does each Heat Furnace (Fire), Cooling Unit (Ice) and Sunlamp (Light) in use. With My Aniimo, crop jobs share the workers' available time; optional travel accounting also includes walking between workplaces. Not yet checked in game: each recipe's minimum ability level, the Farmland and Woodland jobs, and whether an environment building's Aniimo level or personality matters.</p>
                             </details>
                             <div id="aniimo-summary"></div>
                         </div>
                     </div>
 
-                    <div class="card rate-card">
+                    <div class="card rate-card" id="plan-overview" tabindex="-1">
                         <!-- Shows the upgrade estimate. In Level up mode the table replaces the coin rate below. -->
                         <div class="level-up-card" id="level-up-card" style="display: none;">
                             <span class="summary-label" id="level-up-label">Level-Up</span>
@@ -337,8 +377,16 @@
                         <div id="profit-breakdown"></div>
                     </div>
 
-                    <div class="card production-steps">
+                    <div class="card production-steps" id="facility-plan-card" tabindex="-1">
                         <h2>What Each Facility Should Do</h2>
+                        <div class="production-filters">
+                            <div class="input-field">
+                                <label for="plan-facility-search">Find a building or recipe</label>
+                                <input id="plan-facility-search" type="search" placeholder="Search by name" autocomplete="off">
+                            </div>
+                            <label class="checkbox-field"><input id="plan-show-inactive" type="checkbox"> Show idle buildings</label>
+                        </div>
+                        <p id="plan-facility-empty" class="hint small" hidden>No matching production rows.</p>
                         <details class="explain">
                             <summary>How to read this</summary>
                             <p>Each row is one product; a facility split between several products gets a row for each. Crops that need a growing environment are grouped by the Heat Furnace, Cooling Unit or Sunlamp setting that covers them, with its layout. Everything else is grouped like the facility list.</p>
@@ -351,7 +399,7 @@
                         <div id="facility-plan-container" class="facilities-container"></div>
                     </div>
 
-                    <div class="card production-steps" id="layout-card" style="display: none;">
+                    <div class="card production-steps" id="layout-card" style="display: none;" tabindex="-1">
                         <h2>Homeland Layout</h2>
                         <p class="hint" id="layout-summary"></p>
                         <details class="explain">
@@ -396,9 +444,16 @@
                             </span>
                             <span class="layout-sim" id="layout-sim" hidden><span id="layout-clock">0h 00m</span><button type="button" class="toggle-button small" id="layout-replay">Replay</button></span>
                         </div>
-                        <p class="hint layout-zoom-hint">Hold Ctrl and scroll over the layout to zoom. Drag to move around while zoomed; double-click to zoom back out.</p>
+                        <div class="layout-zoom-controls" id="layout-zoom-controls" hidden>
+                            <span class="hint small">Drag to move around while zoomed.</span>
+                            <div role="group" aria-label="Map zoom">
+                                <button type="button" class="skip-add-btn" data-map-zoom="out" aria-label="Zoom out" disabled>−</button>
+                                <button type="button" class="skip-add-btn" data-map-zoom="in" aria-label="Zoom in">+</button>
+                                <button type="button" class="skip-add-btn" data-map-zoom="fit" aria-label="Fit map to view" disabled>Fit</button>
+                            </div>
+                        </div>
                         <ul class="layout-group-legend" id="layout-group-legend" aria-label="Storage groups" hidden></ul>
-                        <details class="explain" id="layout-building-index" open hidden>
+                        <details class="explain" id="layout-building-index" hidden>
                             <summary>Buildings A–Z (English names)</summary>
                             <p class="hint small" id="layout-index-nearest" hidden>Listed by nearest Storage Unit on this map.</p>
                             <div id="layout-building-index-list"></div>
@@ -653,6 +708,6 @@
             }
         });
     </script>
-    <script type="module" src="app.js?v=best-minimum-power"></script>
+    <script type="module" src="app.js?v=planner-workspace"></script>
 </body>
 </html>

@@ -26,7 +26,7 @@ function page() {
         },
         setTimeout(callback) { const id = timers.size + 1; timers.set(id, callback); return id; },
         clearTimeout(id) { timers.delete(id); },
-        displayPlan: plan => shown.push(plan), runTimeToGoal() {},
+        displayPlan: plan => shown.push(plan), runTimeToGoal() {}, updatePlannerNavigation() {},
         startProgress() {}, finishSolveSteps() {}, renderProgress() {}, setStep: (...args) => steps.push(args), translate: s => s,
         stopRanking() {}, stopLayout() {}, renderImprovements() {}, restartWorker() {},
         ENVIRONMENT_BUILDING_ABILITY: {}, RESIDENT_FACILITIES: [], FACILITIES: [], ANIIMO_WALK_SPEED: 4,

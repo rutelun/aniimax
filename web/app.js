@@ -1,7 +1,7 @@
 // Aniimax Web Application
 
-import { currentLocale, sourceAttribute, translate } from './i18n.js?v=best-minimum-power';
-import './math-translation.js?v=best-minimum-power';
+import { currentLocale, sourceAttribute, translate } from './i18n.js?v=planner-workspace';
+import './math-translation.js?v=planner-workspace';
 import { autoMaximizeSeasonPoints } from './season-planning.js?v=optional-season-points';
 
 import {
@@ -251,6 +251,7 @@ function showSelectedPlan() {
     content.classList.toggle('stale', !plan);
     if (!plan) {
         pending.style.display = lastPlanInput ? 'block' : 'none';
+        updatePlannerNavigation();
         stopRanking();
         stopLayout();
         ensurePlanFor(setup);
@@ -342,17 +343,17 @@ function renderFacilityCards() {
     const grid = document.getElementById('facilities-grid');
     grid.innerHTML = FACILITY_CATEGORIES.map(category => {
         const cards = FACILITIES.filter(f => f.category === category).map(f => `
-            <div class="facility-card">
+            <div class="facility-card" data-facility-name="${f.name}">
                 <h4>${f.name} <span class="info-icon" data-tooltip="${f.tooltip}">?</span></h4>
                 <div class="facility-tiers" data-facility="${f.name}"></div>
                 ${f.hasLevels === false ? '' : '<button type="button" class="add-tier-btn" data-facility="' + f.name + '">+ Add level</button>'}
             </div>
         `).join('');
         return `
-            <div class="facility-category">
-                <h4 class="facility-category-title">${category}</h4>
+            <details class="explain facility-category">
+                <summary class="facility-category-title">${category} <span class="hint small">(${FACILITIES.filter(f => f.category === category).length})</span></summary>
                 <div class="facilities-grid">${cards}</div>
-            </div>
+            </details>
         `;
     }).join('');
     FACILITIES.forEach(f => renderTierRows(f.name));
@@ -410,6 +411,40 @@ function attachFacilityTierHandlers() {
         if (e.key === 'Enter' && e.target.matches('input')) {
             runFindPlan();
         }
+    });
+}
+
+function searchTerms(value) {
+    return value.toLocaleLowerCase().trim().split(/\s+/).filter(Boolean);
+}
+
+function matchesSearch(terms, text) {
+    const label = text.toLocaleLowerCase();
+    return terms.every(term => label.includes(term));
+}
+
+function attachFacilitySearch() {
+    const input = document.getElementById('facility-search');
+    const groups = [...document.querySelectorAll('#facilities-grid .facility-category')];
+    let beforeSearch = null;
+    input.addEventListener('input', () => {
+        const terms = searchTerms(input.value);
+        if (terms.length && !beforeSearch) beforeSearch = new Map(groups.map(group => [group, group.open]));
+        let found = false;
+        for (const group of groups) {
+            let visible = false;
+            for (const card of group.querySelectorAll('[data-facility-name]')) {
+                const name = card.dataset.facilityName;
+                card.hidden = !matchesSearch(terms, `${name} ${translate(name)}`);
+                visible ||= !card.hidden;
+            }
+            group.hidden = !visible;
+            if (terms.length && visible) group.open = true;
+            else if (!terms.length && beforeSearch) group.open = beforeSearch.get(group);
+            found ||= visible;
+        }
+        if (!terms.length) beforeSearch = null;
+        document.getElementById('facility-search-empty').hidden = found;
     });
 }
 
@@ -641,6 +676,8 @@ async function initWasm() {
         initWorker();
         const version = await callWorker('get_version');
         wasmReady = true;
+        document.querySelector('#optimize-btn .btn-text').textContent = 'Find the best plan';
+        resetPlanButton();
 
         document.getElementById('version').textContent = version;
         loadRecipeIndex();
@@ -1520,9 +1557,33 @@ function setLayoutView(svg, [x, y, w, h]) {
         svg.setAttribute('viewBox', layoutZoom.view.join(' '));
     }
     svg.classList.toggle('zoomed', !!layoutZoom);
+    updateMapZoomControls(svg);
+}
+
+function updateMapZoomControls(svg) {
+    const controls = document.getElementById('layout-zoom-controls');
+    controls.hidden = !svg;
+    if (!svg) return;
+    const width = viewBoxOf(svg)[2];
+    const max = layoutBaseOf(svg)[2];
+    controls.querySelector('[data-map-zoom="in"]').disabled = width <= max / LAYOUT_MAX_ZOOM + 1e-9;
+    for (const action of ['out', 'fit']) controls.querySelector(`[data-map-zoom="${action}"]`).disabled = width >= max - 1e-9;
 }
 
 function attachLayoutZoom(diagram) {
+    document.getElementById('layout-zoom-controls').addEventListener('click', event => {
+        const button = event.target.closest('[data-map-zoom]');
+        const svg = diagram.querySelector('.layout-svg');
+        if (!button || !svg) return;
+        const action = button.dataset.mapZoom;
+        if (action === 'fit') return setLayoutView(svg, layoutBaseOf(svg));
+        const [x, y, w, h] = viewBoxOf(svg);
+        const max = layoutBaseOf(svg)[2];
+        const width = Math.max(max / LAYOUT_MAX_ZOOM, Math.min(max, w * (action === 'in' ? 0.67 : 1 / 0.67)));
+        const height = h * width / w;
+        setLayoutView(svg, [x + (w - width) / 2, y + (h - height) / 2, width, height]);
+        if (button.disabled) document.querySelector('#layout-zoom-controls [data-map-zoom]:enabled')?.focus({ preventScroll: true });
+    });
     diagram.addEventListener('wheel', (e) => {
         const svg = diagram.querySelector('.layout-svg');
         if (!e.ctrlKey || !svg) return;
@@ -1576,6 +1637,7 @@ function drawLayout(drawn) {
     renderBuildingIndex(drawn.layout);
     // A redraw of the same view keeps its zoom; a new plan or the whole homeland starts over.
     const svg = diagram.querySelector('.layout-svg');
+    updateMapZoomControls(svg);
     if (!svg) return;
     if (layoutZoom && layoutZoom.base === svg.dataset.base) setLayoutView(svg, layoutZoom.view);
     else layoutZoom = null;
@@ -1710,9 +1772,9 @@ function renderExistingPlan(plan) {
                 : site.staff != null ? translate('Generating power') : translate('Idle'),
                 amount: '—', use: site.staff != null ? '100%' : '—',
                 who: site.staff != null ? name(site.staff) : '—' });
-            return work.map(job => `<tr><td><button type="button" class="toggle-button small" data-existing-result="${site.index}">${escapeText(translate(site.facility))} #${site.index + 1}</button>
-                <div class="hint small">Lv.${site.level} · ${site.x}, ${site.y}</div></td>
-                <td>${job.recipe}</td><td>${job.amount}</td><td>${job.use}</td><td>${job.who}</td></tr>`).join('');
+            return work.map(job => `<tr><td data-label="Building"><div><button type="button" class="toggle-button small" data-existing-result="${site.index}">${escapeText(translate(site.facility))} #${site.index + 1}</button>
+                <div class="hint small">Lv.${site.level} · ${site.x}, ${site.y}</div></div></td>
+                <td data-label="Recipe or mode">${job.recipe}</td><td data-label="Units per day">${job.amount}</td><td data-label="Building utilization">${job.use}</td><td data-label="Aniimo">${job.who}</td></tr>`).join('');
         }).join('');
     document.getElementById('existing-plan-assignments').innerHTML = `<h3>Production at each building</h3>
         <table class="facility-plan-table"><thead><tr><th>Building</th><th>Recipe or mode</th>
@@ -1746,6 +1808,7 @@ function renderHomelandLayout(plan) {
     card.style.display = 'block';
     document.getElementById('layout-summary').textContent = 'Laying out…';
     document.getElementById('layout-diagram').innerHTML = '';
+    updateMapZoomControls(null);
     document.getElementById('layout-group-legend').hidden = true;
     document.getElementById('layout-building-index').hidden = true;
     document.getElementById('layout-group-notice').hidden = true;
@@ -2378,6 +2441,54 @@ function renderProgress() {
         <li class="progress-step ${step.state}">${icon(step.state)}<span class="step-label">${step.label}</span>
             <span class="step-note">${note}</span></li>`;
     }).join('')}</ol>`;
+    const running = progress.steps.find(step => step.state === 'running');
+    if (running) announcePlanner(running.label);
+}
+
+function announcePlanner(message) {
+    const status = document.getElementById('planner-status');
+    const text = translate(message);
+    if (status.textContent !== text) status.textContent = text;
+}
+
+function updatePlannerNavigation() {
+    const picker = document.getElementById('planner-jump');
+    const results = document.getElementById('results-content');
+    const enabled = !!lastPlan?.success && !results.classList.contains('stale') && results.getClientRects().length > 0;
+    document.getElementById('planner-results-controls').hidden = !enabled;
+    if (!enabled) return;
+    for (const option of picker.options) {
+        if (option.value) option.disabled = !document.getElementById(option.value)?.getClientRects().length;
+    }
+    if (!picker.value || picker.selectedOptions[0].disabled) picker.value = 'plan-overview';
+}
+
+function jumpToPlannerSection(id) {
+    const section = document.getElementById(id);
+    if (!section) return;
+    if (section instanceof HTMLDetailsElement) section.open = true;
+    const heading = section.querySelector('h2, summary') || section;
+    if (!heading.matches('summary')) heading.tabIndex = -1;
+    heading.focus({ preventScroll: true });
+    section.scrollIntoView({ block: 'start' });
+}
+
+function attachPlannerNavigation() {
+    document.querySelectorAll('.planner-navigation a, .skip-to-planner').forEach(link => {
+        link.addEventListener('click', event => {
+            if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+            event.preventDefault();
+            jumpToPlannerSection(link.hash.slice(1));
+        });
+    });
+    const picker = document.getElementById('planner-jump');
+    picker.addEventListener('pointerdown', updatePlannerNavigation);
+    picker.addEventListener('focus', updatePlannerNavigation);
+    document.getElementById('planner-jump-go').addEventListener('click', () => {
+        updatePlannerNavigation();
+        if (!picker.value) return;
+        jumpToPlannerSection(picker.value);
+    });
 }
 
 // --- My Aniimo -------------------------------------------------------------------------
@@ -3240,7 +3351,7 @@ function showAniimoSetup() {
     travelRefinements = 0;
     const tab = selectedSetupTab();
     document.getElementById('aniimo-setup-panel').hidden = tab === 'minimum';
-    document.getElementById('ability-levels').hidden = tab !== 'best';
+    document.getElementById('ability-level-settings').hidden = tab !== 'best';
     document.getElementById('edit-roster-btn').hidden = tab !== 'custom';
     document.getElementById('roster-worker-limit').hidden = tab !== 'custom';
     document.getElementById('worker-travel-option').hidden = tab !== 'custom';
@@ -3824,6 +3935,7 @@ function showError(message) {
     errorEl.style.display = 'block';
     resultsContent.style.display = 'none';
     resultsSection.style.display = 'block';
+    updatePlannerNavigation();
 }
 
 // The goal card's choices: coins and every priority that's on, in the player's order. Keeps the
@@ -4050,7 +4162,7 @@ function facilityPlanTableOf(groups) {
 
 function planRows(rows) {
     return rows.map(step => `
-                    <tr class="status-${step.status}">
+                    <tr class="status-${step.status}" data-search="${escapeText(`${step.facility} ${prettyItem(step.item_name)}`)}">
                         <td data-label="Facility">${step.facility}</td>
                         <td data-label="Count">${step.facility_count}</td>
                         <td data-label="Producing">${step.item_name ? prettyItem(step.item_name) : '-'}${unverifiedRowKeys.has(`${step.facility}|${step.item_name}`) ? '<span class="tag unverified" title="Not yet checked in game">unverified</span>' : ''}${step.item_name && step.status === 'producing' ? `<button type="button" class="skip-row" data-skip="${step.item_name}" title="Can't make this? Skip it and plan again" aria-label="Skip ${prettyItem(step.item_name)} and plan again">✕</button>` : ''}</td>
@@ -4058,6 +4170,40 @@ function planRows(rows) {
                         <td data-label="Why">${prettyReason(step.reason)}</td>
                     </tr>
                 `).join('');
+}
+
+function filterFacilityPlan() {
+    const terms = searchTerms(document.getElementById('plan-facility-search').value);
+    const showIdle = document.getElementById('plan-show-inactive').checked;
+    const container = document.getElementById('facility-plan-container');
+    let found = false;
+    for (const category of container.querySelectorAll('.facility-category')) {
+        let categoryMatches = false;
+        for (const section of category.querySelectorAll('.table-wrapper, .env-unit')) {
+            const rows = [...section.querySelectorAll('tr[class^="status-"]')];
+            if (!rows.length) continue;
+            let sectionMatches = false;
+            for (const row of rows) {
+                const [facility, , recipe] = row.cells;
+                const match = (showIdle || row.classList.contains('status-producing'))
+                    && matchesSearch(terms, `${row.dataset.search} ${facility.textContent} ${recipe.textContent}`);
+                row.hidden = !match;
+                sectionMatches ||= match;
+            }
+            if (section.classList.contains('table-wrapper')) {
+                for (const heading of section.querySelectorAll('tr.facility-plan-group')) {
+                    let row = heading.nextElementSibling;
+                    while (row?.hidden && row.className.startsWith('status-')) row = row.nextElementSibling;
+                    heading.hidden = !row?.className.startsWith('status-');
+                }
+            }
+            section.hidden = !sectionMatches;
+            categoryMatches ||= sectionMatches;
+        }
+        category.hidden = !categoryMatches;
+        found ||= categoryMatches;
+    }
+    document.getElementById('plan-facility-empty').hidden = found || !container.querySelector('.facility-category');
 }
 
 // "Sowing", "Sowing and Collecting", "Reaping, Logging and Collecting".
@@ -4646,6 +4792,7 @@ function renderFacilityPlan(plan) {
 
     if (steps.length === 0) {
         container.innerHTML = '<p class="hint">Nothing profitable to produce with the current facilities.</p>';
+        document.getElementById('plan-facility-empty').hidden = true;
         return;
     }
 
@@ -4747,6 +4894,7 @@ function renderFacilityPlan(plan) {
     }).join('');
 
     container.innerHTML = environmentSections + categorySections;
+    filterFacilityPlan();
 }
 
 // Re-renders "Your Rate" from `lastPlan` at whichever unit is currently selected in the
@@ -4860,6 +5008,7 @@ function displayPlan(plan) {
     resultsSection.style.display = 'block';
 
     if (!plan.success) {
+        updatePlannerNavigation();
         goalSection.style.display = 'none';
         if (selectedSetupTab() === 'custom') {
             showRosterShortfall();
@@ -4924,6 +5073,8 @@ function displayPlan(plan) {
     renderProfitBreakdown(plan);
     renderFacilityPlan(plan);
     renderAniimoSummary(plan);
+    updatePlannerNavigation();
+    announcePlanner('Plan ready. Use Results to jump to a section.');
     // The page stays where the player is; the results appear without scrolling to them.
 }
 
@@ -5037,6 +5188,8 @@ async function runFindPlan() {
     const progressCaption = document.getElementById('progress-bar-caption');
 
     btn.disabled = true;
+    const previousError = document.getElementById('error-message');
+    previousError.style.display = 'none';
     btnText.style.display = 'none';
     btnLoading.style.display = 'inline';
     // The progress card below the button follows each step; the bar only shows if the backup
@@ -5133,7 +5286,7 @@ async function runFindPlan() {
 // Puts the Find the best plan button back once a run is over or called off.
 function resetPlanButton() {
     const btn = document.getElementById('optimize-btn');
-    btn.disabled = false;
+    btn.disabled = !wasmReady;
     btn.querySelector('.btn-text').style.display = 'inline';
     btn.querySelector('.btn-loading').style.display = 'none';
     document.getElementById('progress-bar-container').style.display = 'none';
@@ -5162,6 +5315,8 @@ function clearPlanResults() {
     renderProgress();
     resetPlanButton();
     document.getElementById('results-section').style.display = 'none';
+    updatePlannerNavigation();
+    announcePlanner('');
 }
 
 // Compute time-to-goal against the already-computed `lastPlan`; cheap, safe to call on every
@@ -5457,6 +5612,10 @@ async function initApp() {
     loadInputsFromStorage(savedData);
     attachAutoSave();
     attachFacilityTierHandlers();
+    attachFacilitySearch();
+    attachPlannerNavigation();
+    document.getElementById('plan-facility-search').addEventListener('input', filterFacilityPlan);
+    document.getElementById('plan-show-inactive').addEventListener('change', filterFacilityPlan);
     attachModeHandlers();
     attachStrategyHandlers();
     attachSkipHandlers();

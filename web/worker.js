@@ -312,6 +312,10 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
         }
         const workJson = JSON.stringify({ ...workStage, maximize_material_work: true });
         const workProblem = maximizeBenchAndKiln ? JSON.parse(exact_problem(payload, workJson)) : {};
+        const keepMaterialStock = () => {
+            stageJson = JSON.stringify({ ...workStage, material_pace: undefined, maximize_upgrade_materials: true });
+            problem = JSON.parse(exact_problem(payload, stageJson));
+        };
         if (workProblem.lp) {
             step('materials', 'start');
             const worked = await (await materialSearch).searchMaterials(workProblem, solved.values, runModel, options);
@@ -325,12 +329,17 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
                 proven &&= worked.proven;
                 if (!worked.proven) materialWorkNote = 'unproven';
             } else {
-                throw new Error('no plan found for the Woodworking Bench and Chimney Kiln workload');
+                // An optional maximization must not discard a plan with valid RV materials.
+                // Keep the preceding solution; the independent check still runs below.
+                if (!stage.pace && !(materialPace > 0)) {
+                    throw new Error('no plan found for the Woodworking Bench and Chimney Kiln workload');
+                }
+                materialWorkNote = 'unproven';
+                if (materialPace != null) keepMaterialStock();
             }
         } else if (materialPace != null) {
             // Preserve useful upgrade output without filling the remaining machine time.
-            stageJson = JSON.stringify({ ...workStage, material_pace: undefined, maximize_upgrade_materials: true });
-            problem = JSON.parse(exact_problem(payload, stageJson));
+            keepMaterialStock();
             step('materials', 'done', solved.proven);
         }
     }

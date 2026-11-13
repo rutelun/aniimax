@@ -75,11 +75,23 @@ test('reuses the last coin priority, seeds material search and deduplicates its 
     assert.ok(p.progress.some(([step,state])=>step==='final'&&state==='skip'));
 });
 
-test('a material timeout cannot return the preceding zero-material priority plan', async () => {
+test('a spare workload timeout preserves the checked plan with RV materials', async () => {
+    const p = planner(null, ['coins'], {
+        level_up_preview:{cost:[['coins',100],['standard_planks',10]],stock:[]},
+    });
+    const plan = JSON.parse(await p.run());
+    assert.ok(plan.success);
+    assert.equal(plan.material_work_note, 'unproven');
+    assert.equal(plan.comparison_scores.material_pace, .3);
+    assert.equal(p.checks.at(-1).stage.maximize_upgrade_materials, true);
+    assert.deepEqual(p.checks.at(-1).solved.values, [.5,1,.3]);
+    assert.ok(p.progress.some(([step,state])=>step==='materials'&&state==='fail'));
+});
+
+test('a material timeout without an RV material plan does not claim to satisfy the option', async () => {
     const p = planner(null);
     await assert.rejects(p.run(), /Woodworking Bench and Chimney Kiln workload/);
-    assert.equal(p.checks.length,0);
-    assert.ok(p.progress.some(([step,state])=>step==='materials'&&state==='fail'));
+    assert.equal(p.checks.length, 0);
 });
 
 test('a feasible time-limited material solution is shown without claiming a proven maximum', async () => {
