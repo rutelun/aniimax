@@ -55,6 +55,7 @@
   "Crop job assignments are suggestions when there is no team limit.": "未設定隊伍人數上限時，農作工作分配僅供參考。",
   "Working out the source team…": "正在計算來源隊伍…",
   "No working team to copy from this plan.": "此規劃沒有可複製的工作隊伍。",
+  "Best and Minimum compare E-mode with normal production and count the Lightning Aniimo needed to run the generators.": "最佳與最低配置會比較電力模式與一般生產，並計入發電機所需的雷電阿尼莫。",
   "E-mode · Building Lv.{level}": "電力模式 · 設施等級 {level}",
   "Minimum for normal mode": "一般模式最低需求",
   "Minimum Plots per Event Crop": "各種當季作物的最低地塊數",

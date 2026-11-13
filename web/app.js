@@ -1,7 +1,7 @@
 // Aniimax Web Application
 
-import { currentLocale, sourceAttribute, translate } from './i18n.js?v=roster-picker';
-import './math-translation.js?v=roster-picker';
+import { currentLocale, sourceAttribute, translate } from './i18n.js?v=best-minimum-power';
+import './math-translation.js?v=best-minimum-power';
 import { autoMaximizeSeasonPoints } from './season-planning.js?v=optional-season-points';
 
 import {
@@ -2895,6 +2895,7 @@ let seasonBudgets = {};
 function renderElectricity() {
     const available = existingLayoutEnabled() ? existingRv() >= 12 : !isSimpleMode() || selectedHomeLevel() >= 12;
     document.getElementById('electricity-section').hidden = !available;
+    document.getElementById('electricity-best-minimum-note').hidden = !document.getElementById('electricity-on').checked || existingLayoutEnabled();
 }
 
 function eModeRv(input) {
@@ -4132,7 +4133,7 @@ function aniimoTeam(plan) {
         if (!ability || !units) return;
         const key = `${ability} (environment:${level || 0})`;
         if (!groups.has(key)) {
-            groups.set(key, { label: level ? `${ability} Lv.${level}` : `${ability} any level`, ability, level: level || 1, bonus: false, busy: 0, where: new Map(), jobs: new Map(), environment: true });
+            groups.set(key, { label: level ? `${ability} Lv.${level}` : `${ability} any level`, ability, level: level || 1, anyLevel: !level, bonus: false, busy: 0, where: new Map(), jobs: new Map(), environment: true });
         }
         const g = groups.get(key);
         g.busy += units;
@@ -4263,7 +4264,7 @@ function renderAniimoSummary(plan) {
         const where = whereText(g);
         const tip = `${g.count > 1 ? `${g.count}× ` : ''}${g.label}${g.bonus ? ' (+20% speed)' : ''} · ${where}`;
         const times = g.count > 1 ? `<span class="ability-times">×${g.count}</span>` : '';
-        return `<span class="ability-kind">${dot(g.ability, g.environment ? '·' : g.level, g.bonus, tip)}${times}</span>`;
+        return `<span class="ability-kind">${dot(g.ability, g.anyLevel ? '·' : g.level, g.bonus, tip)}${times}</span>`;
     };
     document.getElementById('aniimo-abilities').innerHTML = ABILITIES.map(a => {
         const n = a.name === 'Hauling' ? needed.get(a.name) + haulingCount : needed.get(a.name);

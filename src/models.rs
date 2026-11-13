@@ -735,6 +735,11 @@ impl AniimoRequirements {
             if let Some(workload) = item.workload {
                 let required = self.get(&item.name).map_or(1, |(_, level)| level);
                 let worker = self.worker_for_at(&item.name, &item.facility, setup);
+                // Keep the recipe's price and timing for reporting, but the normal worker
+                // cannot run it. E-mode variants use the original recipe's building level.
+                if matches!(setup, AniimoSetup::Best(_)) && worker.suitability < required {
+                    item.facility_level = u32::MAX;
+                }
                 item.production_time = worker.seconds_for_item(item, workload, required);
             }
         }

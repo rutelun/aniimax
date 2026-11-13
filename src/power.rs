@@ -126,10 +126,11 @@ pub fn add_electric_variants(
     requirements: &AniimoRequirements,
     grid: &Electricity,
 ) {
-    let mut fastest = BTreeMap::<&str, f64>::new();
+    let mut fastest_gathering = BTreeMap::<&str, f64>::new();
     if counts.crew().is_none() {
-        for item in items.iter().filter(|i| i.facility_level != u32::MAX && i.production_time > 0.0) {
-            fastest.entry(base_item_name(&item.name)).and_modify(|t| *t = t.min(item.production_time)).or_insert(item.production_time);
+        for item in items.iter().filter(|i| i.raw_materials.is_none() && i.facility_level != u32::MAX && i.production_time > 0.0) {
+            fastest_gathering.entry(base_item_name(&item.name))
+                .and_modify(|t| *t = t.min(item.production_time)).or_insert(item.production_time);
         }
     }
     let speed = grid.percent as f64 / 100.0;
@@ -141,7 +142,9 @@ pub fn add_electric_variants(
             continue;
         }
         let time = workload / (base_work_rate(required) * speed);
-        if fastest.get(item.name.as_str()).is_some_and(|&normal| time > normal + 1e-9) {
+        // A slower processing recipe can still match normal output if ingredients are
+        // the bottleneck. Keep it so the solver can share a generator across workplaces.
+        if fastest_gathering.get(item.name.as_str()).is_some_and(|&normal| time > normal + 1e-9) {
             continue;
         }
         let levels: std::collections::BTreeSet<_> = counts.tiers(&item.facility).into_iter()

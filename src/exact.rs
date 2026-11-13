@@ -1183,9 +1183,18 @@ fn build_model<'a>(
         model.objective[variable] -= weight;
         model.tiebreak.push((variable, weight));
     }
+    let compare_power_staff = generator_count.is_some() && facility_counts.crew().is_none();
+    // On equal output, compare normal work saved with the full shifts of the generators.
+    // Keep this above the solver's default absolute MIP gap and well below production.
+    const POWER_STAFF_TIE_BREAK: f64 = 4e-6;
     for &(recipe, rate) in &rate_of {
-        if electric_level(&recipe.name).is_some() {
-            // Prefer the worker-free alternative when the production objective is tied.
+        if compare_power_staff && recipe.workload.is_some()
+            && electric_level(&recipe.name).is_none()
+        {
+            let weight = POWER_STAFF_TIE_BREAK * recipe.production_time;
+            model.objective[rate] -= weight;
+            model.tiebreak.push((rate, weight));
+        } else if !compare_power_staff && electric_level(&recipe.name).is_some() {
             let weight = 1e-6 * recipe.production_time;
             model.objective[rate] += weight;
             model.tiebreak.push((rate, -weight));
@@ -1197,6 +1206,7 @@ fn build_model<'a>(
             VarKind::Environment { .. } => BUILDING_TIE_BREAK,
             VarKind::EnvironmentPair { .. } => 2.0 * BUILDING_TIE_BREAK,
             VarKind::LowerLevelPlots => LOWER_LEVEL_PLOT_TIE_BREAK,
+            VarKind::PowerGenerators if compare_power_staff => POWER_STAFF_TIE_BREAK + 1e-7,
             VarKind::PowerGenerators => 1e-7,
             _ => continue,
         };

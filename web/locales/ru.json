@@ -55,6 +55,7 @@
   "Crop job assignments are suggestions when there is no team limit.": "Без лимита команды назначения на грядки и посадки ориентировочные.",
   "Working out the source team…": "Рассчитывается исходная команда…",
   "No working team to copy from this plan.": "В этом плане нет рабочей команды для копирования.",
+  "Best and Minimum compare E-mode with normal production and count the Lightning Aniimo needed to run the generators.": "Best и Minimum сравнивают E-mode с обычным производством и учитывают Анимо со способностью Lightning для генераторов.",
   "E-mode · Building Lv.{level}": "Электрорежим · здание ур. {level}",
   "Minimum for normal mode": "Минимум для обычного режима",
   "Minimum Plots per Event Crop": "Минимум грядок для каждой ивентовой культуры",

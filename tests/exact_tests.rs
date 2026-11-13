@@ -386,6 +386,66 @@ fn test_electricity_uses_the_actual_building_level_and_keeps_faster_workers() {
 }
 
 #[test]
+fn test_electricity_in_best_can_run_a_recipe_above_its_workers_level() {
+    use aniimax::models::{AniimoLevels, GrowerSteps};
+    use aniimax::power::{add_electric_variants, Electricity, GeneratorLimits, PowerPlan};
+    let mut originals = load_items().unwrap();
+    originals.retain(|item| matches!(item.name.as_str(), "rock" | "copper_ore"));
+    let requirements = load_aniimo_requirements(Path::new("data")).unwrap();
+    let mut levels = AniimoLevels::all(4);
+    levels.by_ability.insert("Earth".into(), 1);
+    let mut items = originals.clone();
+    requirements.apply(&AniimoSetup::Best(levels), &mut items);
+    let mut counts = FacilityCounts::only(&[("Mine", 5, 4)]);
+    let modules = ModuleLevels::default();
+    let goal = Goal::Earn { floors: &[] };
+    let off = solve_exact(&items, "coins", &counts, &modules, goal, None, None).unwrap();
+    assert!(!off.units.contains_key("copper_ore"));
+    let limits = GeneratorLimits::for_rv(14, 1).unwrap();
+    let grid = Electricity { watts: limits.max_output(), percent: 120, max_aniimo: None };
+    add_electric_variants(&mut items, originals, &counts, &requirements, &grid);
+    counts.set_power(PowerPlan { grid, grower_steps: GrowerSteps::default(), automatic: Some(limits) });
+    let on = solve_exact(&items, "coins", &counts, &modules, goal, None, None).unwrap();
+    // Four mines use 576 W at 120%, so the fifth must use an Earth Lv.1 recipe.
+    assert_eq!(on.units.get("copper_ore__electric4"), Some(&4));
+    assert_eq!(on.units.get("rock"), Some(&1));
+    assert_eq!(limits.staffing(576.0), vec![1]);
+    check_plan(&on, &items, "coins", &counts, &modules, None).unwrap();
+}
+
+#[test]
+fn test_electricity_compares_bottlenecked_processors_and_the_generator_shift() {
+    use aniimax::models::{AniimoLevels, AniimoRequirements, GrowerSteps};
+    use aniimax::power::{add_electric_variants, Electricity, GeneratorLimits, PowerPlan};
+    let mut source = walking_item("input", "Source", 30.0, "none");
+    source.workload = None;
+    let mut product = walking_item("output", "Carousel Mill", 30.0, "coins");
+    product.raw_materials = Some(vec![source.name.clone()]);
+    product.required_amount = Some(vec![1]);
+    let originals = vec![source, product];
+    let mut requirements = AniimoRequirements::default();
+    requirements.insert("output", "Wind", 1);
+    let mut items = originals.clone();
+    requirements.apply(&AniimoSetup::Best(AniimoLevels::all(2)), &mut items);
+    assert!(items[1].production_time < 10.0);
+    let limits = GeneratorLimits::for_rv(12, 4).unwrap();
+    let grid = Electricity { watts: limits.max_output(), percent: 120, max_aniimo: None };
+    let modules = ModuleLevels::default();
+    let goal = Goal::Earn { floors: &[] };
+    for (sources, expected) in [(1, 0), (4, 4), (14, 0)] {
+        let mut counts = FacilityCounts::only(&[("Source", sources, 1), ("Carousel Mill", 4, 1)]);
+        let off = solve_exact(&items, "coins", &counts, &modules, goal, None, None).unwrap();
+        let mut powered = items.clone();
+        add_electric_variants(&mut powered, originals.clone(), &counts, &requirements, &grid);
+        counts.set_power(PowerPlan { grid: grid.clone(), grower_steps: GrowerSteps::default(), automatic: Some(limits) });
+        let on = solve_exact(&powered, "coins", &counts, &modules, goal, None, None).unwrap();
+        assert!((on.rate_per_second - off.rate_per_second).abs() < 1e-7);
+        assert_eq!(on.units.get("output__electric1").copied().unwrap_or(0), expected);
+        check_plan(&on, &powered, "coins", &counts, &modules, None).unwrap();
+    }
+}
+
+#[test]
 fn test_electricity_counts_lightning_workers_toward_the_roster_limit() {
     use aniimax::models::{Crew, GrowerSteps, RosterAniimo};
     use aniimax::power::{add_electric_variants, Electricity, PowerPlan, GENERATOR};

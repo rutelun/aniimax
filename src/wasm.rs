@@ -1788,7 +1788,7 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
                 js.power_generator_levels.push((level, lightning));
             }
             js.power_generator_levels.sort_unstable();
-            js.power_used = Some(draw);
+            js.power_used = Some(needed);
             js.power_generated = Some(generated);
             js.power_generators = js.power_generator_levels.len() as u32;
         } else if power.automatic.is_none() && draw > 0.0 {
