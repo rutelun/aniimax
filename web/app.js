@@ -1,7 +1,7 @@
 // Aniimax Web Application
 
-import { currentLocale, sourceAttribute, translate } from './i18n.js?v=planner-spacing';
-import './math-translation.js?v=planner-spacing';
+import { currentLocale, sourceAttribute, translate } from './i18n.js?v=aniimo-workload';
+import './math-translation.js?v=aniimo-workload';
 import { autoMaximizeSeasonPoints } from './season-planning.js?v=optional-season-points';
 
 import {
@@ -2858,53 +2858,67 @@ function renderRosterSummary(plan) {
     const assigned = busy.map(load => Math.max(0, Math.ceil(load - 1e-6)));
     const working = assigned.slice(0, roster.length).reduce((sum, n) => sum + n, 0);
     const reserves = assigned.slice(roster.length).reduce((sum, n) => sum + n, 0);
-    const rows = members.map((aniimo, i) => {
+    const buildRow = (aniimo, i) => {
         if (aniimo.assumed && assigned[i] === 0) return '';
         const places = [...where[i]].map(([place, n]) => Number.isInteger(n) && n > 1 ? `${place} ×${n}` : place).join(', ');
-        const abilities = Object.entries(aniimo.abilities).map(([ability, level]) => `${abilityTag(ability)} ${level}`).join(' ');
+        const abilities = Object.entries(aniimo.abilities).map(([ability, level]) => `<span>${abilityTag(ability)} ${level}</span>`).join('');
         const letters = aniimo.personalities.map(personalityLetter).join('');
         const label = aniimo.assumed ? 'Assumed Aniimo' : rosterLabel(aniimo, i);
-        return `<tr>
-            <td data-label="Aniimo">${label}<div class="hint small">${abilities} · <span>${letters || 'No personality'}</span>${aniimo.family ? `<br>${leisureFamilyName(aniimo.family)}` : ''}</div></td>
-            <td data-label="Assigned">${assigned[i]}</td>
-            <td data-label="In roster">${aniimo.assumed ? '—' : aniimo.count}</td>
-            <td data-label="Busy on average">${busy[i].toFixed(3)}${walking[i] > 1e-8 ? `<div class="hint small">${translate('{minutes} min/h walking').replace('{minutes}', (walking[i] * 60).toFixed(1))}</div>` : ''}${reservedAtWorkplace[i] > 1e-8 ? `<div class="hint small">${translate('{minutes} min/h reserved at a workplace').replace('{minutes}', (reservedAtWorkplace[i] * 60).toFixed(1))}</div>` : ''}</td>
-            <td data-label="Where">${places || '<span class="hint small">idle</span>'}</td>
-        </tr>`;
-    }).join('');
+        const count = aniimo.assumed ? assigned[i] : `${assigned[i]} / ${aniimo.count}`;
+        const notes = [
+            walking[i] * 60 >= 0.05 ? translate('{minutes} min/h walking').replace('{minutes}', (walking[i] * 60).toFixed(1)) : '',
+            reservedAtWorkplace[i] * 60 >= 0.05 ? translate('{minutes} min/h reserved at a workplace').replace('{minutes}', (reservedAtWorkplace[i] * 60).toFixed(1)) : '',
+        ].filter(Boolean).join(' · ');
+        return assignmentRow(
+            `<strong>${label}</strong><span class="assignment-abilities">${abilities}${letters ? `<span>${letters}</span>` : ''}</span>${aniimo.family ? `<span class="assignment-meta">${leisureFamilyName(aniimo.family)}</span>` : ''}`,
+            count, assigned[i], busy[i], notes, places
+        );
+    };
+    const rows = members.map((aniimo, i) => ({ aniimo, i })).filter(row => assigned[row.i] > 0)
+        .map(({ aniimo, i }) => buildRow(aniimo, i)).join('');
+    const idle = members.flatMap((aniimo, i) => !aniimo.assumed && aniimo.count > assigned[i]
+        ? [`${rosterLabel(aniimo, i)}${aniimo.count - assigned[i] > 1 ? ` ×${aniimo.count - assigned[i]}` : ''}`] : []);
     const summary = document.getElementById('roster-summary');
-    const detailsOpen = summary.querySelector('details')?.open;
-    const reserveNote = reserves > 0 ? `<p class="hint small">Additional Aniimo needed for this plan: ${reserves}</p>` : '';
     const total = working + reserves;
     const cap = ANIIMO_MAX[layoutHomeLevel() - 1];
-    const totalNote = translate('This plan needs {n} Aniimo including reserves.')
-        .replace('{n}', formatNumber(total));
     const capNote = cap && total > cap ? `<p class="hint small">${translate('This RV level can host {n} Aniimo.').replace('{n}', cap)}</p>` : '';
-    summary.innerHTML = rows
-        ? `<h3>Aniimo assignments</h3>
-           <p class="hint small">${working} of your ${have} Aniimo have work in this plan.</p>
-           ${reserveNote}
-           <p class="hint small">${totalNote}</p>
-           ${capNote}
-           <p class="hint small">${translate('A workload of 1.000 means one full-time Aniimo. Dedicated posts count as full shifts.')}</p>
-           ${plan.hauling_busy != null ? `<p class="hint small">${translate(HAULING_ESTIMATE_HINT)}</p>` : ''}
-           ${workerTravelEnabled() ? '' : `<p class="hint small">${translate('Worker travel is off: workload excludes travel between work buildings. Delivery routes are included.')}</p>`}
-           <details class="explain"${detailsOpen ? ' open' : ''}><summary>Aniimo workload and assignments</summary>
-           <table class="aniimo-table roster-assignment-table"><thead><tr><th>Aniimo</th><th>Assigned</th><th>In roster</th><th>Busy on average</th><th>Where</th></tr></thead><tbody>${rows}</tbody></table></details>`
-        : '<p class="hint">No Aniimo needed.</p>';
+    summary.innerHTML = ` ${capNote}
+        ${rows ? assignmentList(rows) : '<p class="hint">No Aniimo needed.</p>'}
+        ${idle.length ? `<p class="assignment-idle"><strong>Unassigned</strong> · ${idle.join(', ')}</p>` : ''}`;
     summary.hidden = false;
-    document.getElementById('aniimo-collapsed-summary').textContent = '';
+    const own = translate('{assigned} of {owned} assigned').replace('{assigned}', formatNumber(working)).replace('{owned}', formatNumber(have));
+    const extra = translate('{n} assumed').replace('{n}', formatNumber(reserves));
+    document.getElementById('aniimo-collapsed-summary').textContent = reserves ? `${own} · ${extra}` : own;
     document.getElementById('aniimo-abilities').innerHTML = '';
     document.getElementById('aniimo-summary').innerHTML = '';
-    const count = document.getElementById('aniimo-count');
-    document.getElementById('aniimo-count-have').textContent = working;
-    const of = document.getElementById('aniimo-count-of');
-    of.textContent = have;
-    of.hidden = false;
-    count.hidden = false;
-    count.classList.remove('over');
-    count.title = `${working} of your ${have} Aniimo have work in this plan`;
+    document.getElementById('aniimo-count').hidden = true;
 }
+
+function assignmentRow(identity, count, workers, busy, notes, workplaces) {
+    const load = workers > 0 ? busy / workers : 0;
+    const percent = formatNumber(load * 100) + '%';
+    return `<li class="assignment-row">
+        <div class="assignment-identity">${identity}</div>
+        <div class="assignment-load">
+            <div><strong>${percent}</strong> <span class="assignment-meta">· ${count} ${translate('assigned')}</span></div>
+            <progress aria-label="${translate('Average workload per assigned Aniimo')}" max="1" value="${Math.min(1, load)}"></progress>
+            ${notes ? `<span class="assignment-meta">${notes}</span>` : ''}
+        </div>
+        <div class="assignment-workplaces">${workplaces || '—'}</div>
+    </li>`;
+}
+
+function assignmentList(rows) {
+    return `<ul class="assignment-list" aria-label="Aniimo workload and assignments">${rows}</ul>`;
+}
+
+function setAniimoExpanded(expanded) {
+    const toggle = document.getElementById('aniimo-toggle');
+    toggle.setAttribute('aria-expanded', String(expanded));
+    document.getElementById('aniimo-body').hidden = !expanded;
+}
+
+let aniimoExpansionChosen = false;
 
 // --- Season ----------------------------------------------------------------------------
 // The limited-time season picked in the selector (see `SEASONS`): on the page from its RV level, or
@@ -4051,7 +4065,7 @@ function facilityPlanTable(rows) {
 // rows follow a band naming it, so the column headers are written once.
 function facilityPlanTableOf(groups) {
     const body = groups
-        .map(group => (group.label ? `<tr class="facility-plan-group"><td colspan="5">${group.label}</td></tr>` : '') + planRows(group.rows))
+        .map(group => (group.label ? `<tr class="facility-plan-group"><td colspan="6">${group.label}</td></tr>` : '') + planRows(group.rows))
         .join('');
     return `
         <div class="table-wrapper">
@@ -4062,6 +4076,7 @@ function facilityPlanTableOf(groups) {
                         <th>Count</th>
                         <th>Producing</th>
                         <th>Aniimo</th>
+                        <th>Building load</th>
                         <th>Why</th>
                     </tr>
                 </thead>
@@ -4077,10 +4092,35 @@ function planRows(rows) {
                         <td data-label="Facility">${step.facility}</td>
                         <td data-label="Count">${step.facility_count}</td>
                         <td data-label="Producing">${step.item_name ? prettyItem(step.item_name) : '-'}${unverifiedRowKeys.has(`${step.facility}|${step.item_name}`) ? '<span class="tag unverified" title="Not yet checked in game">unverified</span>' : ''}${step.item_name && step.status === 'producing' ? `<button type="button" class="skip-row" data-skip="${step.item_name}" title="Can't make this? Skip it and plan again" aria-label="Skip ${prettyItem(step.item_name)} and plan again">✕</button>` : ''}</td>
-                        <td data-label="Aniimo">${aniimoLabel(step)}</td>
+                        <td data-label="Aniimo">${facilityWorkerLabel(step)}</td>
+                        <td data-label="Building load">${facilityWorkloadLabel(step)}</td>
                         <td data-label="Why">${prettyReason(step.reason)}</td>
                     </tr>
                 `).join('');
+}
+
+function facilityWorkerLabel(step) {
+    const member = roster[step.crew];
+    const name = member ? rosterLabel(member, step.crew) : step.crew != null ? translate('Assumed Aniimo') : '';
+    const abilities = aniimoLabel(step);
+    return name ? `<div class="facility-worker"><div>${name}</div>${abilities}</div>` : abilities;
+}
+
+function facilityWorkloadLabel(step) {
+    if (step.status !== 'producing' || !(step.cycle_time > 0) || !(step.facility_count > 0)) return '—';
+    const busy = step.busy_units ?? step.facility_count;
+    const load = Math.max(0, Math.min(1, busy / step.facility_count));
+    const percent = formatNumber(load * 100);
+    const hours = formatNumber(load * 24);
+    const total = Math.max(1, Math.round(step.cycle_time));
+    const cycle = [
+        total >= 3600 ? translate('{hours}h').replace('{hours}', Math.floor(total / 3600)) : '',
+        total % 3600 >= 60 ? translate('{minutes}m').replace('{minutes}', Math.floor(total / 60) % 60) : '',
+        total % 60 ? translate('{seconds}s').replace('{seconds}', total % 60) : '',
+    ].filter(Boolean).join(' ');
+    const daily = translate('{hours} h/day').replace('{hours}', hours);
+    return `<div class="facility-load"><strong>${percent}%</strong> <span class="assignment-meta">· ${daily}</span>
+        <span class="assignment-meta">${translate('{duration} per batch').replace('{duration}', cycle)}</span></div>`;
 }
 
 function filterFacilityPlan() {
@@ -4259,7 +4299,12 @@ function aniimoTeam(plan) {
 }
 
 function renderAniimoSummary(plan) {
-    if (selectedSetupTab() === 'custom') {
+    const custom = selectedSetupTab() === 'custom';
+    const workloadNote = document.getElementById('aniimo-workload-note');
+    workloadNote.textContent = plan.hauling_busy != null ? HAULING_ESTIMATE_HINT : '';
+    workloadNote.hidden = plan.hauling_busy == null;
+    if (custom) {
+        if (!aniimoExpansionChosen) setAniimoExpanded(true);
         renderRosterSummary(plan);
         return;
     }
@@ -4282,11 +4327,13 @@ function renderAniimoSummary(plan) {
         .map(g => {
             total += g.count;
             const where = whereText(g);
-            return `<tr><td data-label="Aniimo">${abilityTag(g.ability)} ${aniimoNeeds(g)}</td><td data-label="How many">${g.count}</td><td data-label="Busy on average">${g.busy.toFixed(1)}</td><td data-label="Where">${where}</td></tr>`;
+            return assignmentRow(`${abilityTag(g.ability)} ${aniimoNeeds(g)}`, g.count, g.count, g.busy, '', where);
         })
         .join('');
     const haulingLevel = selectedSetupTab() === 'minimum' ? 1 : 3;
-    const haulingRow = haulingCount ? `<tr><td data-label="Aniimo">${abilityTag('Hauling')} Lv.${haulingLevel}</td><td data-label="How many">${haulingCount}</td><td data-label="Busy on average">${plan.hauling_busy.toFixed(3)}</td><td data-label="Where">${translate('Hauling to Storage Units ({minutes} min/h)').replace('{minutes}', (plan.hauling_busy * 60).toFixed(1))}</td></tr>` : '';
+    const haulingRow = haulingCount ? assignmentRow(`${abilityTag('Hauling')} Lv.${haulingLevel}`,
+        haulingCount, haulingCount, plan.hauling_busy, '',
+        translate('Hauling to Storage Units ({minutes} min/h)').replace('{minutes}', (plan.hauling_busy * 60).toFixed(1))) : '';
 
     // The count above says how many; this is only said when it's more than the homeland holds.
     const cap = homelandHolds;
@@ -4339,16 +4386,7 @@ function renderAniimoSummary(plan) {
                 <span class="ability-count">${n}</span><span class="ability-name">${a.name}</span>
             </div>${stack}</div>`;
     }).join('');
-    container.innerHTML = `
-        <div class="table-wrapper">
-            <table class="facility-plan-table">
-                <thead><tr><th>Aniimo</th><th>How many</th><th>Busy on average</th><th>Where</th></tr></thead>
-                <tbody>${rows}${haulingRow}</tbody>
-            </table>
-        </div>
-        ${capNote}
-        ${haulingCount ? `<p class="hint small">${translate(HAULING_ESTIMATE_HINT)}</p>` : ''}
-    `;
+    container.innerHTML = capNote + assignmentList(rows + haulingRow);
 }
 
 // Splits one environment mode's rows across its individual building units. Unlike the old
@@ -4363,6 +4401,11 @@ function renderAniimoSummary(plan) {
 function environmentPairKey(assignment) {
     return assignment.pair_id != null ? `pair:${assignment.pair_id}`
         : JSON.stringify([assignment.building, assignment.partner, assignment.pair_modes]);
+}
+
+function withFacilityCount(step, count) {
+    return { ...step, facility_count: count,
+        busy_units: step.busy_units == null ? step.busy_units : step.busy_units * count / step.facility_count };
 }
 
 function splitByEnvironmentUnit(rows, assignmentsForMode) {
@@ -4386,7 +4429,7 @@ function splitByEnvironmentUnit(rows, assignmentsForMode) {
             const take = Math.min(remaining, available);
             if (take <= 0) continue;
             unit.remaining[step.facility] -= take;
-            unit.rows.push({ ...step, facility_count: take });
+            unit.rows.push(withFacilityCount(step, take));
             remaining -= take;
         }
     });
@@ -4764,7 +4807,7 @@ function renderFacilityPlan(plan) {
                 placed[`${r.facility}|${r.item_name}`] = (placed[`${r.facility}|${r.item_name}`] || 0) + r.facility_count;
             }));
             const orphans = (envGroups.get(mode) || [])
-                .map(step => ({ ...step, facility_count: step.facility_count - (placed[`${step.facility}|${step.item_name}`] || 0) }))
+                .map(step => withFacilityCount(step, step.facility_count - (placed[`${step.facility}|${step.item_name}`] || 0)))
                 .filter(step => step.facility_count > 0);
             return orphans.length === 0 ? '' : `
                 <div class="facility-category">
@@ -5515,10 +5558,8 @@ async function initApp() {
         switchAniimoSetup();
     });
     document.getElementById('aniimo-toggle').addEventListener('click', () => {
-        const toggle = document.getElementById('aniimo-toggle');
-        const expanded = toggle.getAttribute('aria-expanded') !== 'true';
-        toggle.setAttribute('aria-expanded', String(expanded));
-        document.getElementById('aniimo-body').hidden = !expanded;
+        aniimoExpansionChosen = true;
+        setAniimoExpanded(document.getElementById('aniimo-body').hidden);
     });
     // Best's level buttons are named `level-<ability>`; the roster editor handles its own.
     document.getElementById('aniimo-setup-panel').addEventListener('change', event => {

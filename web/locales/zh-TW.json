@@ -1102,5 +1102,15 @@
   "Fit": "全圖",
   "Plan ready. Use Results to jump to a section.": "計畫已完成，可透過結果選單前往各區段。",
   "Loading optimizer…": "載入規劃器中…",
-  "Shared setup loaded. Your saved setup is kept until you edit this one.": "已載入分享設定。編輯後才會更新原本儲存的設定。"
+  "Shared setup loaded. Your saved setup is kept until you edit this one.": "已載入分享設定。編輯後才會更新原本儲存的設定。",
+  "assigned": "已指派",
+  "{assigned} of {owned} assigned": "已指派 {assigned}／{owned}",
+  "{n} assumed": "{n} 隻候補",
+  "Unassigned": "未指派",
+  "Average workload per assigned Aniimo": "每隻已指派阿尼莫的平均工作量",
+  "Building load": "建築使用率",
+  "{hours} h/day": "每日 {hours} 小時",
+  "{duration} per batch": "每批 {duration}",
+  "Workload is the average per assigned Aniimo. Dedicated posts count as full shifts.": "顯示每隻已指派阿尼莫的平均工作量。固定崗位以全班計算。",
+  "Building load is the average time spent on a recipe per building. Time per batch is for a single production cycle. In the Aniimo column, a ring means the plan uses a personality bonus.": "建築使用率是單棟建築用於配方的平均時間比例。每批時間為一次生產週期。阿尼莫欄的圓環代表使用了性格加成。"
 }

@@ -3022,35 +3022,6 @@ tr:hover .skip-row,
     gap: 0.5rem;
 }
 
-#roster-summary {
-    min-width: 0;
-    margin: 0.9rem 0 1.25rem;
-}
-
-#roster-summary > h3 {
-    margin: 0 0 0.4rem;
-}
-
-#roster-summary > .hint {
-    margin: 0.4rem 0;
-}
-
-.roster-assignment-table {
-    table-layout: fixed;
-}
-
-.roster-assignment-table th,
-.roster-assignment-table td {
-    overflow-wrap: anywhere;
-    vertical-align: top;
-}
-
-.roster-assignment-table th:first-child { width: 28%; }
-.roster-assignment-table th:nth-child(2),
-.roster-assignment-table th:nth-child(3) { width: 12%; }
-.roster-assignment-table th:nth-child(4) { width: 16%; }
-.roster-assignment-table th:last-child { width: 32%; }
-
 .roster-ability {
     max-width: 100%;
     flex-wrap: wrap;
@@ -3078,55 +3049,6 @@ tr:hover .skip-row,
 #level-up-lines,
 #priority-rates {
     overflow-x: auto;
-}
-
-@media (max-width: 600px) {
-    .roster-assignment-table thead {
-        display: none;
-    }
-
-    .roster-assignment-table,
-    .roster-assignment-table tbody,
-    .roster-assignment-table tr {
-        display: block;
-        width: 100%;
-    }
-
-    .roster-assignment-table tr {
-        padding: 0.65rem 0;
-        border-bottom: 1px solid var(--border);
-    }
-
-    .card .roster-assignment-table td {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr);
-        gap: 0.6rem;
-        padding: 0.2rem 0;
-        border: none;
-        text-align: right;
-    }
-
-    .roster-assignment-table td::before {
-        content: attr(data-label);
-        text-align: left;
-        color: var(--text-muted);
-        font-size: 0.75rem;
-    }
-
-    .card .roster-assignment-table td:first-child {
-        display: block;
-        margin-bottom: 0.35rem;
-        text-align: left;
-    }
-
-    .roster-assignment-table td:first-child::before {
-        display: none;
-    }
-
-    .aniimo-card .tabs.compact {
-        flex-wrap: wrap;
-        max-width: 100%;
-    }
 }
 
 /* A plan that failed shows only the Aniimo card, whose setup may be what to change. */
@@ -3302,32 +3224,53 @@ body > header {
 .planner-results-controls { display: inline-flex; min-width: 0; max-width: 100%; gap: 0.25rem; }
 .planner-navigation select { background: var(--surface-2); border: 1px solid var(--border); }
 .planner-navigation #planner-jump-go { min-height: 2.75rem; }
-.planner-bar .optimize-btn { width: auto; min-height: 2.75rem; padding: 0.45rem 0.95rem; }
 
 html { scroll-padding-top: calc(var(--planner-bar-height, 4rem) + 0.8rem); }
 .planner-settings-grid > *, #results-content > *, .input-field { min-width: 0; }
-.planner-settings-primary, .planner-settings-options { display: flow-root; }
-.planner-settings-primary > h3 { margin: 0 0 0.6rem; }
-.planner-settings-grid .tabs { margin-bottom: 0.8rem; }
-.planner-settings-grid .strategy .checkbox-field,
+.planner-settings-primary, .planner-team-settings { display: flow-root; }
+.planner-settings-grid h3 { margin: 0 0 0.6rem; }
+.planner-settings-grid .tabs, .strategy .tabs { margin-bottom: 0.8rem; }
 .production-filters .checkbox-field { align-items: baseline; gap: 0.5rem; }
-.planner-settings-grid .checkbox-field input[type="checkbox"] { flex: none; align-self: start; margin-top: 0.2em; }
-.planner-settings-grid .tabs label { min-height: 2.75rem; display: inline-flex; align-items: center; }
+.planner-settings-grid .tabs label, .strategy .tabs label { min-height: 2.75rem; display: inline-flex; align-items: center; }
 .planner-team-settings #worker-travel-option label { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.15rem 0.5rem; }
 .config-actions { gap: 0.1rem 0.85rem; }
 .config-actions button { min-height: 2.75rem; }
-.planner-team-settings {
-    display: flow-root;
-    margin-block: 1rem;
-    padding-block: 0.8rem;
-    border-block: 1px solid var(--border);
-}
-.planner-team-settings h3 { margin-top: 0; }
-.planner-team-settings .aniimo-setup-panel { padding-inline: 0; }
+.planner-settings-grid { display: grid; gap: 1.25rem; align-items: start; }
+.planner-team-settings .aniimo-setup-panel { padding: 0; }
 .planner-team-settings .checkbox-field { margin-top: 0.75rem; }
+.planner-team-settings #roster-worker-limit { margin-bottom: 0; }
 .planner-team-settings #electricity-aniimo-limit { max-width: 15rem; }
 .planner-team-settings .tabs { max-width: 100%; flex-wrap: wrap; }
 .planner-team-settings .level-picker label { min-height: 2rem; }
+
+.planner-checkbox {
+    display: grid;
+    grid-template-columns: 1rem minmax(0, 1fr);
+    align-items: start;
+    gap: 0.5rem;
+    width: fit-content;
+    max-width: 100%;
+    padding-block: 0.3rem;
+    line-height: 1.4;
+    cursor: pointer;
+}
+.planner-checkbox input[type="checkbox"] {
+    width: 1rem;
+    height: 1rem;
+    margin: calc((1.4em - 1rem) / 2) 0 0;
+}
+#priorities-config > .hint, #level-up-config > .hint { margin-top: 0.4rem; }
+.planner-season {
+    padding-block: 1rem;
+    margin-block: 0 1.25rem;
+    border-block: 1px solid var(--border);
+}
+#season-hint { max-width: 65ch; }
+.season-budget { max-width: 23rem; }
+#season-notes .special-option { align-items: baseline; }
+#season-notes input { flex: none; }
+.planner-submit { margin-top: 1.25rem; }
+.planner-submit .optimize-btn { min-height: 2.75rem; }
 
 .facility-search, .production-filters .input-field { max-width: 25rem; }
 .facility-search { margin-bottom: 0.8rem; }
@@ -3359,23 +3302,15 @@ html { scroll-padding-top: calc(var(--planner-bar-height, 4rem) + 0.8rem); }
 
 @media (min-width: 65rem) {
     .planner-settings-grid {
-        display: grid;
         grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-        align-items: start;
         gap: clamp(1.25rem, 3vw, 2.5rem);
     }
-    .planner-settings-primary .facilities-grid, .planner-settings-primary .modules-grid {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-    .planner-settings-options .strategy h3 { margin-top: 0; }
-    .planner-settings-options > .strategy { margin-top: 0; padding-top: 0; border-top: 0; }
 }
 
 @media (max-width: 37.5rem) {
     body > header { align-items: flex-start; }
     .header-buttons { justify-content: flex-start; }
     .planner-navigation { flex-basis: 100%; }
-    .planner-bar .optimize-btn { flex: 1 1 100%; }
     .planner-navigation a, .planner-navigation select, .planner-navigation #planner-jump-go { padding-inline: 0.45rem; font-size: 0.8rem; }
     .planner-navigation select { max-width: min(100%, 13rem); min-width: 0; }
     .input-field input, .input-field select { min-height: 2.75rem; font-size: 1rem; }
@@ -3401,6 +3336,41 @@ html { scroll-padding-top: calc(var(--planner-bar-height, 4rem) + 0.8rem); }
     .card #level-up-lines td:first-child { grid-column: 1 / -1; font-weight: 600; }
     #level-up-lines td:not(:first-child)::before { content: attr(data-label); color: var(--text-muted); font-size: 0.75rem; font-weight: 400; }
     .level-up-unit select { min-height: 2.75rem; }
+}
+
+.aniimo-card .card-head { margin-bottom: 0.4rem; }
+.aniimo-card #aniimo-collapsed-summary { margin: 0.15rem 0 0 1.15rem; }
+.aniimo-card .ability-strip:empty { display: none; }
+.assignment-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: 0.65rem;
+}
+.assignment-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(7rem, 0.65fr) minmax(0, 1.6fr);
+    align-items: start;
+    gap: 0.4rem 1.2rem;
+    padding: 0.65rem 0.85rem;
+    font-size: 0.88rem;
+    overflow-wrap: anywhere;
+}
+.assignment-row + .assignment-row { border-top: 1px solid var(--border); }
+.assignment-identity, .assignment-load { display: grid; gap: 0.2rem; }
+.assignment-meta { color: var(--text-muted); font-size: 0.78rem; }
+.assignment-abilities { display: flex; flex-wrap: wrap; gap: 0.15rem 0.4rem; font-size: 0.78rem; }
+.assignment-abilities > span { white-space: nowrap; }
+.assignment-load progress { width: 100%; max-width: 9rem; height: 0.35rem; }
+.assignment-idle { color: var(--text-muted); font-size: 0.85rem; margin: 0.65rem 0 0; }
+.facility-worker { margin-bottom: 0.2rem; overflow-wrap: anywhere; }
+.facility-load > .assignment-meta:last-child { display: block; }
+.facility-plan-table td { vertical-align: top; }
+
+@media (max-width: 43rem) {
+    .assignment-row { grid-template-columns: minmax(0, 1fr) minmax(0, 0.8fr); gap: 0.45rem 0.75rem; }
+    .assignment-workplaces { grid-column: 1 / -1; }
 }
 
 @media (max-height: 30rem) {

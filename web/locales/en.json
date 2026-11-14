@@ -1084,5 +1084,15 @@
   "Plan ready. Use Results to jump to a section.",
   "Loading optimizer…",
   "Shareable link",
-  "Shared setup loaded. Your saved setup is kept until you edit this one."
+  "Shared setup loaded. Your saved setup is kept until you edit this one.",
+  "assigned",
+  "{assigned} of {owned} assigned",
+  "{n} assumed",
+  "Unassigned",
+  "Average workload per assigned Aniimo",
+  "Building load",
+  "{hours} h/day",
+  "{duration} per batch",
+  "Workload is the average per assigned Aniimo. Dedicated posts count as full shifts.",
+  "Building load is the average time spent on a recipe per building. Time per batch is for a single production cycle. In the Aniimo column, a ring means the plan uses a personality bonus."
 ]

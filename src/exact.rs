@@ -2598,9 +2598,7 @@ fn production_plan(
                 is_grower: grower,
                 cycle_time: Some(recipe.production_time),
                 environment: if grower { recipe.environment.clone() } else { None },
-                // A roster member's row says how much of its time it really takes, gathering too.
-                busy_units: (!grower || recipe.crew.is_some() || recipe.season.is_some_and(|s| s.currency_per_day.is_some()))
-                    .then(|| (rate * recipe.production_time).min(units as f64)),
+                busy_units: Some((rate * recipe.production_time).min(units as f64)),
                 crew: recipe.crew,
                 electric_level: electric_level(&recipe.name),
             });

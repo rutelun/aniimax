@@ -1084,5 +1084,15 @@
   "Plan ready. Use Results to jump to a section.": "План готов. Выбери раздел в панели результатов.",
   "Loading optimizer…": "Загружаю оптимизатор…",
   "Shareable link": "Ссылка на настройки",
-  "Shared setup loaded. Your saved setup is kept until you edit this one.": "Настройки по ссылке загружены. Сохранённые настройки обновятся после первого изменения."
+  "Shared setup loaded. Your saved setup is kept until you edit this one.": "Настройки по ссылке загружены. Сохранённые настройки обновятся после первого изменения.",
+  "assigned": "назначено",
+  "{assigned} of {owned} assigned": "Назначено {assigned} из {owned}",
+  "{n} assumed": "{n} резервных",
+  "Unassigned": "Свободны",
+  "Average workload per assigned Aniimo": "Средняя загрузка на одного назначенного Анимо",
+  "Building load": "Загрузка здания",
+  "{hours} h/day": "{hours} ч/сутки",
+  "{duration} per batch": "{duration} на партию",
+  "Workload is the average per assigned Aniimo. Dedicated posts count as full shifts.": "Показана средняя загрузка на одного назначенного Анимо. Постоянные рабочие места считаются полной сменой.",
+  "Building load is the average time spent on a recipe per building. Time per batch is for a single production cycle. In the Aniimo column, a ring means the plan uses a personality bonus.": "Загрузка показывает, какую долю времени каждое здание в среднем занято рецептом. Время партии — один производственный цикл. Кольцо в столбце Анимо означает бонус характера."
 }
