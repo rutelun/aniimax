@@ -9,6 +9,7 @@
   "Your Homeland",
   "Your inputs are saved in this browser automatically.",
   "Clear saved values",
+  "Share setup",
   "Input mode",
   "Simple",
   "Advanced",
@@ -1081,5 +1082,7 @@
   "Fit map to view",
   "Fit",
   "Plan ready. Use Results to jump to a section.",
-  "Loading optimizer…"
+  "Loading optimizer…",
+  "Shareable link",
+  "Shared setup loaded. Your saved setup is kept until you edit this one."
 ]

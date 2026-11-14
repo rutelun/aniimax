@@ -1,7 +1,7 @@
 // Aniimax Web Application
 
-import { currentLocale, sourceAttribute, translate } from './i18n.js?v=planner-workspace';
-import './math-translation.js?v=planner-workspace';
+import { currentLocale, sourceAttribute, translate } from './i18n.js?v=planner-spacing';
+import './math-translation.js?v=planner-spacing';
 import { autoMaximizeSeasonPoints } from './season-planning.js?v=optional-season-points';
 
 import {
@@ -18,8 +18,6 @@ import { assignFacilityStock, bufferedBatches, haulingWorkload, allocateHauling,
 import { changeOneMember, personalityInput, reserveLevelFourInputs, comparePlans, usefulUpgrade, keepBetterComparison } from './opportunity-comparison.js?v=income-aware-chains';
 import { comparisonConcurrency, startComparisonQueue } from './comparison-queue.js?v=parallel-comparisons';
 import { prepareOpportunities, startedProcessing, increasedProcessing } from './opportunity-effects.js?v=auto-e-mode';
-import { attachExistingEditor, normalizeExistingSites, prepareExistingHomeland, jobsOnExistingSites,
-    existingPlanLayout } from './fixed-homeland.js?v=fixed-homeland';
 import { attachRosterPicker, rosterFormName } from './roster-picker.js?v=roster-picker';
 
 let wasmReady = false;
@@ -159,12 +157,6 @@ function bestAniimoSetup() {
 // What the last plan was solved from, so switching setup can work out another one without the
 // player filling the form in again.
 let lastPlanInput = null;
-let existingSites = [];
-let existingMap = null;
-let materialWorkFor = { automatic: true, existing: false };
-const existingLayoutEnabled = () => document.getElementById('existing-homeland-on').checked;
-const existingRv = () => Math.min(MAX_HOME_LEVEL, Math.max(1,
-    numberOrDefault(document.getElementById('existing-rv').value, 14)));
 
 // Solves for `setup` if it isn't already worked out, and shows it when it lands if that's still
 // what's selected. It runs in a worker of its own, which a newer pick stops, so quick roster
@@ -242,7 +234,7 @@ function switchAniimoSetup() {
 function showSelectedPlan() {
     const setup = selectedAniimoSetup();
     document.querySelectorAll('[data-roster="from-best"], [data-roster="from-minimum"]').forEach(button => {
-        button.disabled = !lastPlanInput || existingLayoutEnabled();
+        button.disabled = !lastPlanInput;
     });
     const plan = plansBySetup[setup];
     const pending = document.getElementById('aniimo-pending');
@@ -471,7 +463,7 @@ function getPersistedFieldIds() {
         'resource-detector-level', 'crafting-module-level',
         'rate-unit', 'season-on', 'season-event', 'layout-sim-on', 'layout-recipes', 'layout-storage-count', 'layout-rv-level',
         'layout-style', 'layout-group-gap', 'layout-separate-sales',
-        'existing-homeland-on', 'existing-rv',
+        'material-work-on',
         'aniimo-best', 'aniimo-minimum', 'aniimo-custom', 'worker-travel-on'
     ];
 }
@@ -514,6 +506,9 @@ function migrateSavedConfig(data) {
     if (data.seasonBudgets === undefined && data['season-currency-per-day'] !== undefined) {
         data.seasonBudgets = { [data['season-event'] || 'harvest_moon_festival']: data['season-currency-per-day'] };
     }
+    if (data['material-work-on'] === undefined && typeof data.materialWorkFor?.automatic === 'boolean') {
+        data['material-work-on'] = data.materialWorkFor.automatic;
+    }
     return data;
 }
 
@@ -537,7 +532,7 @@ function initFacilityTiers(data) {
 }
 
 function currentConfig() {
-    const data = { facilityTiers, levelUpStock, skippedRecipes: [...skippedRecipes], unlockedSpecial: [...unlockedSpecial], priorities: priorityOrder, aniimoLevels, roster, seasonBudgets, seasonCropMinimums, existingSites, materialWorkFor };
+    const data = { facilityTiers, levelUpStock, skippedRecipes: [...skippedRecipes], unlockedSpecial: [...unlockedSpecial], priorities: priorityOrder, aniimoLevels, roster, seasonBudgets, seasonCropMinimums };
     getPersistedFieldIds().forEach(id => {
         const el = document.getElementById(id);
         if (!el) return;
@@ -588,10 +583,6 @@ async function shareCurrentConfig() {
 
 function loadInputsFromStorage(data) {
     if (!data) return;
-    existingSites = normalizeExistingSites(data.existingSites);
-    if (data.materialWorkFor) {
-        materialWorkFor = { automatic: data.materialWorkFor.automatic !== false, existing: data.materialWorkFor.existing === true };
-    }
     if (data.levelUpStock && typeof data.levelUpStock === 'object') levelUpStock = { ...data.levelUpStock };
     if (Array.isArray(data.skippedRecipes)) skippedRecipes = new Set(data.skippedRecipes.filter(n => typeof n === 'string'));
     if (Array.isArray(data.unlockedSpecial)) unlockedSpecial = new Set(data.unlockedSpecial.filter(n => typeof n === 'string'));
@@ -752,13 +743,9 @@ function followLevelUpTarget(homeLevel) {
 
 function applyConfigMode() {
     const simple = isSimpleMode();
-    const fixed = existingLayoutEnabled();
     if (!simple && !levelUpTargetChosen) followLevelUpTarget(selectedHomeLevel());
-    document.getElementById('simple-config').style.display = simple && !fixed ? 'block' : 'none';
+    document.getElementById('simple-config').style.display = simple ? 'block' : 'none';
     document.getElementById('advanced-config').style.display = simple ? 'none' : 'block';
-    document.getElementById('advanced-facility-settings').hidden = fixed;
-    document.getElementById('existing-modules-hint').hidden = !simple;
-    document.getElementById('material-work-on').checked = fixed ? materialWorkFor.existing : materialWorkFor.automatic;
     if (simple) renderSimpleSummary();
     renderStrategy();
 }
@@ -1012,7 +999,6 @@ function improvementCandidates(base, setup) {
 // Prepare suggestions after planning. Full comparisons run only when the player requests
 // a row or the batch, in a small cancellable pool; the current plan stays intact.
 function rankImprovementsFor(setup, requested = null, detailed = false) {
-    if (lastPlanInput?.fixed_homeland) return;
     if (requested != null && (mainSolve || setupSolve || layoutWorker)) return;
     stopRanking();
     const plan = plansBySetup[setup] || lastPlan;
@@ -1423,8 +1409,6 @@ function homelandPlots() {
 // The RV level the layout is for: the one given in Simple mode, else the lowest that allows
 // everything entered (see `homeLevelCovering`).
 function layoutHomeLevel(input = lastPlanInput) {
-    if (input?.fixed_rv) return input.fixed_rv;
-    if (existingLayoutEnabled()) return existingRv();
     if (isSimpleMode()) return selectedHomeLevel();
     const minimum = homeLevelCovering(input);
     return Math.min(MAX_HOME_LEVEL, Math.max(minimum,
@@ -1477,14 +1461,6 @@ function attachLayoutHandlers() {
         const width = Math.min(baseWidth, Math.max(baseWidth / LAYOUT_MAX_ZOOM, right - left + 8, (bottom - top + 8) * baseWidth / baseHeight));
         const height = width * baseHeight / baseWidth;
         setLayoutView(svg, [(left + right - width) / 2, (top + bottom - height) / 2, width, height]);
-        svg.scrollIntoView({ block: 'nearest' });
-    });
-    document.getElementById('existing-plan-assignments').addEventListener('click', event => {
-        const button = event.target.closest('[data-existing-result]');
-        const svg = document.querySelector('#layout-diagram .layout-svg');
-        if (!button || !svg) return;
-        svg.querySelectorAll('[data-existing-building]').forEach(shape => shape.classList.toggle(
-            'layout-site-focused', shape.dataset.existingBuilding === button.dataset.existingResult));
         svg.scrollIntoView({ block: 'nearest' });
     });
     ['layout-style', 'layout-group-gap', 'layout-separate-sales'].forEach(id => document.getElementById(id).addEventListener('change', () => {
@@ -1734,70 +1710,10 @@ function rememberLayout(plan, key, layout) {
     cached.set(key, layout);
 }
 
-function renderExistingPlan(plan) {
-    const homeLevel = lastPlanInput.fixed_rv;
-    const rows = jobsOnExistingSites(existingMap, plan);
-    const layout = existingPlanLayout(existingMap, rows, recipeIndex);
-    const byName = new Map(recipeIndex.map(recipe => [recipe.name, recipe]));
-    const power = document.getElementById('layout-summary');
-    const notes = [
-        'Delivery workload uses a route allowance based on the placed Storage Units.',
-        existingMap.disconnectedGenerators ? 'E-mode uses the grid connected to the first generator.' : '',
-        existingMap.mixedGenerators ? 'Generator output uses the lowest placed generator level.' : '',
-    ];
-    power.textContent = notes.filter(Boolean).map(translate).join(' ');
-    document.getElementById('layout-card').style.display = 'block';
-    document.getElementById('layout-group-legend').hidden = true;
-    document.getElementById('layout-group-notice').hidden = true;
-    document.getElementById('layout-group-hint').hidden = true;
-    const name = index => roster[index] ? rosterLabel(roster[index], index) : '—';
-    const cropTeam = recipe => {
-        const tasks = new Set((recipe?.jobs || []).map(([, ability, level]) => `${ability}|${level}`));
-        const workers = new Set((plan.crop_assignments || []).filter(([ability, level]) => tasks.has(`${ability}|${level}`))
-            .map(([, , member]) => member));
-        return workers.size ? `${translate('Crop team')} · ${[...workers].map(name).join(', ')}` : '—';
-    };
-    const table = rows.filter(site => site.facility !== 'Crackle Power Pole' && site.facility !== 'Storage Unit')
-        .map(site => {
-            const work = site.jobs.map(job => {
-                const recipe = byName.get(job.item);
-                const amount = job.rate * (recipe?.yieldAmount || 1) * 86400;
-                const use = Math.min(100, job.rate * job.cycle * 100);
-                const who = job.electric_level != null ? translate('E-mode')
-                    : job.crew != null ? name(job.crew) : cropTeam(recipe);
-                return { recipe: escapeText(translate(prettyItem(job.item))), amount: formatRate(amount),
-                    use: formatNumber(use) + '%', who };
-            });
-            if (!work.length) work.push({ recipe: site.mode ? escapeText(translate(site.mode))
-                : site.staff != null ? translate('Generating power') : translate('Idle'),
-                amount: '—', use: site.staff != null ? '100%' : '—',
-                who: site.staff != null ? name(site.staff) : '—' });
-            return work.map(job => `<tr><td data-label="Building"><div><button type="button" class="toggle-button small" data-existing-result="${site.index}">${escapeText(translate(site.facility))} #${site.index + 1}</button>
-                <div class="hint small">Lv.${site.level} · ${site.x}, ${site.y}</div></div></td>
-                <td data-label="Recipe or mode">${job.recipe}</td><td data-label="Units per day">${job.amount}</td><td data-label="Building utilization">${job.use}</td><td data-label="Aniimo">${job.who}</td></tr>`).join('');
-        }).join('');
-    document.getElementById('existing-plan-assignments').innerHTML = `<h3>Production at each building</h3>
-        <table class="facility-plan-table"><thead><tr><th>Building</th><th>Recipe or mode</th>
-        <th>Units per day</th><th>Building utilization</th><th>Aniimo</th></tr></thead><tbody>${table}</tbody></table>`;
-    lastLayout = { layout, homeLevel };
-    layoutZoom = null;
-    drawLayout(lastLayout);
-    setStep('layout', 'done');
-    plan.hauling_busy = (plan.hauling_staffing || []).reduce((sum, [, share]) => sum + share, 0);
-}
-
 function renderHomelandLayout(plan) {
     const card = document.getElementById('layout-card');
     if (!plan?.success || !lastPlanInput) {
         card.style.display = 'none';
-        return;
-    }
-    const fixed = !!lastPlanInput.fixed_homeland;
-    document.getElementById('layout-arrangement').hidden = fixed;
-    document.getElementById('layout-storage-count').closest('.input-field').hidden = fixed;
-    document.getElementById('existing-plan-assignments').hidden = !fixed;
-    if (fixed) {
-        renderExistingPlan(plan);
         return;
     }
     const runId = ++layoutRunId;
@@ -1984,8 +1900,7 @@ function homelandSvg(layout, homeLevel) {
         const away = storage ? Math.hypot(m.x + m.w / 2 - storage.x - storage.w / 2, m.y + m.h / 2 - storage.y - storage.h / 2) : 0;
         const electric = m.electric_level != null;
         const electricDetail = electric ? ` · ${translate('E-mode · Building Lv.{level}').replace('{level}', m.electric_level)} · ${translate(m.power_connected ? 'Connected to power' : 'No power connection')}` : '';
-        const fixedSite = m.index == null ? '' : ` data-existing-building="${m.index}"`;
-        const tip = tipAttrs(m.index == null ? m.facility : `${m.facility} #${m.index + 1}`, {
+        const tip = tipAttrs(m.facility, {
             detail: m.generatorTier ? translate('Building Lv.{level}').replace('{level}', m.generatorTier)
                 : m.jobs ? m.jobs.map(j => prettyItem(j.item)).join(', ') : m.crop ? prettyItem(m.crop) : m.building && m.mode ? m.mode : 'Idle',
             stats: [
@@ -2001,11 +1916,11 @@ function homelandSvg(layout, homeLevel) {
         const fill = m.building ? 0.9 : m.weight > 0 ? 0.35 + 0.55 * Math.sqrt(m.weight / maxTrips) : 0.08;
         if (m.building) {
             // As on the building's own map: its mode's color, with the game's symbol for it.
-            return `<g class="env-building"${fixedSite} ${tip}><rect x="${m.x + 0.05}" y="${m.y + 0.05}" width="${m.w - 0.1}" height="${m.h - 0.1}" rx="0.3"
+            return `<g class="env-building" ${tip}><rect x="${m.x + 0.05}" y="${m.y + 0.05}" width="${m.w - 0.1}" height="${m.h - 0.1}" rx="0.3"
                 fill="${color}" fill-opacity="${m.mode ? 1 : 0.25}" stroke="currentColor" stroke-opacity="0.6" stroke-width="0.08" />
                 ${m.mode ? environmentBuildingIcon(m.facility, m.mode, m.x + m.w / 2, m.y + m.h / 2) : ''}</g>`;
         }
-        return `<g class="layout-piece${electric ? ' layout-emode' : ''}${m.generator ? ' layout-generator' : ''}" data-layout-site="${index}"${fixedSite} ${tip}><rect x="${m.x + 0.04}" y="${m.y + 0.04}" width="${m.w - 0.08}" height="${m.h - 0.08}" rx="0.2"
+        return `<g class="layout-piece${electric ? ' layout-emode' : ''}${m.generator ? ' layout-generator' : ''}" data-layout-site="${index}" ${tip}><rect x="${m.x + 0.04}" y="${m.y + 0.04}" width="${m.w - 0.08}" height="${m.h - 0.08}" rx="0.2"
             fill="${m.generator ? '#f6cd58' : color}" fill-opacity="${m.generator ? 0.5 : fill.toFixed(2)}" stroke="${color}" stroke-width="0.06" />${label}${badge}</g>`;
     }).join('');
     const coverageShapes = coverage.map(c => {
@@ -2474,6 +2389,13 @@ function jumpToPlannerSection(id) {
 }
 
 function attachPlannerNavigation() {
+    const bar = document.querySelector('.planner-bar');
+    const syncScrollPadding = () => {
+        document.documentElement.style.setProperty('--planner-bar-height', `${bar.offsetHeight}px`);
+    };
+    syncScrollPadding();
+    new ResizeObserver(syncScrollPadding).observe(bar);
+
     document.querySelectorAll('.planner-navigation a, .skip-to-planner').forEach(link => {
         link.addEventListener('click', event => {
             if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
@@ -2585,9 +2507,9 @@ const RESIDENT_FACILITIES = new Set(FACILITIES.filter(f => f.category === 'Aniim
 // The roster for the solver (see `JsRoster` in wasm.rs).
 function rosterPayload() {
     return {
-        hauling_seconds: existingMap ? existingMap.hauling : haulingSeconds,
+        hauling_seconds: haulingSeconds,
         hauling_default_seconds: haulingDefaultSeconds,
-        movement_seconds: workerTravelEnabled() ? existingMap?.movement ?? movementDefaultDistance / ANIIMO_WALK_SPEED : 0,
+        movement_seconds: workerTravelEnabled() ? movementDefaultDistance / ANIIMO_WALK_SPEED : 0,
         movement_by_member: workerTravelEnabled() ? Object.fromEntries(Object.entries(movementDistances).map(([member, distance]) => [member, distance / ANIIMO_WALK_SPEED])) : {},
         members: roster.map(a => ({ count: a.count, abilities: a.abilities, personalities: a.personalities.filter(Boolean), family: a.family })),
         residents: [...RESIDENT_FACILITIES],
@@ -2612,7 +2534,6 @@ function renderRoster() {
     const editor = document.getElementById('roster-editor');
     const useRoster = document.getElementById('use-my-aniimo');
     useRoster.checked = selectedSetupTab() === 'custom';
-    useRoster.disabled = existingLayoutEnabled();
     const cards = roster.map((aniimo, i) => {
         const tags = Object.entries(aniimo.abilities).map(([ability, level]) =>
             `<span>${abilityTag(ability)} ${level}</span>`).join('');
@@ -2627,7 +2548,7 @@ function renderRoster() {
     if (open) renderRosterCardFields(open);
     document.getElementById('roster-config-count').textContent = String(roster.reduce((total, member) => total + member.count, 0));
     editor.querySelectorAll('[data-roster="from-best"], [data-roster="from-minimum"]').forEach(button => {
-        button.disabled = !lastPlanInput || existingLayoutEnabled();
+        button.disabled = !lastPlanInput;
     });
     rosterPicker?.filter();
 }
@@ -2956,7 +2877,7 @@ function renderRosterSummary(plan) {
     const reserveNote = reserves > 0 ? `<p class="hint small">Additional Aniimo needed for this plan: ${reserves}</p>` : '';
     const total = working + reserves;
     const cap = ANIIMO_MAX[layoutHomeLevel() - 1];
-    const totalNote = translate(existingMap ? 'This plan needs {n} Aniimo.' : 'This plan needs {n} Aniimo including reserves.')
+    const totalNote = translate('This plan needs {n} Aniimo including reserves.')
         .replace('{n}', formatNumber(total));
     const capNote = cap && total > cap ? `<p class="hint small">${translate('This RV level can host {n} Aniimo.').replace('{n}', cap)}</p>` : '';
     summary.innerHTML = rows
@@ -3004,9 +2925,9 @@ function currentSeason() {
 // Jelly Beans.
 let seasonBudgets = {};
 function renderElectricity() {
-    const available = existingLayoutEnabled() ? existingRv() >= 12 : !isSimpleMode() || selectedHomeLevel() >= 12;
+    const available = !isSimpleMode() || selectedHomeLevel() >= 12;
     document.getElementById('electricity-section').hidden = !available;
-    document.getElementById('electricity-best-minimum-note').hidden = !document.getElementById('electricity-on').checked || existingLayoutEnabled();
+    document.getElementById('electricity-best-minimum-note').hidden = !document.getElementById('electricity-on').checked;
 }
 
 function eModeRv(input) {
@@ -3065,8 +2986,7 @@ function seasonCurrencyPerDay() {
 function seasonAvailable() {
     const season = currentSeason();
     if (!season) return false;
-    return existingLayoutEnabled() ? existingRv() >= season.minHomeLevel
-        : !isSimpleMode() || selectedHomeLevel() >= season.minHomeLevel;
+    return !isSimpleMode() || selectedHomeLevel() >= season.minHomeLevel;
 }
 
 function seasonActive() {
@@ -3302,8 +3222,7 @@ let aniimoLevels = {};
 // `aniimo_setup_from` and `JsRoster` in wasm.rs).
 function aniimoInput(setup) {
     if (setup.startsWith('roster')) return {
-        aniimo: 'roster', roster: rosterPayload(), aniimo_levels: {}, max_working_aniimo: existingMap
-            ? Math.min(ANIIMO_MAX[existingRv() - 1] ?? Infinity, maxWorkingAniimo() ?? Infinity) : maxWorkingAniimo(),
+        aniimo: 'roster', roster: rosterPayload(), aniimo_levels: {}, max_working_aniimo: maxWorkingAniimo(),
     };
     const levels = {};
     levelledAbilities().forEach(ability => { levels[ability] = bestAniimoLevel(ability); });
@@ -3317,7 +3236,6 @@ function bestAniimoLevel(ability) {
 
 // Which of the three setups is on screen.
 function selectedSetupTab() {
-    if (existingLayoutEnabled()) return 'custom';
     if (document.getElementById('aniimo-minimum')?.checked) return 'minimum';
     if (document.getElementById('aniimo-custom')?.checked) return 'custom';
     return 'best';
@@ -3355,9 +3273,7 @@ function showAniimoSetup() {
     document.getElementById('edit-roster-btn').hidden = tab !== 'custom';
     document.getElementById('roster-worker-limit').hidden = tab !== 'custom';
     document.getElementById('worker-travel-option').hidden = tab !== 'custom';
-    document.getElementById('aniimo-setup-hint').textContent = existingLayoutEnabled()
-        ? 'Your existing layout uses only the workers entered in My Aniimo.'
-        : tab === 'custom'
+    document.getElementById('aniimo-setup-hint').textContent = tab === 'custom'
         ? 'The plan shares your Aniimo’s available hours between jobs.'
         : 'The best Aniimo you have of each ability.';
     if (tab === 'best') renderAbilityLevels();
@@ -3523,7 +3439,6 @@ function bestAniipod() {
 
 // The RV level being worked toward: the next one in simple mode, the picked one in advanced.
 function levelUpTarget() {
-    if (existingLayoutEnabled()) return existingRv() + 1;
     if (isSimpleMode()) return selectedHomeLevel() + 1;
     return numberOrDefault(document.getElementById('level-up-target').value, 7);
 }
@@ -3576,7 +3491,7 @@ function renderStrategy() {
     if (isPriorityStrategy()) renderPriorities();
 
     // Simple mode always plans the next RV level, so only Advanced picks one.
-    document.getElementById('level-up-target-row').style.display = isSimpleMode() || existingLayoutEnabled() ? 'none' : '';
+    document.getElementById('level-up-target-row').style.display = isSimpleMode() ? 'none' : '';
 
     const costEl = document.getElementById('level-up-cost');
     const stockDetails = document.getElementById('level-up-stock');
@@ -3661,10 +3576,8 @@ function renderLevelUp(plan) {
     const select = document.getElementById('rate-unit');
     const rateBlock = document.getElementById('rate-block');
     const context = planContext;
-    if (context?.levelUp) {
-        if (select.closest('#level-up-card')) document.getElementById('rate-line').appendChild(select);
-        rateBlock.style.display = '';
-    }
+    if (select.closest('#level-up-card')) document.getElementById('rate-line').appendChild(select);
+    rateBlock.style.display = '';
     if (!context || (!context.levelUp && context.unavailable)) {
         card.style.display = 'none';
         return;
@@ -3698,6 +3611,7 @@ function renderLevelUp(plan) {
     }
     time.textContent = report.seconds == null ? 'Not reached with this plan' : `in ${formatDuration(report.seconds)}`;
     const { multiplier } = RATE_UNIT_SECONDS[select.value] || RATE_UNIT_SECONDS.second;
+    const unitLabel = select.selectedOptions[0].textContent;
     const perUnit = perSecond => formatRate(perSecond * multiplier);
     const slowest = Math.max(...report.requirements.map(r => r.seconds ?? Infinity));
     const rows = report.requirements.map(r => {
@@ -3706,11 +3620,11 @@ function renderLevelUp(plan) {
             ? r.seconds === null
             : r.seconds > 0 && r.seconds >= slowest * (1 - 1e-6);
         return `<tr${isSlowest ? ' class="slowest"' : ''}>
-            <td>${ITEM_NAMES[r.name] || prettyItem(r.name)}</td>
-            <td>${formatNumber(r.need)}</td>
-            <td>${formatNumber(r.have)}</td>
-            <td>${perUnit(r.per_second)}</td>
-            <td>${ready}</td>
+            <td data-label="Cost">${ITEM_NAMES[r.name] || prettyItem(r.name)}</td>
+            <td data-label="Need">${formatNumber(r.need)}</td>
+            <td data-label="Have">${formatNumber(r.have)}</td>
+            <td data-label="${escapeText(unitLabel)}">${perUnit(r.per_second)}</td>
+            <td data-label="Ready in">${ready}</td>
         </tr>`;
     }).join('');
     // What's left over once everything is ready and paid for: costs that finish early keep coming
@@ -3725,16 +3639,13 @@ function renderLevelUp(plan) {
         : '';
     lines.innerHTML = `
         <table class="level-up-lines">
-            <thead><tr><th>Cost</th><th>Need</th><th>Have</th><th id="level-up-rate-head"></th><th>Ready in</th></tr></thead>
+            <thead><tr><th>Cost</th><th>Need</th><th>Have</th><th>${escapeText(unitLabel)}</th><th>Ready in</th></tr></thead>
             <tbody>${rows}</tbody>
         </table>
         ${coinsNote}`;
-    const rateHead = document.getElementById('level-up-rate-head');
     if (context.levelUp) {
-        rateHead.appendChild(select);
+        document.getElementById('level-up-unit').appendChild(select);
         rateBlock.style.display = 'none';
-    } else {
-        rateHead.textContent = select.selectedOptions[0].textContent;
     }
 }
 
@@ -3831,7 +3742,7 @@ function getPlanInputValues() {
     // `attachFacilityTierHandlers`), sent straight through as a list of tiers per facility; see
     // `JsPlanInput::facilities` in wasm.rs for the shape (`[{count, level}, ...]` per facility).
     if (isSimpleMode()) {
-        const { facilities, modules } = simpleSetup(existingLayoutEnabled() ? existingRv() : selectedHomeLevel());
+        const { facilities, modules } = simpleSetup(selectedHomeLevel());
         return {
             currency: 'coins',
             priorities: activePriorities(),
@@ -5078,42 +4989,6 @@ function displayPlan(plan) {
     // The page stays where the player is; the results appear without scrolling to them.
 }
 
-function attachExistingLayout() {
-    const editor = document.getElementById('existing-editor');
-    const render = attachExistingEditor(editor, {
-        read: () => existingSites, rv: existingRv, tr: translate,
-        write: sites => {
-            existingSites = sites;
-            if (lastPlanInput) clearPlanResults();
-            saveInputsToStorage();
-        },
-    });
-    function apply() {
-        const fixed = existingLayoutEnabled();
-        editor.hidden = !fixed;
-        for (const id of ['aniimo-best', 'aniimo-minimum']) document.getElementById(id).disabled = fixed;
-        if (fixed) document.getElementById('aniimo-custom').checked = true;
-        render();
-        applyConfigMode();
-        showAniimoSetup();
-    }
-    document.getElementById('existing-homeland-on').addEventListener('change', () => {
-        if (lastPlanInput) clearPlanResults();
-        apply();
-        saveInputsToStorage();
-    });
-    document.getElementById('existing-rv').addEventListener('input', () => {
-        if (lastPlanInput) clearPlanResults();
-        renderStrategy();
-    });
-    document.getElementById('material-work-on').addEventListener('change', event => {
-        materialWorkFor[existingLayoutEnabled() ? 'existing' : 'automatic'] = event.target.checked;
-        if (lastPlanInput) clearPlanResults();
-        saveInputsToStorage();
-    });
-    apply();
-}
-
 // Render a time-to-goal result: Total Time / Amount Produced summary + Product Breakdown. Called
 // live on every goal-field keystroke once a plan exists; cheap, no facility-allocation re-solve.
 function displayGoal(goalResult) {
@@ -5145,8 +5020,7 @@ async function runFindPlan() {
     haulingDefaultSeconds = 0;
     haulingRefinements = 0;
     const invalid = (seasonActive() && document.querySelector('#season-crop-minimum-fields input:invalid'))
-        || (existingLayoutEnabled() ? document.querySelector('#existing-rv:invalid')
-            : !isSimpleMode() && document.querySelector('#layout-rv-level:invalid'))
+        || (!isSimpleMode() && document.querySelector('#layout-rv-level:invalid'))
         || (selectedSetupTab() === 'custom' && document.querySelector('#electricity-aniimo-limit:invalid'));
     if (invalid) {
         invalid.reportValidity();
@@ -5156,30 +5030,6 @@ async function runFindPlan() {
         showError('Optimizer not ready. Please wait...');
         return;
     }
-    existingMap = null;
-    if (existingLayoutEnabled()) {
-        const status = document.getElementById('existing-status');
-        try {
-            if (!recipeIndex.length) throw new Error('The recipe list is still loading. Try again in a moment.');
-            if (!roster.some(aniimo => Object.keys(aniimo.abilities).length)) {
-                throw new Error('Add your workers in My Aniimo before calculating this layout.');
-            }
-            existingMap = prepareExistingHomeland(existingSites, existingRv(),
-                document.getElementById('electricity-on').checked, recipeIndex);
-            for (const [facility, count] of Object.entries(existingMap.input.climate)) {
-                const ability = ENVIRONMENT_BUILDING_ABILITY[facility];
-                const available = roster.reduce((sum, member) => sum + (member.abilities[ability] ? member.count : 0), 0);
-                if (available < count) throw new Error(translate('{building} needs {n} Aniimo with {ability}.')
-                    .replace('{building}', translate(facility)).replace('{n}', count).replace('{ability}', translate(ability)));
-            }
-            status.textContent = '';
-        } catch (error) {
-            existingMap = null;
-            status.textContent = translate(error.message);
-            return;
-        }
-    }
-
     const btn = document.getElementById('optimize-btn');
     const btnText = btn.querySelector('.btn-text');
     const btnLoading = btn.querySelector('.btn-loading');
@@ -5210,11 +5060,6 @@ async function runFindPlan() {
     if (pendingWorkerRequests.size > 0) restartWorker();
     try {
         const input = getPlanInputValues();
-        if (existingMap) {
-            input.facilities = existingMap.facilities;
-            input.fixed_homeland = existingMap.input;
-            input.fixed_rv = existingRv();
-        }
         const rvTarget = input.level_up ?? input.level_up_preview;
         lastPlanInput = input;
         planContext = {
@@ -5304,7 +5149,6 @@ function clearPlanResults() {
     rankingsBySetup = {};
     lastPlan = null;
     lastPlanInput = null;
-    existingMap = null;
     lastGoalResult = null;
     planContext = null;
     stopRanking();
@@ -5627,7 +5471,11 @@ async function initApp() {
     attachRosterHandlers();
     attachLayoutHandlers();
     attachPriorityHandlers();
-    attachExistingLayout();
+    applyConfigMode();
+    showAniimoSetup();
+    document.getElementById('material-work-on').addEventListener('change', () => {
+        if (lastPlanInput) clearPlanResults();
+    });
     initWasm();
 
     document.getElementById('optimize-btn').addEventListener('click', runFindPlan);
@@ -5707,7 +5555,7 @@ async function initApp() {
     // once at startup wouldn't reach a tier added later).
     document.querySelectorAll('input').forEach(input => {
         if (input.id === 'target-amount' || input.id === 'current-amount') return;
-        if (input.closest('#facilities-grid, #level-up-stock-grid, #existing-editor, #roster-config') || input.id === 'skip-input') return;
+        if (input.closest('#facilities-grid, #level-up-stock-grid, #roster-config') || input.id === 'skip-input') return;
         input.addEventListener('keypress', (e) => {
             if (e.key === 'Enter') {
                 runFindPlan();

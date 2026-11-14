@@ -9,6 +9,7 @@
   "Your Homeland": "Ваша Родина",
   "Your inputs are saved in this browser automatically.": "Ваши настройки автоматически сохраняются в этом браузере.",
   "Clear saved values": "Сбросить сохранённые значения",
+  "Share setup": "Поделиться",
   "Input mode": "Режим ввода",
   "Simple": "Простой",
   "Advanced": "Расширенный",
@@ -1081,5 +1082,7 @@
   "Fit map to view": "Показать карту целиком",
   "Fit": "Целиком",
   "Plan ready. Use Results to jump to a section.": "План готов. Выбери раздел в панели результатов.",
-  "Loading optimizer…": "Загружаю оптимизатор…"
+  "Loading optimizer…": "Загружаю оптимизатор…",
+  "Shareable link": "Ссылка на настройки",
+  "Shared setup loaded. Your saved setup is kept until you edit this one.": "Настройки по ссылке загружены. Сохранённые настройки обновятся после первого изменения."
 }

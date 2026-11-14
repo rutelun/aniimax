@@ -19,9 +19,8 @@ function appFunction(name, next) {
 }
 
 // `seasonAvailable` run against the season the selector resolves to (`null` with none running).
-function seasonAvailable(season, { simple, homeLevel, existingLevel = null }) {
-    const context = { currentSeason: () => season, isSimpleMode: () => simple, selectedHomeLevel: () => homeLevel,
-        existingLayoutEnabled: () => existingLevel !== null, existingRv: () => existingLevel };
+function seasonAvailable(season, { simple, homeLevel }) {
+    const context = { currentSeason: () => season, isSimpleMode: () => simple, selectedHomeLevel: () => homeLevel };
     runInNewContext(`${appFunction('seasonAvailable', 'function seasonActive()')}\nresult = seasonAvailable();`, context);
     return context.result;
 }
@@ -56,8 +55,6 @@ test('a running season is offered from its RV level', () => {
     assert.equal(seasonAvailable(season, { simple: true, homeLevel: season.minHomeLevel }), true);
     // Advanced mode has no RV level to go by, so a running season is always on offer there.
     assert.equal(seasonAvailable(season, { simple: false, homeLevel: 1 }), true);
-    assert.equal(seasonAvailable(season, { simple: false, existingLevel: season.minHomeLevel - 1 }), false);
-    assert.equal(seasonAvailable(season, { simple: false, existingLevel: season.minHomeLevel }), true);
 });
 
 test('every season has what the page shows of it', () => {
@@ -94,6 +91,12 @@ function migrate(data) {
     // Objects made inside the context have its own prototypes; a JSON round trip brings them home.
     return JSON.parse(JSON.stringify(context.result));
 }
+
+test('an old shared setup keeps its automatic Bench and Kiln preference', () => {
+    const saved = migrate({ 'existing-homeland-on': true, materialWorkFor: { automatic: false, existing: true } });
+    assert.equal(saved['material-work-on'], false);
+    assert.equal(migrate({ ...saved, 'material-work-on': true })['material-work-on'], true);
+});
 
 test('a single saved budget goes to the season it was typed for', () => {
     // From before the picker: the only season was the Harvest Moon Festival.

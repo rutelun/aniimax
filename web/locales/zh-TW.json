@@ -1101,5 +1101,6 @@
   "Fit map to view": "顯示完整地圖",
   "Fit": "全圖",
   "Plan ready. Use Results to jump to a section.": "計畫已完成，可透過結果選單前往各區段。",
-  "Loading optimizer…": "載入規劃器中…"
+  "Loading optimizer…": "載入規劃器中…",
+  "Shared setup loaded. Your saved setup is kept until you edit this one.": "已載入分享設定。編輯後才會更新原本儲存的設定。"
 }

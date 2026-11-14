@@ -1800,11 +1800,7 @@ details.explain p {
     border-top: 1px solid var(--border);
 }
 
-/* The unit select, as the rate column's header. */
-.level-up-lines th .rate-unit-select {
-    font-size: 0.75rem;
-    padding: 0.15rem 0.3rem;
-}
+.level-up-unit:not(:empty) { margin-top: 0.5rem; }
 
 /* A level-up that couldn't be planned: the coin rate follows its note. */
 .level-up-card .level-up-note {
@@ -3127,10 +3123,6 @@ tr:hover .skip-row,
         display: none;
     }
 
-    #level-up-lines > table {
-        min-width: 25rem;
-    }
-
     .aniimo-card .tabs.compact {
         flex-wrap: wrap;
         max-width: 100%;
@@ -3224,32 +3216,6 @@ tr:hover .skip-row,
         animation: none;
     }
 }
-.existing-toolbar { align-items: end; flex-wrap: wrap; }
-.existing-toolbar input[type="number"] { width: 6rem; }
-.existing-toolbar select { max-width: 100%; }
-.existing-map {
-    display: block;
-    width: 100%;
-    max-height: 38rem;
-    background: #161b22;
-    border: 1px solid #3a4656;
-    border-radius: 0.5rem;
-    cursor: crosshair;
-}
-.existing-map .existing-open { fill: #202b34; stroke: #6f859c; stroke-width: 0.09; }
-.existing-map .existing-locked { fill: #33272c; stroke: #865462; stroke-width: 0.09; }
-.existing-map pattern path { fill: none; stroke: #869aaf; stroke-opacity: 0.28; stroke-width: 0.055; }
-.existing-map .existing-plot-label { fill: #abbdd1; font-size: 0.8px; pointer-events: none; }
-.existing-map .existing-climate { fill: #bda45935; stroke: #d8c176; stroke-width: 0.08; pointer-events: none; }
-.existing-map g[data-existing-site] { cursor: pointer; outline: none; }
-.existing-map g[data-existing-site] rect { fill: #315c66; stroke: #89cbbf; stroke-width: 0.08; }
-.existing-map g[data-existing-site] text { fill: white; font-size: 0.65px; text-anchor: middle; dominant-baseline: central; pointer-events: none; }
-.existing-map g.invalid rect { fill: #803543; stroke: #ffc4c9; }
-.existing-map g.selected rect, .existing-map g:focus-visible rect { stroke: #fff4b5; stroke-width: 0.2; }
-.existing-preview { max-width: 100%; margin-top: 0.5rem; }
-#existing-plan-assignments { margin-top: 1rem; overflow-x: auto; }
-#existing-plan-assignments table { min-width: 32rem; }
-
 /* Planner controls stay within reach while editing long setups or reading results. */
 body {
     max-width: 76rem;
@@ -3338,9 +3304,18 @@ body > header {
 .planner-navigation #planner-jump-go { min-height: 2.75rem; }
 .planner-bar .optimize-btn { width: auto; min-height: 2.75rem; padding: 0.45rem 0.95rem; }
 
-#planner-settings, #roster-config, #results-content > *, #existing-status { scroll-margin-top: 5rem; }
+html { scroll-padding-top: calc(var(--planner-bar-height, 4rem) + 0.8rem); }
 .planner-settings-grid > *, #results-content > *, .input-field { min-width: 0; }
 .planner-settings-primary, .planner-settings-options { display: flow-root; }
+.planner-settings-primary > h3 { margin: 0 0 0.6rem; }
+.planner-settings-grid .tabs { margin-bottom: 0.8rem; }
+.planner-settings-grid .strategy .checkbox-field,
+.production-filters .checkbox-field { align-items: baseline; gap: 0.5rem; }
+.planner-settings-grid .checkbox-field input[type="checkbox"] { flex: none; align-self: start; margin-top: 0.2em; }
+.planner-settings-grid .tabs label { min-height: 2.75rem; display: inline-flex; align-items: center; }
+.planner-team-settings #worker-travel-option label { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.15rem 0.5rem; }
+.config-actions { gap: 0.1rem 0.85rem; }
+.config-actions button { min-height: 2.75rem; }
 .planner-team-settings {
     display: flow-root;
     margin-block: 1rem;
@@ -3352,6 +3327,7 @@ body > header {
 .planner-team-settings .checkbox-field { margin-top: 0.75rem; }
 .planner-team-settings #electricity-aniimo-limit { max-width: 15rem; }
 .planner-team-settings .tabs { max-width: 100%; flex-wrap: wrap; }
+.planner-team-settings .level-picker label { min-height: 2rem; }
 
 .facility-search, .production-filters .input-field { max-width: 25rem; }
 .facility-search { margin-bottom: 0.8rem; }
@@ -3366,10 +3342,20 @@ body > header {
 .layout-zoom-controls .hint { margin: 0; }
 .layout-zoom-controls [role="group"] { display: flex; gap: 0.35rem; }
 .layout-zoom-controls button { min-height: 2.75rem; min-width: 2.75rem; }
+.layout-controls { align-items: end; }
+.layout-controls .layout-toggles { padding-block: 0.45rem; }
+.layout-arrangement > .input-field { flex: 1 1 11rem; }
+.layout-arrangement > label { display: flex; align-items: baseline; gap: 0.5rem; }
+.layout-arrangement > label input { flex: none; }
 .layout-svg.zoomed { touch-action: none; }
 .roster-card-summary strong { overflow-wrap: anywhere; }
 .roster-card-meta { float: none; margin-inline-start: 0.4rem; white-space: nowrap; }
 .roster-card-tags { padding-inline-start: 0.2rem; }
+.seed-table { overflow-x: auto; }
+.priority-name, .step-label { min-width: 0; overflow-wrap: anywhere; }
+.progress-step { grid-template-columns: 1.1rem minmax(0, 1fr) auto; }
+.opportunity-actions { max-width: 100%; }
+.opportunity-actions button { white-space: normal; max-width: 100%; }
 
 @media (min-width: 65rem) {
     .planner-settings-grid {
@@ -3378,14 +3364,11 @@ body > header {
         align-items: start;
         gap: clamp(1.25rem, 3vw, 2.5rem);
     }
-    .planner-settings-grid:has(#existing-homeland-on:checked) { grid-template-columns: 1fr; }
-    .planner-settings-grid:has(#existing-homeland-on:checked) .planner-settings-options {
-        border-top: 1px solid var(--border);
-    }
     .planner-settings-primary .facilities-grid, .planner-settings-primary .modules-grid {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
     .planner-settings-options .strategy h3 { margin-top: 0; }
+    .planner-settings-options > .strategy { margin-top: 0; padding-top: 0; border-top: 0; }
 }
 
 @media (max-width: 37.5rem) {
@@ -3395,15 +3378,34 @@ body > header {
     .planner-bar .optimize-btn { flex: 1 1 100%; }
     .planner-navigation a, .planner-navigation select, .planner-navigation #planner-jump-go { padding-inline: 0.45rem; font-size: 0.8rem; }
     .planner-navigation select { max-width: min(100%, 13rem); min-width: 0; }
-    #planner-settings, #roster-config, #results-content > *, #existing-status { scroll-margin-top: 8.5rem; }
-    .existing-toolbar { flex-direction: row; align-items: end; }
-    .existing-toolbar > .input-field { flex: 1 1 7rem; }
-    .existing-toolbar input[type="number"] { width: 100%; }
+    .input-field input, .input-field select { min-height: 2.75rem; font-size: 1rem; }
+    .planner-settings-primary .input-field, #level-up-target-row .input-field { max-width: 100%; }
+    .layout-storage-config { flex-basis: 100%; }
     .card .facility-plan-table td { overflow-wrap: anywhere; gap: 0.6rem; }
     .facility-plan-table td::before { flex: 0 0 34%; white-space: normal; }
-    #existing-plan-assignments table { min-width: 0; }
-    #existing-plan-assignments .facility-plan-table td { align-items: baseline; }
     .env-diagram { flex-basis: min(100%, 280px); min-width: 0; max-width: 100%; }
+    .priority { gap: 0.4rem; }
+    .priority-move { flex: none; }
+    .priority-move button { width: 2rem; height: 2rem; }
+    .priority-switch .switch-text { display: none; }
+    .progress-step { grid-template-columns: 1.1rem minmax(0, 1fr); column-gap: 0.5rem; row-gap: 0.1rem; }
+    .step-note { grid-column: 2; white-space: normal; font-size: 0.75rem; }
+    .step-note:empty { display: none; }
+    .opportunity-heading > .opportunity-actions { flex: 1 1 100%; }
+    .opportunity-actions button { flex: 1 1 7rem; min-height: 2.75rem; }
+    .production-filters .input-field { flex-basis: 100%; max-width: none; }
+    #level-up-lines thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+    #level-up-lines table, #level-up-lines tbody { display: block; }
+    #level-up-lines tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 0.6rem; padding-block: 0.5rem; border-top: 1px solid var(--border); }
+    .card #level-up-lines td { display: flex; justify-content: space-between; align-items: baseline; gap: 0.3rem; padding: 0.15rem 0; border: 0; overflow-wrap: anywhere; }
+    .card #level-up-lines td:first-child { grid-column: 1 / -1; font-weight: 600; }
+    #level-up-lines td:not(:first-child)::before { content: attr(data-label); color: var(--text-muted); font-size: 0.75rem; font-weight: 400; }
+    .level-up-unit select { min-height: 2.75rem; }
+}
+
+@media (max-height: 30rem) {
+    html { scroll-padding-top: 0.8rem; }
+    .planner-bar { position: relative; }
 }
 
 @media (max-width: 26rem) {
