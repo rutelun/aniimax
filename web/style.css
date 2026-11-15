@@ -3458,7 +3458,7 @@ html { scroll-padding-top: calc(var(--planner-bar-height, 4rem) + 0.8rem); }
 .planner-team-settings #roster-worker-limit { margin-bottom: 0; }
 .planner-team-settings #electricity-aniimo-limit { max-width: 15rem; }
 .planner-team-settings .level-picker label { min-height: 2rem; }
-#edit-roster-from-plan { min-height: 2.75rem; }
+.planner-team-settings .roster-config { margin-top: 0.75rem; }
 
 .planner-checkbox {
     display: grid;

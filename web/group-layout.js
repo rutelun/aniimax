@@ -2,8 +2,8 @@
 import { alphabetScore, chainPurposes, productionDistance, productionGraph,
     productionLinkDistances, refineProductionPlacement } from './production-layout.js?v=zone-ranges';
 import { miningRows, productionRows, productionZones, rawTheme, rawZones, rawZoneSpread, zoneLinkDistance } from './production-zones.js?v=workshop-blocks';
-import { allocateHauling, haulingWorkload } from './hauling.js?v=facility-stock';
-import { ANIIMO_WALK_SPEED, workerTravelDistances } from './worker-travel.js?v=auto-worker-travel';
+import { allocateHauling, haulingWorkload } from './hauling.js?v=travel-allowance';
+import { workerTravelDistances, workerTravelSeconds } from './worker-travel.js?v=travel-allowance';
 import { canMoveDistrictStorage, districtStorageIndices, improveDistrictStorage } from './district-storage.js?v=workshop-blocks';
 
 const load = new URL(import.meta.url).search;
@@ -137,7 +137,7 @@ function makeGroup(lot, style, gap, offset) {
 // Use the same workload and route checks as the app so a move cannot trigger a lower-output solve.
 function incomeWalking(layout, staffing, recipes) {
     if (!staffing) return [];
-    const { movement, limit, minimumWorkers, members, busy, steps, haulingBound, haulingLevel, facilities } = staffing;
+    const { movement, limit, minimumWorkers, members, busy, steps, haulingBound, haulingLevel, facilities, accountForTravel } = staffing;
     const walking = [], occupied = busy?.slice();
     if (movement) {
         const distances = workerTravelDistances(layout.pieces.flatMap(piece => piece.members));
@@ -146,7 +146,7 @@ function incomeWalking(layout, staffing, recipes) {
             if (extra <= 1e-6) continue;
             const visits = movement.visits[member];
             if (!(visits > 0) || !members?.[member]) return null;
-            const workload = extra * visits / (ANIIMO_WALK_SPEED * 3600);
+            const workload = workerTravelSeconds(extra) * visits / 3600;
             occupied[member] += workload;
             if (occupied[member] > members[member].count + 1e-6) return null;
             walking.push([member, workload]);
@@ -155,7 +155,7 @@ function incomeWalking(layout, staffing, recipes) {
     if (!Number.isFinite(limit)) return walking;
     const cargo = recipes.map(recipe => ({ name: recipe.item, facility_level: recipe.facility_level,
         yieldAmount: recipe.yield, byproductAmount: recipe.byproduct?.[1] }));
-    const work = haulingWorkload(layout, steps, haulingBound, cargo, facilities);
+    const work = haulingWorkload(layout, steps, haulingBound, cargo, facilities, accountForTravel);
     if (!members) return minimumWorkers + Math.ceil(work.busyByLevel[haulingLevel] - 1e-6) <= limit ? walking : null;
     if (occupied.reduce((sum, load) => sum + Math.max(0, Math.ceil(load - 1e-6)), 0) > limit) return null;
     return allocateHauling(members, occupied, work, limit).unassigned <= 1e-6 ? walking : null;

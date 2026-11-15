@@ -16,6 +16,10 @@ test('delivery goes through storage to the next frequency-weighted pickup', () =
     assert.equal(work.seconds['Mine|far'], 6.5); // double the loaded leg and weighted next pickup
     assert.equal(work.seconds['Well|near'], 4.5);
     assert.ok(Math.abs(work.busy - 200/3600) < 1e-12);
+    const withTravel = haulingWorkload(layout, steps, 0, [], null, true);
+    assert.equal(withTravel.seconds['Mine|far'], 19.5);
+    assert.equal(withTravel.seconds['Well|near'], 13.5);
+    assert.ok(Math.abs(withTravel.busy - 600/3600) < 1e-12);
 });
 
 test('couriers share existing work hours without assigning delivery to another ability', () => {

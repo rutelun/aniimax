@@ -908,6 +908,8 @@
   "{minutes} min/h walking": "{minutes} мин/ч на переходы",
   "Walking time uses a conservative distance estimate, checked against the layout, at {speed} tiles/s.": "Время переходов входит в загрузку по консервативной оценке расстояний, проверяемой по расстановке; скорость — {speed} клет./с.",
   "Account for Aniimo travel": "Учитывать переходы Анимо",
+  "(3× travel time)": "(тройное время в пути)",
+  "The travel option triples the estimated time for walks and deliveries.": "С включённой галкой расчётное время переходов и доставки утраивается.",
   "very slow": "очень медленно",
   "This setup took too long. Try turning off Aniimo travel or simplifying the priorities.": "Расчёт занял слишком много времени. Попробуйте отключить переходы Анимо или сократить список приоритетов.",
   "The planner took too long. Try turning off Aniimo travel or simplifying the priorities.": "Расчёт занял слишком много времени. Попробуйте отключить переходы Анимо или сократить список приоритетов.",

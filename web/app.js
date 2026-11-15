@@ -1,7 +1,7 @@
 // Aniimax Web Application
 
-import { currentLocale, sourceAttribute, translate } from './i18n.js?v=plan-team';
-import './math-translation.js?v=compact-roster';
+import { currentLocale, sourceAttribute, translate } from './i18n.js?v=travel-allowance';
+import './math-translation.js?v=travel-allowance';
 import { autoMaximizeSeasonPoints } from './season-planning.js?v=optional-season-points';
 
 import {
@@ -12,9 +12,9 @@ import {
 import { allocateTurnFacilities, redistributeTurnFacilityRows } from './turn-jobs.js?v=auto-worker-travel';
 import { createShareUrl, readShareHash, urlWithoutShare } from './share-config.js?v=compact-roster';
 import { nearestStorage } from './layout.js?v=storage-power';
-import { ANIIMO_WALK_SPEED, workerTravelDistances } from './worker-travel.js?v=auto-worker-travel';
+import { workerTravelDistances, workerTravelSeconds } from './worker-travel.js?v=travel-allowance';
 import { assignFacilityStock, bufferedBatches, haulingWorkload, allocateHauling, haulingBatchTrips,
-    haulingTravelSeconds, pickupStockLimit } from './hauling.js?v=facility-stock';
+    haulingTravelSeconds, pickupStockLimit } from './hauling.js?v=travel-allowance';
 import { changeOneMember, personalityInput, reserveLevelFourInputs, comparePlans, usefulUpgrade, keepBetterComparison } from './opportunity-comparison.js?v=income-aware-chains';
 import { comparisonConcurrency, startComparisonQueue } from './comparison-queue.js?v=parallel-comparisons';
 import { prepareOpportunities, startedProcessing, increasedProcessing } from './opportunity-effects.js?v=auto-e-mode';
@@ -1016,12 +1016,12 @@ function rankImprovementsFor(setup, requested = null, detailed = false) {
         const base = structuredClone({ ...lastPlanInput, ...aniimoInput(setup) });
         if (base.roster && plan.hauling_estimates) {
             base.roster = { ...base.roster, hauling_seconds: plan.hauling_estimates,
-                hauling_default_seconds: haulingRouteBound() };
+                hauling_default_seconds: haulingRouteBound(setup.startsWith('roster:') && workerTravelEnabled()) };
         }
         if (base.roster && plan.layout_walking?.length && lastLayout) {
             const distances = workerTravelDistances(lastLayout.layout.pieces.flatMap(piece => piece.members));
             for (const [member] of plan.layout_walking) {
-                base.roster.movement_by_member[member] = distances.get(member) / ANIIMO_WALK_SPEED;
+                base.roster.movement_by_member[member] = workerTravelSeconds(distances.get(member));
             }
         }
         const prepared = improvementCandidates(base,setup);
@@ -1691,6 +1691,7 @@ function layoutOptionsFor(plan, homeLevel, setup = selectedSetupTab()) {
     let staffing = null;
     if (recipes.length) {
         const ownedPlan = setup === 'custom';
+        const accountForTravel = ownedPlan && workerTravelEnabled();
         const team = ownedPlan ? rosterWorkload({ ...plan, layout_walking: [],
             assumed_aniimo: haulingBaseByPlan.get(plan) ?? plan.assumed_aniimo }) : null;
         const rvLimit = ANIIMO_MAX[homeLevel - 1] ?? Infinity;
@@ -1701,10 +1702,11 @@ function layoutOptionsFor(plan, homeLevel, setup = selectedSetupTab()) {
             members: team?.members,
             busy: team?.busy,
             minimumWorkers: ownedPlan ? 0 : aniimoTeam({ ...plan, hauling_busy: 0 }).total,
-            movement: ownedPlan && workerTravelEnabled() && plan.mobile_work?.length
+            movement: accountForTravel && plan.mobile_work?.length
                 ? { defaultDistance: movementDefaultDistance, byMember: movementDistances, visits } : null,
             haulingLevel: setup === 'minimum' ? 1 : 3,
-            haulingBound: haulingRouteBound(),
+            haulingBound: haulingRouteBound(accountForTravel),
+            accountForTravel,
             facilities: lastPlanInput?.facilities,
             steps: (plan.coin_items || []).filter(step => step.status === 'producing'),
         };
@@ -2513,6 +2515,7 @@ function updatePlannerNavigation() {
 function jumpToPlannerSection(id) {
     const section = document.getElementById(id);
     if (!section) return;
+    if (id === 'roster-config') section.hidden = false;
     if (section instanceof HTMLDetailsElement) section.open = true;
     const heading = section.querySelector('h2, summary') || section;
     if (!heading.matches('summary')) heading.tabIndex = -1;
@@ -2561,16 +2564,17 @@ let haulingRefinements = 0;
 const haulingBaseByPlan = new WeakMap();
 const HAULING_ESTIMATE_HINT = 'Delivery estimates use facility stock limits, carrying capacity, and twice the basic walking time. Pickup timing is approximate; Hauling Lv.4 uses Lv.3 capacity.';
 
-function haulingRouteBound() {
+function haulingRouteBound(accountForTravel = false) {
     const open = homelandPlots().filter(p => p.number <= layoutHomeLevel());
     return open.length ? haulingTravelSeconds(2 * Math.hypot(
         Math.max(...open.map(p => p.x + p.w)) - Math.min(...open.map(p => p.x)),
-        Math.max(...open.map(p => p.y + p.h)) - Math.min(...open.map(p => p.y)))) : 0;
+        Math.max(...open.map(p => p.y + p.h)) - Math.min(...open.map(p => p.y))), accountForTravel) : 0;
 }
 
 function assignLayoutHauling(layout, plan) {
-    const bound = haulingRouteBound();
-    const work = haulingWorkload(layout, plan.coin_items || [], bound, recipeIndex, lastPlanInput?.facilities);
+    const accountForTravel = selectedSetupTab() === 'custom' && workerTravelEnabled();
+    const bound = haulingRouteBound(accountForTravel);
+    const work = haulingWorkload(layout, plan.coin_items || [], bound, recipeIndex, lastPlanInput?.facilities, accountForTravel);
     plan.hauling_estimates = work.seconds;
     plan.hauling_busy = work.busyByLevel[selectedSetupTab() === 'minimum' ? 1 : 3];
     if (selectedSetupTab() !== 'custom') return false;
@@ -2639,11 +2643,12 @@ const RESIDENT_FACILITIES = new Set(FACILITIES.filter(f => f.category === 'Aniim
 
 // The roster for the solver (see `JsRoster` in wasm.rs).
 function rosterPayload() {
+    const accountForTravel = workerTravelEnabled();
     return {
         hauling_seconds: haulingSeconds,
         hauling_default_seconds: haulingDefaultSeconds,
-        movement_seconds: workerTravelEnabled() ? movementDefaultDistance / ANIIMO_WALK_SPEED : 0,
-        movement_by_member: workerTravelEnabled() ? Object.fromEntries(Object.entries(movementDistances).map(([member, distance]) => [member, distance / ANIIMO_WALK_SPEED])) : {},
+        movement_seconds: accountForTravel ? workerTravelSeconds(movementDefaultDistance) : 0,
+        movement_by_member: accountForTravel ? Object.fromEntries(Object.entries(movementDistances).map(([member, distance]) => [member, workerTravelSeconds(distance)])) : {},
         members: roster.map(a => ({ count: a.count, abilities: a.abilities, personalities: a.personalities.filter(Boolean), family: a.family })),
         residents: [...RESIDENT_FACILITIES],
         environment: ENVIRONMENT_BUILDING_ABILITY,
@@ -3022,12 +3027,7 @@ function attachRosterHandlers() {
         openRosterSlot = null;
         (tile ?? editor.querySelector('[data-roster="add-row"]')).focus();
     });
-    document.querySelectorAll('[data-edit-roster]').forEach(button => button.addEventListener('click', () => {
-        const config = document.getElementById('roster-config');
-        config.open = true;
-        config.scrollIntoView({ block: 'start' });
-        document.getElementById('roster-filter').focus({ preventScroll: true });
-    }));
+    document.getElementById('edit-roster-btn').addEventListener('click', () => jumpToPlannerSection('roster-config'));
     editor.addEventListener('click', (e) => {
         const button = e.target.closest('button');
         if (!button) return;
@@ -3661,7 +3661,8 @@ function showAniimoSetup() {
     travelRefinements = 0;
     const tab = selectedSetupTab();
     document.getElementById('ability-level-settings').hidden = tab !== 'best';
-    document.querySelectorAll('[data-edit-roster]').forEach(button => { button.hidden = tab !== 'custom'; });
+    document.getElementById('edit-roster-btn').hidden = tab !== 'custom';
+    document.getElementById('roster-config').hidden = tab !== 'custom';
     document.getElementById('roster-worker-limit').hidden = tab !== 'custom';
     document.getElementById('worker-travel-option').hidden = tab !== 'custom';
     const hints = {
@@ -4681,7 +4682,8 @@ function aniimoTeam(plan) {
 function renderAniimoSummary(plan) {
     const custom = selectedSetupTab() === 'custom';
     const workloadNote = document.getElementById('aniimo-workload-note');
-    workloadNote.textContent = plan.hauling_busy != null ? HAULING_ESTIMATE_HINT : '';
+    const travelNote = custom && workerTravelEnabled() ? ' The travel option triples the estimated time for walks and deliveries.' : '';
+    workloadNote.textContent = plan.hauling_busy != null ? HAULING_ESTIMATE_HINT + travelNote : '';
     workloadNote.hidden = plan.hauling_busy == null;
     if (custom) {
         if (!aniimoExpansionChosen) setAniimoExpanded(true);
@@ -5921,12 +5923,15 @@ async function initApp() {
     });
     if (sharedRoster) {
         const config = document.getElementById('roster-config');
+        config.hidden = false;
         config.open = true;
         const save = config.querySelector('[data-roster="save-import"]');
         save.hidden = false;
         save.focus();
     } else if (sharedData) {
         document.getElementById('share-config-status').textContent = 'Shared setup loaded. Your saved setup is kept until you edit this one.';
+    } else if (window.location.hash === '#roster-config') {
+        jumpToPlannerSection('roster-config');
     }
     document.getElementById('rate-unit').addEventListener('change', () => {
         rateUnitChosen = true;
@@ -5946,6 +5951,9 @@ async function initApp() {
         travelRefinements = 0;
         movementDistances = {};
         movementDefaultDistance = 20;
+        haulingSeconds = {};
+        haulingDefaultSeconds = 0;
+        haulingRefinements = 0;
         stopSetupSolve();
         renderRoster();
         saveInputsToStorage();
@@ -5956,7 +5964,7 @@ async function initApp() {
         setAniimoExpanded(document.getElementById('aniimo-body').hidden);
     });
     // Best's level buttons are named `level-<ability>`; the roster editor handles its own.
-    document.getElementById('aniimo-setup-panel').addEventListener('change', event => {
+    document.getElementById('ability-level-settings').addEventListener('change', event => {
         const { name, value, checked } = event.target;
         const unheardOf = event.target.dataset?.confirm;
         if (unheardOf && checked) {

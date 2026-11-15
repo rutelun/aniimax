@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { runInNewContext } from 'node:vm';
+import { workerTravelSeconds } from '../web/worker-travel.js';
 
 const source = await readFile(new URL('../web/app.js', import.meta.url), 'utf8');
 const setupCode = source.slice(source.indexOf('function selectedAniimoSetup()'), source.indexOf('// The most recently computed goal result'));
@@ -29,7 +30,7 @@ function page() {
         displayPlan: plan => shown.push(plan), runTimeToGoal() {}, updatePlannerNavigation() {},
         startProgress() {}, finishSolveSteps() {}, renderProgress() {}, setStep: (...args) => steps.push(args), translate: s => s,
         stopRanking() {}, stopLayout() {}, renderImprovements() {}, restartWorker() {}, refreshRosterTileWorkloads() {},
-        ENVIRONMENT_BUILDING_ABILITY: {}, RESIDENT_FACILITIES: [], FACILITIES: [], ANIIMO_WALK_SPEED: 4,
+        ENVIRONMENT_BUILDING_ABILITY: {}, RESIDENT_FACILITIES: [], FACILITIES: [], workerTravelSeconds,
     };
     const run = code => runInNewContext(code, context);
     run(`let roster = [{count:1, abilities:{Water:3}, personalities:[], family:null}];
@@ -87,7 +88,9 @@ test('turning travel off cancels the costly solve and ignores previous distances
     const p = page();
     p.element('worker-travel-on').checked = true;
     p.run('showSelectedPlan();');
-    assert.equal(JSON.parse(p.workers[0].request.payload).roster.movement_seconds, 5);
+    const withTravel = JSON.parse(p.workers[0].request.payload).roster;
+    assert.equal(withTravel.movement_seconds, 15);
+    assert.deepEqual(withTravel.movement_by_member, {0:30});
     p.element('worker-travel-on').checked = false;
     p.run('switchAniimoSetup();');
     assert.ok(p.workers[0].stopped);

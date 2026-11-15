@@ -909,6 +909,8 @@
   "{minutes} min/h walking",
   "Walking time uses a conservative distance estimate, checked against the layout, at {speed} tiles/s.",
   "Account for Aniimo travel",
+  "(3× travel time)",
+  "The travel option triples the estimated time for walks and deliveries.",
   "very slow",
   "This setup took too long. Try turning off Aniimo travel or simplifying the priorities.",
   "The planner took too long. Try turning off Aniimo travel or simplifying the priorities.",

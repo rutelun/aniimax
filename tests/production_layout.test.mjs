@@ -106,6 +106,7 @@ test('extra walking can use spare working time without lowering production', () 
             piece('Blazing Stove', 'bread', x, 0, { workers: [[0, 36]] })] });
     const staffing = { limit: 1, members: [{ count: 1, abilities: {} }], busy: [.98], steps: [],
         movement: { defaultDistance: 4, byMember: {}, visits: { 0: 72 } } };
-    assert.equal(layoutKeepsIncome(map(6), staffing, recipes), true);
+    assert.equal(layoutKeepsIncome(map(5), staffing, recipes), true);
+    assert.equal(layoutKeepsIncome(map(6), staffing, recipes), false);
     assert.equal(layoutKeepsIncome(map(20), staffing, recipes), false);
 });

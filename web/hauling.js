@@ -1,5 +1,5 @@
 import { nearestStorage } from './layout.js?v=optional-worker-travel';
-import { ANIIMO_WALK_SPEED } from './worker-travel.js?v=auto-worker-travel';
+import { ANIIMO_WALK_SPEED, workerTravelSeconds } from './worker-travel.js?v=travel-allowance';
 import facilityStock from './facility-stock.json' with { type: 'json' };
 
 // Client-derived Wikily profiles: Skippy 60, Fenrier 80, Bouldus/Glacy 100.
@@ -7,7 +7,8 @@ import facilityStock from './facility-stock.json' with { type: 'json' };
 export const HAULING_CAPACITY = Object.freeze({1:60, 2:80, 3:100, 4:100});
 const levels = [1, 2, 3, 4];
 const headcount = n => Math.max(0, Math.ceil(n - 1e-6));
-export const haulingTravelSeconds = distance => 2 * distance / ANIIMO_WALK_SPEED;
+export const haulingTravelSeconds = (distance, accountForTravel = false) =>
+    2 * (accountForTravel ? workerTravelSeconds(distance) : distance / ANIIMO_WALK_SPEED);
 const batchOutput = recipe => [Math.max(1, recipe?.yieldAmount || 1), Math.max(0, recipe?.byproductAmount || 0)];
 export const facilityStockLimit = (facility, level = 1) =>
     facilityStock[facility]?.[Math.max(1, level) - 1] ?? facilityStock[facility]?.at(-1) ?? 0;
@@ -57,7 +58,7 @@ function fallbackTrips(step, recipe, level, facilities) {
 // pickup over carrying capacity. An oversized harvest still needs all its trips. After storage
 // comes the next pickup, weighted by its delivery frequency in the same storage pool.
 // Pickup thresholds are estimates. Fallback seconds already include the time allowance.
-export function haulingWorkload(layout, steps, fallbackSeconds = 0, recipes = [], facilities = null) {
+export function haulingWorkload(layout, steps, fallbackSeconds = 0, recipes = [], facilities = null, accountForTravel = false) {
     const recipeOf = new Map(recipes.map(recipe => [recipe.name, recipe]));
     const seconds = {}, jobs = new Map();
     for (const level of levels) {
@@ -66,8 +67,9 @@ export function haulingWorkload(layout, steps, fallbackSeconds = 0, recipes = []
             if (!(member.weight > 0)) continue;
             const storage = nearestStorage(member, layout.storages);
             if (!storage) continue;
-            const loaded = haulingTravelSeconds(Math.hypot(member.x + member.w / 2 - storage.x - storage.w / 2,
-                member.y + member.h / 2 - storage.y - storage.h / 2));
+            const distance = Math.hypot(member.x + member.w / 2 - storage.x - storage.w / 2,
+                member.y + member.h / 2 - storage.y - storage.h / 2);
+            const loaded = haulingTravelSeconds(distance, accountForTravel);
             const cargo = member.jobs?.map(job => [job.item, job.rate * 3600]) || [[member.crop, member.batchWeight ?? member.weight]];
             const pool = pools.get(storage) || { trips: 0, pickupSeconds: 0 };
             for (const [item, batches] of cargo) {
