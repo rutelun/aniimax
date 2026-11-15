@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Aniimax - Aniimo Production Optimizer</title>
-    <link rel="stylesheet" href="style.css?v=homeland-icons">
+    <link rel="stylesheet" href="style.css?v=roster-rows">
     <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
 </head>
 <body>
@@ -290,6 +290,14 @@
                         <p class="hint small" id="aniimo-pending" style="display: none;">Still working this setup out...</p>
                         <div id="aniimo-body" hidden>
                             <div id="roster-summary" hidden></div>
+                            <dialog class="roster-dialog roster-edit-dialog" id="aniimo-work-dialog" aria-labelledby="aniimo-work-title">
+                                <div class="roster-dialog-head">
+                                    <h3 id="aniimo-work-title"></h3>
+                                    <button type="button" class="roster-x" aria-label="Close">✕</button>
+                                </div>
+                                <p class="roster-dialog-summary"></p>
+                                <p class="roster-edit-workload hint small"></p>
+                            </dialog>
                             <div id="aniimo-summary"></div>
                             <details class="explain">
                                 <summary>How the team is worked out</summary>
@@ -683,6 +691,6 @@
             }
         });
     </script>
-    <script type="module" src="app.js?v=homeland-icons"></script>
+    <script type="module" src="app.js?v=roster-rows"></script>
 </body>
 </html>

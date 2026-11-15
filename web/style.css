@@ -2589,6 +2589,7 @@ tr:hover .skip-row,
 
 .layout-storage {
     fill: var(--accent);
+    fill-opacity: 0.26;
     stroke: var(--text);
     stroke-width: 0.08;
 }
@@ -2898,18 +2899,29 @@ tr:hover .skip-row,
 }
 .roster-tools .input-field { flex: 0 1 20rem; min-width: 0; margin: 0; }
 .roster-tools .planner-checkbox { min-height: 2.65rem; }
-.roster-cards, .roster-catalog-results {
+.roster-catalog-results {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(min(100%, 7rem), 1fr));
     gap: 0.45rem;
     align-items: start;
 }
 .roster-cards {
+    display: grid;
+    gap: 0.4rem;
     padding: 0.6rem;
     border: 1px solid var(--border);
     border-radius: var(--radius);
     background: color-mix(in srgb, var(--accent) 8%, var(--bg));
 }
+.roster-slot-row {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 0.45rem;
+    align-items: start;
+}
+.roster-slot { min-width: 0; }
+.roster-move-hint:not([hidden]) { display: flex; flex-wrap: wrap; align-items: center; gap: 0.45rem; }
+.roster-additional-title { font-size: 0.95rem; margin: 0.85rem 0 0.4rem; }
 .roster-tile {
     display: grid;
     width: 100%;
@@ -2926,23 +2938,26 @@ tr:hover .skip-row,
     cursor: pointer;
 }
 .roster-tile[hidden] { display: none; }
-.roster-tile:hover, .roster-tile:focus-visible { border-color: var(--accent); background: var(--surface-2); }
+.roster-tile:is(:hover, :focus-visible, .is-moving, .is-drop-target) { border-color: var(--accent); background: var(--surface-2); }
+.roster-tile[draggable="true"] { cursor: grab; }
+.roster-tile.is-idle .roster-portrait { filter: grayscale(1); opacity: 0.58; }
+.roster-tile.is-idle .roster-tile-name { color: var(--text-muted); }
 .roster-tile-name { font-size: 0.8rem; line-height: 1.25; overflow-wrap: anywhere; }
 .roster-tile small { color: var(--text-muted); font-size: 0.7rem; }
 .roster-portrait {
-    --hex: polygon(50% 0%, 93% 22%, 98% 31%, 98% 69%, 93% 78%, 50% 100%, 7% 78%, 2% 69%, 2% 31%, 7% 22%);
+    --hex: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
     position: relative;
     display: grid;
     place-items: center;
     width: min(100%, 5.6rem);
-    aspect-ratio: 1;
+    aspect-ratio: 0.8660254;
     margin-bottom: 0.55rem;
 }
-.roster-portrait::before, .roster-portrait-fill {
+.roster-portrait::before, .roster-portrait-fill, .roster-portrait-fill::before {
     position: absolute;
     inset: 0;
-    clip-path: var(--hex);
 }
+.roster-portrait::before, .roster-portrait-fill::before { clip-path: var(--hex); }
 .roster-portrait::before { content: ""; background: #697387; }
 .roster-portrait.prismana::before { background: linear-gradient(145deg, #c29cff, #80d0ff, #ef96de); }
 .roster-portrait-fill {
@@ -2950,28 +2965,23 @@ tr:hover .skip-row,
     display: grid;
     place-items: center;
     color: #b7c3d9;
-    background: radial-gradient(at 50% 25%, #606b81, #333b4d 80%);
     font-size: 2rem;
 }
-.roster-portrait-fill img, .roster-skill img {
+.roster-portrait-fill::before {
+    content: "";
+    background: radial-gradient(at 50% 25%, #606b81, #333b4d 80%);
+}
+.roster-portrait-fill > span { position: relative; }
+.roster-portrait-fill > span:has(svg) { width: 46%; }
+.roster-portrait-fill > span > svg { display: block; width: 100%; }
+.roster-portrait-fill img {
     position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 100%;
+    inset: 8% 5%;
+    width: 90%;
+    height: 84%;
     object-fit: contain;
 }
-.roster-portrait-fill:has(img:not([hidden])) > span, .roster-skill:has(img:not([hidden])) > span { visibility: hidden; }
-.roster-portrait-count {
-    position: absolute;
-    right: 0;
-    top: 0.2rem;
-    padding: 0.03rem 0.34rem;
-    border: 1px solid #6b768a;
-    border-radius: 1rem;
-    background: #182131;
-    color: white;
-    font-size: 0.7rem;
-}
+.roster-portrait-fill:has(img.loaded) > span { visibility: hidden; }
 .roster-tile.is-assigned .roster-portrait::after {
     content: "";
     position: absolute;
@@ -2984,10 +2994,11 @@ tr:hover .skip-row,
     background: #78dab3;
 }
 .roster-card-tags {
+    --skill-size: 1.4rem;
     display: flex;
     flex-wrap: wrap;
     justify-content: center;
-    max-width: calc(100% + 0.65rem);
+    max-width: calc(100% + 0.9rem);
     gap: 1px;
     position: absolute;
     bottom: -0.38rem;
@@ -3003,16 +3014,17 @@ tr:hover .skip-row,
     border-radius: 50%;
     background: var(--ability);
     color: white;
-    width: 1.25rem;
-    height: 1.25rem;
+    width: var(--skill-size);
+    height: var(--skill-size);
     font-size: 0.7rem;
     line-height: 1;
 }
+.roster-skill svg { width: 70%; height: 70%; }
 .roster-skill b {
     position: absolute;
     right: -1px;
     bottom: -1px;
-    font-size: 0.66rem;
+    font-size: calc(var(--skill-size) * 0.58);
     text-shadow: 1px 0 #172131, -1px 0 #172131, 0 -1px #172131, 0 1px #172131;
 }
 .roster-empty-tile .roster-portrait {
@@ -3022,6 +3034,14 @@ tr:hover .skip-row,
     font-weight: 400;
 }
 .roster-empty-tile .roster-portrait::before { z-index: -1; background: color-mix(in srgb, var(--accent) 15%, var(--surface)); }
+@media (max-width: 40rem) {
+    .roster-slot-row { gap: 0.2rem; }
+    .roster-slot .roster-tile { padding-inline: 0.06rem; }
+    .roster-slot .roster-tile-name { font-size: 0.68rem; }
+    .roster-slot .roster-card-tags { --skill-size: clamp(0.65rem, 3.25vw, 1.1rem); padding: 1px; }
+}
+.layout-worker-icon { color: #fff; }
+.layout-emode-badge { color: #ffd75c; }
 .roster-dialog {
     position: fixed;
     margin: auto;
@@ -3077,14 +3097,6 @@ tr:hover .skip-row,
     border-color: var(--border);
 }
 
-.roster-count {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.25rem;
-    font-variant-numeric: tabular-nums;
-}
-
-.roster-count button,
 .roster-x {
     background: transparent;
     border: 1px solid var(--border);
@@ -3096,7 +3108,6 @@ tr:hover .skip-row,
     line-height: 1;
 }
 
-.roster-count button:hover,
 .roster-x:hover {
     color: var(--text);
 }
@@ -3180,12 +3191,12 @@ tr:hover .skip-row,
 
 .layout-power-zones rect { fill: #f6cd58; fill-opacity: 0.035; stroke: #e2ba43; stroke-opacity: 0.45; stroke-width: 0.06; stroke-dasharray: 0.3 0.2; }
 .layout-power-links line { stroke: #f6cd58; stroke-opacity: 0.85; stroke-width: 0.11; stroke-dasharray: 0.35 0.18; }
-.layout-power-pole rect { fill: #77602b; stroke: #f6cd58; stroke-width: 0.1; }
+.layout-power-pole rect { fill: #e7b849; fill-opacity: 0.17; stroke: #f6cd58; stroke-width: 0.1; }
 .layout-power-pole text, .layout-generator text { fill: #fff0b0; }
 .layout-emode-badge { pointer-events: none; }
-.layout-emode-badge circle { fill: #594500; stroke: #ffd75c; stroke-width: 0.08; }
+.layout-emode-badge path { fill: #594500; stroke: #ffd75c; stroke-width: 0.045; }
 .layout-emode-badge text { fill: #fff0aa; }
-.layout-emode-badge.disconnected circle { fill: #842d2d; stroke: #ff7777; }
+.layout-emode-badge.disconnected path { fill: #842d2d; stroke: #ff7777; }
 
 /* Hover tips (see "Hover tips" in app.js). */
 .tip-card {
@@ -3456,40 +3467,10 @@ html { scroll-padding-top: calc(var(--planner-bar-height, 4rem) + 0.8rem); }
 .aniimo-card .card-head { margin-bottom: 0.4rem; }
 .aniimo-card #aniimo-collapsed-summary { margin: 0.15rem 0 0 1.15rem; }
 .aniimo-card .ability-strip:empty { display: none; }
-.assignment-list {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    border: 1px solid var(--border);
-    border-radius: 0.65rem;
-}
-.assignment-row {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(7rem, 0.65fr) minmax(0, 1.6fr);
-    align-items: start;
-    gap: 0.4rem 1.2rem;
-    padding: 0.65rem 0.85rem;
-    font-size: 0.88rem;
-    overflow-wrap: anywhere;
-}
-.assignment-row + .assignment-row { border-top: 1px solid var(--border); }
-.assignment-identity, .assignment-load { display: grid; gap: 0.2rem; }
-.assignment-with-portrait { display: flex; gap: 0.6rem; align-items: start; min-width: 0; }
-.assignment-with-portrait img { flex: none; object-fit: contain; border-radius: 0.6rem; background: var(--surface-2); }
-.assignment-with-portrait > div { display: grid; min-width: 0; gap: 0.2rem; }
 .assignment-meta { color: var(--text-muted); font-size: 0.78rem; }
-.assignment-abilities { display: flex; flex-wrap: wrap; gap: 0.15rem 0.4rem; font-size: 0.78rem; }
-.assignment-abilities > span { white-space: nowrap; }
-.assignment-load progress { width: 100%; max-width: 9rem; height: 0.35rem; }
-.assignment-idle { color: var(--text-muted); font-size: 0.85rem; margin: 0.65rem 0 0; }
 .facility-worker { margin-bottom: 0.2rem; overflow-wrap: anywhere; }
 .facility-load > .assignment-meta:last-child { display: block; }
 .facility-plan-table td { vertical-align: top; }
-
-@media (max-width: 43rem) {
-    .assignment-row { grid-template-columns: minmax(0, 1fr) minmax(0, 0.8fr); gap: 0.45rem 0.75rem; }
-    .assignment-workplaces { grid-column: 1 / -1; }
-}
 
 @media (max-height: 30rem) {
     html { scroll-padding-top: 0.8rem; }

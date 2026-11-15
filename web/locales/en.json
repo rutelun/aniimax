@@ -1102,5 +1102,9 @@
   "Calculate a plan with My Aniimo to see assignments.",
   "Shared field crew",
   "Show workers",
-  "Art"
+  "Art",
+  "Add row",
+  "Move Aniimo",
+  "Add a copy",
+  "Choose a destination slot. Occupied slots swap places."
 ]

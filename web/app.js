@@ -1,7 +1,7 @@
 // Aniimax Web Application
 
-import { currentLocale, sourceAttribute, translate } from './i18n.js?v=roster-portraits';
-import './math-translation.js?v=roster-portraits';
+import { currentLocale, sourceAttribute, translate } from './i18n.js?v=roster-rows';
+import './math-translation.js?v=roster-rows';
 import { autoMaximizeSeasonPoints } from './season-planning.js?v=optional-season-points';
 
 import {
@@ -18,8 +18,10 @@ import { assignFacilityStock, bufferedBatches, haulingWorkload, allocateHauling,
 import { changeOneMember, personalityInput, reserveLevelFourInputs, comparePlans, usefulUpgrade, keepBetterComparison } from './opportunity-comparison.js?v=income-aware-chains';
 import { comparisonConcurrency, startComparisonQueue } from './comparison-queue.js?v=parallel-comparisons';
 import { prepareOpportunities, startedProcessing, increasedProcessing } from './opportunity-effects.js?v=auto-e-mode';
-import { aniimoPortrait, attachRosterPicker, rosterCatalogId, rosterFormName } from './roster-picker.js?v=roster-portraits';
+import { aniimoPortrait, attachRosterPicker, rosterCatalogId, rosterFormName } from './roster-picker.js?v=roster-rows';
+import { placeRosterCopy, ROSTER_ROW_SIZE, rosterSlotsFor, swapRosterSlots } from './roster-slots.js';
 import facilityIcons from './facility-icons.json' with { type: 'json' };
+import { abilityGlyph } from './ability-icons.js';
 
 let wasmReady = false;
 
@@ -534,7 +536,7 @@ function initFacilityTiers(data) {
 }
 
 function currentConfig() {
-    const data = { facilityTiers, levelUpStock, skippedRecipes: [...skippedRecipes], unlockedSpecial: [...unlockedSpecial], priorities: priorityOrder, aniimoLevels, roster, seasonBudgets, seasonCropMinimums };
+    const data = { facilityTiers, levelUpStock, skippedRecipes: [...skippedRecipes], unlockedSpecial: [...unlockedSpecial], priorities: priorityOrder, aniimoLevels, roster, rosterSlots, seasonBudgets, seasonCropMinimums };
     getPersistedFieldIds().forEach(id => {
         const el = document.getElementById(id);
         if (!el) return;
@@ -619,7 +621,7 @@ function loadInputsFromStorage(data) {
             .map(a => ({
                 name: typeof a.name === 'string' ? a.name : '',
                 catalogId: rosterCatalogId(a.catalogId, typeof a.name === 'string' ? a.name : ''),
-                count: Math.max(1, Math.round(Number(a.count)) || 1),
+                count: Number.isSafeInteger(Number(a.count)) ? Math.max(1, Number(a.count)) : 1,
                 family: LEISURE_FAMILIES.some(f => f.id === a.family) ? a.family : null,
                 abilities: Object.fromEntries(Object.entries(a.abilities)
                     .filter(([ability, level]) => ABILITY_BY_NAME.has(ability) && Number.isInteger(Number(level)) && level >= 1 && level <= 4)
@@ -630,6 +632,7 @@ function loadInputsFromStorage(data) {
                 }),
             }));
     }
+    rosterSlots = rosterSlotsFor(roster, Array.isArray(data.rosterSlots) ? data.rosterSlots : []);
     getPersistedFieldIds().forEach(id => {
         if (!(id in data)) return;
         const el = document.getElementById(id);
@@ -1861,17 +1864,17 @@ function pieceLabel(m, showRecipes) {
     const initials = Math.min(0.8, m.w / 3);
     const recipe = showRecipes ? (m.jobs ? m.jobs.map(j => prettyItem(j.item)).join(', ') : m.crop ? prettyItem(m.crop) : '') : '';
     const fallback = `<text class="layout-icon-fallback" x="${x}" y="${y}" font-size="${initials}">${initialsOf(m.facility)}</text>`;
-    const art = layoutFacilityIcon(m.facility, m, recipe ? 0.24 : 0.05);
+    const art = layoutFacilityIcon(m.facility, m, recipe ? 0.16 : 0);
     if (!recipe) return fallback + art;
     const size = Math.min(initials * 0.62, (m.w - 0.16) / (recipe.length * 0.56));
     return `${fallback}${art}<text class="layout-recipe" x="${x}" y="${m.y + m.h - size * 0.8}" font-size="${size}">${escapeText(recipe)}</text>`;
 }
 
-function layoutFacilityIcon(facility, { x, y, w, h }, labelSpace = 0.15) {
+function layoutFacilityIcon(facility, { x, y, w, h }, labelSpace = 0) {
     const id = facilityIcons[facility];
     if (!id) return '';
-    return `<image class="layout-facility-icon" href="https://aniimotools.dev/assets/items/ui_item_${id}.webp"
-        x="${x + w * 0.04}" y="${y + h * 0.03}" width="${w * 0.92}" height="${h * (0.97 - labelSpace)}" aria-hidden="true"/>`;
+    return `<image class="layout-facility-icon" href="https://aniimo.gamevault.in/generated/media/items/ui_item_${id}.webp"
+        x="${x}" y="${y}" width="${w}" height="${h * (1 - labelSpace)}" aria-hidden="true"/>`;
 }
 
 // Whether the layout shows the whole homeland rather than just what's placed; the player's toggle.
@@ -1945,23 +1948,30 @@ function layoutWorkAtSites(plan, sites) {
     });
 }
 
-function layoutWorkerBadges(site, work) {
+function layoutWorkerBadges(site, work, electric) {
     const workers = [...new Map(work.filter(line => line.worker).map(({ worker }) => [worker.key, worker])).values()];
-    if (!workers.length) return '';
+    if (!electric && !workers.length) return '';
     const size = Math.min(1.6, site.h * 0.46, site.w * 0.65);
+    const position = `translate(${site.x + 0.08} ${site.y + site.h - size - 0.08})`;
+    const hex = 'M.5 0 .95 .23 .95 .77 .5 1 .05 .77 .05 .23Z';
+    if (electric) return `<g transform="${position}" class="layout-worker-badges layout-emode-badge${site.power_connected ? '' : ' disconnected'}" aria-hidden="true">
+        <path d="${hex}" transform="scale(${size})"/>
+        <svg x="${size * 0.18}" y="${size * 0.18}" width="${size * 0.64}" height="${size * 0.64}" viewBox="0 0 24 24">${abilityGlyph('Lightning')}</svg>
+    </g>`;
     const visible = site.w < 3 ? 1 : 2;
     const group = workers.slice(0, visible).map(({ portrait, ability, level }, index) => {
-        const image = portrait || abilityImages.get(ability);
         const fill = portrait ? '#303743' : ABILITY_BY_NAME.get(ability)?.color ?? '#4f5b6c';
+        const glyph = abilityGlyph(ability);
         const x = index * size * 0.88;
         return `<g transform="translate(${x} 0)">
-            <path d="M.5 0 .95 .23 .95 .77 .5 1 .05 .77 .05 .23Z" transform="scale(${size})" fill="${fill}" stroke="#151820" stroke-width=".07"/>
-            ${image ? `<image href="${escapeText(image)}" width="${size}" height="${size}" class="layout-worker-icon"/>` : ''}
-            ${!image && level ? `<text x="${size / 2}" y="${size / 2}" font-size="${size * .55}">${level}</text>` : ''}</g>`;
+            <path d="${hex}" transform="scale(${size})" fill="${fill}" stroke="#151820" stroke-width=".07"/>
+            ${portrait ? `<image href="${escapeText(portrait)}" width="${size}" height="${size}" class="layout-worker-icon"/>`
+                : glyph ? `<svg x="${size * 0.16}" y="${size * 0.16}" width="${size * 0.68}" height="${size * 0.68}" viewBox="0 0 24 24" class="layout-worker-icon">${glyph}</svg>`
+                : level ? `<text x="${size / 2}" y="${size / 2}" font-size="${size * .55}">${level}</text>` : ''}</g>`;
     });
     const extra = workers.length - visible;
     if (extra > 0) group.push(`<text class="layout-worker-more" x="${visible * size * 0.88 + size * 0.25}" y="${size * 0.5}" font-size="${size * 0.45}">+${extra}</text>`);
-    return `<g transform="translate(${site.x + 0.08} ${site.y + site.h - size - 0.08})" class="layout-worker-badges" aria-hidden="true">${group.join('')}</g>`;
+    return `<g transform="${position}" class="layout-worker-badges" aria-hidden="true">${group.join('')}</g>`;
 }
 
 function homelandSvg(layout, homeLevel, plan) {
@@ -2014,19 +2024,18 @@ function homelandSvg(layout, homeLevel, plan) {
             color,
         });
         const focus = workAtSites[index].length ? 'tabindex="0" role="group"' : '';
-        const workers = showWorkers ? layoutWorkerBadges(m, workAtSites[index]) : '';
-        const badge = electric ? `<g class="layout-emode-badge${m.power_connected ? '' : ' disconnected'}" aria-label="E-mode"><circle cx="${m.x + m.w - 0.4}" cy="${m.y + 0.4}" r="0.45" /><text x="${m.x + m.w - 0.4}" y="${m.y + 0.4}" font-size="0.65">⚡</text></g>` : '';
+        const workers = electric || showWorkers ? layoutWorkerBadges(m, workAtSites[index], electric) : '';
         const label = pieceLabel(m, showRecipes);
         // Busier pieces are filled more solidly; idle ones are an outline.
-        const fill = m.building ? 0.9 : m.weight > 0 ? 0.35 + 0.55 * Math.sqrt(m.weight / maxTrips) : 0.08;
+        const fill = m.weight > 0 ? 0.13 + 0.18 * Math.sqrt(m.weight / maxTrips) : 0.07;
         if (m.building) {
             // The footprint and coverage stay colored by climate mode.
             return `<g class="env-building" ${focus} ${tip}><rect x="${m.x + 0.05}" y="${m.y + 0.05}" width="${m.w - 0.1}" height="${m.h - 0.1}" rx="0.3"
-                fill="${color}" fill-opacity="${m.mode ? 1 : 0.25}" stroke="currentColor" stroke-opacity="0.6" stroke-width="0.08" />
+                fill="${color}" fill-opacity="${m.mode ? 0.24 : 0.09}" stroke="currentColor" stroke-opacity="0.6" stroke-width="0.08" />
                 ${label}${workers}</g>`;
         }
         return `<g class="layout-piece${electric ? ' layout-emode' : ''}${m.generator ? ' layout-generator' : ''}" data-layout-site="${index}" ${focus} ${tip}><rect x="${m.x + 0.04}" y="${m.y + 0.04}" width="${m.w - 0.08}" height="${m.h - 0.08}" rx="0.2"
-            fill="${m.generator ? '#f6cd58' : color}" fill-opacity="${m.generator ? 0.5 : fill.toFixed(2)}" stroke="${color}" stroke-width="0.06" />${label}${badge}${workers}</g>`;
+            fill="${m.generator ? '#f6cd58' : color}" fill-opacity="${m.generator ? 0.18 : fill.toFixed(2)}" stroke="${color}" stroke-width="0.06" />${label}${workers}</g>`;
     }).join('');
     const coverageShapes = coverage.map(c => {
         const tint = ENVIRONMENT_MODE_COLORS[c.mode] || '#9aa0a8';
@@ -2049,7 +2058,7 @@ function homelandSvg(layout, homeLevel, plan) {
         const trips = flowList.filter(flow => flow.storage === index).reduce((sum, flow) => sum + flow.trips, 0);
         return `<g class="layout-piece layout-storage-unit" ${tipAttrs('Storage Unit', { detail: 'Nearest storage for its deliveries', stats: trips > 0 ? `${formatRate(trips)} trips/hour` : '' })}>
             <rect x="${s.x + 0.04}" y="${s.y + 0.04}" width="${s.w - 0.08}" height="${s.h - 0.08}" rx="0.2" class="layout-storage" />
-            ${layoutFacilityIcon('Storage Unit', s, 0.27)}
+            ${layoutFacilityIcon('Storage Unit', s, 0.10)}
             <text x="${s.x + s.w / 2}" y="${s.y + s.h * 0.82}" font-size="0.52" class="layout-number-label">SU${index + 1}</text></g>`;
     }).join('');
     const view = `${minX} ${minY} ${maxX - minX} ${maxY - minY}`;
@@ -2058,7 +2067,7 @@ function homelandSvg(layout, homeLevel, plan) {
     const powerLines = (power?.links || []).map(link => `<line x1="${link.from.x}" y1="${link.from.y}" x2="${link.to.x}" y2="${link.to.y}" />`).join('');
     const poleShapes = (power?.poles || []).map((p, i) => `<g class="layout-power-pole" ${tipAttrs('Crackle Power Pole', { detail: `${i + 1} · 7×7` })}>
         <rect x="${p.x + 0.04}" y="${p.y + 0.04}" width="${p.w - 0.08}" height="${p.h - 0.08}" rx="0.2" />
-        ${layoutFacilityIcon('Crackle Power Pole', p, 0.27)}
+        ${layoutFacilityIcon('Crackle Power Pole', p, 0.10)}
         <text x="${p.x + p.w / 2}" y="${p.y + p.h * 0.82}" font-size="0.48" class="layout-number-label">${i + 1}</text></g>`).join('');
     const rectangle = (r, css) => `<rect class="${css}" x="${r.x}" y="${r.y}" width="${r.w}" height="${r.h}" />`;
     const districts = layout.groupStyle === 'districts';
@@ -2526,6 +2535,7 @@ function attachPlannerNavigation() {
 // The plan shares their hours out, so one level-4 Earth Aniimo covers what it can and no more.
 
 let roster = [];
+let rosterSlots = rosterSlotsFor(roster);
 let movementDistances = {};
 let movementDefaultDistance = 20;
 let travelRefinements = 0;
@@ -2634,30 +2644,50 @@ function rosterLabel(aniimo, i) {
     return abilities || `Aniimo ${i + 1}`;
 }
 
-const abilityImages = new Map(['Fire', 'Grass', 'Water', 'Earth', 'Lightning', 'Ice', 'Wind', 'Dark', 'Light',
-    'Hauling', 'Artisanship', 'Leisure', 'Perfumery'].map((name, index) =>
-    [name, `https://aniimotools.dev/assets/home-sim/job/${index < 9 ? 1000 + index : 1100 + index - 9}.webp`]));
-
 function tileAbilities(abilities) {
     return Object.entries(abilities).map(([name, level]) => `<span class="roster-skill" style="--ability:${ABILITY_BY_NAME.get(name)?.color ?? 'var(--accent)'}"
-        aria-label="${escapeText(translate(name))} ${level}"><span aria-hidden="true">${escapeText(translate(name).slice(0, 1))}</span>
-        <img src="${abilityImages.get(name)}" alt="" width="24" height="24" loading="lazy"><b aria-hidden="true">${level}</b></span>`).join('');
+        aria-label="${escapeText(translate(name))} ${level}"><svg viewBox="0 0 24 24" aria-hidden="true">${abilityGlyph(name)}</svg><b aria-hidden="true">${level}</b></span>`).join('');
 }
 
 function portraitTile(member, label, id = rosterCatalogId(member.catalogId, member.name)) {
     const portrait = aniimoPortrait(id);
     const traits = member.personalities?.map(personalityLetter).join('');
+    const ability = Object.keys(member.abilities)[0];
+    const glyph = abilityGlyph(ability);
     return `<span class="roster-portrait${id?.includes('prismana') ? ' prismana' : ''}">
-        <span class="roster-portrait-fill"><span aria-hidden="true">◇</span>
-            ${portrait ? `<img src="${escapeText(portrait)}" alt="" width="92" height="92" loading="lazy" decoding="async" referrerpolicy="no-referrer">` : ''}</span>
-        ${member.count > 1 ? `<span class="roster-portrait-count">×${member.count}</span>` : ''}
+        <span class="roster-portrait-fill"><span aria-hidden="true">${glyph ? `<svg viewBox="0 0 24 24">${glyph}</svg>` : '◇'}</span>
+            ${portrait ? `<img src="${escapeText(portrait)}" alt="" width="96" height="96" loading="lazy" decoding="async" referrerpolicy="no-referrer" draggable="false">` : ''}</span>
         <span class="roster-card-tags">${tileAbilities(member.abilities)}</span></span>
         <strong class="roster-tile-name">${escapeText(label)}</strong>${traits ? `<small>${traits}</small>` : ''}`;
 }
 
 let openRosterCard = null;
+let openRosterSlot = null;
+let rosterAddSlot = null;
+let rosterMoveFrom = null;
 let rosterPicker;
 let rosterTileWorkloads = [];
+
+function rosterBoard(slots, tile) {
+    const rows = [];
+    const seen = new Map();
+    for (let i = 0; i < slots.length; i += ROSTER_ROW_SIZE) {
+        rows.push(`<div class="roster-slot-row">${Array.from({ length: ROSTER_ROW_SIZE }, (_, offset) => {
+            const member = slots[i + offset];
+            const copy = seen.get(member) ?? 0;
+            if (member != null) seen.set(member, copy + 1);
+            return `<div class="roster-slot">${tile(member, i + offset, copy)}</div>`;
+        }).join('')}</div>`);
+    }
+    return rows.join('');
+}
+
+function emptyRosterCell(position) {
+    return position == null
+        ? '<span class="roster-tile roster-empty-tile" aria-hidden="true"><span class="roster-portrait"></span></span>'
+        : `<button type="button" class="roster-tile roster-empty-tile" data-roster="browse" data-roster-position="${position}" aria-label="Add Aniimo" aria-haspopup="dialog">
+            <span class="roster-portrait" aria-hidden="true">+</span></button>`;
+}
 
 function rosterTileLabel(member, index) {
     return member.name.trim() || Object.entries(member.abilities).map(([name, level]) => `${translate(name)} ${level}`).join(', ') || `Aniimo ${index + 1}`;
@@ -2665,7 +2695,7 @@ function rosterTileLabel(member, index) {
 
 function refreshRosterTileWorkloads(workloads = []) {
     rosterTileWorkloads = workloads;
-    document.querySelectorAll('[data-roster-tile]').forEach(tile => {
+    document.querySelectorAll('#roster-editor [data-roster-tile]').forEach(tile => {
         const i = Number(tile.dataset.rosterTile);
         const member = roster[i];
         if (!member) return;
@@ -2673,7 +2703,7 @@ function refreshRosterTileWorkloads(workloads = []) {
         tile.dataset.tip = rosterTileLabel(member, i);
         tile.dataset.tipStats = work?.summary ?? translate('Calculate a plan with My Aniimo to see assignments.');
         tile.dataset.tipDetail = work?.lines.join('\n') ?? '';
-        tile.classList.toggle('is-assigned', Boolean(work?.assigned));
+        tile.classList.toggle('is-assigned', work?.assigned > Number(tile.dataset.rosterCopy));
         tile.setAttribute('aria-description', [tile.dataset.tipStats, tile.dataset.tipDetail].filter(Boolean).join('. '));
     });
     const fields = document.querySelector('#roster-edit-dialog[open] .roster-card-fields');
@@ -2690,12 +2720,12 @@ function renderRoster() {
     const editor = document.getElementById('roster-editor');
     const useRoster = document.getElementById('use-my-aniimo');
     useRoster.checked = selectedSetupTab() === 'custom';
-    const cards = roster.map((member, i) => `<button type="button" class="roster-tile" data-roster-tile="${i}" aria-haspopup="dialog">
-        ${portraitTile(member, rosterTileLabel(member, i))}</button>`).join('');
-    editor.querySelector('.roster-cards').innerHTML = `${cards}
-        <button type="button" class="roster-tile roster-empty-tile" data-roster="browse" aria-haspopup="dialog">
-            <span class="roster-portrait" aria-hidden="true">+</span><strong class="roster-tile-name">Add Aniimo</strong>
-        </button>`;
+    editor.querySelector('.roster-cards').innerHTML = rosterBoard(rosterSlots, (i, position, copy) => i == null
+        ? emptyRosterCell(position)
+        : `<button type="button" class="roster-tile" data-roster-tile="${i}" data-roster-position="${position}" data-roster-copy="${copy}" draggable="true" aria-haspopup="dialog">
+            ${portraitTile(roster[i], rosterTileLabel(roster[i], i))}</button>`);
+    editor.querySelector('[data-roster-move-hint]').hidden = rosterMoveFrom == null;
+    editor.querySelector(`[data-roster-position="${rosterMoveFrom}"]`)?.classList.add('is-moving');
     if (openRosterCard != null && roster[openRosterCard]) renderRosterCardFields(openRosterCard);
     document.getElementById('roster-config-count').textContent = String(roster.reduce((total, member) => total + member.count, 0));
     editor.querySelectorAll('[data-roster="from-best"], [data-roster="from-minimum"]').forEach(button => {
@@ -2703,6 +2733,39 @@ function renderRoster() {
     });
     rosterPicker?.filter();
     refreshRosterTileWorkloads(rosterTileWorkloads);
+}
+
+function rosterBoardChanged(position) {
+    saveInputsToStorage();
+    renderRoster();
+    const plan = plansBySetup[selectedAniimoSetup()];
+    if (selectedSetupTab() === 'custom' && plan?.success && !document.getElementById('roster-summary').hidden) renderRosterSummary(plan);
+    document.querySelector(`#roster-editor [data-roster-position="${position}"]`)?.focus();
+}
+
+function moveRosterCopy(from, to) {
+    rosterMoveFrom = null;
+    if (swapRosterSlots(rosterSlots, from, to)) rosterBoardChanged(to);
+    else renderRoster();
+}
+
+function removeRosterCopy(position) {
+    const index = rosterSlots[position];
+    rosterSlots[position] = null;
+    if (--roster[index].count > 0) return;
+    roster.splice(index, 1);
+    rosterSlots = rosterSlots.map(member => member != null && member > index ? member - 1 : member);
+}
+
+function editableRosterCopy() {
+    const member = roster[openRosterCard];
+    if (member.count === 1) return member;
+    member.count--;
+    const copy = { ...structuredClone(member), count: 1 };
+    openRosterCard = roster.length;
+    rosterSlots[openRosterSlot] = openRosterCard;
+    roster.push(copy);
+    return copy;
 }
 
 function renderRosterCardFields(i) {
@@ -2722,8 +2785,6 @@ function renderRosterCardFields(i) {
                 <p class="roster-edit-workload hint small"></p>
                 <div class="roster-head">
                     <input type="text" class="roster-name" data-name="${i}" value="${escapeText(aniimo.name)}" placeholder="Aniimo ${i + 1}" aria-label="Name">
-                    <span class="roster-count" title="How many you have that are alike"><button type="button" data-count="${i}|-1" aria-label="One fewer">−</button><span>×${aniimo.count}</span><button type="button" data-count="${i}|1" aria-label="One more">+</button></span>
-                    <button type="button" class="roster-x" data-remove="${i}" aria-label="Remove this Aniimo" title="Remove">✕</button>
                 </div>
                 <div class="roster-abilities">${abilities}${add}</div>
                 ${aniimo.abilities.Leisure ? `<div class="input-field roster-family"><label for="roster-family-${i}">Leisure family</label>
@@ -2731,13 +2792,19 @@ function renderRosterCardFields(i) {
                     ${aniimo.family ? '' : '<p class="hint small">Choose a family to use this Aniimo for Leisure recipes.</p>'}</div>` : ''}
                 <div class="roster-personalities">${personalities}
                     <button type="button" class="skip-add-btn" data-clear-personality="${i}"${aniimo.personalities.some(Boolean) ? '' : ' disabled'}>No personality</button>
+                </div>
+                <div class="roster-actions">
+                    <button type="button" class="skip-add-btn" data-roster="move">Move Aniimo</button>
+                    <button type="button" class="skip-add-btn" data-roster="duplicate">Add a copy</button>
+                    <button type="button" class="skip-add-btn" data-remove="${openRosterSlot}">Remove this Aniimo</button>
                 </div>`;
         updateRosterEditorWorkload(fields);
 }
 
-function editRosterCard(index) {
-    openRosterCard = index;
-    renderRosterCardFields(index);
+function editRosterCard(position) {
+    openRosterSlot = position;
+    openRosterCard = rosterSlots[position];
+    renderRosterCardFields(openRosterCard);
     document.getElementById('roster-edit-dialog').showModal();
     document.querySelector('#roster-edit-dialog .roster-name').focus();
 }
@@ -2814,6 +2881,7 @@ async function fillRosterFrom(setup) {
         });
         roster = [...cards.values()];
         if (haulingBusy > 1e-6) roster.push({ ...newRosterAniimo({ Hauling: haulingLevel }), count: Math.ceil(haulingBusy - 1e-6) });
+        rosterSlots = rosterSlotsFor(roster);
         rosterChanged();
     } catch (error) {
         if (runId === planRunId && version === rosterFillVersion) status.textContent = 'No working team to copy from this plan.';
@@ -2846,16 +2914,24 @@ async function measureSourceTeamHauling(plan, input, level) {
 
 function attachRosterHandlers() {
     const editor = document.getElementById('roster-editor');
-    editor.addEventListener('error', event => {
-        if (event.target.matches?.('.roster-portrait-fill img, .roster-skill img')) event.target.hidden = true;
+    document.addEventListener('load', event => {
+        if (event.target.matches?.('.roster-portrait-fill img')) event.target.classList.add('loaded');
+    }, true);
+    document.addEventListener('error', event => {
+        if (event.target.matches?.('.roster-portrait-fill img')) event.target.hidden = true;
     }, true);
     editor.innerHTML = `<div class="roster-tools">
         <div class="input-field"><label for="roster-filter">Filter your team</label>
             <input id="roster-filter" type="search" autocomplete="off" placeholder="Name or ability"></div>
         <label class="planner-checkbox"><input id="use-my-aniimo" type="checkbox"> Use My Aniimo in the plan</label>
     </div>
+    <div class="roster-move-hint" data-roster-move-hint hidden>
+        <p class="hint small" role="status">Choose a destination slot. Occupied slots swap places.</p>
+        <button type="button" class="skip-add-btn" data-roster="cancel-move">Cancel</button>
+    </div>
     <div class="roster-cards"></div>
     <div class="roster-actions">
+        <button type="button" class="skip-add-btn" data-roster="add-row">Add row</button>
         <button type="button" class="skip-add-btn" data-roster="from-best" disabled>Start from the Best team</button>
         <button type="button" class="skip-add-btn" data-roster="from-minimum" disabled>Start from the Minimum team</button>
     </div><p class="hint small" id="roster-fill-status" role="status"></p>
@@ -2870,8 +2946,7 @@ function attachRosterHandlers() {
             <button type="button" class="skip-add-btn" data-catalog-more>Load more Aniimo</button>
         </div>
         <div class="roster-dialog-foot"><button type="button" class="skip-add-btn" data-catalog-manual>Add manually</button>
-            <small class="hint">Art · <a href="https://aniimotools.dev/creatures/" target="_blank" rel="noreferrer">AniimoTools</a> ·
-            <a href="https://aniimo.gamevault.in/en/aniimo/" target="_blank" rel="noreferrer">Aniimo Wiki</a></small></div>
+            <small class="hint">Art · <a href="https://aniimo.gamevault.in/en/aniimo/" target="_blank" rel="noreferrer">Aniimo Wiki</a></small></div>
     </dialog>
     <dialog class="roster-dialog roster-edit-dialog" id="roster-edit-dialog" aria-labelledby="roster-edit-title">
         <div class="roster-dialog-head"><h3 id="roster-edit-title">Edit Aniimo</h3>
@@ -2881,23 +2956,26 @@ function attachRosterHandlers() {
     rosterPicker = attachRosterPicker(editor, {
         add(entry) {
             const name = rosterFormName(entry);
-            const same = roster.find(member => member.name === name && !member.personalities.some(Boolean)
+            const same = roster.findIndex(member => member.name === name && !member.personalities.some(Boolean)
                 && member.family === (entry.family ?? null)
                 && Object.keys(member.abilities).length === Object.keys(entry.abilities).length
                 && Object.entries(entry.abilities).every(([ability, level]) => member.abilities[ability] === level));
-            if (same) {
-                same.catalogId = entry.id;
-                same.count++;
+            const i = same < 0 ? roster.length : same;
+            if (same >= 0) {
+                roster[i].catalogId = entry.id;
+                roster[i].count++;
             } else {
                 roster.push({ ...newRosterAniimo({ ...entry.abilities }), catalogId: entry.id, name, family: entry.family ?? null });
             }
+            const position = placeRosterCopy(rosterSlots, i, rosterAddSlot);
             rosterChanged();
-            editor.querySelector('[data-roster="browse"]').focus();
+            editor.querySelector(`[data-roster-position="${position}"]`).focus();
         },
         manual() {
             roster.push(newRosterAniimo());
+            const position = placeRosterCopy(rosterSlots, roster.length - 1, rosterAddSlot);
             rosterChanged();
-            editRosterCard(roster.length - 1);
+            editRosterCard(position);
         },
         label: i => [rosterTileLabel(roster[i], i), ...Object.keys(roster[i].abilities).flatMap(ability => [ability, translate(ability)])].join(' '),
         paint: (entry, name) => portraitTile(entry, name, entry.id),
@@ -2909,9 +2987,10 @@ function attachRosterHandlers() {
         setup.dispatchEvent(new Event('change'));
     });
     editor.querySelector('#roster-edit-dialog').addEventListener('close', () => {
-        const tile = editor.querySelector(`[data-roster-tile="${openRosterCard}"]`);
+        const tile = editor.querySelector(`[data-roster-position="${openRosterSlot}"]`);
         openRosterCard = null;
-        (tile ?? editor.querySelector('[data-roster="browse"]')).focus();
+        openRosterSlot = null;
+        (tile ?? editor.querySelector('[data-roster="add-row"]')).focus();
     });
     document.getElementById('edit-roster-btn').addEventListener('click', () => {
         const config = document.getElementById('roster-config');
@@ -2922,30 +3001,51 @@ function attachRosterHandlers() {
     editor.addEventListener('click', (e) => {
         const button = e.target.closest('button');
         if (!button) return;
-        const { count, remove, drop, clearPersonality, roster: action, rosterTile, closeDialog } = button.dataset;
+        const { remove, drop, clearPersonality, roster: action, rosterTile, rosterPosition, closeDialog } = button.dataset;
+        if (rosterPosition !== undefined && rosterMoveFrom != null) {
+            moveRosterCopy(rosterMoveFrom, Number(rosterPosition));
+            return;
+        }
         if (closeDialog !== undefined) {
             button.closest('dialog').close();
             return;
         } else if (action === 'browse') {
             hideTip();
+            rosterAddSlot = Number(rosterPosition);
             rosterPicker.open();
             return;
         } else if (rosterTile !== undefined) {
             hideTip();
-            editRosterCard(Number(rosterTile));
+            editRosterCard(Number(rosterPosition));
             return;
-        } else if (count) {
-            const [i, by] = count.split('|').map(Number);
-            roster[i].count = Math.max(1, roster[i].count + by);
-        } else if (remove) {
-            roster.splice(Number(remove), 1);
+        } else if (action === 'add-row') {
+            const start = rosterSlots.length;
+            rosterSlots.push(...Array(ROSTER_ROW_SIZE).fill(null));
+            rosterBoardChanged(start);
+            return;
+        } else if (action === 'cancel-move') {
+            moveRosterCopy(rosterMoveFrom, rosterMoveFrom);
+            return;
+        } else if (action === 'move') {
+            rosterMoveFrom = openRosterSlot;
+            button.closest('dialog').close();
+            const filter = editor.querySelector('#roster-filter');
+            filter.value = '';
+            rosterPicker.filter();
+            editor.querySelector('[data-roster-move-hint]').hidden = false;
+            editor.querySelector(`[data-roster-position="${rosterMoveFrom}"]`).classList.add('is-moving');
+            return;
+        } else if (action === 'duplicate') {
+            roster[openRosterCard].count++;
+            placeRosterCopy(rosterSlots, openRosterCard);
+        } else if (remove !== undefined) {
+            removeRosterCopy(Number(remove));
             openRosterCard = null;
             editor.querySelector('#roster-edit-dialog').close();
         } else if (drop) {
-            const [i, ability] = drop.split('|');
-            delete roster[Number(i)].abilities[ability];
+            delete editableRosterCopy().abilities[drop.split('|')[1]];
         } else if (clearPersonality !== undefined) {
-            roster[Number(clearPersonality)].personalities.fill(null);
+            editableRosterCopy().personalities.fill(null);
         } else if (action === 'from-best' || action === 'from-minimum') {
             fillRosterFrom(action === 'from-best' ? bestAniimoSetup() : 'minimum');
             return;
@@ -2957,24 +3057,33 @@ function attachRosterHandlers() {
     editor.addEventListener('change', (e) => {
         const { level, personality, add, name, family } = e.target.dataset;
         if (level) {
-            const [i, ability] = level.split('|');
-            roster[Number(i)].abilities[ability] = Number(e.target.value);
+            editableRosterCopy().abilities[level.split('|')[1]] = Number(e.target.value);
         } else if (personality) {
-            const [i, p] = personality.split('|').map(Number);
-            roster[i].personalities[p] = e.target.value;
+            editableRosterCopy().personalities[Number(personality.split('|')[1])] = e.target.value;
         } else if (add) {
             if (!e.target.value) return;
-            roster[Number(add)].abilities[e.target.value] = 1;
+            editableRosterCopy().abilities[e.target.value] = 1;
         } else if (family !== undefined) {
-            roster[Number(family)].family = e.target.value || null;
+            editableRosterCopy().family = e.target.value || null;
         } else if (name !== undefined) {
-            const i = Number(name);
-            const member = roster[i];
+            const previous = openRosterCard;
+            const member = editableRosterCopy();
+            const i = openRosterCard;
             member.catalogId = rosterCatalogId(member.catalogId, e.target.value);
             member.name = e.target.value;
-            saveInputsToStorage();
-            const tile = editor.querySelector(`[data-roster-tile="${i}"]`);
+            const tile = editor.querySelector(`[data-roster-position="${openRosterSlot}"]`);
+            tile.dataset.rosterTile = i;
+            tile.dataset.rosterCopy = 0;
             tile.innerHTML = portraitTile(member, rosterTileLabel(member, i));
+            if (previous !== i) {
+                editor.querySelector('.roster-card-fields').dataset.rosterCard = i;
+                const remaining = editor.querySelectorAll(`[data-roster-tile="${previous}"]`);
+                remaining.forEach((copy, index) => { copy.dataset.rosterCopy = index; });
+                rosterChanged(false);
+                rosterPicker.filter();
+                return;
+            }
+            saveInputsToStorage();
             refreshRosterTileWorkloads(rosterTileWorkloads);
             rosterPicker.filter();
             const plan = plansBySetup[selectedAniimoSetup()];
@@ -2984,6 +3093,51 @@ function attachRosterHandlers() {
             return;
         }
         rosterChanged();
+    });
+    const board = editor.querySelector('.roster-cards');
+    let draggedSlot = null;
+    const clearDrag = () => {
+        draggedSlot = null;
+        board.querySelectorAll('.is-drop-target').forEach(tile => tile.classList.remove('is-drop-target'));
+    };
+    board.addEventListener('dragstart', event => {
+        const tile = event.target.closest('[data-roster-tile]');
+        if (!tile) return;
+        draggedSlot = Number(tile.dataset.rosterPosition);
+        event.dataTransfer.effectAllowed = 'move';
+        event.dataTransfer.setData('text/plain', String(draggedSlot));
+    });
+    board.addEventListener('dragover', event => {
+        const tile = event.target.closest('[data-roster-position]');
+        if (draggedSlot == null || !tile) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'move';
+        board.querySelector('.is-drop-target')?.classList.remove('is-drop-target');
+        tile.classList.add('is-drop-target');
+    });
+    board.addEventListener('drop', event => {
+        const tile = event.target.closest('[data-roster-position]');
+        if (draggedSlot == null || !tile) return;
+        event.preventDefault();
+        const source = draggedSlot;
+        clearDrag();
+        moveRosterCopy(source, Number(tile.dataset.rosterPosition));
+    });
+    board.addEventListener('dragend', clearDrag);
+    editor.addEventListener('keydown', event => {
+        if (event.key !== 'Escape' || rosterMoveFrom == null) return;
+        moveRosterCopy(rosterMoveFrom, rosterMoveFrom);
+    });
+    const workDialog = document.getElementById('aniimo-work-dialog');
+    workDialog.querySelector('button').addEventListener('click', () => workDialog.close());
+    document.getElementById('aniimo-body').addEventListener('click', event => {
+        const tile = event.target.closest('[data-roster-work]');
+        if (!tile) return;
+        hideTip();
+        workDialog.querySelector('h3').textContent = tile.dataset.tip;
+        workDialog.querySelector('.roster-dialog-summary').textContent = tile.dataset.tipStats;
+        workDialog.querySelector('.roster-edit-workload').textContent = tile.dataset.tipDetail;
+        workDialog.showModal();
     });
 }
 
@@ -3066,32 +3220,25 @@ function renderRosterSummary(plan) {
             : translate('Unassigned'),
         lines: [...memberPlaces(i), ...memberNotes(i)],
     })));
-    const buildRow = (aniimo, i) => {
-        if (aniimo.assumed && assigned[i] === 0) return '';
-        const places = memberPlaces(i).join(', ');
-        const abilities = Object.entries(aniimo.abilities).map(([ability, level]) => `<span>${abilityTag(ability)} ${level}</span>`).join('');
-        const letters = aniimo.personalities.map(personalityLetter).join('');
-        const label = aniimo.assumed ? 'Assumed Aniimo' : rosterLabel(aniimo, i);
-        const count = aniimo.assumed ? assigned[i] : `${assigned[i]} / ${aniimo.count}`;
-        const notes = memberNotes(i).join(' · ');
-        const identity = `<strong>${label}</strong><span class="assignment-abilities">${abilities}${letters ? `<span>${letters}</span>` : ''}</span>${aniimo.family ? `<span class="assignment-meta">${leisureFamilyName(aniimo.family)}</span>` : ''}`;
-        const portrait = aniimoPortrait(rosterCatalogId(aniimo.catalogId, aniimo.name));
-        return assignmentRow(
-            portrait ? `<div class="assignment-with-portrait"><img src="${escapeText(portrait)}" alt="" width="44" height="44" loading="lazy" referrerpolicy="no-referrer"><div>${identity}</div></div>` : identity,
-            count, assigned[i], busy[i], notes, places
-        );
+    const buildTile = (i, _position, copy) => {
+        if (i == null) return emptyRosterCell();
+        const member = members[i];
+        const active = copy < assigned[i];
+        const label = member.assumed ? translate('Assumed Aniimo') : rosterTileLabel(member, i);
+        const load = active ? `${formatNumber(busy[i] / assigned[i] * 100)}%` : '';
+        const detail = active ? [...memberPlaces(i), ...memberNotes(i)].join('\n') : '';
+        const status = active ? load : translate('Unassigned');
+        return assignmentTile(member, label, detail, status, active);
     };
-    const rows = members.map((aniimo, i) => ({ aniimo, i })).filter(row => assigned[row.i] > 0)
-        .map(({ aniimo, i }) => buildRow(aniimo, i)).join('');
-    const idle = members.flatMap((aniimo, i) => !aniimo.assumed && aniimo.count > assigned[i]
-        ? [`${rosterLabel(aniimo, i)}${aniimo.count - assigned[i] > 1 ? ` ×${aniimo.count - assigned[i]}` : ''}`] : []);
+    const additional = members.flatMap((member, i) => member.assumed && assigned[i] > 0 ? Array(assigned[i]).fill(i) : []);
     const summary = document.getElementById('roster-summary');
     const total = working + reserves;
     const cap = ANIIMO_MAX[layoutHomeLevel() - 1];
     const capNote = cap && total > cap ? `<p class="hint small">${translate('This RV level can host {n} Aniimo.').replace('{n}', cap)}</p>` : '';
-    summary.innerHTML = ` ${capNote}
-        ${rows ? assignmentList(rows) : '<p class="hint">No Aniimo needed.</p>'}
-        ${idle.length ? `<p class="assignment-idle"><strong>Unassigned</strong> · ${idle.join(', ')}</p>` : ''}`;
+    summary.innerHTML = `${capNote}
+        <div class="roster-cards">${rosterBoard(rosterSlots, buildTile)}</div>
+        ${additional.length ? `<h3 class="roster-additional-title">Additional Aniimo</h3>
+            <div class="roster-cards">${rosterBoard(additional, buildTile)}</div>` : ''}`;
     summary.hidden = false;
     const own = translate('{assigned} of {owned} assigned').replace('{assigned}', formatNumber(working)).replace('{owned}', formatNumber(have));
     const extra = translate('{n} assumed').replace('{n}', formatNumber(reserves));
@@ -3101,22 +3248,10 @@ function renderRosterSummary(plan) {
     document.getElementById('aniimo-count').hidden = true;
 }
 
-function assignmentRow(identity, count, workers, busy, notes, workplaces) {
-    const load = workers > 0 ? busy / workers : 0;
-    const percent = formatNumber(load * 100) + '%';
-    return `<li class="assignment-row">
-        <div class="assignment-identity">${identity}</div>
-        <div class="assignment-load">
-            <div><strong>${percent}</strong> <span class="assignment-meta">· ${count} ${translate('assigned')}</span></div>
-            <progress aria-label="${translate('Average workload per assigned Aniimo')}" max="1" value="${Math.min(1, load)}"></progress>
-            ${notes ? `<span class="assignment-meta">${notes}</span>` : ''}
-        </div>
-        <div class="assignment-workplaces">${workplaces || '—'}</div>
-    </li>`;
-}
-
-function assignmentList(rows) {
-    return `<ul class="assignment-list" aria-label="Aniimo workload and assignments">${rows}</ul>`;
+function assignmentTile(member, label, detail, status, active = true) {
+    const tip = tipAttrs(label, { detail, stats: status });
+    return `<button type="button" class="roster-tile${active ? ' is-assigned' : ' is-idle'}" data-roster-work ${tip} aria-haspopup="dialog">
+        ${portraitTile(member, label)}<small>${escapeText(status)}</small></button>`;
 }
 
 function setAniimoExpanded(expanded) {
@@ -4529,19 +4664,19 @@ function renderAniimoSummary(plan) {
         return;
     }
     const homelandHolds = isSimpleMode() ? ANIIMO_MAX[selectedHomeLevel() - 1] : null;
-    let total = assigned - kept.reduce((sum, g) => sum + g.count, 0);
-    const rows = kept
+    const groups = kept
         .sort((a, b) => a.label.localeCompare(b.label))
-        .map(g => {
-            total += g.count;
-            const where = whereText(g);
-            return assignmentRow(`${abilityTag(g.ability)} ${aniimoNeeds(g)}`, g.count, g.count, g.busy, '', where);
-        })
-        .join('');
+        .map(g => ({
+            count: g.count, busy: g.busy, abilities: { [g.ability]: g.anyLevel ? '·' : g.level },
+            label: `${translate(g.ability)} ${translate(aniimoNeeds(g))}`, detail: translate(whereText(g)),
+        }));
     const haulingLevel = selectedSetupTab() === 'minimum' ? 1 : 3;
-    const haulingRow = haulingCount ? assignmentRow(`${abilityTag('Hauling')} Lv.${haulingLevel}`,
-        haulingCount, haulingCount, plan.hauling_busy, '',
-        translate('Hauling to Storage Units ({minutes} min/h)').replace('{minutes}', (plan.hauling_busy * 60).toFixed(1))) : '';
+    if (haulingCount) groups.push({
+        count: haulingCount, busy: plan.hauling_busy, abilities: { Hauling: haulingLevel },
+        label: `${translate('Hauling')} Lv.${haulingLevel}`, detail: translate('Carrying produce to storage'),
+    });
+    const tiles = groups.flatMap((group, index) => Array(group.count).fill(index));
+    const total = assigned;
 
     // The count above says how many; this is only said when it's more than the homeland holds.
     const cap = homelandHolds;
@@ -4594,7 +4729,11 @@ function renderAniimoSummary(plan) {
                 <span class="ability-count">${n}</span><span class="ability-name">${a.name}</span>
             </div>${stack}</div>`;
     }).join('');
-    container.innerHTML = capNote + assignmentList(rows + haulingRow);
+    container.innerHTML = `${capNote}<div class="roster-cards">${rosterBoard(tiles, i => {
+        if (i == null) return emptyRosterCell();
+        const member = groups[i];
+        return assignmentTile(member, member.label, member.detail, `${formatNumber(member.busy / member.count * 100)}%`);
+    })}</div>`;
 }
 
 // Splits one environment mode's rows across its individual building units. Unlike the old
