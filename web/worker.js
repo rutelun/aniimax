@@ -201,8 +201,12 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
     for (let priorityIndex=0;priorityIndex<priorities.length;priorityIndex++) {
         const target = priorities[priorityIndex];
         step(`priority:${target}`, 'start');
-        const alone = stage.floors.length === 0;
+        const alone = stage.floors.length === 0 && !stage.pace;
         let priority = JSON.parse(exact_priority_problem(payload, JSON.stringify(stage), target));
+        if (target === 'level_up' && !priority.lp) {
+            step('priority:level_up', 'skip');
+            continue;
+        }
         if (!priority.lp) throw new Error('this setup isn\'t covered by the exact planner');
         // Keep the final currency stage's preferences, since its full solution is reused.
         // Earlier priorities get their true production maximum; the final solve chooses
@@ -217,7 +221,11 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
         if (target === (input.currency || 'coins') && most.proven && priority.production_only) provenCurrencyMaximum=most.objective;
         if (alone) first({ measure: target, objective: most.objective, proven: most.proven });
         allProven &&= most.proven;
-        stage.floors.push([target, Math.max(0, most.objective)]);
+        if (target === 'level_up') {
+            if (most.objective > 1e-9) stage.pace = most.objective;
+        } else {
+            stage.floors.push([target, Math.max(0, most.objective)]);
+        }
     }
 
     let levelUpNote = null;
@@ -248,7 +256,7 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
     if (!problem.lp) throw new Error('this setup isn\'t covered by the exact planner');
     const alone = stage.floors.length === 0 && !stage.pace;
     let solved = null;
-    if (lastCurrencySolve && !stage.pace && !input.level_up_strategy) {
+    if (lastCurrencySolve && !input.level_up_strategy) {
         // The last priority already optimized this currency with every preceding floor.
         // Adding its own achieved floor cannot improve the result. Validate the completed
         // plan once, after material allocation, rather than rebuilding this intermediate one.
@@ -284,12 +292,13 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
     }
     if (!finalReused) step('final', 'done', solved.proven);
     const coins = solved.objective;
+    const levelUpStrategyPace = stage.pace && input.level_up;
     let materialWork;
     let materialPace;
     if (hasMaterialProcessors(input)) {
         const currency = input.currency || 'coins';
         const coinFloor = Math.max(coins, ...stage.floors.filter(([name]) => name === currency).map(([, amount]) => amount));
-        const workStage = stage.pace ? { ...stage, coins } : {
+        const workStage = levelUpStrategyPace ? { ...stage, coins } : {
             ...stage, floors: [...stage.floors.filter(([name]) => name !== currency), [currency, coinFloor]],
         };
         // A workload maximum alone can fill both Benches with Rough Lumber and make no
@@ -351,7 +360,7 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
         }
         return JSON.stringify(plan);
     };
-    if (stage.pace) {
+    if (levelUpStrategyPace) {
         // Prefer the materials the level-up needs while keeping the maximum workload.
         const stockStage = { ...stage, coins, material_work: materialWork };
         const stockJson = JSON.stringify(stockStage);
@@ -455,7 +464,8 @@ self.onmessage = async (event) => {
                 fallbackReason = error && error.message ? error.message : String(error);
                 // The backup planner doesn't know the player's roster, so a roster plan stops here.
                 const input = JSON.parse(payload);
-                if (input.fixed_homeland || input.e_mode_rv >= 12 || input.electricity || hasSeasonCropMinimums(input) || hasMaterialProcessors(input) || (!input.level_up_strategy && (input.crop_variety || input.season))) {
+                if (input.fixed_homeland || input.e_mode_rv >= 12 || input.electricity || hasSeasonCropMinimums(input) || hasMaterialProcessors(input)
+                    || (!input.level_up_strategy && (input.crop_variety || input.season || input.priorities?.includes('level_up')))) {
                     result = JSON.stringify({ success: false, error: fallbackReason });
                 } else if (input.aniimo?.startsWith('roster')) {
                     console.warn('Exact planner failed on a roster:', error);

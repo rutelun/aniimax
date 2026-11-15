@@ -189,6 +189,8 @@ pub enum Goal<'a> {
     MaterialWork { base: &'a Goal<'a>, minimum: Option<f64> },
     /// Balanced net production of the outstanding RV materials, keeping the main priorities.
     UpgradeMaterials { base: &'a Goal<'a>, level_up: &'a LevelUp, minimum: Option<f64> },
+    /// Optimize the RV pace, or preserve it while pursuing a later priority.
+    LevelUpPriority { base: &'a Goal<'a>, level_up: &'a LevelUp, minimum: Option<f64> },
 }
 
 impl Goal<'_> {
@@ -197,7 +199,8 @@ impl Goal<'_> {
         match self {
             Goal::Earn { floors } | Goal::EarnWithCropVariety { floors, .. } | Goal::EarnWhileLevelingUp(.., floors)
             | Goal::StockUp(.., floors) => floors,
-            Goal::MaterialWork { base, .. } | Goal::UpgradeMaterials { base, .. } => base.floors(),
+            Goal::MaterialWork { base, .. } | Goal::UpgradeMaterials { base, .. }
+            | Goal::LevelUpPriority { base, .. } => base.floors(),
             Goal::CropVariety { .. } | Goal::MostOf(_) | Goal::LevelUp(_) | Goal::MostWhileLevelingUp(..) => &[],
         }
     }
@@ -626,10 +629,12 @@ fn build_model<'a>(
     let mut goal = goal;
     let mut material_work = None;
     let mut material_stock = None;
+    let mut level_up_priority = None;
     loop {
         match goal {
             Goal::MaterialWork { base, minimum } => { material_work = Some(minimum); goal = *base; }
             Goal::UpgradeMaterials { base, level_up, minimum } => { material_stock = Some((level_up, minimum)); goal = *base; }
+            Goal::LevelUpPriority { base, level_up, minimum } => { level_up_priority = Some((level_up, minimum)); goal = *base; }
             _ => break,
         }
     }
@@ -713,6 +718,7 @@ fn build_model<'a>(
     // while it earns `currency`; those items need sell variables too, worth nothing here. So does
     // the season's points a level-up plan makes the most of while coins pay for the level-up.
     let mut floor_currencies: Vec<&str> = goal.floors().iter().map(|(name, _)| name.as_str()).collect();
+    if level_up_priority.is_some() { floor_currencies.push("coins"); }
     if let Goal::MostWhileLevelingUp(_, _, target) = goal {
         floor_currencies.push(target);
     }
@@ -736,15 +742,17 @@ fn build_model<'a>(
         Goal::MostWhileLevelingUp(level_up, pace, _)
         | Goal::EarnWhileLevelingUp(level_up, pace, _)
         | Goal::StockUp(level_up, pace, ..) => Some((level_up, pace * (1.0 - 1e-4))),
-        _ => None,
+        _ => level_up_priority.map(|(level_up, minimum)| (level_up, minimum.unwrap_or(0.0) * (1.0 - 1e-4))),
     };
     if let Some((level_up, min_pace)) = level_up {
         let pace = model.add(0.0, (min_pace.min(MAX_PACE), MAX_PACE), false, VarKind::Pace);
         let per_pace = |name: &str| (LevelUp::amount(&level_up.stock, name) - LevelUp::amount(&level_up.cost, name)) / PACE_UNIT;
-        let coin_terms: Vec<(usize, f64)> =
-            model.earnings.iter().enumerate().filter(|(_, c)| **c != 0.0).map(|(v, c)| (v, *c)).collect();
+        let coin_terms: Vec<(usize, f64)> = sold_of.iter()
+            .filter_map(|&(v, item)| (item.earns("coins") > 0.0).then_some((v, item.earns("coins"))))
+            .chain(rate_of.iter().filter_map(|&(recipe, v)| recipe.cost.filter(|&cost| cost > 0.0).map(|cost| (v, -cost))))
+            .collect();
         let mut earned = coin_terms.clone();
-        earned.push((pace, per_pace(currency)));
+        earned.push((pace, per_pace("coins")));
         model.constrain(earned, ComparisonOp::Ge, 0.0);
         if let Goal::StockUp(_, _, coins, _) = goal {
             // Slack of 0.1%: `coins` is another solve's maximum, and a tighter floor can leave no
@@ -752,7 +760,7 @@ fn build_model<'a>(
             model.constrain(coin_terms, ComparisonOp::Ge, coins - 1e-3 * coins.abs());
         }
         for (name, _) in level_up.cost.iter().chain(&level_up.stock) {
-            if name != currency {
+            if name != "coins" {
                 balance.entry(name.as_str()).or_default();
             }
         }
@@ -789,6 +797,10 @@ fn build_model<'a>(
                 }
             }
             _ => {}
+        }
+        if level_up_priority.is_some_and(|(_, minimum)| minimum.is_none()) {
+            model.objective.fill(0.0);
+            model.objective[pace] = 1.0;
         }
     }
     let material_requirements: Vec<_> = material_stock.into_iter().flat_map(|(level_up, _)| {
@@ -1021,7 +1033,7 @@ fn build_model<'a>(
             }
         }
         Goal::CropVariety { .. } | Goal::LevelUp(_) | Goal::MostWhileLevelingUp(..) | Goal::EarnWhileLevelingUp(..)
-        | Goal::StockUp(..) | Goal::MaterialWork { .. } | Goal::UpgradeMaterials { .. } => {}
+        | Goal::StockUp(..) | Goal::MaterialWork { .. } | Goal::UpgradeMaterials { .. } | Goal::LevelUpPriority { .. } => {}
     }
     // With the player's own Aniimo (see `Crew`), each member's day covers everything it works:
     // a recipe's time per batch at its rate, or at a facility it lives in, the whole day per unit.

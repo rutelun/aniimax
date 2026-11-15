@@ -64,6 +64,16 @@ test('an explicit points priority still runs with reserved event crops', async (
     assert.deepEqual(p.checks.at(-1).stage.floors,[['season_points',10],['coins',10]]);
 });
 
+test('the RV time priority sets a pace floor in order and leaves the later coin income in place', async () => {
+    const p = planner({objective:2,values:[.5,1],proven:true}, ['Wood Blocks','level_up','coins'], {
+        level_up_preview:{cost:[['coins',100],['standard_planks',10]],stock:[]},
+    });
+    await p.run();
+    assert.deepEqual(p.calls.map(({problem}) => problem.lp),['priority:Wood Blocks','priority:level_up','priority:coins','materials']);
+    assert.equal(p.checks.at(-1).stage.pace,10);
+    assert.deepEqual(p.checks.at(-1).stage.floors,[['Wood Blocks',10],['coins',10]]);
+});
+
 test('reuses the last coin priority, seeds material search and deduplicates its coin floor', async () => {
     const p = planner({objective:2,values:[.5,1],proven:true});
     const result = JSON.parse(await p.run());

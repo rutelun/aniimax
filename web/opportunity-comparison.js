@@ -130,12 +130,13 @@ export function comparePlans(beforePlan, afterPlan, beforeInput, afterInput = be
     }
     const targets = levelUp ? [] : beforeInput.priorities || [];
     for (const target of [...new Set([...targets, 'coins'])]) {
-        add(target,'rate',rateOf(beforePlan,target),rateOf(afterPlan,target),false,true);
+        if (target === 'level_up') add('rv_time','duration',reportOf(beforePlan)?.seconds ?? null,reportOf(afterPlan)?.seconds ?? null,true,true);
+        else add(target,'rate',rateOf(beforePlan,target),rateOf(afterPlan,target),false,true);
     }
     score('material_pace');
     score('material_work');
     score('stock');
-    if (!levelUp) add('rv_time','duration',reportOf(beforePlan)?.seconds ?? null,reportOf(afterPlan)?.seconds ?? null,true);
+    if (!levelUp && !targets.includes('level_up')) add('rv_time','duration',reportOf(beforePlan)?.seconds ?? null,reportOf(afterPlan)?.seconds ?? null,true);
     const a = reportOf(beforePlan), b = reportOf(afterPlan);
     for (const name of new Set([...(a?.requirements || []), ...(b?.requirements || [])].map(r=>r.name).filter(n=>n!=='coins'))) {
         add(`item:${name}`,'rate',a?.requirements.find(r=>r.name===name)?.per_second || 0,b?.requirements.find(r=>r.name===name)?.per_second || 0);

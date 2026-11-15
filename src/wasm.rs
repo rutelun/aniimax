@@ -1516,6 +1516,16 @@ pub fn exact_priority_problem(input_json: &str, stage_json: &str, target: &str) 
     let stage: JsStage = serde_json::from_str(stage_json).unwrap_or_default();
     let lp = match prepare_exact_input(input_json) {
         Ok(prepared) => match (&prepared.input.level_up, stage.pace) {
+            _ if target == "level_up" => {
+                let Some(level_up) = prepared.input.level_up_preview.as_ref().filter(|target| !target.ready()) else {
+                    return lp_json(&Default::default());
+                };
+                let base = stage.goal(&prepared.input);
+                crate::exact::write_lp(
+                    &prepared.items, &prepared.input.currency, &prepared.facility_counts, &prepared.module_levels,
+                    crate::exact::Goal::LevelUpPriority { base: &base, level_up, minimum: None },
+                )
+            }
             (Some(level_up), Some(pace)) => crate::exact::write_lp(
                 &prepared.items,
                 &prepared.input.currency,
@@ -1523,13 +1533,11 @@ pub fn exact_priority_problem(input_json: &str, stage_json: &str, target: &str) 
                 &prepared.module_levels,
                 crate::exact::Goal::MostWhileLevelingUp(level_up, pace, target),
             ),
-            _ => crate::exact::write_lp(
-                &prepared.items,
-                target,
-                &prepared.facility_counts,
-                &prepared.module_levels,
-                stage.goal(&prepared.input),
-            ),
+            _ => {
+                let base = stage.goal(&prepared.input);
+                crate::exact::write_lp(&prepared.items, target, &prepared.facility_counts, &prepared.module_levels,
+                    stage.with_priority_pace(&base, &prepared.input))
+            }
         },
         Err(_) => Default::default(),
     };
@@ -1588,6 +1596,13 @@ struct JsStage {
 }
 
 impl JsStage {
+    fn with_priority_pace<'a>(&self, base: &'a crate::exact::Goal<'a>, input: &'a JsPlanInput) -> crate::exact::Goal<'a> {
+        match (&input.level_up_preview, self.pace) {
+            (Some(level_up), Some(pace)) => crate::exact::Goal::LevelUpPriority { base, level_up, minimum: Some(pace) },
+            _ => *base,
+        }
+    }
+
     fn with_upgrade_materials<'a>(&self, base: &'a crate::exact::Goal<'a>, input: &'a JsPlanInput) -> crate::exact::Goal<'a> {
         match input.level_up_preview.as_ref() {
             Some(level_up) if self.maximize_upgrade_materials || self.material_pace.is_some() =>
@@ -1648,7 +1663,8 @@ pub fn exact_problem(input_json: &str, stage_json: &str) -> String {
     let lp = match prepare_exact_input(input_json) {
         Ok(prepared) if !prepared.input.currency.is_empty() => {
             let base = stage.goal(&prepared.input);
-            let stock = stage.with_upgrade_materials(&base, &prepared.input);
+            let paced = stage.with_priority_pace(&base, &prepared.input);
+            let stock = stage.with_upgrade_materials(&paced, &prepared.input);
             crate::exact::write_lp(&prepared.items, &prepared.input.currency, &prepared.facility_counts,
                 &prepared.module_levels, stage.with_material_work(&stock))
         },
@@ -1691,10 +1707,11 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
     let Ok(result) = serde_json::from_str::<JsSolverResult>(solution_json) else { return no_plan() };
     let currency = prepared.input.currency.clone();
     let goal = stage.goal(&prepared.input);
-    let stock = stage.with_upgrade_materials(&goal, &prepared.input);
+    let paced = stage.with_priority_pace(&goal, &prepared.input);
+    let stock = stage.with_upgrade_materials(&paced, &prepared.input);
     let level_up = match goal {
         crate::exact::Goal::EarnWhileLevelingUp(level_up, ..) | crate::exact::Goal::StockUp(level_up, ..) => Some(level_up),
-        _ => None,
+        _ => prepared.input.level_up_preview.as_ref().filter(|_| stage.pace.is_some()),
     };
     let Some(mut exact) = crate::exact::plan_from_values(
         &prepared.items,
@@ -1734,11 +1751,11 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
         Some(report_at(target, Some(crate::exact::PACE_UNIT / pace)))
     });
     let preview = prepared.input.level_up_preview.as_ref().filter(|_| currency == "coins")
-        .map(|target| report_at(target, None));
+        .map(|target| report_at(target, exact.pace.filter(|&pace| pace > 0.0).map(|pace| crate::exact::PACE_UNIT / pace)));
     let build_report = if result.summary_only { crate::exact::to_production_summary } else { crate::exact::to_production_plan };
     let plan = build_report(&exact, &prepared.items, &currency, &prepared.facility_counts);
     let mut js = prepared.to_js(plan, Some(proof));
-    js.level_up = report;
+    js.level_up = report.filter(|_| prepared.input.level_up.is_some());
     js.level_up_preview = preview;
     js.staffing = exact.staffing.clone();
     js.crop_staffing = prepared.crew.is_some();

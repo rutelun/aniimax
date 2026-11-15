@@ -582,6 +582,35 @@ fn exact_level_up_with_items_in_stock_is_only_coins() {
     assert!((plan.rate_per_second - best.rate_per_second).abs() < 1e-6);
 }
 
+#[test]
+fn level_up_priority_finds_the_bottleneck_and_preserves_the_pace_in_later_solves() {
+    let mut ore = walking_item("level_ore", "Mine", 10.0, "coins");
+    ore.sell_value = 0.0;
+    let items = vec![ore, walking_item("coin_output", "Mine", 10.0, "coins"),
+        walking_item("exp_output", "Well", 10.0, "aniimo_exp")];
+    let counts = FacilityCounts::only(&[("Mine", 2, 1), ("Well", 1, 1)]);
+    let modules = ModuleLevels::default();
+    let cost = level_up(&[("coins", 1000.0), ("level_ore", 8640.0)], &[]);
+    let base = Goal::Earn { floors: &[] };
+    let fastest = solve_exact(&items, "coins", &counts, &modules,
+        Goal::LevelUpPriority { base: &base, level_up: &cost, minimum: None }, None, None).unwrap();
+    assert!((fastest.objective - 1.0).abs() < 1e-8);
+
+    let retain = Goal::LevelUpPriority { base: &base, level_up: &cost, minimum: Some(fastest.objective) };
+    let coins = solve_exact(&items, "coins", &counts, &modules, retain, None, None).unwrap();
+    assert!((coins.rate_per_second - 0.1).abs() < 1e-8);
+    check_plan(&coins, &items, "coins", &counts, &modules, Some(&cost)).unwrap();
+    let exp = solve_exact(&items, "aniimo_exp", &counts, &modules, retain, None, None).unwrap();
+    assert!((exp.rate_per_second - 0.1).abs() < 1e-8);
+    assert!(exp.sold["coin_output"] >= 0.01);
+
+    let floors = [("coins".into(), 0.2)];
+    let coins_first = Goal::Earn { floors: &floors };
+    let constrained = solve_exact(&items, "coins", &counts, &modules,
+        Goal::LevelUpPriority { base: &coins_first, level_up: &cost, minimum: None }, None, None).unwrap();
+    assert!(constrained.objective < 1e-8);
+}
+
 // The items come from Wood Blocks and Mineral Sand through the Woodworking Bench and Chimney
 // Kiln, so the plan must run them, and has to give up some coins to make the byproducts.
 #[test]

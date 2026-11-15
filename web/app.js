@@ -1,7 +1,7 @@
 // Aniimax Web Application
 
-import { currentLocale, sourceAttribute, translate } from './i18n.js?v=hauling-assignments';
-import './math-translation.js?v=hauling-assignments';
+import { currentLocale, sourceAttribute, translate } from './i18n.js?v=level-up-priority';
+import './math-translation.js?v=level-up-priority';
 import { autoMaximizeSeasonPoints } from './season-planning.js?v=optional-season-points';
 
 import {
@@ -15,7 +15,7 @@ import { nearestStorage } from './layout.js?v=storage-power';
 import { workerTravelDistances, workerTravelSeconds } from './worker-travel.js?v=travel-allowance';
 import { assignFacilityStock, bufferedBatches, haulingWorkload, allocateHauling, haulingBatchTrips,
     haulingTravelSeconds, pickupStockLimit } from './hauling.js?v=hauling-assignments';
-import { changeOneMember, personalityInput, reserveLevelFourInputs, comparePlans, usefulUpgrade, keepBetterComparison } from './opportunity-comparison.js?v=income-aware-chains';
+import { changeOneMember, personalityInput, reserveLevelFourInputs, comparePlans, usefulUpgrade, keepBetterComparison } from './opportunity-comparison.js?v=level-up-priority';
 import { comparisonConcurrency, startComparisonQueue } from './comparison-queue.js?v=parallel-comparisons';
 import { prepareOpportunities, startedProcessing, increasedProcessing } from './opportunity-effects.js?v=auto-e-mode';
 import { aniimoPortrait, attachRosterPicker, rosterCatalogId, rosterFormName } from './roster-picker.js?v=game-heads';
@@ -2399,7 +2399,8 @@ function startProgress(input, runId) {
     const season = seasonFirst ? [{ key: 'season', label: `Most ${seasonById(input.season).points}` }] : [];
     const steps = [
         ...(planting ? [{ key: 'crop_variety', label: input.crop_variety ? 'Crop and Tree Variety' : 'Season Crops' }] : []),
-        ...priorities.map(target => ({ key: `priority:${target}`, label: `Most ${priorityLabel(target, planContext.aniipod)}` })),
+        ...priorities.map(target => ({ key: `priority:${target}`, label: target === 'level_up'
+            ? priorityLabel(target) : `Most ${priorityLabel(target, planContext.aniipod)}` })),
         ...(levelUp ? [] : season),
         { key: 'plan', label: levelUp ? 'Fastest Level-Up' : priorities.at(-1) === 'coins' && !input.level_up_strategy
             ? 'Finish Production Plan' : priorities.length || seasonFirst || planting ? "Home Coins with What's Left" : 'Most Home Coins' },
@@ -3699,6 +3700,7 @@ function isLevelUpStrategy() {
 // `JsPlanInput::priorities` in wasm.rs).
 const PRIORITY_TARGETS = [
     { id: 'coins', label: 'Home Coins' },
+    { id: 'level_up', label: 'Minimum level-up time' },
     { id: 'aniimo_exp', label: 'Aniimo EXP' },
     { id: 'aniipods', label: 'Aniipods' },
     { id: 'Wood Blocks', label: 'Wood Blocks' },
@@ -5245,7 +5247,7 @@ function renderFacilityPlan(plan) {
 function updateRateDisplay(pickUnit = false) {
     if (!lastPlan || !lastPlan.success) return;
     const select = document.getElementById('rate-unit');
-    const rows = planContext && !planContext.levelUp ? priorityRows(lastPlan) : null;
+    const rows = planContext && !planContext.levelUp ? priorityRows(lastPlan, true) : null;
     // Step the unit up until the smallest rate reads at least 1 (Aniipods per hour, Rough Lumber
     // per hour, not 0.01 per second); a plain coin rate only needs to read above zero.
     const costRates = (lastPlan.level_up?.requirements || []).map(r => r.per_second);
@@ -5273,6 +5275,11 @@ function updateRateDisplay(pickUnit = false) {
     // Priorities: one row each, in the player's order, at the selected unit.
     const amount = formatRate;
     const body = rows.map(r => {
+        if (r.target === 'level_up') {
+            const seconds = lastPlan.level_up_preview?.seconds;
+            const time = seconds === 0 ? 'Ready now' : seconds == null ? 'Not reached with this plan' : formatDuration(seconds);
+            return `<tr${r.rank === 1 ? ' class="top"' : ''}><td>${r.rank}</td><td>${r.label}</td><td>${time}</td><td></td></tr>`;
+        }
         const why = r.perSecond <= 1e-9 && r.missing ? `<span class="hint small">${r.missing}</span>` : '';
         // Aniimo EXP names the Growth items making it; an Aniipod row is already named by tier.
         const made = r.target === 'aniimo_exp'
@@ -5297,7 +5304,7 @@ function updateRateDisplay(pickUnit = false) {
 
 // A Priorities plan's rate rows, in the player's order: each priority, then coins from what's
 // left if coins wasn't one of them. A priority the homeland can't make yet says why.
-function priorityRows(plan) {
+function priorityRows(plan, includeTime = false) {
     const missing = {
         aniimo_exp: planContext?.hasPolisher ? null : 'No Dance Pad Polisher yet',
         aniipods: planContext?.aniipod ? null : 'No Aniipod Maker yet',
@@ -5310,7 +5317,7 @@ function priorityRows(plan) {
         items: p.items || [],
         streams: p.streams || [],
         missing: missing[p.target] || null,
-    }));
+    })).filter(row => includeTime || row.target !== 'level_up');
     if (!rows.some(r => r.target === 'coins')) {
         rows.push({ rank: null, target: 'coins', label: rows.length ? "Home Coins, from what's left" : 'Home Coins', perSecond: plan.rate_per_second, items: [], missing: null });
     }
