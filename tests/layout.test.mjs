@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { layOut, layOutHomeland, nearestStorage, layoutCost, refineDistrictDeliveries,
+import { improveFixedStorage, layOut, layOutHomeland, nearestStorage, layoutCost, refineDistrictDeliveries,
     refineStorageNeighborhood, seededStorageLayouts } from '../web/layout.js';
 import { storageUnitLimit } from '../web/facility-config.js';
 
@@ -19,6 +19,19 @@ const cost = layout => layout.pieces.flatMap(p => p.members).reduce((sum, member
 test('storage placement follows the RV rank table', () => {
     assert.deepEqual(Array.from({ length: 20 }, (_, index) => storageUnitLimit(index + 1)),
         [0, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5, 5, 6, 6, 6, 7, 8]);
+});
+
+test('moving a storage after wiring shortens routes without moving facilities or covering poles', () => {
+    const storage = { x: 0, y: 0, w: 2, h: 2 };
+    const member = { x: 10, y: 4, w: 2, h: 2, weight: 4 };
+    const pole = { x: 8, y: 4, w: 1.5, h: 1.5 };
+    const layout = { storages: [storage], pieces: [{ members: [member] }], unplaced: [],
+        power: { disconnected: 0, poles: [pole] } };
+    const better = improveFixedStorage(layout, cells);
+    assert.ok(cost(better) < cost(layout));
+    assert.deepEqual(better.pieces[0].members, [member]);
+    assert.deepEqual(better.power, layout.power);
+    assert.ok(!overlap(better.storages[0], pole) && !overlap(better.storages[0], member));
 });
 
 test('multiple storage units shorten hauling and keep every placed facility clear', () => {

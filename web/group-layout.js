@@ -182,27 +182,27 @@ function* groupShapes(cells, storageCount, style, gap) {
 }
 
 export async function groupHomelandLayout(pieces, cells, { style, gap = 2, storageCount, poleLimit, saleProducts = null,
-    recipes = [], staffing = null, deadline = Infinity }) {
+    recipes = [], staffing = null, fast = false }) {
     const graph = productionGraph(pieces, recipes, { includeIdle: recipes.length > 0 });
     const useRanges = graph.nodes.some(node => node.label);
     if (storageCount > 0 && cells.length > 0 && (useRanges || graph.nodes.some(node => rawTheme(node.rect)))) {
-        for (let actualGap = gap; actualGap >= 1 && performance.now() < deadline; actualGap--) {
+        for (let actualGap = gap; actualGap >= 1; actualGap--) {
             const arranged = await tryRangeLayout(pieces, cells, { style, gap: actualGap, storageCount, poleLimit,
-                saleProducts, recipes, staffing, graph, deadline });
+                saleProducts, recipes, staffing, graph, fast });
             if (arranged) return { ...arranged, groupStyle: style, requestedGroupGap: gap };
         }
         if (useRanges) return null;
     }
-    for (let actualGap = gap; actualGap >= 1 && performance.now() < deadline; actualGap--) {
+    for (let actualGap = gap; actualGap >= 1; actualGap--) {
         const arranged = await tryGroupedLayout(pieces, cells, {
-            style, gap: actualGap, storageCount, poleLimit, saleProducts, recipes, staffing, deadline,
+            style, gap: actualGap, storageCount, poleLimit, saleProducts, recipes, staffing, fast,
         });
         if (arranged) return { ...arranged, groupStyle: style, requestedGroupGap: gap };
     }
     return null;
 }
 
-async function tryRangeLayout(pieces, cells, { style, gap, storageCount, poleLimit, saleProducts, recipes, staffing, graph, deadline }) {
+async function tryRangeLayout(pieces, cells, { style, gap, storageCount, poleLimit, saleProducts, recipes, staffing, graph, fast }) {
     const [{ layOut, layoutTravelCost, refineStorageNeighborhood, refineDistrictClimate, refineDistrictDeliveries },
         { connectPower, updatePowerConnections }] = await Promise.all([placement, wiring]);
     const requiredArea = pieces.reduce((sum, piece) => sum + pieceArea(piece), 0);
@@ -210,11 +210,10 @@ async function tryRangeLayout(pieces, cells, { style, gap, storageCount, poleLim
     const purposes = sales ? chainPurposes(pieces.map(piece => piecePurpose(piece, sales)), graph) : null;
     const candidates = [];
     let variant = 0;
-    scan: for (const shapes of groupShapes(cells, storageCount, style, gap)) for (const groups of shapes) {
-        if (performance.now() >= deadline) break scan;
+    for (const shapes of groupShapes(cells, storageCount, style, gap)) for (const groups of shapes) {
         const buildable = groups.flatMap(group => group.buildable);
         if (buildable.reduce((sum, r) => sum + area(r), 0) < requiredArea) continue;
-        for (const zoning of productionZones(pieces, groups, graph, purposes, 10)) {
+        for (const zoning of productionZones(pieces, groups, graph, purposes, fast ? 4 : 10)) {
             const rows = productionRows(pieces, groups, zoning, graph);
             if (!rows.complete) continue;
             candidates.push({ groups, buildable, zoning, variant, rows,
@@ -233,13 +232,12 @@ async function tryRangeLayout(pieces, cells, { style, gap, storageCount, poleLim
         variants.add(candidate.variant);
     }
     const shortlist = [...byCount.values()].flatMap(({ first, more }) =>
-        [...first.slice(0, 4), ...more.slice(0, 2), ...first.slice(4)].slice(0, 7)).slice(0, 12);
+        [...first.slice(0, 4), ...more.slice(0, 2), ...first.slice(4)].slice(0, 7)).slice(0, fast ? 2 : 12);
     const trips = graph.nodes.reduce((sum, node) => sum + (node.rect.weight || 0), 0) || 1;
     const compactness = (layout, placedGraph) => zoneLinkDistance(placedGraph) + layoutTravelCost(layout) / (trips * 2);
     const keepsIncome = layout => layoutKeepsIncome(layout, staffing, recipes);
     let best = null, consolidated = 0;
     placement: for (const { groups, buildable, zoning, rows } of shortlist) {
-        if (performance.now() >= deadline) break;
         if (best?.mineZones <= 1 && zoning.workshopCount > best.zoning.workshopCount) break;
         const storages = groups.map(group => group.storage);
         const belongs = (index, rects) => {
@@ -251,9 +249,8 @@ async function tryRangeLayout(pieces, cells, { style, gap, storageCount, poleLim
         const raw = rawZones(pieces, groups, zoning.owners, workshops, graph);
         const mining = miningRows(pieces, groups, raw, workshops);
         const modes = [...(raw.fits && raw.homes.some(home => home >= 0) ? ['all'] : []),
-            ...(raw.miningFits ? ['mines'] : []), 'flexible'];
+            ...(!fast && raw.miningFits ? ['mines'] : []), 'flexible'];
         for (const mode of modes) {
-            if (performance.now() >= deadline) break placement;
             const valid = (i, rects) => {
                 if (!belongs(i, rects)) return false;
                 const owner = zoning.owners[i];
@@ -268,7 +265,7 @@ async function tryRangeLayout(pieces, cells, { style, gap, storageCount, poleLim
                 seed.initialLayout.pieces[i] = { members: [spot] };
                 seed.fixedPieces.add(i);
             }
-            const layout = layOut(pieces, { ...seed, cells: buildable, storages, passes: 1, deadline,
+            const layout = layOut(pieces, { ...seed, cells: buildable, storages, fast, passes: fast ? 0 : 1,
                 preferredStorages: zoning.owners, preferredTargets: raw.targets,
                 placementPriority: pieces.map((piece, i) => piece.cluster ? 3 : zoning.owners[i] >= 0 ? 2 : raw.homes[i] >= 0 ? 1 : 0),
                 clusterFits: valid, canPlace: (i, _, rects) => valid(i, rects) });
@@ -276,13 +273,13 @@ async function tryRangeLayout(pieces, cells, { style, gap, storageCount, poleLim
             // The power repacker clones the layout, so the owning piece index
             // must travel with the member to keep its placement restrictions.
             layout.pieces.forEach((piece, i) => piece.members.forEach(member => { member.zonePiece = i; }));
-            const wired = connectPower(layout, buildable, poleLimit, true, (member, rectangle) =>
-                valid(member.zonePiece, [rectangle]), rectangle => workshops.every(workshop => !overlaps(workshop, rectangle)), deadline);
+            const wired = connectPower(layout, buildable, poleLimit, !fast, (member, rectangle) =>
+                valid(member.zonePiece, [rectangle]), rectangle => workshops.every(workshop => !overlaps(workshop, rectangle)));
             if (wired.power.disconnected) continue;
             const mineZones = miningDistricts(wired, groups);
             if (best && mineZones > best.mineZones) continue;
             const storageZones = groups.map((group, i) => ({ ...group, range: zoning.ranges[i], workshop: workshops[i] }));
-            const powered = deadline === Infinity ? improveDistrictStorage(wired, storageZones, keepsIncome) : wired;
+            const powered = fast && keepsIncome(wired) ? wired : improveDistrictStorage(wired, storageZones, keepsIncome);
             if (!keepsIncome(powered)) continue;
             const placedGraph = productionGraph(powered.pieces, recipes, { includeIdle: true });
             const score = compactness(powered, placedGraph) + .15 * zoning.score + .45 * workshopSeparation(workshops)
@@ -290,7 +287,7 @@ async function tryRangeLayout(pieces, cells, { style, gap, storageCount, poleLim
             if (!best || mineZones < best.mineZones || zoning.workshopCount < best.zoning.workshopCount
                 || (zoning.workshopCount === best.zoning.workshopCount && score < best.score))
                 best = { powered, placedGraph, groups, zoning, belongs, score, workshops, mineZones, storageZones };
-            if (deadline !== Infinity && best) break placement;
+            if (fast && best) break placement;
             if (mineZones <= 1) {
                 consolidated++;
                 break;
@@ -303,13 +300,13 @@ async function tryRangeLayout(pieces, cells, { style, gap, storageCount, poleLim
     const maxChain = productionDistance(placedGraph);
     const maxLinks = productionLinkDistances(placedGraph).map(length => length + Math.max(1, length * .07));
     const costBefore = compactness(powered, placedGraph);
-    if (deadline === Infinity) {
+    if (!fast) {
         refineProductionPlacement(powered, groups, placedGraph, layoutTravelCost, { maxChain, maxLinks,
             canPlace: (index, rectangle) => belongs(index, [rectangle])
                 && (!workshops[zoning.owners[index]] || contains(workshops[zoning.owners[index]], rectangle)),
             keepsIncome: layout => compactness(layout, placedGraph) <= costBefore + .35 && layoutKeepsIncome(layout, staffing, recipes) });
     }
-    const placedBeforeStorage = deadline === Infinity ? improveDistrictStorage(powered, storageZones, keepsIncome) : powered;
+    const placedBeforeStorage = fast ? powered : improveDistrictStorage(powered, storageZones, keepsIncome);
     const order = alphabetScore(groups, placedGraph).count;
     const links = productionLinkDistances(placedGraph);
     const chainBeforeStorage = productionDistance(placedGraph);
@@ -329,14 +326,13 @@ async function tryRangeLayout(pieces, cells, { style, gap, storageCount, poleLim
             && productionLinkDistances(graph).every((length, i) => length <= links[i] + Math.max(1, links[i] * .07))
             && keepsIncome(layout);
     };
-    const placedStorage = refineStorageNeighborhood(placedBeforeStorage, pieces, buildable, deadline === Infinity ? 4 : 0, {
+    const placedStorage = refineStorageNeighborhood(placedBeforeStorage, pieces, buildable, fast ? 0 : 4, {
         storageCells: groups.map(group => group.bounds),
         canMoveStorage: (layout, index, trial) => canMoveDistrictStorage(layout, index, trial, storageZones),
         canPlace, cost: layoutTravelCost, accept,
     });
-    const finalLayout = deadline === Infinity
-        ? refineDistrictDeliveries(refineDistrictClimate(placedStorage, pieces, buildable, { canPlace, accept }), groups, { canPlace, accept })
-        : placedStorage;
+    const finalLayout = fast ? refineDistrictDeliveries(placedStorage, groups, { canPlace, accept, swapsOnly: true, passes: 1 })
+        : refineDistrictDeliveries(refineDistrictClimate(placedStorage, pieces, buildable, { canPlace, accept }), groups, { canPlace, accept });
     const assignedStores = districtStorageIndices(finalLayout.storages, groups);
     const placed = finalLayout.pieces.flatMap(piece => piece.members);
     const labels = groups.map(({ bounds }, group) => {
@@ -363,9 +359,9 @@ async function tryRangeLayout(pieces, cells, { style, gap, storageCount, poleLim
 }
 
 async function tryGroupedLayout(pieces, cells, { style, gap, storageCount, poleLimit, saleProducts,
-    recipes = [], staffing = null, deadline = Infinity }) {
+    recipes = [], staffing = null, fast = false }) {
     if (storageCount < 1 || !cells.length) return null;
-    const [{ layOut, layoutTravelCost }, { connectPower, updatePowerConnections }] = await Promise.all([placement, wiring]);
+    const [{ layOut, layoutTravelCost, refineDistrictDeliveries }, { connectPower, updatePowerConnections }] = await Promise.all([placement, wiring]);
     const requiredArea = pieces.reduce((sum, piece) => sum + pieceArea(piece), 0);
     const sales = saleProducts && new Set(saleProducts.map(([facility, item]) => saleKey(facility, item)));
     const purposes = sales ? pieces.map(piece => piecePurpose(piece, sales)) : null;
@@ -381,7 +377,7 @@ async function tryGroupedLayout(pieces, cells, { style, gap, storageCount, poleL
             : purpose === 'sales' ? label === 'sales' : label !== 'sales');
         const sameGroup = (purpose, rectangles) => groups.some((group, i) =>
             accepts(labels[i], purpose) && rectangles.every(rectangle => contains(group.bounds, rectangle)));
-        const layout = layOut(pieces, { cells: buildable, storages, passes: 2, deadline,
+        const layout = layOut(pieces, { cells: buildable, storages, fast, passes: fast ? 0 : 2,
             clusterFits: (i, rectangles) => sameGroup(purposes?.[i], rectangles),
             canPlace: splitRequested ? (i, _, rectangles) => sameGroup(purposes[i], rectangles) : undefined });
         if (layout.unplaced.length) return;
@@ -390,25 +386,21 @@ async function tryGroupedLayout(pieces, cells, { style, gap, storageCount, poleL
         });
         const canRelocate = splitRequested ? (member, rectangle) => member.generator
             || sameGroup(member.layoutPurpose, [rectangle]) : null;
-        const powered = connectPower(layout, buildable, poleLimit, true, canRelocate, null, deadline);
+        const powered = connectPower(layout, buildable, poleLimit, !fast, canRelocate);
         if (powered.power.disconnected) return;
-        const moved = deadline === Infinity
-            ? improveDistrictStorage(powered, groups, layout => layoutKeepsIncome(layout, staffing, recipes)) : powered;
+        const moved = fast ? powered : improveDistrictStorage(powered, groups, layout => layoutKeepsIncome(layout, staffing, recipes));
         const assignedStores = districtStorageIndices(moved.storages, groups);
         const arranged = { ...moved, groups: groups.map(({ bounds, feature, reserved }, i) => ({
             bounds, feature, reserved, purpose: labels[i], storageIndices: assignedStores[i],
         })), groupGap: gap };
         candidates.push({ arranged, route: layoutTravelCost(arranged) });
     };
-    scan: for (const shapes of groupShapes(cells, storageCount, style, gap)) {
-        for (const groups of shapes) {
-            if (performance.now() >= deadline) break scan;
-            tryPartition(groups);
-        }
+    for (const shapes of groupShapes(cells, storageCount, style, gap)) {
+        for (const groups of shapes) tryPartition(groups);
         if (candidates.length) break;
     }
-    if (!candidates.length && splitRequested && performance.now() < deadline) {
-        const mixed = await tryGroupedLayout(pieces, cells, { style, gap, storageCount, poleLimit, saleProducts: null, recipes, staffing, deadline });
+    if (!candidates.length && splitRequested) {
+        const mixed = await tryGroupedLayout(pieces, cells, { style, gap, storageCount, poleLimit, saleProducts: null, recipes, staffing, fast });
         return mixed && { ...mixed, groupPurposeFallback: true };
     }
     if (!candidates.length) return null;
@@ -416,8 +408,11 @@ async function tryGroupedLayout(pieces, cells, { style, gap, storageCount, poleL
     for (const { arranged } of candidates) {
         const walking = incomeWalking(arranged, staffing, recipes);
         if (walking === null) continue;
-        if (staffing?.movement) arranged.incomeWalking = walking;
-        return updatePowerConnections(arranged);
+        const improved = fast ? refineDistrictDeliveries(arranged, arranged.groups, { swapsOnly: true, passes: 1,
+            accept: variant => layoutKeepsIncome(variant, staffing, recipes),
+        }) : arranged;
+        if (staffing?.movement) improved.incomeWalking = incomeWalking(improved, staffing, recipes);
+        return updatePowerConnections(improved);
     }
     return updatePowerConnections(candidates[0].arranged);
 }

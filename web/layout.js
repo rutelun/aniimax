@@ -100,8 +100,7 @@ export function cacheGridDistance(extent, distance) {
 // buildings then plots) at their final places and its cost, the indices of any piece there was
 // no room for, and how many spots were tried.
 export function layOut(pieces, options = {}) {
-    const { storage = { w: 2, h: 2 }, passes = 6, cells = null, deadline = Infinity } = options;
-    const expired = () => deadline !== Infinity && performance.now() >= deadline;
+    const { storage = { w: 2, h: 2 }, passes = 6, cells = null, fast = false } = options;
     const storageRect = { x: -storage.w / 2, y: -storage.h / 2, w: storage.w, h: storage.h };
     const storages = options.storages ?? [storageRect];
     const storageCenters = storages.map(s => [s.x + s.w / 2, s.y + s.h / 2]);
@@ -144,6 +143,7 @@ export function layOut(pieces, options = {}) {
     const defaultProfile = { distanceToStorage, offsets, clusterOffsets };
     const profiles = new Map();
     const profileFor = i => {
+        if (fast) return defaultProfile;
         const zone = options.preferredStorages?.[i];
         const target = options.preferredTargets?.[i];
         if (!target && (!storageCenters[zone] || storages.length < 2)) return defaultProfile;
@@ -227,7 +227,6 @@ export function layOut(pieces, options = {}) {
             if(shape.members.length===1&&options.singleBuildingFastPath!==false){
                 const member=shape.members[0],rectangle={x:0,y:0,w:member.w,h:member.h},rectangles=[rectangle];
                 for(const [ox,oy,distance] of offsets){
-                    if ((tried & 63) === 0 && expired()) return best;
                     if(firstFit!==null&&distance>firstFit+shape.spread+STEP+travelRadius)break;
                     const x=snap(ox-shape.cx),y=snap(oy-shape.cy);
                     rectangle.x=member.x+x;rectangle.y=member.y+y;tried++;
@@ -250,7 +249,6 @@ export function layOut(pieces, options = {}) {
                 continue;
             }
             for (const [ox, oy, distance] of offsets) {
-                if ((tried & 63) === 0 && expired()) return best;
                 if (firstFit !== null && distance > firstFit + shape.spread + STEP
                     + travelRadius) break;
                 const x = snap(ox - shape.cx);
@@ -325,9 +323,8 @@ export function layOut(pieces, options = {}) {
         for (const shape of shapes[i]) {
             let fits = 0;
             for (const [ox, oy] of clusterOffsets) {
-                if (expired()) return best;
-                if (fits >= CLUSTER_TRIES) break;
-                const pack = deadline === Infinity && fits < CLUSTER_PACKS && shape.plots.length <= CLUSTER_PACK_MOST;
+                if (fits >= (fast ? 1 : CLUSTER_TRIES)) break;
+                const pack = !fast && fits < CLUSTER_PACKS && shape.plots.length <= CLUSTER_PACK_MOST;
                 const spot = tryCluster(i, shape, Math.round(ox - shape.cx), Math.round(oy - shape.cy), pack, clear, distanceToStorage);
                 if (!spot) continue;
                 fits++;
@@ -389,10 +386,6 @@ export function layOut(pieces, options = {}) {
     const shapeOf = i => (pieces[i].cluster ? null : JSON.stringify(pieces[i].members.map(m => [m.x, m.y, m.w, m.h, !!m.sensitive, m.electric_level != null])));
     for (const i of order) {
         if (placed.has(i)) continue;
-        if (expired()) {
-            unplaced.push(i);
-            continue;
-        }
         const shape = options.canPlace ? null : shapeOf(i);
         const spot = shape !== null && noRoom.has(shape) ? null : place(i);
         if (!spot) {
@@ -405,7 +398,6 @@ export function layOut(pieces, options = {}) {
     }
     // Lift each piece and put it back where it's cheapest now, until a pass moves nothing.
     for (let pass = 0; pass < passes; pass++) {
-        if (expired()) break;
         let moved = false;
         for (const i of order) {
             if (!placed.has(i)) continue;
@@ -533,7 +525,7 @@ export function layOut(pieces, options = {}) {
 // whichever walks least with everything placed. Returns what `layOut` does, moved into the
 // homeland's own frame, plus the first storage center for older callers.
 // Additional storage locations are chosen up to `storageCount`.
-export function layOutHomeland(pieces, cells, storage = { w: 2, h: 2 }, storageCount = 1, { fast = false, deadline = Infinity } = {}) {
+export function layOutHomeland(pieces, cells, storage = { w: 2, h: 2 }, storageCount = 1, { fast = false } = {}) {
     if (!cells.length) {
         return { storage: null, storages: [], storageAt: null, pieces: pieces.map(p => ({ ...p, members: [], cost: 0 })), unplaced: pieces.map((_, i) => i), tried: 0 };
     }
@@ -551,11 +543,10 @@ export function layOutHomeland(pieces, cells, storage = { w: 2, h: 2 }, storageC
     let best = null;
     let tried = 0;
     for (const at of candidates) {
-        if (best && performance.now() >= deadline) break;
         const storageRect = { x: at.x - storage.w / 2, y: at.y - storage.h / 2, w: storage.w, h: storage.h };
         if (cells.reduce((sum, c) => sum + overlapArea(storageRect, c), 0) < storage.w * storage.h - EPSILON) continue;
         const relative = cells.map(c => ({ x: c.x - at.x, y: c.y - at.y, w: c.w, h: c.h }));
-        const out = layOut(pieces, { storage, cells: relative, deadline, ...(fast ? { passes: 0 } : {}),
+        const out = layOut(pieces, { storage, cells: relative, fast, ...(fast ? { passes: 0 } : {}),
             ...(storageCount === 0 ? { storages: [] } : {}) });
         tried += out.tried;
         const cost = layoutCost(out);
@@ -577,7 +568,7 @@ export function layOutHomeland(pieces, cells, storage = { w: 2, h: 2 }, storageC
         storages: out.storages.map(move),
         pieces: out.pieces.map(p => ({ ...p, members: p.members.map(move) })),
     };
-    if (storageCount > 1 && performance.now() < deadline) layout = improveStorageLayout(layout, pieces, cells, storage, storageCount, fast, deadline);
+    if (storageCount > 1) layout = improveStorageLayout(layout, pieces, cells, storage, storageCount, fast);
     return layout;
 }
 
@@ -742,7 +733,7 @@ export function refineDistrictClimate(layout, pieces, cells, { canPlace, accept 
 // Revisit pickup sites throughout the district. Climate plots can move or
 // exchange footprints only if they retain exactly their required coverage.
 export function refineDistrictDeliveries(layout, groups, {
-    canPlace = () => true, accept = () => true, passes = 2,
+    canPlace = () => true, accept = () => true, passes = 2, swapsOnly = false,
 } = {}) {
     if (!layout.storages.length) return layout;
     const result = { ...layout, pieces: layout.pieces.map(piece => ({
@@ -810,17 +801,20 @@ export function refineDistrictDeliveries(layout, groups, {
         targets.sort((a, b) => b.rect.weight * distance(b.rect) - a.rect.weight * distance(a.rect));
         for (const entry of targets) {
             const rect = entry.rect, original = distance(rect), candidates = [];
-            for (const { spot, distance: away } of sitesFor(entry)) {
-                if (away >= original - EPSILON) break;
-                if (!valid(entry, spot)) continue;
-                candidates.push({ spot, saving: (original - away) * rect.weight });
-                if (candidates.length === 4) break;
+            if (!swapsOnly) {
+                for (const { spot, distance: away } of sitesFor(entry)) {
+                    if (away >= original - EPSILON) break;
+                    if (!valid(entry, spot)) continue;
+                    candidates.push({ spot, saving: (original - away) * rect.weight });
+                    if (candidates.length === 4) break;
+                }
             }
             for (const other of local[entry.district]) {
                 const s = other.rect;
                 if (other === entry || !other.movable || s.w !== rect.w || s.h !== rect.h) continue;
                 const saving = (original - distance(s)) * (rect.weight - (s.weight || 0));
-                if (saving > EPSILON && valid(entry, s, other) && valid(other, rect, entry))
+                if (saving > (swapsOnly ? Math.max(EPSILON, original * rect.weight * .02) : EPSILON)
+                    && valid(entry, s, other) && valid(other, rect, entry))
                     candidates.push({ spot: s, swap: other, saving });
             }
             candidates.sort((a, b) => b.saving - a.saving);
@@ -850,7 +844,7 @@ function storageSites(cells, storage) {
 
 // Use the placed factories as demand points, but reserve all storage sites before
 // placing facilities again. A busy building can move away from a new store's footprint.
-export function* seededStorageLayouts(layout, pieces, cells, storage, maximum) {
+export function* seededStorageLayouts(layout, pieces, cells, storage, maximum, { fast = false } = {}) {
     const demand = layout.pieces.flatMap(piece => piece.members)
         .filter(member => member.weight > 0)
         .map(member => ({ x: member.x + member.w / 2, y: member.y + member.h / 2, weight: member.weight }));
@@ -880,7 +874,7 @@ export function* seededStorageLayouts(layout, pieces, cells, storage, maximum) {
         const signature = key(stores);
         if (stores.length < 2 || tried.has(signature)) continue;
         tried.add(signature);
-        const trial = layOut(pieces, { storage, storages: stores, cells, passes: 2 });
+        const trial = layOut(pieces, { storage, storages: stores, cells, fast, passes: fast ? 0 : 2 });
         if (trial.unplaced.length) continue;
         trial.storageAt = { x: stores[0].x + storage.w / 2, y: stores[0].y + storage.h / 2 };
         yield trial;
@@ -889,7 +883,7 @@ export function* seededStorageLayouts(layout, pieces, cells, storage, maximum) {
 
 // Add useful storage locations, then alternate relocating storage and laying facilities out.
 // Each accepted step keeps every placed piece and reduces weighted hauling distance.
-function improveStorageLayout(layout, pieces, cells, storage, maximum, fast, deadline) {
+function improveStorageLayout(layout, pieces, cells, storage, maximum, fast, fixed = false) {
     const candidates = storageSites(cells, storage);
     const membersOf = current => current.pieces.flatMap(piece => piece.members);
     const costOf = (members, stores) => members.reduce((sum, member) => {
@@ -902,7 +896,7 @@ function improveStorageLayout(layout, pieces, cells, storage, maximum, fast, dea
         || (candidate.unplaced.length === current.unplaced.length
             && layoutCost(candidate) < layoutCost(current) - 1e-9);
     const findSpot = (members, others) => {
-        const occupied = [...members, ...others];
+        const occupied = [...members, ...others, ...(fixed ? layout.power.poles : [])];
         const destinations = members.filter(member => member.weight > 0).map(member => {
             const x = member.x + member.w / 2, y = member.y + member.h / 2;
             const existing = nearestStorage(member, others);
@@ -911,7 +905,6 @@ function improveStorageLayout(layout, pieces, cells, storage, maximum, fast, dea
         });
         let best = null;
         for (const candidate of candidates) {
-            if (performance.now() >= deadline) break;
             if (occupied.some(rect => overlaps(candidate, rect))) continue;
             const x = candidate.x + candidate.w / 2, y = candidate.y + candidate.h / 2;
             const cost = destinations.reduce((sum, member) =>
@@ -924,16 +917,16 @@ function improveStorageLayout(layout, pieces, cells, storage, maximum, fast, dea
         const members = membersOf(layout);
         const stores = [...layout.storages];
         let changed = false;
-        while (stores.length < maximum && performance.now() < deadline) {
+        while (stores.length < maximum) {
             const spot = findSpot(members, stores);
             if (!spot || spot.cost >= costOf(members, stores) - EPSILON) break;
             stores.push(spot.storage);
             changed = true;
         }
-        for (let index = 0; index < stores.length && performance.now() < deadline; index++) {
+        for (let index = 0; index < stores.length; index++) {
             const others = stores.filter((_, i) => i !== index);
             const spot = findSpot(members, others);
-            if (spot && spot.cost < costOf(members, stores) - EPSILON) {
+            if (spot && spot.cost < costOf(members, stores) * (fixed ? .99 : 1) - EPSILON) {
                 stores[index] = spot.storage;
                 changed = true;
             }
@@ -942,9 +935,11 @@ function improveStorageLayout(layout, pieces, cells, storage, maximum, fast, dea
         const updated = { ...layout, storages: stores, storage: stores[0], storageAt: {
             x: stores[0].x + storage.w / 2, y: stores[0].y + storage.h / 2,
         } };
-        const repacked = performance.now() < deadline
-            ? layOut(pieces, { storage, storages: stores, cells, deadline, passes: fast ? 1 : 3, initialLayout: updated })
-            : updated;
+        if (fixed) {
+            layout = updated;
+            break;
+        }
+        const repacked = layOut(pieces, { storage, storages: stores, cells, fast, passes: fast ? 1 : 3, initialLayout: updated });
         repacked.storageAt = updated.storageAt;
         repacked.tried += layout.tried;
         layout = better(repacked, updated) ? repacked : updated;
@@ -953,6 +948,11 @@ function improveStorageLayout(layout, pieces, cells, storage, maximum, fast, dea
         ...layout,
         pieces: layout.pieces.map(piece => ({ ...piece, cost: costOf(piece.members, layout.storages) })),
     };
+}
+
+export function improveFixedStorage(layout, cells) {
+    if (!layout.storages.length || layout.unplaced.length || layout.power.disconnected) return layout;
+    return improveStorageLayout(layout, null, cells, layout.storages[0], layout.storages.length, true, true);
 }
 
 // Puts `plots` on `slots` (the plan's own arrangement, one slot per plot, each slot sized for the

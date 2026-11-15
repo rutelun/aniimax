@@ -18,8 +18,8 @@ const pieces = [
 ];
 const saleProducts = [['Mine', 'copper_ore'], ['Well', 'fresh_water']];
 
-for (const style of ['courtyards', 'avenues', 'districts']) test(`${style} keep decor clear and group sold output, RV processors and climate plots`, async () => {
-    const layout = await groupHomelandLayout(pieces, cells, { style, storageCount: 2, gap: 2, poleLimit: 3, saleProducts });
+for (const style of ['courtyards', 'avenues', 'districts']) test(`${style} keep decor clear and group sold output, RV processors and climate plots in the fast search`, async () => {
+    const layout = await groupHomelandLayout(pieces, cells, { style, storageCount: 2, gap: 2, poleLimit: 3, saleProducts, fast: true });
     assert.ok(layout);
     assert.deepEqual(layout.unplaced, []);
     assert.equal(layout.power.disconnected, 0);
