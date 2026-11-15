@@ -1,7 +1,7 @@
 // Aniimax Web Application
 
-import { currentLocale, sourceAttribute, translate } from './i18n.js?v=roster-rows';
-import './math-translation.js?v=roster-rows';
+import { currentLocale, sourceAttribute, translate } from './i18n.js?v=compact-roster';
+import './math-translation.js?v=compact-roster';
 import { autoMaximizeSeasonPoints } from './season-planning.js?v=optional-season-points';
 
 import {
@@ -10,7 +10,7 @@ import {
     LEVEL_UP_COSTS, LEVEL_UP_CHAINS, SPECIAL_RECIPES, SEASONS, RUNNING_SEASONS, seasonById, runningSeason, ANIIPOD_TIERS, PERSONALITY_PAIRS, personalityLetter, opposedPersonality,
 } from './facility-config.js?v=leisure-families';
 import { allocateTurnFacilities, redistributeTurnFacilityRows } from './turn-jobs.js?v=auto-worker-travel';
-import { createShareUrl, readShareHash, urlWithoutShare } from './share-config.js';
+import { createShareUrl, readShareHash, urlWithoutShare } from './share-config.js?v=compact-roster';
 import { nearestStorage } from './layout.js?v=storage-power';
 import { ANIIMO_WALK_SPEED, workerTravelDistances } from './worker-travel.js?v=auto-worker-travel';
 import { assignFacilityStock, bufferedBatches, haulingWorkload, allocateHauling, haulingBatchTrips,
@@ -466,8 +466,7 @@ function getPersistedFieldIds() {
         'ecological-module-level', 'kitchen-module-level',
         'resource-detector-level', 'crafting-module-level',
         'rate-unit', 'season-on', 'season-event', 'layout-sim-on', 'layout-recipes', 'layout-workers', 'layout-storage-count', 'layout-rv-level',
-        'layout-style', 'layout-group-gap', 'layout-separate-sales',
-        'material-work-on',
+        'layout-style', 'layout-group-gap', 'layout-separate-sales', 'layout-icons',
         'aniimo-best', 'aniimo-minimum', 'aniimo-custom', 'worker-travel-on'
     ];
 }
@@ -510,9 +509,8 @@ function migrateSavedConfig(data) {
     if (data.seasonBudgets === undefined && data['season-currency-per-day'] !== undefined) {
         data.seasonBudgets = { [data['season-event'] || 'harvest_moon_festival']: data['season-currency-per-day'] };
     }
-    if (data['material-work-on'] === undefined && typeof data.materialWorkFor?.automatic === 'boolean') {
-        data['material-work-on'] = data.materialWorkFor.automatic;
-    }
+    delete data['material-work-on'];
+    delete data.materialWorkFor;
     return data;
 }
 
@@ -559,8 +557,12 @@ function saveInputsToStorage() {
         document.getElementById('share-config-status').textContent = imported
             ? 'Your changes are saved in this browser.' : '';
         document.getElementById('share-config-result').hidden = true;
+        const rosterSave = document.querySelector('[data-roster="save-import"]');
+        if (rosterSave) rosterSave.hidden = true;
+        return true;
     } catch (e) {
         console.warn('Could not save inputs to localStorage:', e);
+        return false;
     }
 }
 
@@ -1505,7 +1507,7 @@ function attachLayoutHandlers() {
     document.getElementById('layout-sim-on').addEventListener('change', () => {
         if (lastLayout) drawLayout(lastLayout);
     });
-    for (const id of ['layout-recipes', 'layout-workers']) document.getElementById(id).addEventListener('change', () => {
+    for (const id of ['layout-recipes', 'layout-workers', 'layout-icons']) document.getElementById(id).addEventListener('change', () => {
         if (lastLayout) drawLayout(lastLayout);
     });
     document.getElementById('layout-replay').addEventListener('click', () => {
@@ -1858,16 +1860,18 @@ function stopLayout() {
 }
 
 // A map piece's game icon and optional recipe names. Use initials while the art loads.
-function pieceLabel(m, showRecipes) {
+function pieceLabel(m, showRecipes, showIcons) {
     const x = m.x + m.w / 2;
     const y = m.y + m.h / 2;
     const initials = Math.min(0.8, m.w / 3);
     const recipe = showRecipes ? (m.jobs ? m.jobs.map(j => prettyItem(j.item)).join(', ') : m.crop ? prettyItem(m.crop) : '') : '';
-    const fallback = `<text class="layout-icon-fallback" x="${x}" y="${y}" font-size="${initials}">${initialsOf(m.facility)}</text>`;
-    const art = layoutFacilityIcon(m.facility, m, recipe ? 0.16 : 0);
-    if (!recipe) return fallback + art;
     const size = Math.min(initials * 0.62, (m.w - 0.16) / (recipe.length * 0.56));
-    return `${fallback}${art}<text class="layout-recipe" x="${x}" y="${m.y + m.h - size * 0.8}" font-size="${size}">${escapeText(recipe)}</text>`;
+    const labelY = !showIcons && recipe ? y - (size + 0.08) / 2 : y;
+    const fallback = `<text class="layout-icon-fallback" x="${x}" y="${labelY}" font-size="${initials}">${m.generator ? '⚡G' : initialsOf(m.facility)}</text>`;
+    const art = showIcons ? layoutFacilityIcon(m.facility, m, recipe ? 0.16 : 0) : '';
+    if (!recipe) return fallback + art;
+    const recipeY = showIcons ? m.y + m.h - size * 0.8 : y + (initials + 0.08) / 2;
+    return `${fallback}${art}<text class="layout-recipe" x="${x}" y="${recipeY}" font-size="${size}">${escapeText(recipe)}</text>`;
 }
 
 function layoutFacilityIcon(facility, { x, y, w, h }, labelSpace = 0) {
@@ -1899,10 +1903,13 @@ function layoutWorkAtSites(plan, sites) {
     const iconFor = (id, ability, level) => {
         const member = owned && roster[id];
         const label = ability ? `${translate(ability)}${level ? ` Lv.${level}` : ''}` : '';
-        if (member) return {
-            key: `member:${id}`, label: rosterTileLabel(member, id),
-            portrait: aniimoPortrait(rosterCatalogId(member.catalogId, member.name)), ability, level,
-        };
+        if (member) {
+            const form = rosterCatalogId(member.catalogId, member.name);
+            return {
+                key: `member:${id}`, label: rosterTileLabel(member, id),
+                portrait: aniimoPortrait(form), prismana: form?.includes('prismana'), ability, level,
+            };
+        }
         return { key: label, label: id != null ? `${translate('Assumed Aniimo')} · ${label}` : label, ability, level };
     };
     const matchingCropWorkers = (ability, level) => new Set((plan.crop_assignments || [])
@@ -1952,25 +1959,33 @@ function layoutWorkerBadges(site, work, electric) {
     const workers = [...new Map(work.filter(line => line.worker).map(({ worker }) => [worker.key, worker])).values()];
     if (!electric && !workers.length) return '';
     const size = Math.min(1.6, site.h * 0.46, site.w * 0.65);
+    const width = size * 0.8660254;
+    const border = size * 0.05;
     const position = `translate(${site.x + 0.08} ${site.y + site.h - size - 0.08})`;
-    const hex = 'M.5 0 .95 .23 .95 .77 .5 1 .05 .77 .05 .23Z';
+    const frame = `<use href="#roster-hex-shape" transform="scale(${width} ${size})"`;
+    const glyphArt = (glyph, scale, className) => `<svg x="${(width - size * scale) / 2}" y="${size * (1 - scale) / 2}" width="${size * scale}" height="${size * scale}" viewBox="0 0 24 24" class="${className}">${glyph}</svg>`;
     if (electric) return `<g transform="${position}" class="layout-worker-badges layout-emode-badge${site.power_connected ? '' : ' disconnected'}" aria-hidden="true">
-        <path d="${hex}" transform="scale(${size})"/>
-        <svg x="${size * 0.18}" y="${size * 0.18}" width="${size * 0.64}" height="${size * 0.64}" viewBox="0 0 24 24">${abilityGlyph('Lightning')}</svg>
+        ${frame} class="layout-emode-frame"/>
+        ${glyphArt(abilityGlyph('Lightning'), 0.74, 'layout-emode-bolt')}
     </g>`;
     const visible = site.w < 3 ? 1 : 2;
-    const group = workers.slice(0, visible).map(({ portrait, ability, level }, index) => {
+    const advance = width * 0.96;
+    const group = workers.slice(0, visible).map(({ portrait, prismana, ability, level }, index) => {
         const fill = portrait ? '#303743' : ABILITY_BY_NAME.get(ability)?.color ?? '#4f5b6c';
         const glyph = abilityGlyph(ability);
-        const x = index * size * 0.88;
+        const x = index * advance;
+        const innerWidth = width - 2 * border;
+        const innerHeight = size - 2 * border;
+        const backing = prismana && portrait ? `<use href="#roster-hex-shape" transform="translate(${border} ${border}) scale(${innerWidth} ${innerHeight})" fill="url(#layout-prismana-fill)"/>` : '';
         return `<g transform="translate(${x} 0)">
-            <path d="${hex}" transform="scale(${size})" fill="${fill}" stroke="#151820" stroke-width=".07"/>
-            ${portrait ? `<image href="${escapeText(portrait)}" width="${size}" height="${size}" class="layout-worker-icon"/>`
-                : glyph ? `<svg x="${size * 0.16}" y="${size * 0.16}" width="${size * 0.68}" height="${size * 0.68}" viewBox="0 0 24 24" class="layout-worker-icon">${glyph}</svg>`
-                : level ? `<text x="${size / 2}" y="${size / 2}" font-size="${size * .55}">${level}</text>` : ''}</g>`;
+            ${frame} fill="${prismana && portrait ? 'url(#layout-prismana-border)' : fill}"/>
+            ${backing}
+            ${portrait ? `<image href="${escapeText(portrait)}" x="${border}" y="${border}" width="${innerWidth}" height="${innerHeight}" preserveAspectRatio="xMidYMid slice" clip-path="url(#roster-hex)" class="layout-worker-icon"/>`
+                : glyph ? glyphArt(glyph, 0.66, 'layout-worker-icon')
+                : level ? `<text x="${width / 2}" y="${size / 2}" font-size="${size * .55}">${level}</text>` : ''}</g>`;
     });
     const extra = workers.length - visible;
-    if (extra > 0) group.push(`<text class="layout-worker-more" x="${visible * size * 0.88 + size * 0.25}" y="${size * 0.5}" font-size="${size * 0.45}">+${extra}</text>`);
+    if (extra > 0) group.push(`<text class="layout-worker-more" x="${visible * advance + size * 0.25}" y="${size * 0.5}" font-size="${size * 0.45}">+${extra}</text>`);
     return `<g transform="${position}" class="layout-worker-badges" aria-hidden="true">${group.join('')}</g>`;
 }
 
@@ -2004,6 +2019,7 @@ function homelandSvg(layout, homeLevel, plan) {
     for (let y = minY; y <= maxY; y++) lines.push(`<line x1="${minX}" y1="${y}" x2="${maxX}" y2="${y}" />`);
     const maxTrips = Math.max(...layout.pieces.flatMap(p => p.members.map(m => m.weight || 0)), 1e-9);
     const showRecipes = document.getElementById('layout-recipes').checked;
+    const showIcons = document.getElementById('layout-icons').checked;
     const showWorkers = document.getElementById('layout-workers').checked;
     const sites = layout.pieces.flatMap(p => p.members);
     const workAtSites = layoutWorkAtSites(plan, sites);
@@ -2025,7 +2041,7 @@ function homelandSvg(layout, homeLevel, plan) {
         });
         const focus = workAtSites[index].length ? 'tabindex="0" role="group"' : '';
         const workers = electric || showWorkers ? layoutWorkerBadges(m, workAtSites[index], electric) : '';
-        const label = pieceLabel(m, showRecipes);
+        const label = pieceLabel(m, showRecipes, showIcons);
         // Busier pieces are filled more solidly; idle ones are an outline.
         const fill = m.weight > 0 ? 0.13 + 0.18 * Math.sqrt(m.weight / maxTrips) : 0.07;
         if (m.building) {
@@ -2058,8 +2074,8 @@ function homelandSvg(layout, homeLevel, plan) {
         const trips = flowList.filter(flow => flow.storage === index).reduce((sum, flow) => sum + flow.trips, 0);
         return `<g class="layout-piece layout-storage-unit" ${tipAttrs('Storage Unit', { detail: 'Nearest storage for its deliveries', stats: trips > 0 ? `${formatRate(trips)} trips/hour` : '' })}>
             <rect x="${s.x + 0.04}" y="${s.y + 0.04}" width="${s.w - 0.08}" height="${s.h - 0.08}" rx="0.2" class="layout-storage" />
-            ${layoutFacilityIcon('Storage Unit', s, 0.10)}
-            <text x="${s.x + s.w / 2}" y="${s.y + s.h * 0.82}" font-size="0.52" class="layout-number-label">SU${index + 1}</text></g>`;
+            ${showIcons ? layoutFacilityIcon('Storage Unit', s, 0.10) : ''}
+            <text x="${s.x + s.w / 2}" y="${s.y + s.h * (showIcons ? 0.82 : 0.5)}" font-size="${showIcons ? 0.52 : 0.65}" class="layout-number-label">SU${index + 1}</text></g>`;
     }).join('');
     const view = `${minX} ${minY} ${maxX - minX} ${maxY - minY}`;
     const power = layout.power;
@@ -2067,8 +2083,8 @@ function homelandSvg(layout, homeLevel, plan) {
     const powerLines = (power?.links || []).map(link => `<line x1="${link.from.x}" y1="${link.from.y}" x2="${link.to.x}" y2="${link.to.y}" />`).join('');
     const poleShapes = (power?.poles || []).map((p, i) => `<g class="layout-power-pole" ${tipAttrs('Crackle Power Pole', { detail: `${i + 1} · 7×7` })}>
         <rect x="${p.x + 0.04}" y="${p.y + 0.04}" width="${p.w - 0.08}" height="${p.h - 0.08}" rx="0.2" />
-        ${layoutFacilityIcon('Crackle Power Pole', p, 0.10)}
-        <text x="${p.x + p.w / 2}" y="${p.y + p.h * 0.82}" font-size="0.48" class="layout-number-label">${i + 1}</text></g>`).join('');
+        ${showIcons ? layoutFacilityIcon('Crackle Power Pole', p, 0.10) : ''}
+        <text x="${p.x + p.w / 2}" y="${p.y + p.h * (showIcons ? 0.82 : 0.5)}" font-size="${showIcons ? 0.48 : 0.7}" class="layout-number-label">${showIcons ? '' : '⚡'}${i + 1}</text></g>`).join('');
     const rectangle = (r, css) => `<rect class="${css}" x="${r.x}" y="${r.y}" width="${r.w}" height="${r.h}" />`;
     const districts = layout.groupStyle === 'districts';
     const groupShapes = groups.map(group => `<g class="layout-district${districts ? ' layout-district-structured' : ''}" data-purpose="${group.purpose}" data-theme="${resourceZoneTheme(group)}">
@@ -2713,8 +2729,9 @@ function refreshRosterTileWorkloads(workloads = []) {
 
 function updateRosterEditorWorkload(fields) {
     const work = rosterTileWorkloads[Number(fields.dataset.rosterCard)];
-    fields.querySelector('.roster-edit-workload').textContent = work
-        ? [work.summary, ...work.lines].join('\n') : translate('Calculate a plan with My Aniimo to see assignments.');
+    const workload = fields.querySelector('.roster-edit-workload');
+    workload.hidden = !work;
+    workload.textContent = work ? [work.summary, ...work.lines].join('\n') : '';
 }
 
 function renderRoster() {
@@ -2770,36 +2787,52 @@ function editableRosterCopy() {
 }
 
 function renderRosterCardFields(i) {
-        const aniimo = roster[i];
-        const fields = document.querySelector('#roster-edit-dialog .roster-card-fields');
-        fields.dataset.rosterCard = i;
-        const abilities = Object.entries(aniimo.abilities).map(([ability, level]) => `
-            <span class="roster-ability">${abilityTag(ability)}<span class="tabs level-picker">${[1, 2, 3, 4].map(l =>
-                `<label><input type="radio" name="roster-${i}-${ability}" data-level="${i}|${ability}" value="${l}"${l === level ? ' checked' : ''}> ${l}</label>`).join('')}</span><button type="button" class="roster-x" data-drop="${i}|${ability}" aria-label="Remove ${ability}" title="Remove ${ability}">✕</button></span>`).join('');
-        const missing = ABILITIES.map(a => a.name).filter(name => !(name in aniimo.abilities));
-        const add = missing.length
-            ? `<select class="roster-add-ability" data-add="${i}" aria-label="Add an ability"><option value="">+ Ability</option>${missing.map(name => `<option value="${name}">${name}</option>`).join('')}</select>`
-            : '';
-        const personalities = PERSONALITY_PAIRS.map((pair, p) => `<span class="tabs level-picker roster-pair" role="radiogroup" aria-label="${pair.names.join(' or ')}">${pair.names.map((name, k) =>
-            `<label title="${name}"><input type="radio" name="roster-${i}-pair-${p}" data-personality="${i}|${p}" value="${name}"${aniimo.personalities[p] === name ? ' checked' : ''}> ${pair.letters[k]}</label>`).join('')}</span>`).join('');
-        fields.innerHTML = `
-                <p class="roster-edit-workload hint small"></p>
-                <div class="roster-head">
-                    <input type="text" class="roster-name" data-name="${i}" value="${escapeText(aniimo.name)}" placeholder="Aniimo ${i + 1}" aria-label="Name">
-                </div>
-                <div class="roster-abilities">${abilities}${add}</div>
-                ${aniimo.abilities.Leisure ? `<div class="input-field roster-family"><label for="roster-family-${i}">Leisure family</label>
-                    <select id="roster-family-${i}" data-family="${i}"><option value="">Choose a family</option>${LEISURE_FAMILIES.map(f => `<option value="${f.id}"${aniimo.family === f.id ? ' selected' : ''}>${f.name} — ${translate(f.product)}</option>`).join('')}</select>
-                    ${aniimo.family ? '' : '<p class="hint small">Choose a family to use this Aniimo for Leisure recipes.</p>'}</div>` : ''}
-                <div class="roster-personalities">${personalities}
-                    <button type="button" class="skip-add-btn" data-clear-personality="${i}"${aniimo.personalities.some(Boolean) ? '' : ' disabled'}>No personality</button>
-                </div>
-                <div class="roster-actions">
-                    <button type="button" class="skip-add-btn" data-roster="move">Move Aniimo</button>
-                    <button type="button" class="skip-add-btn" data-roster="duplicate">Add a copy</button>
-                    <button type="button" class="skip-add-btn" data-remove="${openRosterSlot}">Remove this Aniimo</button>
-                </div>`;
-        updateRosterEditorWorkload(fields);
+    const aniimo = roster[i];
+    const fields = document.querySelector('#roster-edit-dialog .roster-card-fields');
+    fields.dataset.rosterCard = i;
+    const abilities = Object.entries(aniimo.abilities).map(([ability, level]) => `
+        <div class="roster-ability">
+            <span>${abilityTag(ability)}</span>
+            <span class="tabs level-picker" role="radiogroup" aria-label="${ability}">${[1, 2, 3, 4].map(l =>
+                `<label><input type="radio" name="roster-${i}-${ability}" data-level="${i}|${ability}" value="${l}"${l === level ? ' checked' : ''}> ${l}</label>`).join('')}
+            </span>
+            <button type="button" class="roster-x" data-drop="${i}|${ability}" aria-label="Remove ${ability}" title="Remove ${ability}">✕</button>
+        </div>`).join('');
+    const missing = ABILITIES.map(a => a.name).filter(name => !(name in aniimo.abilities));
+    const add = missing.length
+        ? `<select class="roster-add-ability" data-add="${i}" aria-label="Add an ability"><option value="">+ Ability</option>${missing.map(name => `<option value="${name}">${name}</option>`).join('')}</select>`
+        : '';
+    const personalities = PERSONALITY_PAIRS.map((pair, p) => `<span class="tabs level-picker roster-pair" role="radiogroup" aria-label="${pair.names.join(' or ')}">${pair.names.map((name, k) =>
+        `<label title="${name}"><input type="radio" name="roster-${i}-pair-${p}" data-personality="${i}|${p}" value="${name}"${aniimo.personalities[p] === name ? ' checked' : ''}> ${pair.letters[k]}</label>`).join('')}</span>`).join('');
+    fields.innerHTML = `
+        <div class="input-field">
+            <label for="roster-member-name">Name</label>
+            <input id="roster-member-name" type="text" class="roster-name" data-name="${i}" value="${escapeText(aniimo.name)}" placeholder="Aniimo ${i + 1}">
+        </div>
+        <section class="roster-edit-section" aria-labelledby="roster-abilities-title">
+            <div class="roster-edit-section-head">
+                <h4 id="roster-abilities-title">Work abilities</h4>
+                ${add}
+            </div>
+            ${abilities ? `<div class="roster-abilities">${abilities}</div>` : ''}
+            ${aniimo.abilities.Leisure ? `<div class="input-field roster-family"><label for="roster-family-${i}">Leisure family</label>
+                <select id="roster-family-${i}" data-family="${i}"><option value="">Choose a family</option>${LEISURE_FAMILIES.map(f => `<option value="${f.id}"${aniimo.family === f.id ? ' selected' : ''}>${f.name} — ${translate(f.product)}</option>`).join('')}</select>
+                ${aniimo.family ? '' : '<p class="hint small">Choose a family to use this Aniimo for Leisure recipes.</p>'}</div>` : ''}
+        </section>
+        <section class="roster-edit-section" aria-labelledby="roster-personality-title">
+            <div class="roster-edit-section-head">
+                <h4 id="roster-personality-title">Personality</h4>
+                <button type="button" class="skip-add-btn" data-clear-personality="${i}"${aniimo.personalities.some(Boolean) ? '' : ' hidden'}>No personality</button>
+            </div>
+            <div class="roster-personalities">${personalities}</div>
+        </section>
+        <p class="roster-edit-workload hint small" hidden></p>
+        <div class="roster-actions roster-edit-actions">
+            <button type="button" class="skip-add-btn" data-roster="move">Move Aniimo</button>
+            <button type="button" class="skip-add-btn" data-roster="duplicate">Add a copy</button>
+            <button type="button" class="skip-add-btn roster-remove-btn" data-remove="${openRosterSlot}">Remove this Aniimo</button>
+        </div>`;
+    updateRosterEditorWorkload(fields);
 }
 
 function editRosterCard(position) {
@@ -2807,7 +2840,7 @@ function editRosterCard(position) {
     openRosterCard = rosterSlots[position];
     renderRosterCardFields(openRosterCard);
     document.getElementById('roster-edit-dialog').showModal();
-    document.querySelector('#roster-edit-dialog .roster-name').focus();
+    if (!roster[openRosterCard].name) document.getElementById('roster-member-name').focus();
 }
 
 // When the roster can't make a plan: keeps the Aniimo card, and its editor, on screen so the
@@ -2921,21 +2954,25 @@ function attachRosterHandlers() {
     document.addEventListener('error', event => {
         if (event.target.matches?.('.roster-portrait-fill img, .roster-skill img')) event.target.hidden = true;
     }, true);
-    editor.innerHTML = `<div class="roster-tools">
-        <div class="input-field"><label for="roster-filter">Filter your team</label>
-            <input id="roster-filter" type="search" autocomplete="off" placeholder="Name or ability"></div>
-        <label class="planner-checkbox"><input id="use-my-aniimo" type="checkbox"> Use My Aniimo in the plan</label>
+    editor.innerHTML = `<div class="roster-editor-layout">
+        <div class="roster-tools">
+            <div class="input-field"><label for="roster-filter">Filter your team</label>
+                <input id="roster-filter" type="search" autocomplete="off" placeholder="Name or ability"></div>
+            <label class="planner-checkbox"><input id="use-my-aniimo" type="checkbox"> Use My Aniimo in the plan</label>
+            <div class="roster-actions">
+                <button type="button" class="skip-add-btn" data-roster="save-import" hidden>Save this roster</button>
+                <button type="button" class="skip-add-btn" data-roster="add-row">Add row</button>
+                <button type="button" class="skip-add-btn" data-roster="from-best" disabled>Start from the Best team</button>
+                <button type="button" class="skip-add-btn" data-roster="from-minimum" disabled>Start from the Minimum team</button>
+            </div>
+            <p class="hint small" id="roster-fill-status" role="status"></p>
+            <div class="roster-move-hint" data-roster-move-hint hidden>
+                <p class="hint small" role="status">Choose a destination slot. Occupied slots swap places.</p>
+                <button type="button" class="skip-add-btn" data-roster="cancel-move">Cancel</button>
+            </div>
+        </div>
+        <div class="roster-cards"></div>
     </div>
-    <div class="roster-move-hint" data-roster-move-hint hidden>
-        <p class="hint small" role="status">Choose a destination slot. Occupied slots swap places.</p>
-        <button type="button" class="skip-add-btn" data-roster="cancel-move">Cancel</button>
-    </div>
-    <div class="roster-cards"></div>
-    <div class="roster-actions">
-        <button type="button" class="skip-add-btn" data-roster="add-row">Add row</button>
-        <button type="button" class="skip-add-btn" data-roster="from-best" disabled>Start from the Best team</button>
-        <button type="button" class="skip-add-btn" data-roster="from-minimum" disabled>Start from the Minimum team</button>
-    </div><p class="hint small" id="roster-fill-status" role="status"></p>
     <dialog class="roster-dialog" id="roster-picker-dialog" aria-labelledby="roster-picker-title">
         <div class="roster-dialog-head"><h3 id="roster-picker-title">Add Aniimo</h3>
             <button type="button" class="roster-x" data-close-dialog aria-label="Close">✕</button></div>
@@ -3023,6 +3060,12 @@ function attachRosterHandlers() {
             const start = rosterSlots.length;
             rosterSlots.push(...Array(ROSTER_ROW_SIZE).fill(null));
             rosterBoardChanged(start);
+            return;
+        } else if (action === 'save-import') {
+            if (saveInputsToStorage()) {
+                editor.querySelector('#roster-fill-status').textContent = 'Your changes are saved in this browser.';
+                editor.querySelector('#roster-filter').focus();
+            }
             return;
         } else if (action === 'cancel-move') {
             moveRosterCopy(rosterMoveFrom, rosterMoveFrom);
@@ -4093,8 +4136,7 @@ function renderProfitBreakdown(plan) {
 function getPlanInputValues() {
     const target = levelUpInput();
     const levelUp = isLevelUpStrategy();
-    const rv = { level_up_strategy: levelUp, level_up: levelUp ? target : null, level_up_preview: levelUp ? null : target,
-        maximize_material_work: document.getElementById('material-work-on').checked };
+    const rv = { level_up_strategy: levelUp, level_up: levelUp ? target : null, level_up_preview: levelUp ? null : target };
     // `facilityTiers` is the live source of truth for owned counts (kept in sync with the DOM by
     // `attachFacilityTierHandlers`), sent straight through as a list of tiers per facility; see
     // `JsPlanInput::facilities` in wasm.rs for the shape (`[{count, level}, ...]` per facility).
@@ -5343,6 +5385,7 @@ function displayPlan(plan) {
     const materialHint = document.getElementById('material-work-hint');
     materialHint.hidden = !plan.material_work_note;
     materialHint.textContent = !plan.material_work_note ? ''
+        : plan.material_work_note === 'unavailable' ? translate('The production plan is valid. The extra Bench and Kiln workload could not be optimized in time.')
         : translate('Bench and Kiln workload is the best found in the time allowed; its maximum is not proven.');
     explored.style.display = plan.proven_optimal === true ? 'none' : '';
     if (plan.proven_optimal === true) {
@@ -5839,7 +5882,10 @@ async function initApp() {
         document.getElementById('share-config-status').textContent = 'This share link is invalid. Your saved setup was kept.';
         console.warn('Could not load shared config:', error);
     }
-    const savedData = sharedData ? migrateSavedConfig(sharedData) : readStorage();
+    const sharedRoster = sharedData?.kind === 'roster';
+    const savedData = sharedRoster ? {
+        ...readStorage(), roster: sharedData.roster, rosterSlots: sharedData.rosterSlots,
+    } : sharedData ? migrateSavedConfig(sharedData) : readStorage();
     initFacilityTiers(savedData);
     renderFacilityCards();
     populateHomeLevels();
@@ -5865,9 +5911,6 @@ async function initApp() {
     attachPriorityHandlers();
     applyConfigMode();
     showAniimoSetup();
-    document.getElementById('material-work-on').addEventListener('change', () => {
-        if (lastPlanInput) clearPlanResults();
-    });
     initWasm();
 
     document.getElementById('optimize-btn').addEventListener('click', runFindPlan);
@@ -5882,7 +5925,15 @@ async function initApp() {
         const indices = ranking.candidates.map((c,i)=>(c.group || `#${i}`) === group ? i : -1).filter(i=>i>=0);
         rankImprovementsFor(selectedAniimoSetup(),indices,button.dataset.compareDetailed != null);
     });
-    if (sharedData) document.getElementById('share-config-status').textContent = 'Shared setup loaded. Your saved setup is kept until you edit this one.';
+    if (sharedRoster) {
+        const config = document.getElementById('roster-config');
+        config.open = true;
+        const save = config.querySelector('[data-roster="save-import"]');
+        save.hidden = false;
+        save.focus();
+    } else if (sharedData) {
+        document.getElementById('share-config-status').textContent = 'Shared setup loaded. Your saved setup is kept until you edit this one.';
+    }
     document.getElementById('rate-unit').addEventListener('change', () => {
         rateUnitChosen = true;
         updateRateUnitDisplays();

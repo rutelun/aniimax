@@ -33,6 +33,7 @@ jobs:
           cargo test --locked --test data_tests --test models_tests
           cargo test --locked --test exact_tests hauling
           cargo test --locked --test exact_tests electricity
+          cargo test --locked --test exact_tests material_work_uses_spare_owned_artisans_before_slower_reserves
 
       - name: Install wasm-pack
         run: cargo install wasm-pack

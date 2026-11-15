@@ -44,3 +44,14 @@ test('test_share_link_compresses_repeated_data_losslessly', async () => {
     assert.ok(url.href.length < JSON.stringify(fullSetup).length);
     assert.deepEqual(await readShareHash(url.hash), fullSetup);
 });
+
+test('a roster-only link keeps empty cells and does not require facility settings', async () => {
+    const roster = {
+        kind: 'roster', roster: [{ count: 1, name: 'Whirlbite', abilities: { Water: 4 } }],
+        rosterSlots: [null, null, 0, null, null],
+    };
+    const url = new URL(await createShareUrl('https://example.com/', roster));
+    assert.deepEqual(await readShareHash(url.hash), roster);
+    const invalid = new URL(await createShareUrl('https://example.com/', { ...roster, rosterSlots: [] }));
+    await assert.rejects(readShareHash(invalid.hash), /Invalid shared config/);
+});

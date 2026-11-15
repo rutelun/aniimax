@@ -81,17 +81,20 @@ test('a spare workload timeout preserves the checked plan with RV materials', as
     });
     const plan = JSON.parse(await p.run());
     assert.ok(plan.success);
-    assert.equal(plan.material_work_note, 'unproven');
+    assert.equal(plan.material_work_note, 'unavailable');
     assert.equal(plan.comparison_scores.material_pace, .3);
     assert.equal(p.checks.at(-1).stage.maximize_upgrade_materials, true);
     assert.deepEqual(p.checks.at(-1).solved.values, [.5,1,.3]);
     assert.ok(p.progress.some(([step,state])=>step==='materials'&&state==='fail'));
 });
 
-test('a material timeout without an RV material plan does not claim to satisfy the option', async () => {
+test('a material timeout without an RV material goal still returns the checked priority plan', async () => {
     const p = planner(null);
-    await assert.rejects(p.run(), /Woodworking Bench and Chimney Kiln workload/);
-    assert.equal(p.checks.length, 0);
+    const plan = JSON.parse(await p.run());
+    assert.equal(plan.success, true);
+    assert.equal(plan.material_work_note, 'unavailable');
+    assert.deepEqual(p.checks.at(-1).stage.floors, [['coins',10]]);
+    assert.equal(p.checks.at(-1).stage.maximize_material_work, undefined);
 });
 
 test('a feasible time-limited material solution is shown without claiming a proven maximum', async () => {

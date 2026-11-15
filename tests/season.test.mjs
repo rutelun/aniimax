@@ -92,10 +92,10 @@ function migrate(data) {
     return JSON.parse(JSON.stringify(context.result));
 }
 
-test('an old shared setup keeps its automatic Bench and Kiln preference', () => {
-    const saved = migrate({ 'existing-homeland-on': true, materialWorkFor: { automatic: false, existing: true } });
-    assert.equal(saved['material-work-on'], false);
-    assert.equal(migrate({ ...saved, 'material-work-on': true })['material-work-on'], true);
+test('an old shared setup uses automatic Bench and Kiln production', () => {
+    const saved = migrate({ 'material-work-on': false, materialWorkFor: { automatic: false, existing: true } });
+    assert.equal('material-work-on' in saved, false);
+    assert.equal('materialWorkFor' in saved, false);
 });
 
 test('a single saved budget goes to the season it was typed for', () => {

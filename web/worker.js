@@ -329,12 +329,8 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
                 proven &&= worked.proven;
                 if (!worked.proven) materialWorkNote = 'unproven';
             } else {
-                // An optional maximization must not discard a plan with valid RV materials.
-                // Keep the preceding solution; the independent check still runs below.
-                if (!stage.pace && !(materialPace > 0)) {
-                    throw new Error('no plan found for the Woodworking Bench and Chimney Kiln workload');
-                }
-                materialWorkNote = 'unproven';
+                // Keep the feasible priority plan when the extra workload search times out.
+                materialWorkNote = 'unavailable';
                 if (materialPace != null) keepMaterialStock();
             }
         } else if (materialPace != null) {

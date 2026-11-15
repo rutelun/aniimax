@@ -1106,5 +1106,9 @@
   "Add row": "Добавить ряд",
   "Move Aniimo": "Переместить Анимо",
   "Add a copy": "Добавить копию",
-  "Choose a destination slot. Occupied slots swap places.": "Выбери ячейку. Если она занята, Анимо поменяются местами."
+  "Choose a destination slot. Occupied slots swap places.": "Выбери ячейку. Если она занята, Анимо поменяются местами.",
+  "Work abilities": "Рабочие способности",
+  "Personality": "Характер",
+  "Show building icons": "Показывать иконки зданий",
+  "Save this roster": "Сохранить этот состав"
 }

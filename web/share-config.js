@@ -58,8 +58,12 @@ export async function readShareHash(hash) {
         MAX_CONFIG_BYTES
     );
     const config = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(decompressed));
-    if (!config || typeof config !== 'object' || Array.isArray(config)
-        || !config.facilityTiers || typeof config.facilityTiers !== 'object' || Array.isArray(config.facilityTiers)) {
+    const setup = config?.facilityTiers && typeof config.facilityTiers === 'object' && !Array.isArray(config.facilityTiers);
+    const roster = config?.kind === 'roster' && Array.isArray(config.roster) && Array.isArray(config.rosterSlots)
+        && config.roster.every(member => member?.abilities && Number.isSafeInteger(member.count) && member.count > 0)
+        && config.roster.reduce((count, member) => count + member.count, 0) <= config.rosterSlots.length;
+    const valid = config?.kind === 'roster' ? roster : setup;
+    if (!config || typeof config !== 'object' || Array.isArray(config) || !valid) {
         throw new Error('Invalid shared config');
     }
     return config;

@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Aniimax - Aniimo Production Optimizer</title>
-    <link rel="stylesheet" href="style.css?v=game-heads">
+    <link rel="stylesheet" href="style.css?v=compact-roster">
     <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
 </head>
 <body>
@@ -185,7 +185,6 @@
                         <label><input type="radio" name="strategy" id="strategy-level-up" value="level-up" checked> Level up</label>
                         <label><input type="radio" name="strategy" id="strategy-priorities" value="priorities"> Priorities</label>
                     </div>
-                    <label class="planner-checkbox"><input type="checkbox" id="material-work-on" checked><span>Maximize spare Bench and Kiln production</span></label>
 
                     <div id="priorities-config" style="display: none;">
                         <label class="planner-checkbox"><input type="checkbox" id="crop-variety"><span>Crop and Tree Variety</span></label>
@@ -423,6 +422,7 @@
                             <span class="layout-toggles">
                                 <label class="layout-whole"><input type="checkbox" id="layout-whole"> Show the whole homeland</label>
                                 <label class="layout-whole"><input type="checkbox" id="layout-sim-on" checked> Simulate</label>
+                                <label class="layout-whole"><input type="checkbox" id="layout-icons" checked> Show building icons</label>
                                 <label class="layout-whole"><input type="checkbox" id="layout-recipes"> Show recipe</label>
                                 <label class="layout-whole"><input type="checkbox" id="layout-workers" checked> Show workers</label>
                             </span>
@@ -692,11 +692,18 @@
         });
     </script>
     <svg class="roster-svg-defs" width="0" height="0" aria-hidden="true">
-        <defs><clipPath id="roster-hex" clipPathUnits="objectBoundingBox">
-            <path d="M .445 .027 Q .5 0 .555 .027 L .945 .222 Q 1 .25 1 .31 L 1 .69 Q 1 .75 .945 .778
+        <defs>
+            <path id="roster-hex-shape" d="M .445 .027 Q .5 0 .555 .027 L .945 .222 Q 1 .25 1 .31 L 1 .69 Q 1 .75 .945 .778
                 L .555 .973 Q .5 1 .445 .973 L .055 .778 Q 0 .75 0 .69 L 0 .31 Q 0 .25 .055 .222 Z"/>
-        </clipPath></defs>
+            <clipPath id="roster-hex" clipPathUnits="objectBoundingBox"><use href="#roster-hex-shape"/></clipPath>
+            <linearGradient id="layout-prismana-fill" x2="1" y2="1">
+                <stop stop-color="#ffdad7"/><stop offset=".28" stop-color="#bfc7f6"/><stop offset=".53" stop-color="#fff1c9"/><stop offset="1" stop-color="#bd9adf"/>
+            </linearGradient>
+            <linearGradient id="layout-prismana-border" x2="1" y2="1">
+                <stop stop-color="#a68aff"/><stop offset=".4" stop-color="#98b6ff"/><stop offset="1" stop-color="#f1a5fb"/>
+            </linearGradient>
+        </defs>
     </svg>
-    <script type="module" src="app.js?v=game-heads"></script>
+    <script type="module" src="app.js?v=compact-roster"></script>
 </body>
 </html>

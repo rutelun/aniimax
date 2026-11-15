@@ -1124,5 +1124,9 @@
   "Add row": "新增一列",
   "Move Aniimo": "移動阿尼莫",
   "Add a copy": "新增相同個體",
-  "Choose a destination slot. Occupied slots swap places.": "選擇目標欄位。若欄位已有阿尼莫，兩者會交換位置。"
+  "Choose a destination slot. Occupied slots swap places.": "選擇目標欄位。若欄位已有阿尼莫，兩者會交換位置。",
+  "Work abilities": "工作能力",
+  "Personality": "個性",
+  "Show building icons": "顯示建築圖示",
+  "Save this roster": "儲存此名單"
 }
