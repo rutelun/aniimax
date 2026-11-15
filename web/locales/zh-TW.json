@@ -1089,6 +1089,8 @@
   "Search by building name": "依建築名稱搜尋",
   "No matching facilities.": "找不到符合的設施。",
   "Plan with": "規劃隊伍",
+  "Uses the minimum ability level each recipe requires.": "使用各配方要求的最低能力等級。",
+  "Uses the selected ability levels and the preferred personality for each facility.": "使用選定的能力等級，以及各設施適合的性格。",
   "Ability levels": "能力等級",
   "Find a building or recipe": "尋找建築或配方",
   "Search by name": "依名稱搜尋",

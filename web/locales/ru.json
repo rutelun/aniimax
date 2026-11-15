@@ -1070,6 +1070,8 @@
   "Search by building name": "Название здания",
   "No matching facilities.": "Здания не найдены.",
   "Plan with": "Команда для расчёта",
+  "Uses the minimum ability level each recipe requires.": "Учитывает минимальный уровень способности для каждого рецепта.",
+  "Uses the selected ability levels and the preferred personality for each facility.": "Учитывает выбранные уровни способностей и подходящий характер для каждого здания.",
   "Ability levels": "Уровни способностей",
   "Find a building or recipe": "Найти здание или рецепт",
   "Search by name": "Поиск по названию",

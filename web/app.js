@@ -1,6 +1,6 @@
 // Aniimax Web Application
 
-import { currentLocale, sourceAttribute, translate } from './i18n.js?v=compact-roster';
+import { currentLocale, sourceAttribute, translate } from './i18n.js?v=plan-team';
 import './math-translation.js?v=compact-roster';
 import { autoMaximizeSeasonPoints } from './season-planning.js?v=optional-season-points';
 
@@ -2736,8 +2736,6 @@ function updateRosterEditorWorkload(fields) {
 
 function renderRoster() {
     const editor = document.getElementById('roster-editor');
-    const useRoster = document.getElementById('use-my-aniimo');
-    useRoster.checked = selectedSetupTab() === 'custom';
     editor.querySelector('.roster-cards').innerHTML = rosterBoard(rosterSlots, (i, position, copy) => i == null
         ? emptyRosterCell(position)
         : `<button type="button" class="roster-tile" data-roster-tile="${i}" data-roster-position="${position}" data-roster-copy="${copy}" draggable="true" aria-haspopup="dialog">
@@ -2958,7 +2956,6 @@ function attachRosterHandlers() {
         <div class="roster-tools">
             <div class="input-field"><label for="roster-filter">Filter your team</label>
                 <input id="roster-filter" type="search" autocomplete="off" placeholder="Name or ability"></div>
-            <label class="planner-checkbox"><input id="use-my-aniimo" type="checkbox"> Use My Aniimo in the plan</label>
             <div class="roster-actions">
                 <button type="button" class="skip-add-btn" data-roster="save-import" hidden>Save this roster</button>
                 <button type="button" class="skip-add-btn" data-roster="add-row">Add row</button>
@@ -3019,23 +3016,18 @@ function attachRosterHandlers() {
         paint: (entry, name) => portraitTile(entry, name, entry.id),
         tr: translate,
     });
-    document.getElementById('use-my-aniimo').addEventListener('change', event => {
-        const setup = document.getElementById(event.target.checked ? 'aniimo-custom' : 'aniimo-best');
-        setup.checked = true;
-        setup.dispatchEvent(new Event('change'));
-    });
     editor.querySelector('#roster-edit-dialog').addEventListener('close', () => {
         const tile = editor.querySelector(`[data-roster-position="${openRosterSlot}"]`);
         openRosterCard = null;
         openRosterSlot = null;
         (tile ?? editor.querySelector('[data-roster="add-row"]')).focus();
     });
-    document.getElementById('edit-roster-btn').addEventListener('click', () => {
+    document.querySelectorAll('[data-edit-roster]').forEach(button => button.addEventListener('click', () => {
         const config = document.getElementById('roster-config');
         config.open = true;
         config.scrollIntoView({ block: 'start' });
         document.getElementById('roster-filter').focus({ preventScroll: true });
-    });
+    }));
     editor.addEventListener('click', (e) => {
         const button = e.target.closest('button');
         if (!button) return;
@@ -3668,14 +3660,16 @@ function renderAbilityLevels() {
 function showAniimoSetup() {
     travelRefinements = 0;
     const tab = selectedSetupTab();
-    document.getElementById('aniimo-setup-panel').hidden = tab === 'minimum';
     document.getElementById('ability-level-settings').hidden = tab !== 'best';
-    document.getElementById('edit-roster-btn').hidden = tab !== 'custom';
+    document.querySelectorAll('[data-edit-roster]').forEach(button => { button.hidden = tab !== 'custom'; });
     document.getElementById('roster-worker-limit').hidden = tab !== 'custom';
     document.getElementById('worker-travel-option').hidden = tab !== 'custom';
-    document.getElementById('aniimo-setup-hint').textContent = tab === 'custom'
-        ? 'The plan shares your Aniimo’s available hours between jobs.'
-        : 'The best Aniimo you have of each ability.';
+    const hints = {
+        custom: 'The plan shares your Aniimo’s available hours between jobs.',
+        minimum: 'Uses the minimum ability level each recipe requires.',
+        best: 'Uses the selected ability levels and the preferred personality for each facility.',
+    };
+    document.getElementById('aniimo-setup-hint').textContent = hints[tab];
     if (tab === 'best') renderAbilityLevels();
     renderRoster();
     switchAniimoSetup();

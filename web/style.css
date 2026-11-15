@@ -2904,7 +2904,6 @@ tr:hover .skip-row,
     gap: 0.55rem;
 }
 .roster-tools .input-field { min-width: 0; margin: 0; }
-.roster-tools .planner-checkbox { min-height: 2rem; }
 .roster-tools .roster-actions { display: grid; gap: 0.3rem; }
 .roster-tools .roster-actions button { text-align: start; }
 .roster-tools [data-roster="save-import"] {
@@ -3424,22 +3423,42 @@ body > header {
 .planner-navigation #planner-jump-go { min-height: 2.75rem; }
 
 html { scroll-padding-top: calc(var(--planner-bar-height, 4rem) + 0.8rem); }
-.planner-settings-grid > *, #results-content > *, .input-field { min-width: 0; }
-.planner-settings-primary, .planner-team-settings { display: flow-root; }
-.planner-settings-grid h3 { margin: 0 0 0.6rem; }
-.planner-settings-grid .tabs, .strategy .tabs { margin-bottom: 0.8rem; }
+#results-content > *, .input-field { min-width: 0; }
+.planner-settings-primary h3, .planner-team-settings h3 { margin: 0 0 0.6rem; }
+.planner-settings-primary .tabs, .strategy .tabs { margin-bottom: 0.8rem; }
 .production-filters .checkbox-field { align-items: baseline; gap: 0.5rem; }
-.planner-settings-grid .tabs label, .strategy .tabs label { min-height: 2.75rem; display: inline-flex; align-items: center; }
+.planner-settings-primary .tabs label, .strategy .tabs label { min-height: 2.75rem; display: inline-flex; align-items: center; }
 .planner-team-settings #worker-travel-option label { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.15rem 0.5rem; }
 .config-actions { gap: 0.1rem 0.85rem; }
 .config-actions button { min-height: 2.75rem; }
-.planner-settings-grid { display: grid; gap: 1.25rem; align-items: start; }
+.planner-team-options.tabs {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.25rem;
+    width: 100%;
+    max-width: 30rem;
+    margin: 0 0 0.65rem;
+}
+.planner-team-options.tabs label {
+    display: grid;
+    place-items: center;
+    min-height: 2.75rem;
+    padding: 0.35rem;
+    text-align: center;
+    line-height: 1.2;
+}
+.planner-team-options.tabs label:has(input:checked) {
+    background: var(--surface);
+    box-shadow: inset 0 0 0 1px var(--accent);
+    color: var(--accent);
+}
 .planner-team-settings .aniimo-setup-panel { padding: 0; }
-.planner-team-settings .checkbox-field { margin-top: 0.75rem; }
+.planner-team-settings #aniimo-setup-hint { margin: 0; }
+.planner-team-settings #ability-level-settings, .planner-team-settings .checkbox-field { margin-top: 0.5rem; }
 .planner-team-settings #roster-worker-limit { margin-bottom: 0; }
 .planner-team-settings #electricity-aniimo-limit { max-width: 15rem; }
-.planner-team-settings .tabs { max-width: 100%; flex-wrap: wrap; }
 .planner-team-settings .level-picker label { min-height: 2rem; }
+#edit-roster-from-plan { min-height: 2.75rem; }
 
 .planner-checkbox {
     display: grid;
@@ -3467,7 +3486,13 @@ html { scroll-padding-top: calc(var(--planner-bar-height, 4rem) + 0.8rem); }
 .season-budget { max-width: 23rem; }
 #season-notes .special-option { align-items: baseline; }
 #season-notes input { flex: none; }
-.planner-submit { margin-top: 1.25rem; }
+.planner-submit {
+    display: grid;
+    gap: 1rem;
+    margin-top: 1.25rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border);
+}
 .planner-submit .optimize-btn { min-height: 2.75rem; }
 
 .facility-search, .production-filters .input-field { max-width: 25rem; }
@@ -3499,13 +3524,6 @@ html { scroll-padding-top: calc(var(--planner-bar-height, 4rem) + 0.8rem); }
 .progress-step { grid-template-columns: 1.1rem minmax(0, 1fr) auto; }
 .opportunity-actions { max-width: 100%; }
 .opportunity-actions button { white-space: normal; max-width: 100%; }
-
-@media (min-width: 65rem) {
-    .planner-settings-grid {
-        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-        gap: clamp(1.25rem, 3vw, 2.5rem);
-    }
-}
 
 @media (max-width: 37.5rem) {
     body > header { align-items: flex-start; }

@@ -1070,6 +1070,8 @@
   "Search by building name",
   "No matching facilities.",
   "Plan with",
+  "Uses the minimum ability level each recipe requires.",
+  "Uses the selected ability levels and the preferred personality for each facility.",
   "Ability levels",
   "Find a building or recipe",
   "Search by name",

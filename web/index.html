@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Aniimax - Aniimo Production Optimizer</title>
-    <link rel="stylesheet" href="style.css?v=compact-roster">
+    <link rel="stylesheet" href="style.css?v=plan-team">
     <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
 </head>
 <body>
@@ -60,51 +60,25 @@
                 </div>
                 <p id="share-config-status" class="hint small" role="status" aria-live="polite"></p>
 
-                <div class="planner-settings-grid">
-                    <div class="planner-settings-primary">
-                        <h3>Input mode</h3>
-                        <div class="tabs" role="radiogroup" aria-label="Input mode">
-                            <label><input type="radio" name="config-mode" id="mode-simple" value="simple" checked> Simple</label>
-                            <label><input type="radio" name="config-mode" id="mode-advanced" value="advanced"> Advanced</label>
-                        </div>
-
-                        <div id="simple-config">
-                            <div class="input-row">
-                                <div class="input-field">
-                                    <label for="home-level">RV level</label>
-                                    <select id="home-level"></select>
-                                </div>
-                            </div>
-                            <p class="hint">Assumes you've built and upgraded everything your RV level allows.</p>
-                            <details class="explain simple-details">
-                                <summary id="simple-summary-title">Facilities and modules</summary>
-                                <div id="simple-summary"></div>
-                            </details>
-                        </div>
+                <div class="planner-settings-primary">
+                    <h3>Input mode</h3>
+                    <div class="tabs" role="radiogroup" aria-label="Input mode">
+                        <label><input type="radio" name="config-mode" id="mode-simple" value="simple" checked> Simple</label>
+                        <label><input type="radio" name="config-mode" id="mode-advanced" value="advanced"> Advanced</label>
                     </div>
-                    <div class="planner-team-settings">
-                        <h3>Plan with</h3>
-                        <div class="tabs compact" role="radiogroup" aria-label="Aniimo setup">
-                            <label title="The best Aniimo you have, with each facility's personality"><input type="radio" name="aniimo-setup" id="aniimo-best" value="best" checked> Best</label>
-                            <label title="The lowest ability level each recipe accepts: the least you can get by with"><input type="radio" name="aniimo-setup" id="aniimo-minimum" value="minimum"> Minimum</label>
-                            <label title="Plan with the Aniimo you actually have"><input type="radio" name="aniimo-setup" id="aniimo-custom" value="custom"> My Aniimo</label>
-                        </div>
-                        <div class="aniimo-setup-panel" id="aniimo-setup-panel">
-                            <p class="hint small" id="aniimo-setup-hint"></p>
-                            <details class="explain" id="ability-level-settings">
-                                <summary>Ability levels</summary>
-                                <div class="ability-levels" id="ability-levels"></div>
-                            </details>
-                            <div id="worker-travel-option" class="checkbox-field" hidden>
-                                <label><input type="checkbox" id="worker-travel-on"> <span>Account for Aniimo travel</span> <span class="hint small">(very slow)</span></label>
-                            </div>
-                            <div id="roster-worker-limit" class="input-row" hidden>
-                                <div class="input-field">
-                                    <label for="electricity-aniimo-limit">Max working Aniimo</label>
-                                    <input type="number" id="electricity-aniimo-limit" min="0" max="4294967295" step="1" placeholder="No limit">
-                                </div>
+
+                    <div id="simple-config">
+                        <div class="input-row">
+                            <div class="input-field">
+                                <label for="home-level">RV level</label>
+                                <select id="home-level"></select>
                             </div>
                         </div>
+                        <p class="hint">Assumes you've built and upgraded everything your RV level allows.</p>
+                        <details class="explain simple-details">
+                            <summary id="simple-summary-title">Facilities and modules</summary>
+                            <div id="simple-summary"></div>
+                        </details>
                     </div>
                 </div>
 
@@ -257,6 +231,31 @@
                 </div>
 
                 <div class="planner-submit">
+                    <div class="planner-team-settings">
+                        <h3 id="planner-team-label">Plan with</h3>
+                        <div class="tabs planner-team-options" role="radiogroup" aria-labelledby="planner-team-label" aria-describedby="aniimo-setup-hint">
+                            <label><input type="radio" name="aniimo-setup" id="aniimo-custom" value="custom"> My Aniimo</label>
+                            <label><input type="radio" name="aniimo-setup" id="aniimo-minimum" value="minimum"> Minimum</label>
+                            <label><input type="radio" name="aniimo-setup" id="aniimo-best" value="best" checked> Best</label>
+                        </div>
+                        <div class="aniimo-setup-panel" id="aniimo-setup-panel">
+                            <p class="hint small" id="aniimo-setup-hint"></p>
+                            <details class="explain" id="ability-level-settings">
+                                <summary>Ability levels</summary>
+                                <div class="ability-levels" id="ability-levels"></div>
+                            </details>
+                            <div id="worker-travel-option" class="checkbox-field" hidden>
+                                <label><input type="checkbox" id="worker-travel-on"> <span>Account for Aniimo travel</span> <span class="hint small">(very slow)</span></label>
+                            </div>
+                            <div id="roster-worker-limit" class="input-row" hidden>
+                                <div class="input-field">
+                                    <label for="electricity-aniimo-limit">Max working Aniimo</label>
+                                    <input type="number" id="electricity-aniimo-limit" min="0" max="4294967295" step="1" placeholder="No limit">
+                                </div>
+                            </div>
+                            <button type="button" class="toggle-button small" id="edit-roster-from-plan" data-edit-roster hidden>Edit My Aniimo</button>
+                        </div>
+                    </div>
                     <button id="optimize-btn" type="button" class="optimize-btn" disabled>
                         <span class="btn-text">Loading optimizer…</span>
                         <span class="btn-loading" style="display: none;">Solving...</span>
@@ -281,7 +280,7 @@
                                 <span class="chevron" aria-hidden="true"></span>
                                 <h2>Aniimo Team</h2>
                             </button>
-                            <button type="button" class="toggle-button small" id="edit-roster-btn" hidden>Edit My Aniimo</button>
+                            <button type="button" class="toggle-button small" id="edit-roster-btn" data-edit-roster hidden>Edit My Aniimo</button>
                         </div>
                         <p class="aniimo-count" id="aniimo-count" hidden><span id="aniimo-count-have">0</span><span class="aniimo-count-of" id="aniimo-count-of"></span></p>
                         <p class="collapsed-summary" id="aniimo-collapsed-summary"></p>
@@ -704,6 +703,6 @@
             </linearGradient>
         </defs>
     </svg>
-    <script type="module" src="app.js?v=compact-roster"></script>
+    <script type="module" src="app.js?v=plan-team"></script>
 </body>
 </html>
