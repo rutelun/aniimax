@@ -24,6 +24,7 @@
   "The colored edge shows the abilities each recipe needs. Open a recipe for its workers, required levels and batch time. Load is the average percentage of time each building spends on that recipe.": "Цветная полоска показывает, какие способности нужны рецепту. Раскройте рецепт, чтобы увидеть работников, нужные уровни и время на партию. Загрузка показывает, какую долю времени здание в среднем занято рецептом.",
   "Required abilities": "Требуемые способности",
   "Skip recipe and replan": "Исключить рецепт и пересчитать",
+  "Skip recipe": "Исключить рецепт",
   "Growing environments": "Условия выращивания",
   "Aniimax - Aniimo Production Optimizer": "Aniimax — оптимизатор производства Анимо",
   "facilities": "объекты",

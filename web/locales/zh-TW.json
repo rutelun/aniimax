@@ -24,6 +24,7 @@
   "The colored edge shows the abilities each recipe needs. Open a recipe for its workers, required levels and batch time. Load is the average percentage of time each building spends on that recipe.": "彩色邊條表示配方所需的能力。展開配方即可查看工作人員、所需等級和每批時間。使用率表示每棟建築平均有多少時間用於該配方。",
   "Required abilities": "所需能力",
   "Skip recipe and replan": "略過配方並重新規劃",
+  "Skip recipe": "略過配方",
   "Growing environments": "栽培環境",
   "Aniimax - Aniimo Production Optimizer": "Aniimax - 伊莫生產最佳化工具",
   "facilities": "設施",

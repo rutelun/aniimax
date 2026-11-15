@@ -1,7 +1,7 @@
 // Aniimax Web Application
 
-import { currentLocale, sourceAttribute, translate } from './i18n.js?v=side-editor';
-import './math-translation.js?v=side-editor';
+import { currentLocale, sourceAttribute, translate } from './i18n.js?v=production-polish';
+import './math-translation.js?v=production-polish';
 import { autoMaximizeSeasonPoints } from './season-planning.js?v=optional-season-points';
 
 import {
@@ -2709,7 +2709,7 @@ function emptyRosterCell(position) {
     return position == null
         ? '<span class="roster-tile roster-empty-tile" aria-hidden="true"><span class="roster-portrait"></span></span>'
         : `<button type="button" class="roster-tile roster-empty-tile" data-roster="browse" data-roster-position="${position}" aria-label="Add Aniimo" aria-haspopup="dialog">
-            <span class="roster-portrait" aria-hidden="true">+</span></button>`;
+            <span class="roster-portrait" aria-hidden="true"><span class="roster-add-mark"></span></span></button>`;
 }
 
 function rosterTileLabel(member, index) {
@@ -4510,7 +4510,8 @@ function productionCard(step, plan) {
                     ${workers.map(worker => `<li>${worker.badge}<span>${worker.name}</span></li>`).join('')}
                 </ul>` : ''}
                 ${step.aniimo?.personality_bonus ? `<p>${escapeText(taskLabel(step.aniimo, step.facility))}</p>` : ''}
-                ${item && producing ? `<button type="button" class="production-skip" data-skip="${escapeText(step.item_name)}">Skip recipe and replan</button>` : ''}
+                ${item && producing ? `<button type="button" class="production-skip" data-skip="${escapeText(step.item_name)}" aria-label="Skip recipe and replan">
+                    <span class="production-skip-mark" aria-hidden="true">×</span><span>Skip recipe</span></button>` : ''}
             </div>
         </details>
     `;

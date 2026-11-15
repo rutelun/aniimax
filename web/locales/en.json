@@ -24,6 +24,7 @@
   "The colored edge shows the abilities each recipe needs. Open a recipe for its workers, required levels and batch time. Load is the average percentage of time each building spends on that recipe.",
   "Required abilities",
   "Skip recipe and replan",
+  "Skip recipe",
   "Growing environments",
   "Aniimax - Aniimo Production Optimizer",
   "facilities",

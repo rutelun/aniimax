@@ -3065,10 +3065,14 @@ details.explain p {
 .roster-empty-tile .roster-portrait {
     isolation: isolate;
     color: var(--accent);
-    font-size: 1.8rem;
-    font-weight: 400;
 }
 .roster-empty-tile .roster-portrait::before { z-index: -1; background: color-mix(in srgb, var(--accent) 15%, var(--surface)); }
+.roster-add-mark {
+    width: min(0.9rem, 28%);
+    aspect-ratio: 1;
+    background: linear-gradient(currentColor, currentColor) center / 100% 2px no-repeat,
+        linear-gradient(currentColor, currentColor) center / 2px 100% no-repeat;
+}
 @media (max-width: 40rem) {
     .roster-slot-row { gap: 0.12rem; }
     .roster-slot .roster-tile { padding-inline: 0.02rem; }
@@ -3627,7 +3631,7 @@ html { scroll-padding-top: calc(var(--planner-bar-height, 4rem) + 0.8rem); }
 .production-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    align-items: start;
+    align-items: stretch;
     gap: 0.75rem;
 }
 .production-building-card {
@@ -3760,7 +3764,24 @@ html { scroll-padding-top: calc(var(--planner-bar-height, 4rem) + 0.8rem); }
 .production-detail strong { color: var(--text); }
 .production-crew { display: flex; flex-wrap: wrap; gap: 0.35rem 0.75rem; list-style: none; padding: 0; margin: 0 0 0.45rem; }
 .production-crew li { display: flex; align-items: center; gap: 0.3rem; min-width: 0; }
-.production-skip { min-height: 2.5rem; font-size: 0.8rem; }
+.production-skip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    min-height: 2.75rem;
+    padding: 0.25rem 0.65rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    color: var(--text);
+    font: inherit;
+    cursor: pointer;
+}
+.production-skip:hover {
+    border-color: var(--error);
+    background: color-mix(in srgb, var(--error) 9%, var(--surface));
+}
+.production-skip-mark { font-size: 1rem; line-height: 1; }
 .production-environment-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(min(100%, 19rem), 1fr));
