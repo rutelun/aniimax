@@ -1,13 +1,13 @@
 // Aniimax Web Application
 
-import { currentLocale, sourceAttribute, translate } from './i18n.js?v=production-groups';
-import './math-translation.js?v=production-groups';
+import { currentLocale, sourceAttribute, translate } from './i18n.js?v=side-editor';
+import './math-translation.js?v=side-editor';
 import { autoMaximizeSeasonPoints } from './season-planning.js?v=optional-season-points';
 
 import {
     FACILITIES, FACILITY_CATEGORIES, FACILITY_CATEGORY_BY_NAME, FACILITY_FOOTPRINTS, HOMELAND_PLOTS, HOMELAND_PLOT_SIZE,
     MAX_HOME_LEVEL, ANIIMO_MAX, simpleSetup, storageUnitLimit, powerPoleLimit, generatorLimit, LEISURE_FAMILIES,
-    LEVEL_UP_COSTS, LEVEL_UP_CHAINS, SPECIAL_RECIPES, SEASONS, RUNNING_SEASONS, seasonById, runningSeason, ANIIPOD_TIERS, PERSONALITY_PAIRS, personalityLetter, opposedPersonality,
+    LEVEL_UP_COSTS, SPECIAL_RECIPES, SEASONS, RUNNING_SEASONS, seasonById, runningSeason, ANIIPOD_TIERS, PERSONALITY_PAIRS, personalityLetter, opposedPersonality,
 } from './facility-config.js?v=leisure-families';
 import { allocateTurnFacilities, redistributeTurnFacilityRows } from './turn-jobs.js?v=auto-worker-travel';
 import { createShareUrl, readShareHash, urlWithoutShare } from './share-config.js?v=compact-roster';
@@ -460,12 +460,12 @@ let rateUnitChosen = false;
 function getPersistedFieldIds() {
     return [
         'target-amount', 'current-amount',
-        'strategy-level-up', 'strategy-priorities', 'crop-variety', 'level-up-target',
+        'crop-variety', 'level-up-target',
         'electricity-on', 'electricity-aniimo-limit',
-        'mode-simple', 'mode-advanced', 'home-level',
+        'home-level',
         'ecological-module-level', 'kitchen-module-level',
         'resource-detector-level', 'crafting-module-level',
-        'rate-unit', 'season-on', 'season-event', 'layout-sim-on', 'layout-recipes', 'layout-workers', 'layout-storage-count', 'layout-rv-level',
+        'rate-unit', 'season-on', 'season-event', 'layout-sim-on', 'layout-recipes', 'layout-workers', 'layout-storage-count',
         'layout-style', 'layout-group-gap', 'layout-separate-sales', 'layout-icons',
         'aniimo-best', 'aniimo-minimum', 'aniimo-custom', 'worker-travel-on'
     ];
@@ -490,12 +490,12 @@ function migrateSavedConfig(data) {
     if (data['crop-variety'] === undefined && data['strategy-crop-variety']) {
         data['crop-variety'] = true;
         data['strategy-level-up'] = false;
-        data['strategy-priorities'] = true;
     }
-    // Saves from before simple mode existed hold a hand-entered setup; keep showing it.
-    if (data['mode-simple'] === undefined && data.facilityTiers) {
-        data['mode-simple'] = false;
-        data['mode-advanced'] = true;
+    if (data.customBuildings === undefined) {
+        // Saves from before Simple held hand-entered building counts.
+        data.customBuildings = Boolean(data['mode-advanced'] || data['mode-simple'] === false
+            || (data['mode-simple'] === undefined && data.facilityTiers));
+        if (data.customBuildings) data['home-level'] = data['layout-rv-level'] ?? '';
     }
     const tiers = data.facilityTiers;
     if (tiers && tiers['Mine'] === undefined && tiers['Mineral Pile'] !== undefined) {
@@ -534,12 +534,13 @@ function initFacilityTiers(data) {
 }
 
 function currentConfig() {
-    const data = { facilityTiers, levelUpStock, skippedRecipes: [...skippedRecipes], unlockedSpecial: [...unlockedSpecial], priorities: priorityOrder, aniimoLevels, roster, rosterSlots, seasonBudgets, seasonCropMinimums };
+    const data = { facilityTiers, customBuildings, levelUpStock, skippedRecipes: [...skippedRecipes], unlockedSpecial: [...unlockedSpecial], priorities: priorityOrder, aniimoLevels, roster, rosterSlots, seasonBudgets, seasonCropMinimums };
     getPersistedFieldIds().forEach(id => {
         const el = document.getElementById(id);
         if (!el) return;
         data[id] = (el.type === 'checkbox' || el.type === 'radio') ? el.checked : el.value;
     });
+    if (!customBuildings || !data['level-up-target']) delete data['level-up-target'];
     return data;
 }
 
@@ -589,6 +590,7 @@ async function shareCurrentConfig() {
 
 function loadInputsFromStorage(data) {
     if (!data) return;
+    customBuildings = Boolean(data.customBuildings);
     if (data.levelUpStock && typeof data.levelUpStock === 'object') levelUpStock = { ...data.levelUpStock };
     if (Array.isArray(data.skippedRecipes)) skippedRecipes = new Set(data.skippedRecipes.filter(n => typeof n === 'string'));
     if (Array.isArray(data.unlockedSpecial)) unlockedSpecial = new Set(data.unlockedSpecial.filter(n => typeof n === 'string'));
@@ -601,16 +603,22 @@ function loadInputsFromStorage(data) {
         seasonCropMinimums = Object.fromEntries(Object.entries(data.seasonCropMinimums)
             .filter(([, count]) => Number.isInteger(count) && count > 0 && count <= MAX_SEASON_PLOTS));
     }
-    if (Array.isArray(data.priorities)) {
-        const saved = data.priorities.filter(p => PRIORITY_TARGETS.some(t => t.id === p?.target));
-        const missing = PRIORITY_TARGETS.filter(t => !saved.some(p => p.target === t.id)).map(t => ({ target: t.id, on: false }));
-        priorityOrder = [...saved.map(p => ({ target: p.target, on: !!p.on })), ...missing];
+    if (data['strategy-level-up']) {
+        priorityOrder = defaultPriorities();
+    } else if (Array.isArray(data.priorities)) {
+        const saved = new Map();
+        for (const { target, on } of data.priorities.filter(p => PRIORITY_TARGETS.some(t => t.id === p?.target))) {
+            if (!saved.has(target)) saved.set(target, Boolean(on));
+        }
+        for (const { id } of PRIORITY_TARGETS) {
+            if (!saved.has(id)) saved.set(id, false);
+        }
+        priorityOrder = [...saved].map(([target, on]) => ({ target, on }));
     } else if (data['strategy-coins'] || data['strategy-exp'] || data['strategy-aniipods']) {
         // Saves from before Priorities picked one "Most ..." tab; carry that choice over.
         const first = data['strategy-exp'] ? 'aniimo_exp' : data['strategy-aniipods'] ? 'aniipods' : 'coins';
         priorityOrder = [first, ...PRIORITY_TARGETS.map(t => t.id).filter(id => id !== first)]
             .map(target => ({ target, on: target === first }));
-        data['strategy-priorities'] = true;
     }
     if (data.aniimoLevels && typeof data.aniimoLevels === 'object') {
         aniimoLevels = Object.fromEntries(Object.entries(data.aniimoLevels)
@@ -641,11 +649,12 @@ function loadInputsFromStorage(data) {
         if (!el) return;
         if (el.type === 'checkbox' || el.type === 'radio') {
             el.checked = !!data[id];
-        } else {
+        } else if (id === 'level-up-target' && !customBuildings) {
+            return;
+        } else if (el.tagName !== 'SELECT' || [...el.options].some(option => option.value === String(data[id]))) {
             el.value = data[id];
         }
     });
-    levelUpTargetChosen = 'level-up-target' in data;
 }
 
 // Auto-save on every change to a persisted static field (facility tier inputs save themselves;
@@ -688,14 +697,11 @@ async function initWasm() {
     }
 }
 
-// --- Simple / advanced mode -----------------------------------------------------------
-// Simple mode takes just the RV (Homeland) level and assumes everything that level allows is built
-// and upgraded (see `simpleSetup` in facility-config.js). Advanced mode is the full per-facility
-// input. Switching modes never overwrites the advanced inputs; "Fill from RV level" copies a
-// simple setup into them on purpose.
+// Use the RV's full set of buildings and upgrades until the player edits their inventory.
+let customBuildings = false;
 
 function isSimpleMode() {
-    return document.getElementById('mode-simple').checked;
+    return !customBuildings;
 }
 
 function selectedHomeLevel() {
@@ -703,63 +709,24 @@ function selectedHomeLevel() {
 }
 
 function populateHomeLevels() {
-    const options = [];
+    const options = ['<option value="">Auto</option>'];
     for (let level = 1; level <= MAX_HOME_LEVEL; level++) {
         options.push(`<option value="${level}">${level}${level === MAX_HOME_LEVEL ? ' (everything unlocked)' : ''}</option>`);
     }
-    for (const id of ['home-level', 'fill-level']) {
-        const select = document.getElementById(id);
-        select.innerHTML = options.join('');
-        select.value = String(MAX_HOME_LEVEL);
-    }
+    const select = document.getElementById('home-level');
+    select.innerHTML = options.join('');
+    select.value = String(MAX_HOME_LEVEL);
 }
 
-// One entry per built facility, e.g. "10 Farmland Lv.2".
-function renderSimpleSummary() {
-    const homeLevel = selectedHomeLevel();
-    const { facilities, modules } = simpleSetup(homeLevel);
-    const chip = (count, name, level) => `
-        <div class="chip"><span><span class="chip-count">${count}</span> ${name}</span>${level ? `<span class="chip-level">${level}</span>` : ''}</div>`;
-    const built = FACILITIES
-        .map(f => ({ name: f.name, tier: facilities[f.name][0], hasLevels: f.hasLevels !== false }))
-        .filter(({ tier }) => tier.count > 0)
-        .map(({ name, tier, hasLevels }) => chip(`${tier.count}×`, name, hasLevels ? `Lv.${tier.level}` : ''))
-        .join('');
-    const moduleChips = [
-        ['Ecological Module', modules.ecological_module],
-        ['Kitchen Module', modules.kitchen_module],
-        ['Resource Detector', modules.resource_detector],
-        ['Crafting Module', modules.crafting_module],
-    ].map(([name, level]) => chip('', name, level > 0 ? `Lv.${level}` : 'not yet')).join('');
-    const kinds = FACILITIES.filter(f => facilities[f.name][0].count > 0).length;
-    document.getElementById('simple-summary-title').textContent = `${kinds} facilities and 4 modules at RV ${homeLevel}`;
-    document.getElementById('simple-summary').innerHTML = `
-        <p class="assume-title">Facilities</p>
-        <div class="chip-grid">${built}</div>
-        <p class="assume-title">Modules</p>
-        <div class="chip-grid">${moduleChips}</div>`;
+function renderBuildingSettings() {
+    document.getElementById('home-level').options[0].hidden = !customBuildings;
+    document.getElementById('reset-buildings').hidden = !customBuildings;
+    document.getElementById('building-setup-note').textContent = customBuildings
+        ? 'Uses your building counts and upgrade levels.'
+        : 'Uses all buildings and upgrades available at your RV level.';
 }
 
-// Whether the player has picked Advanced mode's level-up target; until then it follows the RV
-// level the facilities came from.
-let levelUpTargetChosen = false;
-
-function followLevelUpTarget(homeLevel) {
-    const select = document.getElementById('level-up-target');
-    if ([...select.options].some(o => o.value === String(homeLevel + 1))) select.value = String(homeLevel + 1);
-}
-
-function applyConfigMode() {
-    const simple = isSimpleMode();
-    if (!simple && !levelUpTargetChosen) followLevelUpTarget(selectedHomeLevel());
-    document.getElementById('simple-config').style.display = simple ? 'block' : 'none';
-    document.getElementById('advanced-config').style.display = simple ? 'none' : 'block';
-    if (simple) renderSimpleSummary();
-    renderStrategy();
-}
-
-// Fills the advanced inputs with everything `homeLevel` allows.
-function fillAdvancedFrom(homeLevel) {
+function fillBuildingInputs(homeLevel) {
     const { facilities, modules } = simpleSetup(homeLevel);
     FACILITIES.forEach(f => {
         facilityTiers[f.name] = facilities[f.name].map(t => ({ ...t }));
@@ -769,22 +736,37 @@ function fillAdvancedFrom(homeLevel) {
     document.getElementById('kitchen-module-level').value = modules.kitchen_module;
     document.getElementById('resource-detector-level').value = modules.resource_detector;
     document.getElementById('crafting-module-level').value = modules.crafting_module;
-    document.getElementById('layout-rv-level').value = homeLevel;
-    followLevelUpTarget(homeLevel);
-    renderStrategy();
-    saveInputsToStorage();
 }
 
 function attachModeHandlers() {
-    document.getElementById('mode-simple').addEventListener('change', applyConfigMode);
-    document.getElementById('mode-advanced').addEventListener('change', applyConfigMode);
-    document.getElementById('home-level').addEventListener('change', () => {
-        renderSimpleSummary();
+    const rv = document.getElementById('home-level');
+    rv.addEventListener('change', () => {
+        if (isSimpleMode()) fillBuildingInputs(selectedHomeLevel());
+        if (lastPlanInput) clearPlanResults();
         renderStrategy();
     });
-    document.getElementById('fill-btn').addEventListener('click', () => {
-        fillAdvancedFrom(numberOrDefault(document.getElementById('fill-level').value, MAX_HOME_LEVEL));
+    const markCustom = () => {
+        if (customBuildings) return;
+        customBuildings = true;
+        renderBuildingSettings();
         renderStrategy();
+    };
+    document.getElementById('advanced-config').addEventListener('input', event => {
+        if (event.target.matches('input[type="number"]')) markCustom();
+    }, true);
+    document.getElementById('facilities-grid').addEventListener('click', event => {
+        if (event.target.closest('.add-tier-btn, .tier-remove-btn')) markCustom();
+    }, true);
+    document.getElementById('reset-buildings').addEventListener('click', () => {
+        if (!rv.value) rv.value = String(layoutHomeLevel(null));
+        customBuildings = false;
+        document.getElementById('level-up-target').value = '';
+        fillBuildingInputs(selectedHomeLevel());
+        renderBuildingSettings();
+        if (lastPlanInput) clearPlanResults();
+        renderStrategy();
+        saveInputsToStorage();
+        document.getElementById('custom-buildings').querySelector('summary').focus();
     });
 }
 
@@ -1422,9 +1404,9 @@ function homelandPlots() {
 // everything entered (see `homeLevelCovering`).
 function layoutHomeLevel(input = lastPlanInput) {
     if (isSimpleMode()) return selectedHomeLevel();
-    const minimum = homeLevelCovering(input);
+    const minimum = homeLevelCovering(input ?? buildingInventory());
     return Math.min(MAX_HOME_LEVEL, Math.max(minimum,
-        Math.floor(numberOrDefault(document.getElementById('layout-rv-level').value, minimum))));
+        Math.floor(numberOrDefault(document.getElementById('home-level').value, minimum))));
 }
 
 function layoutStyle() {
@@ -1636,8 +1618,7 @@ function drawLayout(drawn) {
     // With the simulation off, the layout is drawn on its own.
     const on = document.getElementById('layout-sim-on').checked;
     diagram.classList.toggle('no-sim', !on);
-    const stock = new Map(planContext?.levelUp ? lastPlanInput?.level_up?.stock || [] : []);
-    startLayoutSim(on ? diagram.querySelector('.layout-svg') : null, layoutFlows(drawn.layout), stock);
+    startLayoutSim(on ? diagram.querySelector('.layout-svg') : null, layoutFlows(drawn.layout), new Map());
 }
 
 function renderBuildingIndex(layout) {
@@ -2394,23 +2375,17 @@ function showSimClock(seconds) {
 let progress = null;
 
 function startProgress(input, runId) {
-    const levelUp = !!input.level_up && planContext.levelUp && !planContext.ready && !planContext.unavailable;
     const priorities = input.priorities || [];
     const seasonFirst = autoMaximizeSeasonPoints(input);
-    const planting = !input.level_up_strategy && (input.crop_variety || input.season);
-    // A level-up's solves (the soonest level-up, the most Home Coins at that pace, spare Bench
-    // and Kiln time) are one step, and every plan's last is its final solve and the re-check
-    // of it against every limit: the worker's steps map onto these (see `setStep`).
-    // If the worker runs a separate points solve, show it after the level-up pace (if any).
+    const planting = input.crop_variety || input.season;
     const season = seasonFirst ? [{ key: 'season', label: `Most ${seasonById(input.season).points}` }] : [];
     const steps = [
         ...(planting ? [{ key: 'crop_variety', label: input.crop_variety ? 'Crop and Tree Variety' : 'Season Crops' }] : []),
         ...priorities.map(target => ({ key: `priority:${target}`, label: target === 'level_up'
             ? priorityLabel(target) : `Most ${priorityLabel(target, planContext.aniipod)}` })),
-        ...(levelUp ? [] : season),
-        { key: 'plan', label: levelUp ? 'Fastest Level-Up' : priorities.at(-1) === 'coins' && !input.level_up_strategy
+        ...season,
+        { key: 'plan', label: priorities.at(-1) === 'coins'
             ? 'Finish Production Plan' : priorities.length || seasonFirst || planting ? "Home Coins with What's Left" : 'Most Home Coins' },
-        ...(levelUp ? season : []),
         { key: 'layout', label: 'Homeland Layout' },
     ];
     progress = { runId, steps: steps.map(step => ({ ...step, state: 'pending' })) };
@@ -2522,12 +2497,31 @@ function updatePlannerNavigation() {
 function jumpToPlannerSection(id) {
     const section = document.getElementById(id);
     if (!section) return;
-    if (id === 'roster-config') section.hidden = false;
+    if (id === 'roster-config') {
+        openPlannerEditor('team');
+        section.hidden = false;
+    }
     if (section instanceof HTMLDetailsElement) section.open = true;
     const heading = section.querySelector('h2, summary') || section;
     if (!heading.matches('summary')) heading.tabIndex = -1;
     heading.focus({ preventScroll: true });
     section.scrollIntoView({ block: 'start' });
+}
+
+function openPlannerEditor(panel) {
+    document.querySelectorAll('[data-planner-editor]').forEach(button => {
+        const expanded = button.dataset.plannerEditor === panel;
+        button.setAttribute('aria-expanded', String(expanded));
+        document.getElementById(button.getAttribute('aria-controls')).hidden = !expanded;
+    });
+}
+
+function attachPlannerEditor() {
+    document.querySelector('.planner-editor-options').addEventListener('click', event => {
+        const button = event.target.closest('[data-planner-editor]');
+        if (!button) return;
+        openPlannerEditor(button.getAttribute('aria-expanded') === 'true' ? null : button.dataset.plannerEditor);
+    });
 }
 
 function attachPlannerNavigation() {
@@ -2756,6 +2750,15 @@ function renderRoster() {
     editor.querySelector(`[data-roster-position="${rosterMoveFrom}"]`)?.classList.add('is-moving');
     if (openRosterCard != null && roster[openRosterCard]) renderRosterCardFields(openRosterCard);
     document.getElementById('roster-config-count').textContent = String(roster.reduce((total, member) => total + member.count, 0));
+    const tab = selectedSetupTab();
+    const summary = document.getElementById('planner-team-summary');
+    if (tab === 'custom') {
+        const count = document.getElementById('roster-config-count').textContent;
+        const travel = document.getElementById('worker-travel-on').checked ? 'Travel on' : 'Travel off';
+        summary.textContent = `${translate('My Aniimo')} (${count}) · ${translate(travel)}`;
+    } else {
+        summary.textContent = tab === 'minimum' ? 'Minimum' : 'Best';
+    }
     editor.querySelectorAll('[data-roster="from-best"], [data-roster="from-minimum"]').forEach(button => {
         button.disabled = !lastPlanInput;
     });
@@ -3349,9 +3352,6 @@ function attachElectricityHandlers() {
         renderElectricity();
         if (lastPlanInput) clearPlanResults();
     });
-    document.getElementById('layout-rv-level').addEventListener('input', () => {
-        if (lastPlanInput) clearPlanResults();
-    });
 }
 
 let seasonCropMinimums = {};
@@ -3378,6 +3378,22 @@ function renderSeasonCropMinimums() {
             <input type="number" id="season-minimum-${name}" data-crop="${name}"
                 min="0" max="${MAX_SEASON_PLOTS}" step="1" value="${seasonCropMinimums[name] || 0}">
         </div>`).join('');
+    renderSeasonSummary();
+}
+
+function renderSeasonSummary() {
+    const summary = document.getElementById('planner-season-summary');
+    const season = currentSeason();
+    const button = summary.closest('button');
+    button.hidden = !seasonAvailable();
+    if (button.hidden && button.getAttribute('aria-expanded') === 'true') openPlannerEditor(null);
+    if (!seasonActive()) {
+        summary.textContent = 'Off';
+        return;
+    }
+    const counts = seasonCrops(season).map(crop => seasonCropMinimums[crop.name] || 0).filter(Boolean);
+    const plots = counts.length ? translate('{plots} plots').replace('{plots}', counts.join(' + ')) : '';
+    summary.textContent = [translate(season.name), plots].filter(Boolean).join(' · ');
 }
 
 // The picked season's currency a day the player can spend on seeds, or `null` when blank (no limit).
@@ -3411,7 +3427,10 @@ function renderSeason() {
     const season = currentSeason();
     document.getElementById('season-section').hidden = !seasonAvailable();
     document.getElementById('season-config').hidden = !seasonActive();
-    if (!season) return;
+    if (!season) {
+        renderSeasonSummary();
+        return;
+    }
     // A saved pick that has since ended left the selector blank; show the season it fell back to.
     const select = document.getElementById('season-event');
     if (select.value !== season.id) select.value = season.id;
@@ -3460,12 +3479,14 @@ function attachSeasonHandlers() {
         const count = Number(target.value);
         if (count) seasonCropMinimums[crop] = count;
         else delete seasonCropMinimums[crop];
+        renderSeasonSummary();
         saveInputsToStorage();
     });
     document.getElementById('season-notes').addEventListener('change', (e) => {
         const name = e.target.dataset.special;
         if (!name) return;
         if (e.target.checked) unlockedSpecial.add(name); else unlockedSpecial.delete(name);
+        renderRecipeCount();
         saveInputsToStorage();
     });
 }
@@ -3527,10 +3548,11 @@ async function loadRecipeIndex() {
 // The Recipes section's badge, e.g. " (2 on, 3 skipped)", so what's set shows while it's closed.
 function renderRecipeCount() {
     const parts = [];
-    const on = [...unlockedSpecial].filter(name => SPECIAL_NAMES.has(name)).length;
-    if (on) parts.push(`${on} on`);
-    if (skippedRecipes.size) parts.push(`${skippedRecipes.size} skipped`);
-    document.getElementById('recipe-count').textContent = parts.length ? ` (${parts.join(', ')})` : '';
+    const on = [...unlockedSpecial].filter(name => SPECIAL_NAMES.has(name)
+        || (seasonActive() && currentSeason()?.recipeNotes.some(recipe => recipe.name === name))).length;
+    if (on) parts.push(translate('{n} on').replace('{n}', on));
+    if (skippedRecipes.size) parts.push(translate('{n} skipped').replace('{n}', skippedRecipes.size));
+    document.getElementById('recipe-count').textContent = parts.length ? parts.join(' · ') : 'All standard recipes';
 }
 
 function renderSkippedRecipes() {
@@ -3706,17 +3728,12 @@ const ITEM_NAMES = {
     flowers_in_a_bottle: 'Flowers in a Bottle',
 };
 
-function isLevelUpStrategy() {
-    return document.getElementById('strategy-level-up').checked;
-}
-
 // --- Priorities ------------------------------------------------------------------------
-// What the Priorities strategy can go for, and the player's ranking of it. The plan makes as much
-// of each ticked one as the ones above it allow, then earns coins with what's left (see
+// The plan optimizes each active priority in order, then earns coins with what's left (see
 // `JsPlanInput::priorities` in wasm.rs).
 const PRIORITY_TARGETS = [
-    { id: 'coins', label: 'Home Coins' },
     { id: 'level_up', label: 'Minimum level-up time' },
+    { id: 'coins', label: 'Home Coins' },
     { id: 'aniimo_exp', label: 'Aniimo EXP' },
     { id: 'aniipods', label: 'Aniipods' },
     { id: 'Wood Blocks', label: 'Wood Blocks' },
@@ -3729,14 +3746,14 @@ const PRIORITY_TARGETS = [
 const ARROW_UP = '<svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M6 2.5 L10 7 H2 Z" fill="currentColor"/></svg>';
 const ARROW_DOWN = '<svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M6 9.5 L10 5 H2 Z" fill="currentColor"/></svg>';
 
-let priorityOrder = PRIORITY_TARGETS.map(t => ({ target: t.id, on: t.id === 'coins' }));
-
-function isPriorityStrategy() {
-    return document.getElementById('strategy-priorities').checked;
+function defaultPriorities() {
+    return PRIORITY_TARGETS.map(t => ({ target: t.id, on: t.id === 'level_up' || t.id === 'coins' }));
 }
 
+let priorityOrder = defaultPriorities();
+
 function wantsCropVariety() {
-    return isPriorityStrategy() && document.getElementById('crop-variety').checked;
+    return document.getElementById('crop-variety').checked;
 }
 
 // The priorities on the page: season points only while the season is on.
@@ -3745,9 +3762,8 @@ function shownPriorities() {
     return priorityOrder.filter(p => season || !PRIORITY_TARGETS.find(t => t.id === p.target)?.season);
 }
 
-// The ticked priorities, best first; none for the level-up strategy.
 function activePriorities() {
-    return isPriorityStrategy() ? shownPriorities().filter(p => p.on).map(p => p.target) : [];
+    return shownPriorities().filter(p => p.on).map(p => p.target);
 }
 
 function wantsAniipods() {
@@ -3763,26 +3779,27 @@ function priorityLabel(target, aniipod = bestAniipod()) {
 function renderPriorities() {
     const best = bestAniipod();
     const shown = shownPriorities();
-    document.getElementById('priority-list').innerHTML = shown.map((p, at) => {
+    const active = shown.filter(p => p.on);
+    const inactive = shown.filter(p => !p.on);
+    document.getElementById('add-priority').innerHTML = '<option value="">+ Add priority</option>'
+        + inactive.map(p => `<option value="${escapeText(p.target)}">${escapeText(priorityLabel(p.target, best))}</option>`).join('');
+    document.getElementById('add-priority').disabled = !inactive.length;
+    document.getElementById('priority-list').innerHTML = active.map((p, at) => {
         // Indices into `priorityOrder`, which also holds any priority that isn't shown.
         const i = priorityOrder.indexOf(p);
-        const above = at > 0 ? priorityOrder.indexOf(shown[at - 1]) : -1;
-        const below = at < shown.length - 1 ? priorityOrder.indexOf(shown[at + 1]) : -1;
-        const label = priorityLabel(p.target, best);
+        const above = at > 0 ? priorityOrder.indexOf(active[at - 1]) : -1;
+        const below = at < active.length - 1 ? priorityOrder.indexOf(active[at + 1]) : -1;
+        const label = escapeText(priorityLabel(p.target, best));
         const note = p.target === 'aniipods' && !best ? ' <span class="hint small">(no Aniipod Maker yet)</span>' : '';
         return `
-        <li class="priority${p.on ? '' : ' off'}" draggable="true" data-index="${i}">
+        <li class="priority" draggable="true" data-index="${i}">
             <span class="drag-handle" aria-hidden="true">⋮⋮</span>
-            <span class="priority-rank">${p.on ? shown.slice(0, at + 1).filter(q => q.on).length : ''}</span>
+            <span class="priority-rank" aria-hidden="true">${at + 1}</span>
             <span class="priority-name">${label}${note}</span>
-            <label class="priority-switch" title="${p.on ? 'On: the plan goes for this' : 'Off: the plan ignores this'}">
-                <input type="checkbox" role="switch" data-toggle="${i}" aria-label="${label}"${p.on ? ' checked' : ''}>
-                <span class="switch-track" aria-hidden="true"></span>
-                <span class="switch-text">${p.on ? 'On' : 'Off'}</span>
-            </label>
             <span class="priority-move">
                 <button type="button" data-move="${i}" data-to="${above}" data-by="-1" aria-label="Move ${label} up"${above < 0 ? ' disabled' : ''}>${ARROW_UP}</button>
                 <button type="button" data-move="${i}" data-to="${below}" data-by="1" aria-label="Move ${label} down"${below < 0 ? ' disabled' : ''}>${ARROW_DOWN}</button>
+                <button type="button" data-remove-priority="${i}" aria-label="${escapeText(translate('Remove {name}').replace('{name}', priorityLabel(p.target, best)))}">×</button>
             </span>
         </li>`;
     }).join('');
@@ -3798,19 +3815,31 @@ function movePriority(from, to) {
 
 function attachPriorityHandlers() {
     const list = document.getElementById('priority-list');
-    list.addEventListener('change', (e) => {
-        const i = e.target.dataset.toggle;
-        if (i === undefined) return;
-        priorityOrder[i].on = e.target.checked;
+    const add = document.getElementById('add-priority');
+    add.addEventListener('change', () => {
+        const from = priorityOrder.findIndex(p => p.target === add.value && !p.on);
+        if (from < 0) return;
+        const [priority] = priorityOrder.splice(from, 1);
+        priority.on = true;
+        priorityOrder.push(priority);
         renderPriorities();
         saveInputsToStorage();
     });
     list.addEventListener('click', (e) => {
+        const remove = e.target.closest('[data-remove-priority]');
+        if (remove) {
+            priorityOrder[Number(remove.dataset.removePriority)].on = false;
+            renderPriorities();
+            saveInputsToStorage();
+            add.focus();
+            return;
+        }
         const button = e.target.closest('[data-move]');
         if (!button) return;
         const to = Number(button.dataset.to);
         movePriority(Number(button.dataset.move), to);
-        list.querySelector(`[data-move="${to}"][data-by="${button.dataset.by}"]`)?.focus();
+        const row = list.querySelector(`li[data-index="${to}"]`);
+        (row?.querySelector(`[data-by="${button.dataset.by}"]:enabled`) ?? row?.querySelector('button:enabled'))?.focus();
     });
     let dragFrom = null;
     list.addEventListener('dragstart', (e) => {
@@ -3852,8 +3881,10 @@ function bestAniipod() {
 
 // The RV level being worked toward: the next one in simple mode, the picked one in advanced.
 function levelUpTarget() {
-    if (isSimpleMode()) return selectedHomeLevel() + 1;
-    return numberOrDefault(document.getElementById('level-up-target').value, 7);
+    const target = document.getElementById('level-up-target').value;
+    if (customBuildings && target) return Number(target);
+    const rv = document.getElementById('home-level').value;
+    return (rv ? Number(rv) : layoutHomeLevel(null)) + 1;
 }
 
 // The target's cost, or null if it isn't known.
@@ -3869,15 +3900,8 @@ function levelUpUnavailable() {
     return null;
 }
 
-// The preview counts the required items. Level up can also process stock from earlier tiers.
 function stockNames(cost) {
-    if (!isLevelUpStrategy()) return ['coins', ...cost.items.map(([item]) => item)];
-    const names = ['coins'];
-    cost.items.forEach(([item]) => {
-        const chain = LEVEL_UP_CHAINS.find(c => c.includes(item));
-        if (chain) names.push(...chain.slice(0, chain.indexOf(item) + 1));
-    });
-    return names;
+    return ['coins', ...cost.items.map(([item]) => item)];
 }
 
 function stockAmount(name) {
@@ -3887,21 +3911,17 @@ function stockAmount(name) {
 
 function populateLevelUpTargets() {
     const select = document.getElementById('level-up-target');
-    select.innerHTML = Object.keys(LEVEL_UP_COSTS).map(level => `<option value="${level}">${level}</option>`).join('');
+    select.innerHTML = '<option value="">Next RV</option>'
+        + Object.keys(LEVEL_UP_COSTS).map(level => `<option value="${level}">${level}</option>`).join('');
 }
 
 function renderStrategy() {
     renderSeason();
     renderElectricity();
-    const levelUp = isLevelUpStrategy();
     const unavailable = levelUpUnavailable();
-    document.getElementById('level-up-config').style.display = levelUp || !unavailable ? 'block' : 'none';
-    document.getElementById('level-up-strategy-hint').hidden = !levelUp;
-    document.getElementById('level-up-preview-hint').hidden = levelUp;
-    document.getElementById('level-up-stock-hint').hidden = !levelUp;
-    document.getElementById('priorities-config').style.display = isPriorityStrategy() ? 'block' : 'none';
     document.getElementById('crop-variety-config').hidden = !wantsCropVariety();
-    if (isPriorityStrategy()) renderPriorities();
+    renderPriorities();
+    renderRecipeCount();
 
     // Simple mode always plans the next RV level, so only Advanced picks one.
     document.getElementById('level-up-target-row').style.display = isSimpleMode() ? 'none' : '';
@@ -3909,12 +3929,8 @@ function renderStrategy() {
     const costEl = document.getElementById('level-up-cost');
     const stockDetails = document.getElementById('level-up-stock');
     if (unavailable) {
-        // During a season the plan still makes the most of its points first (see worker.js).
-        const fallback = seasonActive()
-            ? 'During the seasonal event, plans make the most of its points first, then the most Home Coins.'
-            : 'Plans will go for the most Home Coins.';
-        costEl.innerHTML = `<p class="level-up-note">${unavailable} ${fallback}</p>`;
-        stockDetails.style.display = 'none';
+        costEl.innerHTML = `<p class="level-up-note">${unavailable}</p>`;
+        stockDetails.hidden = true;
         return;
     }
     const cost = levelUpCost();
@@ -3922,7 +3938,7 @@ function renderStrategy() {
     costEl.innerHTML = `
         <p class="assume-title">RV ${levelUpTarget()} costs</p>
         <div class="chip-grid">${chip(cost.coins, 'coins')}${cost.items.map(([item, n]) => chip(n, item)).join('')}</div>`;
-    stockDetails.style.display = '';
+    stockDetails.hidden = false;
     document.getElementById('level-up-stock-grid').innerHTML = stockNames(cost).map(name => `
         <div class="input-field">
             <label for="stock-${name}">${ITEM_NAMES[name] || prettyItem(name)}</label>
@@ -3931,11 +3947,8 @@ function renderStrategy() {
 }
 
 function attachStrategyHandlers() {
-    document.getElementById('strategy-level-up').addEventListener('change', renderStrategy);
-    document.getElementById('strategy-priorities').addEventListener('change', renderStrategy);
     document.getElementById('crop-variety').addEventListener('change', renderStrategy);
     document.getElementById('level-up-target').addEventListener('change', () => {
-        levelUpTargetChosen = true;
         if (lastPlanInput) clearPlanResults();
         renderStrategy();
     });
@@ -3952,7 +3965,7 @@ function attachStrategyHandlers() {
     });
 }
 
-// The RV target used for optimization in Level up and for reporting in Priorities.
+// The RV target used by the level-up priority and the results preview.
 function levelUpInput() {
     if (levelUpUnavailable()) return null;
     const cost = levelUpCost();
@@ -3983,15 +3996,12 @@ function formatDuration(seconds) {
 // after the inputs change.
 let planContext = null;
 
-// Show one row per upgrade cost. In Level up mode this table also replaces the coin rate.
+// Show one row per upgrade cost, using the production rates of this plan.
 function renderLevelUp(plan) {
     const card = document.getElementById('level-up-card');
     const select = document.getElementById('rate-unit');
-    const rateBlock = document.getElementById('rate-block');
     const context = planContext;
-    if (select.closest('#level-up-card')) document.getElementById('rate-line').appendChild(select);
-    rateBlock.style.display = '';
-    if (!context || (!context.levelUp && context.unavailable)) {
+    if (!context || context.unavailable) {
         card.style.display = 'none';
         return;
     }
@@ -4000,18 +4010,10 @@ function renderLevelUp(plan) {
     const time = document.getElementById('level-up-time');
     const lines = document.getElementById('level-up-lines');
     label.textContent = `RV ${context.target} level-up`;
-    const report = context.levelUp ? plan.level_up : plan.level_up_preview;
-    if (context.unavailable) {
-        time.textContent = '-';
-        lines.innerHTML = `<p class="level-up-note">${context.unavailable} This plan is for the most Home Coins.</p>`;
-        return;
-    }
+    const report = plan.level_up_preview;
     if (context.ready) {
         time.textContent = 'Ready now';
-        const message = context.levelUp
-            ? 'You already have everything it costs. This plan is for the most Home Coins.'
-            : 'You already have everything it costs.';
-        lines.innerHTML = `<p class="level-up-note">${message}</p>`;
+        lines.innerHTML = '<p class="level-up-note">You already have everything it costs.</p>';
         return;
     }
     if (!report) {
@@ -4019,7 +4021,7 @@ function renderLevelUp(plan) {
             ? `These facilities can't make everything it costs.`
             : `The level-up couldn't be planned.`;
         time.textContent = '-';
-        lines.innerHTML = `<p class="level-up-note">${why}${context.levelUp ? ' This plan is for the most Home Coins.' : ''}</p>`;
+        lines.innerHTML = `<p class="level-up-note">${why}</p>`;
         return;
     }
     time.textContent = report.seconds == null ? 'Not reached with this plan' : `in ${formatDuration(report.seconds)}`;
@@ -4056,29 +4058,21 @@ function renderLevelUp(plan) {
             <tbody>${rows}</tbody>
         </table>
         ${coinsNote}`;
-    if (context.levelUp) {
-        document.getElementById('level-up-unit').appendChild(select);
-        rateBlock.style.display = 'none';
-    }
 }
 
-// The seeds a plan plants: one seed per planting of each Farmland and Woodland crop, and what
-// they cost. A level-up plan counts them until the level-up is ready; others per the rate
-// card's unit. Mines, Wells and resident facilities aren't planted.
+// A seed per planting of each Farmland and Woodland crop, and what it costs.
 function renderSeedTable(plan) {
     const card = document.getElementById('seed-card');
     const el = document.getElementById('seed-table');
     const unit = document.getElementById('rate-unit').value;
-    const levelUp = plan.level_up && plan.level_up.seconds > 0 && planContext?.levelUp ? plan.level_up : null;
-    const multiplier = levelUp ? levelUp.seconds : (RATE_UNIT_SECONDS[unit] || RATE_UNIT_SECONDS.second).multiplier;
+    const multiplier = (RATE_UNIT_SECONDS[unit] || RATE_UNIT_SECONDS.second).multiplier;
     const rows = (plan.coin_items || [])
         .filter(s => (s.facility === 'Farmland' || s.facility === 'Woodland') && s.status === 'producing' && s.cycle_time > 0)
         .map(s => {
             const perSecond = (s.busy_units ?? s.facility_count) / s.cycle_time;
             const recipe = recipeIndex.find(r => r.name === s.item_name);
             const cost = recipe?.cost || 0;
-            // Whole seeds when counting to the level-up.
-            const seeds = levelUp ? Math.ceil(perSecond * multiplier) : perSecond * multiplier;
+            const seeds = perSecond * multiplier;
             const wheat = seeds * (recipe?.seasonSeedCost || 0);
             return { name: s.item_name, facility: s.facility, plots: s.facility_count, seeds, cost: seeds * cost, wheat };
         })
@@ -4095,9 +4089,7 @@ function renderSeedTable(plan) {
         totalWheat > 0 ? `${amount(totalWheat)} ${planSeason().currency}` : '',
     ].filter(Boolean).join(' + ');
     card.style.display = 'block';
-    const per = levelUp
-        ? `until RV ${planContext.target}`
-        : { second: 'per second', minute: 'per minute', hour: 'per hour', day: 'per day' }[unit] || 'per second';
+    const per = { second: 'per second', minute: 'per minute', hour: 'per hour', day: 'per day' }[unit] || 'per second';
     document.getElementById('seed-card-unit').textContent = `Seeds ${per}: one per planting, for every Farmland and Woodland crop in the plan.`;
     el.innerHTML = `
         <table>
@@ -4146,29 +4138,12 @@ function renderProfitBreakdown(plan) {
 // Get plan-level input values from the form (facilities/modules/prioritize-byproducts, nothing
 // goal-related, since find_plan doesn't need a target). Currency is always coins: the full
 // release removed Bud Tickets, the only other sellable currency.
-function getPlanInputValues() {
-    const target = levelUpInput();
-    const levelUp = isLevelUpStrategy();
-    const rv = { level_up_strategy: levelUp, level_up: levelUp ? target : null, level_up_preview: levelUp ? null : target };
+function buildingInventory() {
     // `facilityTiers` is the live source of truth for owned counts (kept in sync with the DOM by
     // `attachFacilityTierHandlers`), sent straight through as a list of tiers per facility; see
     // `JsPlanInput::facilities` in wasm.rs for the shape (`[{count, level}, ...]` per facility).
     if (isSimpleMode()) {
-        const { facilities, modules } = simpleSetup(selectedHomeLevel());
-        return {
-            currency: 'coins',
-            priorities: activePriorities(),
-            prioritize_byproducts: false,
-            ...rv,
-            crop_variety: wantsCropVariety(),
-            exclude: excludedRecipes(),
-            season: activeSeasonId(),
-            season_currency_per_day: seasonCurrencyPerDay(),
-            season_crop_minimums: activeSeasonCropMinimums(),
-            e_mode_rv: eModeRv({ facilities, modules }),
-            facilities,
-            modules
-        };
+        return simpleSetup(selectedHomeLevel());
     }
 
     const facilities = {};
@@ -4185,12 +4160,16 @@ function getPlanInputValues() {
         resource_detector: numberOrDefault(document.getElementById('resource-detector-level').value, 0),
         crafting_module: numberOrDefault(document.getElementById('crafting-module-level').value, 0)
     };
+    return { facilities, modules };
+}
 
+function getPlanInputValues() {
+    const { facilities, modules } = buildingInventory();
     return {
         currency: 'coins',
         priorities: activePriorities(),
         prioritize_byproducts: false,
-        ...rv,
+        level_up_preview: levelUpInput(),
         crop_variety: wantsCropVariety(),
         exclude: excludedRecipes(),
         season: activeSeasonId(),
@@ -5236,7 +5215,7 @@ function renderFacilityPlan(plan) {
 function updateRateDisplay(pickUnit = false) {
     if (!lastPlan || !lastPlan.success) return;
     const select = document.getElementById('rate-unit');
-    const rows = planContext && !planContext.levelUp ? priorityRows(lastPlan, true) : null;
+    const rows = planContext ? priorityRows(lastPlan, true) : null;
     // Step the unit up until the smallest rate reads at least 1 (Aniipods per hour, Rough Lumber
     // per hour, not 0.01 per second); a plain coin rate only needs to read above zero.
     const costRates = (lastPlan.level_up?.requirements || []).map(r => r.per_second);
@@ -5446,9 +5425,10 @@ async function runFindPlan() {
     haulingDefaultSeconds = 0;
     haulingRefinements = 0;
     const invalid = (seasonActive() && document.querySelector('#season-crop-minimum-fields input:invalid'))
-        || (!isSimpleMode() && document.querySelector('#layout-rv-level:invalid'))
         || (selectedSetupTab() === 'custom' && document.querySelector('#electricity-aniimo-limit:invalid'));
     if (invalid) {
+        if (invalid.closest('#planner-edit-season')) openPlannerEditor('season');
+        else if (invalid.closest('#planner-edit-team')) openPlannerEditor('team');
         invalid.reportValidity();
         return;
     }
@@ -5489,7 +5469,6 @@ async function runFindPlan() {
         const rvTarget = input.level_up ?? input.level_up_preview;
         lastPlanInput = input;
         planContext = {
-            levelUp: isLevelUpStrategy(),
             target: levelUpTarget(),
             unavailable: levelUpUnavailable(),
             ready: !!(rvTarget && rvTarget.cost.every(([name, need]) => stockAmount(name) >= need)),
@@ -5593,7 +5572,7 @@ function clearPlanResults() {
 // Compute time-to-goal against the already-computed `lastPlan`; cheap, safe to call on every
 // keystroke of the goal-amount fields. No-op until a plan exists.
 async function runTimeToGoal() {
-    if (!lastPlan || !lastPlan.success || planContext?.levelUp) return;
+    if (!lastPlan || !lastPlan.success) return;
     const rows = priorityRows(lastPlan);
     const chosen = rows.find(r => r.target === document.getElementById('goal-target').value) || rows[0];
     const name = goalName(chosen);
@@ -5888,6 +5867,7 @@ async function initApp() {
     attachFacilityTierHandlers();
     attachFacilitySearch();
     attachPlannerNavigation();
+    attachPlannerEditor();
     document.getElementById('plan-facility-search').addEventListener('input', filterFacilityPlan);
     attachModeHandlers();
     attachStrategyHandlers();
@@ -5900,7 +5880,9 @@ async function initApp() {
     attachRosterHandlers();
     attachLayoutHandlers();
     attachPriorityHandlers();
-    applyConfigMode();
+    if (isSimpleMode()) fillBuildingInputs(selectedHomeLevel());
+    renderBuildingSettings();
+    renderStrategy();
     showAniimoSetup();
     initWasm();
 
@@ -5917,6 +5899,7 @@ async function initApp() {
         rankImprovementsFor(selectedAniimoSetup(),indices,button.dataset.compareDetailed != null);
     });
     if (sharedRoster) {
+        openPlannerEditor('team');
         const config = document.getElementById('roster-config');
         config.hidden = false;
         config.open = true;

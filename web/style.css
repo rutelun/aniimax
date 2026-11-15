@@ -3391,9 +3391,100 @@ body > header {
 
 html { scroll-padding-top: calc(var(--planner-bar-height, 4rem) + 0.8rem); }
 #results-content > *, .input-field { min-width: 0; }
-.planner-settings-primary h3, .planner-team-settings h3 { margin: 0 0 0.6rem; }
-.planner-settings-primary .tabs, .strategy .tabs { margin-bottom: 0.8rem; }
-.planner-settings-primary .tabs label, .strategy .tabs label { min-height: 2.75rem; display: inline-flex; align-items: center; }
+.planner-team-settings h3 { margin: 0 0 0.6rem; }
+.planner-setup-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+    gap: 1.25rem;
+    align-items: start;
+}
+.planner-priorities, .planner-editor { min-width: 0; }
+.planner-priorities h3 { margin: 0 0 0.5rem; }
+.planner-priorities .priority-list { max-width: none; }
+.planner-priorities .priority-list:empty { display: none; }
+.planner-priorities .priority-name { min-width: 0; overflow-wrap: anywhere; }
+.planner-priority-add { margin-top: 0.6rem; }
+.planner-priority-add select {
+    min-height: 2.75rem;
+    max-width: 100%;
+    padding: 0 0.65rem;
+    background: var(--surface-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    font: inherit;
+}
+.planner-priorities .planner-checkbox { margin-top: 0.35rem; }
+.planner-editor {
+    container-type: inline-size;
+    border-inline-start: 1px solid var(--border);
+    padding-inline-start: 1.25rem;
+}
+.planner-editor-options { display: grid; gap: 0.36rem; }
+.planner-editor-options button {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-height: 2.75rem;
+    padding: 0.4rem 0.7rem;
+    background: var(--surface-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    font: inherit;
+    text-align: start;
+    overflow-wrap: anywhere;
+    cursor: pointer;
+}
+.planner-editor-options button:hover,
+.planner-editor-options button[aria-expanded="true"] {
+    border-color: var(--accent);
+}
+.planner-editor-options button span {
+    margin-inline-start: auto;
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    text-align: end;
+}
+.planner-editor-options button::after {
+    content: "";
+    flex: 0 0 auto;
+    width: 0.33rem;
+    height: 0.33rem;
+    border-inline-end: 1px solid var(--text-muted);
+    border-block-end: 1px solid var(--text-muted);
+    transform: translateY(-1px) rotate(45deg);
+}
+.planner-editor-options button[aria-expanded="true"]::after { transform: translateY(1px) rotate(225deg); }
+.planner-editor-panel {
+    margin-top: 0.65rem;
+    padding: 0.8rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow-wrap: anywhere;
+}
+.planner-editor-panel .planner-season { padding: 0; margin: 0; border: 0; }
+.planner-editor-panel .skip-add input { min-width: 0; }
+.planner-building-settings { margin-top: 0.8rem; padding-top: 0.8rem; border-top: 1px solid var(--border); }
+.planner-building-settings #reset-buildings { margin-block: 0.45rem; }
+.planner-building-settings #advanced-config { margin-top: 0.65rem; }
+.planner-building-settings #advanced-config .facilities-container { gap: 0.65rem; }
+.planner-building-settings #advanced-config .facilities-grid,
+.planner-building-settings #advanced-config .modules-grid {
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 10rem), 1fr));
+}
+.planner-rv { margin: 0.9rem 0 0; max-width: 14rem; }
+@container (max-width: 35rem) {
+    .planner-editor-panel .roster-editor-layout {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-areas: "tools" "board";
+    }
+    .planner-editor-panel .roster-tools .roster-actions { display: flex; flex-wrap: wrap; }
+}
+@media (max-width: 48rem) {
+    .planner-setup-grid { grid-template-columns: minmax(0, 1fr); gap: 0.75rem; }
+    .planner-editor { border-inline-start: 0; padding-inline-start: 0; }
+}
 .planner-team-settings #worker-travel-option label { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.15rem 0.5rem; }
 .config-actions { gap: 0.1rem 0.85rem; }
 .config-actions button { min-height: 2.75rem; }
@@ -3453,13 +3544,17 @@ html { scroll-padding-top: calc(var(--planner-bar-height, 4rem) + 0.8rem); }
 #season-notes .special-option { align-items: baseline; }
 #season-notes input { flex: none; }
 .planner-submit {
-    display: grid;
-    gap: 1rem;
-    margin-top: 1.25rem;
-    padding-top: 1rem;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin-top: 0.9rem;
+    padding-top: 0.9rem;
     border-top: 1px solid var(--border);
 }
-.planner-submit .optimize-btn { min-height: 2.75rem; }
+.planner-submit #electricity-section { flex: 1 1 14rem; margin: 0; }
+.planner-submit .optimize-btn { min-height: 2.75rem; width: auto; margin: 0 0 0 auto; }
 
 .facility-search, .production-filters .input-field { max-width: 25rem; }
 .facility-search { margin-bottom: 0.8rem; }
@@ -3497,7 +3592,7 @@ html { scroll-padding-top: calc(var(--planner-bar-height, 4rem) + 0.8rem); }
     .planner-navigation a, .planner-navigation select, .planner-navigation #planner-jump-go { padding-inline: 0.45rem; font-size: 0.8rem; }
     .planner-navigation select { max-width: min(100%, 13rem); min-width: 0; }
     .input-field input, .input-field select { min-height: 2.75rem; font-size: 1rem; }
-    .planner-settings-primary .input-field, #level-up-target-row .input-field { max-width: 100%; }
+    .planner-submit .optimize-btn { width: 100%; }
     .layout-storage-config { flex-basis: 100%; }
     .card .facility-plan-table td { overflow-wrap: anywhere; gap: 0.6rem; }
     .facility-plan-table td::before { flex: 0 0 34%; white-space: normal; }
