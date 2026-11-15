@@ -1741,6 +1741,16 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
         Err(problem) => return serde_json::to_string(&empty_production_plan(false, Some(format!("Exact plan failed its check: {problem}"))))
             .unwrap_or_default(),
     };
+    if let Some(candidate) = crate::exact::consolidate_reserve_workplaces(
+        &exact, &roster_workload, &prepared.items, &prepared.facility_counts,
+    ) {
+        if let Ok((_, checked)) = crate::exact::check_plan_with_workload(
+            &candidate, &prepared.items, &currency, &prepared.facility_counts, &prepared.module_levels, level_up,
+        ) {
+            exact = candidate;
+            roster_workload = checked;
+        }
+    }
     crate::exact::prefer_versatile_crew(
         &mut exact, &mut roster_workload, &prepared.items, &currency,
         &prepared.facility_counts, &prepared.module_levels, level_up,

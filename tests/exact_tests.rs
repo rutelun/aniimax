@@ -1308,6 +1308,39 @@ fn idle_dedicated_posts_are_removed_together_with_idle_machines() {
 }
 
 #[test]
+fn consolidates_light_crop_work_for_reserves_when_they_can_walk() {
+    use aniimax::models::{crew_variants, AniimoRequirements, GrowerStep, GrowerSteps};
+    let mut crop = walking_item("reserve_crop", "Farmland", 1000.0, "coins");
+    crop.workload = None;
+    let mut steps = GrowerSteps::default();
+    steps.insert(&crop.name, GrowerStep { step: "Reaping".into(), ability: "Dark".into(), min_level: 3, workload: 1.4 });
+    let mut crew = crew_of(&[(20, &[("Dark", 3)])]);
+    crew.assumed_from = Some(0);
+    let items = crew_variants(vec![crop], &crew, &AniimoRequirements::default(), &steps);
+    let mut counts = FacilityCounts::only(&[("Farmland", 20, 1)]);
+    counts.set_crew(crew);
+    counts.set_grower_steps(steps);
+    counts.set_movement_seconds(5.0);
+    let modules = ModuleLevels::default();
+    let goal = Goal::Earn { floors: &[] };
+    let problem = aniimax::exact::write_lp(&items, "coins", &counts, &modules, goal);
+    // Twenty identical crops, each with its own local Dark worker.
+    let values = [0.02, 20.0, 0.02, 20.0, 0.02, 0.0];
+    assert_eq!(problem.variables, values.len());
+    let plan = aniimax::exact::plan_from_values(&items, "coins", &counts, &modules, goal, &values, false, 0.02).unwrap();
+    let (_, load) = aniimax::exact::check_plan_with_workload(&plan, &items, "coins", &counts, &modules, None).unwrap();
+    assert_eq!(plan.work_posts[0].2, 20.0);
+    let shared = aniimax::exact::consolidate_reserve_workplaces(&plan, &load, &items, &counts).unwrap();
+    let (_, shared_load) = aniimax::exact::check_plan_with_workload(&shared, &items, "coins", &counts, &modules, None).unwrap();
+    assert!(shared.work_posts.is_empty());
+    assert!(shared_load[0] > load[0] && shared_load[0] < 1.0);
+    assert_eq!(shared.sold, plan.sold);
+    assert_eq!(shared.recipe_rates, plan.recipe_rates);
+    counts.set_movement_seconds(1100.0);
+    assert!(aniimax::exact::consolidate_reserve_workplaces(&plan, &load, &items, &counts).is_none());
+}
+
+#[test]
 fn material_work_uses_spare_owned_artisans_before_slower_reserves() {
     use aniimax::models::{crew_variants, AniimoRequirements, GrowerSteps};
     let mut source = walking_item("artisan_wood", "Woodland", 1_000.0, "none");

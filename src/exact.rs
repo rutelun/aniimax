@@ -1713,6 +1713,60 @@ pub fn check_plan(
         .map(|(earned, _)| earned)
 }
 
+/// Consolidate lightly loaded reserve workers by sending one worker between workplaces
+/// when walking fits in fewer shifts. Keep the same production, crop and delivery rates.
+pub fn consolidate_reserve_workplaces(
+    plan: &ExactPlan,
+    workload: &[f64],
+    items: &[ProductionItem],
+    counts: &FacilityCounts,
+) -> Option<ExactPlan> {
+    let crew = counts.crew()?;
+    let first = crew.assumed_from?;
+    if !plan.work_posts.iter().any(|(_, member, _)| *member >= first) { return None; }
+
+    let items: HashMap<_, _> = items.iter().map(|item| (item.name.as_str(), item)).collect();
+    let mut dedicated = vec![0.0_f64; crew.members.len()];
+    let mut local_posts = dedicated.clone();
+    let mut walking = dedicated.clone();
+    let mut busy = workload.to_vec();
+    for &(_, member, share) in &plan.staffing {
+        dedicated[member] += share;
+    }
+    for (name, &units) in &plan.units {
+        let item = items[name.as_str()];
+        if let Some(member) = item.crew.filter(|_| crew.residents.contains(&item.facility)) {
+            dedicated[member] += units as f64;
+        }
+    }
+    for &(_, member, count) in &plan.work_posts { local_posts[member] += count; }
+    for &(member, share) in &plan.hauling_staffing { busy[member] += share; }
+    for route in plan.work_routes.iter().filter(|r| !r.mobile && r.member >= first) {
+        let item = items[route.recipe.as_str()];
+        let (_, visits) = work_spec(item, route.crop.as_ref(), route.member, counts)?;
+        walking[route.member] += route.rate * visits as f64 * counts.member_movement_seconds(route.member);
+    }
+    let move_between = |member: usize| {
+        let whole_shifts = |time: f64| (time - 1e-6).ceil();
+        let at_posts = dedicated[member] + local_posts[member];
+        member >= first && local_posts[member] > 0.0
+            && dedicated[member].max(whole_shifts(busy[member] + walking[member]))
+                < at_posts.max(whole_shifts(busy[member]))
+    };
+    if !(first..crew.members.len()).any(move_between) { return None; }
+    let mut candidate = plan.clone();
+    candidate.work_posts.retain(|(_, member, _)| !move_between(*member));
+    for route in &mut candidate.work_routes {
+        if move_between(route.member) { route.mobile = true; }
+    }
+    let mut travel: BTreeMap<_, _> = plan.movement_staffing.iter().copied().collect();
+    for member in (first..crew.members.len()).filter(|&member| move_between(member)) {
+        *travel.entry(member).or_default() += walking[member];
+    }
+    candidate.movement_staffing = travel.into_iter().collect();
+    Some(candidate)
+}
+
 /// Replace an assigned roster pool with an idle, more versatile owned pool when it can
 /// perform the same work. The whole workload moves together and the checked production
 /// plan, sales and recipe cycle times are preserved.
