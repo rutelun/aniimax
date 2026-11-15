@@ -2682,10 +2682,13 @@ function refreshRosterTileWorkloads(workloads = []) {
         const member = roster[i];
         if (!member) return;
         const work = workloads[i];
+        const active = work?.assigned > Number(tile.dataset.rosterCopy);
         tile.dataset.tip = rosterTileLabel(member, i);
-        tile.dataset.tipStats = work?.summary ?? translate('Calculate a plan with My Aniimo to see assignments.');
-        tile.dataset.tipDetail = work?.lines.join('\n') ?? '';
-        tile.classList.toggle('is-assigned', work?.assigned > Number(tile.dataset.rosterCopy));
+        tile.dataset.tipStats = work ? (active ? work.summary : translate('Unassigned'))
+            : translate('Calculate a plan with My Aniimo to see assignments.');
+        tile.dataset.tipDetail = active ? work.lines.join('\n') : '';
+        tile.dataset.rosterTasks = active ? JSON.stringify(work.tasks) : '[]';
+        tile.classList.toggle('is-assigned', active);
         tile.setAttribute('aria-description', [tile.dataset.tipStats, tile.dataset.tipDetail].filter(Boolean).join('. '));
     });
     const fields = document.querySelector('#roster-edit-dialog[open] .roster-card-fields');
@@ -3139,8 +3142,7 @@ function attachRosterHandlers() {
         if (!tile) return;
         hideTip();
         workDialog.querySelector('h3').textContent = tile.dataset.tip;
-        workDialog.querySelector('.roster-dialog-summary').textContent = tile.dataset.tipStats;
-        workDialog.querySelector('.roster-edit-workload').textContent = tile.dataset.tipDetail;
+        renderAssignmentDetails(workDialog.querySelector('.roster-work-details'), tile);
         workDialog.showModal();
     });
 }
@@ -3155,20 +3157,23 @@ function rosterWorkload(plan) {
     const busy = members.map(() => 0);
     const walking = members.map(() => 0);
     const anchored = members.map(() => 0);
-    const where = members.map(() => new Map());
+    const jobs = members.map(() => new Map());
+    const addJob = (member, name, share) => {
+        jobs[member].set(name, (jobs[member].get(name) || 0) + share);
+    };
     (plan.coin_items || []).forEach(step => {
         if (step.crew == null || step.status !== 'producing' || !members[step.crew]) return;
         const resident = RESIDENT_FACILITIES.has(step.facility);
         busy[step.crew] += resident ? step.facility_count : (step.busy_units ?? step.facility_count);
         if (resident) anchored[step.crew] += step.facility_count;
         const place = `${step.facility} (${prettyItem(step.item_name)})`;
-        where[step.crew].set(place, (where[step.crew].get(place) || 0) + step.facility_count);
+        addJob(step.crew, place, resident ? step.facility_count : (step.busy_units ?? step.facility_count));
     });
     (plan.staffing || []).forEach(([building, member, share]) => {
         if (!members[member]) return;
         busy[member] += share;
         anchored[member] += share;
-        where[member].set(building, (where[member].get(building) || 0) + share);
+        addJob(member, building, share);
     });
     (plan.movement_staffing || []).forEach(([member, travel]) => {
         if (!members[member]) return;
@@ -3178,24 +3183,14 @@ function rosterWorkload(plan) {
     (plan.workplace_anchors || []).forEach(([member, count]) => {
         if (members[member]) anchored[member] += count;
     });
-    // Growing jobs are assigned by the same solver capacity constraints as production.
-    // Keep their names for the locations column, but never invent a free assignment here.
-    const jobs = new Map();
-    (plan.coin_items || []).forEach(step => {
-        if (step.status !== 'producing' || !(step.facility === 'Farmland' || step.facility === 'Woodland')) return;
-        (recipeIndex.find(r => r.name === step.item_name)?.jobs || []).forEach(([job, ability, level]) => {
-            jobs.set(`${job}|${ability}|${level}|${step.facility}`, { job, ability, level, facility: step.facility });
-        });
-    });
-    (plan.crop_assignments || []).forEach(([ability, level, member, share]) => {
-        if (!members[member] || share <= 0) return;
+    for (const [item, job, member, share] of plan.crop_jobs || []) {
+        if (members[member] && share > 1e-9) addJob(member, `${translate(job)} · ${prettyItem(item)}`, share);
+    }
+    for (const [ability, , member, share] of plan.crop_assignments || []) {
+        if (!members[member] || share <= 0) continue;
         busy[member] += share;
-        jobs.forEach(task => {
-            if (task.ability !== ability || task.level !== level) return;
-            const place = `${task.job} on ${task.facility}`;
-            if (!where[member].has(place)) where[member].set(place, 1);
-        });
-    });
+        if (!plan.crop_jobs?.length) addJob(member, `${translate('Crop work')} · ${translate(ability)}`, share);
+    }
     const checked = plan.roster_workload;
     const workload = checked?.length ? members.map((_, i) => checked[i] ?? 0) : busy;
     for (const [member, extra] of plan.layout_walking || []) {
@@ -3203,40 +3198,54 @@ function rosterWorkload(plan) {
         workload[member] += extra;
         walking[member] += extra;
     }
-    return { members, busy: workload, walking, where, anchored };
+    return { members, busy: workload, walking, jobs, anchored };
 }
 
 function renderRosterSummary(plan) {
-    const { members, busy, walking, where, anchored } = rosterWorkload(plan);
+    const { members, busy, walking, jobs, anchored } = rosterWorkload(plan);
     (plan.delivery_assignments || plan.hauling_staffing || []).forEach(([member, share]) => {
         if (!members[member] || share <= 0) return;
         busy[member] += share;
-        where[member].set(translate('Hauling to Storage Units ({minutes} min/h)').replace('{minutes}', (share * 60).toFixed(1)), 1);
+        const label = translate('Hauling to Storage Units');
+        jobs[member].set(label, (jobs[member].get(label) || 0) + share);
     });
     const have = roster.reduce((sum, a) => sum + a.count, 0);
     const assigned = busy.map((load, member) => Math.max(anchored[member], Math.ceil(load - 1e-6)));
     const working = assigned.slice(0, roster.length).reduce((sum, n) => sum + n, 0);
     const reserves = assigned.slice(roster.length).reduce((sum, n) => sum + n, 0);
-    const memberPlaces = i => [...where[i]].map(([place, n]) => Number.isInteger(n) && n > 1 ? `${translate(place)} ×${n}` : translate(place));
-    const memberNotes = i => walking[i] * 60 / assigned[i] >= 0.05
-        ? [translate('{minutes} min/h walking').replace('{minutes}', (walking[i] * 60 / assigned[i]).toFixed(1))]
-        : [];
+    const workload = (share, count) => {
+        const percent = share / count * 100;
+        if (percent > 0 && percent < 0.01) return '<0.01%';
+        if (percent < 100 - 1e-5 && percent > 99.99) return '99.99%';
+        return `${formatNumber(percent)}%`;
+    };
+    const memberTasks = members.map((_, i) => {
+        if (!assigned[i]) return [];
+        const tasks = [...jobs[i]];
+        if (walking[i] > 1e-9) tasks.push([translate('Walking between jobs'), walking[i]]);
+        return tasks.sort((a, b) => b[1] - a[1]).map(([job, share]) => [translate(job), workload(share, assigned[i])]);
+    });
+    const busyLabel = i => translate(assigned[i] > 1 ? '{load} average per assigned Aniimo' : '{load} busy')
+        .replace('{load}', workload(busy[i], assigned[i]));
     refreshRosterTileWorkloads(roster.map((member, i) => ({
         assigned: assigned[i],
         summary: assigned[i]
-            ? `${assigned[i]} / ${member.count} ${translate('assigned')} · ${formatRate(busy[i] / assigned[i] * 100)}%`
+            ? `${assigned[i]} / ${member.count} ${translate('assigned')} · ${busyLabel(i)}`
             : translate('Unassigned'),
-        lines: [...memberPlaces(i), ...memberNotes(i)],
+        lines: memberTasks[i].map(([job, share]) => `${job} · ${share}`),
+        tasks: memberTasks[i],
     })));
     const buildTile = (i, _position, copy) => {
         if (i == null) return emptyRosterCell();
         const member = members[i];
         const active = copy < assigned[i];
         const label = member.assumed ? translate('Assumed Aniimo') : rosterTileLabel(member, i);
-        const load = active ? `${formatNumber(busy[i] / assigned[i] * 100)}%` : '';
-        const detail = active ? [...memberPlaces(i), ...memberNotes(i)].join('\n') : '';
-        const status = active ? load : translate('Unassigned');
-        return assignmentTile(member, label, detail, status, active);
+        const status = active ? busyLabel(i) : translate('Unassigned');
+        const context = member.count > 1
+            ? translate('Copy {copy} of {total} · {assigned} assigned').replace('{copy}', copy + 1)
+                .replace('{total}', member.count).replace('{assigned}', assigned[i])
+            : '';
+        return assignmentTile(member, label, active ? memberTasks[i] : [], status, active, context);
     };
     const additional = members.flatMap((member, i) => member.assumed && assigned[i] > 0 ? Array(assigned[i]).fill(i) : []);
     const summary = document.getElementById('roster-summary');
@@ -3256,10 +3265,49 @@ function renderRosterSummary(plan) {
     document.getElementById('aniimo-count').hidden = true;
 }
 
-function assignmentTile(member, label, detail, status, active = true) {
-    const tip = tipAttrs(label, { detail, stats: status });
-    return `<button type="button" class="roster-tile${active ? ' is-assigned' : ' is-idle'}" data-roster-work ${tip} aria-haspopup="dialog">
+function assignmentTile(member, label, detail, status, active = true, context = '') {
+    const tasks = Array.isArray(detail) ? detail : detail.split('\n').filter(Boolean).map(line => [line, '']);
+    const tip = tipAttrs(label, {
+        detail: tasks.map(([job, share]) => share ? `${job} · ${share}` : job).join('\n'),
+        stats: status, work: context,
+    });
+    return `<button type="button" class="roster-tile${active ? ' is-assigned' : ' is-idle'}" data-roster-work
+        data-roster-tasks="${escapeText(JSON.stringify(tasks))}" ${tip} aria-haspopup="dialog">
         ${portraitTile(member, label)}<small>${escapeText(status)}</small></button>`;
+}
+
+function renderAssignmentDetails(container, tile, maxTasks = Infinity) {
+    container.replaceChildren();
+    const status = document.createElement('strong');
+    status.textContent = tile.dataset.tipStats || '';
+    container.append(status);
+    if (tile.dataset.tipWork) {
+        const context = document.createElement('p');
+        context.className = 'hint small';
+        context.textContent = tile.dataset.tipWork;
+        container.append(context);
+    }
+    const rows = JSON.parse(tile.dataset.rosterTasks || '[]');
+    if (!rows.length) return;
+    const tasks = document.createElement('ul');
+    tasks.className = 'roster-work-tasks';
+    for (const [job, load] of rows.slice(0, maxTasks)) {
+        const task = document.createElement('li');
+        task.textContent = job;
+        if (load) {
+            const share = document.createElement('b');
+            share.textContent = load;
+            task.append(share);
+        }
+        tasks.append(task);
+    }
+    container.append(tasks);
+    if (rows.length > maxTasks) {
+        const more = document.createElement('p');
+        more.className = 'hint small';
+        more.textContent = translate('+{n} more · click for details').replace('{n}', rows.length - maxTasks);
+        container.append(more);
+    }
 }
 
 function setAniimoExpanded(expanded) {
@@ -5960,9 +6008,13 @@ function showTip(el) {
             swatch.style.background = el.dataset.tipColor;
             title.prepend(swatch);
         }
-        if (el.dataset.tipDetail) line('tip-detail', el.dataset.tipDetail);
-        if (el.dataset.tipWork) line('tip-work', el.dataset.tipWork);
-        if (el.dataset.tipStats) line('tip-stats', el.dataset.tipStats);
+        if (el.dataset.rosterTasks != null) {
+            renderAssignmentDetails(line('roster-work-details', ''), el, 5);
+        } else {
+            if (el.dataset.tipDetail) line('tip-detail', el.dataset.tipDetail);
+            if (el.dataset.tipWork) line('tip-work', el.dataset.tipWork);
+            if (el.dataset.tipStats) line('tip-stats', el.dataset.tipStats);
+        }
     } else {
         line('tip-text', translate(el.dataset.tipText));
     }

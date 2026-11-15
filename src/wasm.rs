@@ -1292,6 +1292,9 @@ pub struct JsProductionPlan {
     /// Crop task capacity actually reserved by the solver: ability, required level, member, days/day.
     #[serde(default)]
     pub crop_assignments: Vec<(String, u32, usize, f64)>,
+    /// Item, crop task, roster pool, and days of hands-on work per day.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub crop_jobs: Vec<(String, String, usize, f64)>,
     #[serde(default)]
     pub movement_staffing: Vec<(usize, f64)>,
     /// Local workplaces per roster pool, used to count the copies needed on the plan.
@@ -1389,6 +1392,7 @@ fn empty_production_plan(success: bool, error: Option<String>) -> JsProductionPl
         power_generated: None,
         crop_staffing: false,
         crop_assignments: Vec::new(),
+        crop_jobs: Vec::new(),
         movement_staffing: Vec::new(),
         workplace_anchors: Vec::new(),
         hauling_staffing: Vec::new(),
@@ -1774,6 +1778,17 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
     js.staffing = exact.staffing.clone();
     js.crop_staffing = prepared.crew.is_some();
     js.crop_assignments = exact.crop_staffing.clone();
+    if let Some(crew) = &prepared.crew {
+        for route in &exact.work_routes {
+            let Some((ability, level)) = &route.crop else { continue };
+            let worker = crate::models::Worker::new(crew.members[route.member].level(ability), false);
+            for job in prepared.grower_steps.get(&route.recipe).iter()
+                .filter(|job| job.ability == *ability && job.min_level == *level) {
+                let share = route.rate * worker.seconds_for(job.workload, *level, true);
+                js.crop_jobs.push((crate::models::base_item_name(&route.recipe).into(), job.step.clone(), route.member, share));
+            }
+        }
+    }
     js.movement_staffing = exact.movement_staffing.clone();
     let mut anchors = std::collections::BTreeMap::new();
     for (_, member, count) in &exact.work_posts {
@@ -2160,6 +2175,7 @@ impl PreparedInput {
             power_generated: None,
             crop_staffing: false,
             crop_assignments: Vec::new(),
+            crop_jobs: Vec::new(),
             movement_staffing: Vec::new(),
             workplace_anchors: Vec::new(),
             hauling_staffing: Vec::new(),
