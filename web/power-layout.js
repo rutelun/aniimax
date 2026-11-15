@@ -3,16 +3,24 @@
 // footprints and conservative overlap follow Aniimo Camp's public Home planner data.
 const EPS = 1e-6;
 const center = r => ({ x: r.x + r.w / 2, y: r.y + r.h / 2 });
+const powerRadius = r => r.generator ? 5.5 : r.pole ? 3.5 : 0;
 export function powerCoverage(r) {
-    const side = r.generator ? 11 : r.pole ? 7 : 0;
-    if (!side) return null;
+    const radius = powerRadius(r);
+    if (!radius) return null;
     const c = center(r);
-    return { x: c.x - side / 2, y: c.y - side / 2, w: side, h: side };
+    return { x: c.x - radius, y: c.y - radius, w: 2 * radius, h: 2 * radius };
 }
 const overlap = (a, b, margin = 0.25) => a && b
     && Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x) >= margin - EPS
     && Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y) >= margin - EPS;
-export const powerLinked = (a, b) => !!(overlap(a, powerCoverage(b)) || overlap(b, powerCoverage(a)));
+function covers(relay, target) {
+    const radius = powerRadius(relay);
+    if (!radius) return false;
+    const x = relay.x + relay.w / 2, y = relay.y + relay.h / 2;
+    return Math.min(x + radius, target.x + target.w) - Math.max(x - radius, target.x) >= .25 - EPS
+        && Math.min(y + radius, target.y + target.h) - Math.max(y - radius, target.y) >= .25 - EPS;
+}
+export const powerLinked = (a, b) => covers(a, b) || covers(b, a);
 const relaysPower = member => member.generator || member.pole;
 
 function attachTargets(targets, connected, links) {
@@ -56,6 +64,8 @@ export function connectPower(layout, cells, maximum, repack = true, canRelocate 
     // before routing, rather than leaving them at the edge chosen by the hauling layout.
     for (const generator of generators) {
         const destinations = [...consumers, ...generators.filter(g => g !== generator)];
+        const sumX = destinations.reduce((sum, m) => sum + m.x + m.w / 2, 0);
+        const sumY = destinations.reduce((sum, m) => sum + m.y + m.h / 2, 0);
         const obstacles = [...members.filter(m => m !== generator), ...layout.storages];
         let best = null;
         for (const cell of destinations.length ? cells : []) {
@@ -65,8 +75,8 @@ export function connectPower(layout, cells, maximum, repack = true, canRelocate 
                 const area = cells.reduce((sum, c) => sum + Math.max(0, Math.min(x + r.w, c.x + c.w) - Math.max(x, c.x))
                     * Math.max(0, Math.min(y + r.h, c.y + c.h) - Math.max(y, c.y)), 0);
                 if (area < r.w * r.h - EPS || obstacles.some(o => overlap(r, o, EPS * 2))) continue;
-                const c = center(r);
-                const cost = destinations.reduce((sum, d) => { const p = center(d); return sum + (c.x - p.x) ** 2 + (c.y - p.y) ** 2; }, 0);
+                const cx = x + r.w / 2, cy = y + r.h / 2;
+                const cost = destinations.length * (cx * cx + cy * cy) - 2 * (cx * sumX + cy * sumY);
                 if (!best || cost < best.cost) best = { x, y, cost };
             }
         }
@@ -117,7 +127,8 @@ export function connectPower(layout, cells, maximum, repack = true, canRelocate 
             if (remaining.some(t => powerLinked(r, t))) { end = r; break; }
             if (depth.get(r) >= maximum - poles.length) continue;
             const [bx, by] = bucket(r);
-            for (let y = by - 2; y <= by + 2; y++) for (let x = bx - 2; x <= bx + 2; x++) {
+            // Half-tile pole sites link only within four tiles per axis, one bucket away.
+            for (let y = by - 1; y <= by + 1; y++) for (let x = bx - 1; x <= bx + 1; x++) {
                 const unvisited = buckets.get(`${x},${y}`);
                 if (!unvisited) continue;
                 for (const next of unvisited) {
