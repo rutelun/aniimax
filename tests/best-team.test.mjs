@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { recommendBestTeam } from '../web/best-team.js';
+import { placeBestJobs, recommendBestTeam } from '../web/best-team.js';
 
 test('a catalog match shares a shift across different roles and delivery', () => {
     const { shifts, haulingSpare } = recommendBestTeam([
@@ -36,4 +36,22 @@ test('opposite personalities and unmatched roles stay on separate shifts', () =>
     assert.equal(shifts.length, 3);
     assert.ok(shifts.every(shift => shift.tasks.size === 1));
     assert.equal(shifts.find(shift => shift.tasks.has('Perfume')).entry, undefined);
+});
+
+test('walking consumes shift time before delivery and can force an additional worker', () => {
+    const jobs = [
+        { ability: 'Earth', level: 3, busy: .4, label: 'Mine', siteKey: 'Mine|ore', visitsPerShare: .01 },
+        { ability: 'Grass', level: 2, busy: .25, label: 'Sowing', siteKey: 'Farmland|wheat', visitsPerShare: .01 },
+    ];
+    const layout = distance => ({ pieces: [{ members: [
+        { facility: 'Mine', crop: 'ore', x: 0, y: 0, w: 2, h: 2, weight: 1 },
+        { facility: 'Farmland', crop: 'wheat', x: distance, y: 0, w: 2, h: 2, weight: 1 },
+    ] }] });
+    const near = recommendBestTeam(placeBestJobs(jobs, layout(8)), .2);
+    const far = recommendBestTeam(placeBestJobs(jobs, layout(80)), .2);
+    assert.equal(near.shifts.length, 1);
+    assert.ok(near.shifts[0].tasks.get('Walking between jobs') > 0);
+    assert.equal(near.shifts[0].tasks.get('Hauling to Storage Units'), .2);
+    assert.equal(far.shifts.length, 2);
+    assert.ok(far.shifts.every(shift => shift.busy <= 1 + 1e-6));
 });

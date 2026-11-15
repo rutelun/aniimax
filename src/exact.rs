@@ -2674,6 +2674,68 @@ pub fn rated_power_draw(plan: &ExactPlan, items: &[ProductionItem]) -> f64 {
         .sum()
 }
 
+/// Try a bounded set of E-mode substitutions at exactly the solved production rates.
+/// A new generator has to pay for its whole shift from the normal shifts it frees.
+pub fn prefer_electric_staffing(
+    plan: &ExactPlan,
+    items: &[ProductionItem],
+    currency: &str,
+    counts: &FacilityCounts,
+    modules: &ModuleLevels,
+    level_up: Option<&LevelUp>,
+) -> Option<ExactPlan> {
+    let power = counts.power()?;
+    let generator = power.automatic?;
+    let generator_count = |plan: &ExactPlan| {
+        let watts = rated_power_draw(plan, items) * power.grid.percent as f64 / 100.0;
+        ((watts - 1e-6) / generator.max_output() as f64).ceil().max(0.0) as u32
+    };
+    let all: HashMap<_, _> = items.iter().map(|item| (item.name.as_str(), item)).collect();
+    let normal_generators = generator_count(plan);
+    let mut options: Vec<_> = items.iter().filter_map(|item| {
+        let level = electric_level(&item.name)?;
+        let normal = crate::power::without_electric_suffix(&item.name);
+        let rate = *plan.recipe_rates.get(normal)?;
+        let worker_time = rate * all.get(normal)?.production_time;
+        let units = (rate * item.production_time - 1e-6).ceil() as u32;
+        let watts = watts_per_level(&item.facility) * level * units;
+        (units > 0 && units <= counts.get_count(&item.facility) && watts > 0)
+            .then_some((item, normal, rate, worker_time, watts))
+    }).collect();
+    options.sort_by(|a, b| {
+        let score = |option: &(&ProductionItem, &str, f64, f64, u32)| ((option.3 + 1e-6).floor() * 10.0 + option.3) / option.4 as f64;
+        score(b).total_cmp(&score(a))
+    });
+    let mut trial = plan.clone();
+    let mut best = None;
+    let mut shifts_saved = 0;
+    let mut best_savings = 0;
+    let mut checks = 0;
+    for (item, normal, rate, worker_time, _) in options {
+        if !trial.recipe_rates.contains_key(normal) || checks >= 24 { continue; }
+        let mut candidate = trial.clone();
+        candidate.recipe_rates.remove(normal);
+        candidate.units.remove(normal);
+        let combined_rate = candidate.recipe_rates.entry(item.name.clone()).or_default();
+        *combined_rate += rate;
+        candidate.units.insert(item.name.clone(), (*combined_rate * item.production_time - 1e-6).ceil() as u32);
+
+        let generators = generator_count(&candidate);
+        let freed = shifts_saved + (worker_time + 1e-6).floor() as u32;
+        if generators > power.generator_limit() || generators > normal_generators + freed { continue; }
+        checks += 1;
+        if check_plan_with_workload(&candidate, items, currency, counts, modules, level_up).is_err() { continue; }
+        trial = candidate;
+        shifts_saved = freed;
+        let savings = normal_generators + freed - generators;
+        if savings >= best_savings && (savings > 0 || generators <= normal_generators) {
+            best_savings = savings;
+            best = Some(trial.clone());
+        }
+    }
+    best
+}
+
 /// Turn the solution into facility rows, income streams, byproducts and building layouts.
 pub fn to_production_plan(
     exact: &ExactPlan,

@@ -414,6 +414,41 @@ fn test_electricity_in_best_can_run_a_recipe_above_its_workers_level() {
 }
 
 #[test]
+fn test_electricity_uses_spare_buildings_to_save_workers_at_the_same_output() {
+    use aniimax::exact::prefer_electric_staffing;
+    use aniimax::models::GrowerSteps;
+    use aniimax::power::{Electricity, GeneratorLimits, PowerPlan};
+    let normal = walking_item("fixed_ore", "Mine", 30.0, "coins");
+    let mut electric = normal.clone();
+    electric.name = "fixed_ore__electric1".into();
+    electric.production_time = 45.0;
+    let generator = GeneratorLimits::for_rv(12, 4).unwrap();
+    let mut counts = FacilityCounts::only(&[("Mine", 3, 1)]);
+    counts.set_power(PowerPlan {
+        grid: Electricity { watts: generator.max_output(), percent: 120, max_aniimo: None },
+        grower_steps: GrowerSteps::default(),
+        automatic: Some(generator),
+    });
+    let modules = ModuleLevels::default();
+    let mut source = solve_and_check(std::slice::from_ref(&normal), &counts, &modules);
+    let rate = 2.0 / normal.production_time;
+    source.recipe_rates.insert(normal.name.clone(), rate);
+    source.units.insert(normal.name.clone(), 2);
+    source.sold.insert(normal.name.clone(), rate);
+    source.rate_per_second = rate;
+    let items = vec![normal, electric];
+    let powered = prefer_electric_staffing(&source, &items, "coins", &counts, &modules, None).unwrap();
+    assert_eq!(powered.recipe_rates["fixed_ore__electric1"], rate);
+    assert_eq!(powered.units["fixed_ore__electric1"], 3);
+    assert_eq!(powered.rate_per_second, source.rate_per_second);
+    check_plan(&powered, &items, "coins", &counts, &modules, None).unwrap();
+
+    let mut tight = FacilityCounts::only(&[("Mine", 2, 1)]);
+    tight.set_power(counts.power().unwrap().clone());
+    assert!(prefer_electric_staffing(&source, &items, "coins", &tight, &modules, None).is_none());
+}
+
+#[test]
 fn test_electricity_compares_bottlenecked_processors_and_the_generator_shift() {
     use aniimax::models::{AniimoLevels, AniimoRequirements, GrowerSteps};
     use aniimax::power::{add_electric_variants, Electricity, GeneratorLimits, PowerPlan};

@@ -1774,10 +1774,36 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
         &mut exact, &mut roster_workload, &prepared.items, &currency,
         &prepared.facility_counts, &prepared.module_levels, level_up,
     );
+    let mut reporting_items = &prepared.items[..];
+    let mut extra_electric = Vec::new();
+    if !result.summary_only && matches!(prepared.setup, Some(crate::models::AniimoSetup::Best(_)))
+        && prepared.input.fixed_homeland.is_none()
+    {
+        if let Some(power) = prepared.facility_counts.power().filter(|power| power.automatic.is_some()) {
+            let active = prepared.items.iter()
+                .filter(|item| item.workload.is_some() && crate::power::electric_level(&item.name).is_none()
+                    && exact.recipe_rates.contains_key(&item.name))
+                .cloned().collect();
+            // Slower gathering variants are useful only if spare buildings preserve the
+            // solved rate. Check them here to keep them out of the production search.
+            crate::power::add_electric_variants(
+                &mut extra_electric, active, &prepared.facility_counts, &prepared.requirements, &power.grid,
+            );
+            let existing: std::collections::HashSet<_> = prepared.items.iter().map(|item| item.name.as_str()).collect();
+            extra_electric.retain(|item| !existing.contains(item.name.as_str()));
+            extra_electric.extend(prepared.items.iter().cloned());
+            if let Some(candidate) = crate::exact::prefer_electric_staffing(
+                &exact, &extra_electric, &currency, &prepared.facility_counts, &prepared.module_levels, level_up,
+            ) {
+                exact = candidate;
+                reporting_items = &extra_electric;
+            }
+        }
+    }
     let proof = (exact.proven_optimal, exact.upper_bound);
     let report_at = |target, seconds| {
-        let net = crate::exact::net_rates(&exact, &prepared.items);
-        level_up_report(exact.rate_per_second, &net, &prepared.items, target, seconds)
+        let net = crate::exact::net_rates(&exact, reporting_items);
+        level_up_report(exact.rate_per_second, &net, reporting_items, target, seconds)
     };
     let report = level_up.and_then(|target| {
         let pace = exact.pace.filter(|p| *p > 0.0)?;
@@ -1786,7 +1812,7 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
     let preview = prepared.input.level_up_preview.as_ref().filter(|_| currency == "coins")
         .map(|target| report_at(target, exact.pace.filter(|&pace| pace > 0.0).map(|pace| crate::exact::PACE_UNIT / pace)));
     let build_report = if result.summary_only { crate::exact::to_production_summary } else { crate::exact::to_production_plan };
-    let plan = build_report(&exact, &prepared.items, &currency, &prepared.facility_counts);
+    let plan = build_report(&exact, reporting_items, &currency, &prepared.facility_counts);
     let mut js = prepared.to_js(plan, Some(proof));
     js.level_up = report.filter(|_| prepared.input.level_up.is_some());
     js.level_up_preview = preview;
@@ -1857,7 +1883,7 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
             route.rate * visits as f64 * 3600.0, route.crop.is_some()))
     }).collect();
     if let Some(power) = prepared.facility_counts.power() {
-        let draw = crate::exact::rated_power_draw(&exact, &prepared.items);
+        let draw = crate::exact::rated_power_draw(&exact, reporting_items);
         let needed = draw * power.grid.percent as f64 / 100.0;
         if let Some(automatic) = power.automatic.filter(|_| draw > 0.0) {
             let staff = if let Some(crew) = &prepared.crew {
@@ -1885,7 +1911,7 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
         }
     }
     if prepared.input.season.is_some() {
-        js.season_points = Some(crate::exact::target_rate(&exact, &prepared.items, crate::models::SEASON_POINTS));
+        js.season_points = Some(crate::exact::target_rate(&exact, reporting_items, crate::models::SEASON_POINTS));
     }
     js.priorities = prepared
         .input
@@ -1893,9 +1919,9 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
         .iter()
         .map(|target| JsPriority {
             target: target.clone(),
-            per_second: crate::exact::target_rate(&exact, &prepared.items, target),
-            items: crate::exact::target_items(&exact, &prepared.items, target),
-            streams: crate::exact::target_streams(&exact, &prepared.items, target),
+            per_second: crate::exact::target_rate(&exact, reporting_items, target),
+            items: crate::exact::target_items(&exact, reporting_items, target),
+            streams: crate::exact::target_streams(&exact, reporting_items, target),
         })
         .collect();
     serde_json::to_string(&js).unwrap_or_default()
@@ -2013,7 +2039,8 @@ impl PreparedInput {
             .aniimo
             .as_deref()
             .and_then(|name| aniimo_setup_from(name, &input.aniimo_levels, &input.workers));
-        let requirements = embedded_aniimo_requirements();
+        let mut requirements = embedded_aniimo_requirements();
+        requirements.use_best_catalog();
         let grower_steps = embedded_grower_steps();
         let mut facility_counts = facility_counts;
         facility_counts.set_grower_steps(grower_steps.clone());

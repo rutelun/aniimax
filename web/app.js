@@ -21,7 +21,7 @@ import { prepareOpportunities, startedProcessing, increasedProcessing } from './
 import { aniimoPortrait, attachRosterPicker, rosterCatalogId, rosterFormName } from './roster-picker.js?v=game-heads';
 import { placeRosterCopy, ROSTER_ROW_SIZE, rosterSlotsFor, swapRosterSlots } from './roster-slots.js';
 import { scheduleRosterCopies } from './roster-work.js?v=individual-shifts';
-import { recommendBestTeam } from './best-team.js?v=best-multi-role';
+import { placeBestJobs, recommendBestTeam } from './best-team.js?v=best-travel';
 import facilityIcons from './facility-icons.json' with { type: 'json' };
 import { abilityGlyph, gameAbilityIcon } from './ability-icons.js?v=game-heads';
 
@@ -1674,7 +1674,8 @@ function layoutOptionsFor(plan, homeLevel, setup = selectedSetupTab()) {
         const ownedPlan = setup === 'custom';
         const team = ownedPlan ? rosterWorkload({ ...plan, layout_walking: [],
             assumed_aniimo: haulingBaseByPlan.get(plan) ?? plan.assumed_aniimo }) : null;
-        const bestTeam = setup === 'best' ? bestPlanTeam(plan, 0) : null;
+        const bestTeam = setup === 'best' ? bestPlanTeam(plan, 0, null) : null;
+        const accountForTravel = setup !== 'minimum';
         const rvLimit = ANIIMO_MAX[homeLevel - 1] ?? Infinity;
         const visits = {};
         for (const [, , member, count] of plan.mobile_work || []) visits[member] = (visits[member] || 0) + count;
@@ -1688,8 +1689,8 @@ function layoutOptionsFor(plan, homeLevel, setup = selectedSetupTab()) {
             movement: ownedPlan && plan.mobile_work?.length
                 ? { defaultDistance: movementDefaultDistance, byMember: movementDistances, visits } : null,
             haulingLevel: setup === 'minimum' ? 1 : 3,
-            haulingBound: haulingRouteBound(ownedPlan),
-            accountForTravel: ownedPlan,
+            haulingBound: haulingRouteBound(accountForTravel),
+            accountForTravel,
             facilities: lastPlanInput?.facilities,
             steps: (plan.coin_items || []).filter(step => step.status === 'producing'),
         };
@@ -2538,12 +2539,14 @@ function haulingRouteBound(accountForTravel = false) {
 }
 
 function assignLayoutHauling(layout, plan) {
-    const accountForTravel = selectedSetupTab() === 'custom';
+    const setup = selectedSetupTab();
+    const accountForTravel = setup !== 'minimum';
     const bound = haulingRouteBound(accountForTravel);
     const work = haulingWorkload(layout, plan.coin_items || [], bound, recipeIndex, lastPlanInput?.facilities, accountForTravel);
     plan.hauling_estimates = work.seconds;
-    plan.hauling_busy = work.busyByLevel[selectedSetupTab() === 'minimum' ? 1 : 3];
-    if (selectedSetupTab() !== 'custom') return false;
+    plan.hauling_busy = work.busyByLevel[setup === 'minimum' ? 1 : 3];
+    if (setup === 'best') bestTeamLayouts.set(plan, layout);
+    if (setup !== 'custom') return false;
     if (!haulingBaseByPlan.has(plan)) haulingBaseByPlan.set(plan, [...(plan.assumed_aniimo || [])]);
     plan.assumed_aniimo = [...haulingBaseByPlan.get(plan)];
     const { members, busy, anchored } = rosterWorkload(plan);
@@ -2876,10 +2879,13 @@ async function fillRosterFrom(setup) {
             return;
         }
         const haulingLevel = setup === 'minimum' ? 1 : 3;
-        const haulingBusy = await measureSourceTeamHauling(plan, sourceInput, haulingLevel);
+        const layout = await sourceTeamLayout(plan, sourceInput, setup);
         if (runId !== planRunId || version !== rosterFillVersion) return;
+        const accountForTravel = setup === 'best';
+        const haulingBusy = haulingWorkload(layout, plan.coin_items || [], haulingRouteBound(accountForTravel),
+            recipeIndex, sourceInput.facilities, accountForTravel).busyByLevel[haulingLevel];
         if (setup === 'best') {
-            const { shifts } = bestPlanTeam(plan, haulingBusy);
+            const { shifts } = bestPlanTeam(plan, haulingBusy, layout);
             if (!shifts.length) {
                 status.textContent = 'No working team to copy from this plan.';
                 return;
@@ -2920,8 +2926,8 @@ async function fillRosterFrom(setup) {
     }
 }
 
-async function measureSourceTeamHauling(plan, input, level) {
-    const { key, ...options } = layoutOptionsFor(plan, layoutHomeLevel(), level === 1 ? 'minimum' : 'best');
+async function sourceTeamLayout(plan, input, setup) {
+    const { key, ...options } = layoutOptionsFor(plan, layoutHomeLevel(), setup);
     let layout = layoutsByPlan.get(plan)?.get(key);
     if (!layout) {
         const { pieces } = homelandPieces(plan, input);
@@ -2940,7 +2946,7 @@ async function measureSourceTeamHauling(plan, input, level) {
         });
         rememberLayout(plan, key, layout);
     }
-    return haulingWorkload(layout, plan.coin_items || [], haulingRouteBound(), recipeIndex, input.facilities).busyByLevel[level];
+    return layout;
 }
 
 function attachRosterHandlers() {
@@ -4678,8 +4684,9 @@ function environmentTeamJobs(plan) {
 }
 
 const bestTeamCache = new WeakMap();
+const bestTeamLayouts = new WeakMap();
 
-function bestPlanTeam(plan, haulingBusy = plan.hauling_busy || 0) {
+function bestPlanTeam(plan, haulingBusy = plan.hauling_busy || 0, layout = bestTeamLayouts.get(plan) ?? null) {
     let cached = bestTeamCache.get(plan);
     if (!cached) {
         const jobs = environmentTeamJobs(plan);
@@ -4692,22 +4699,28 @@ function bestPlanTeam(plan, haulingBusy = plan.hauling_busy || 0) {
                 const label = task.jobs?.length
                     ? `${task.jobs.map(translate).join(' / ')} · ${item}`
                     : `${translate(step.facility)} (${item})`;
+                const resident = RESIDENT_FACILITIES.has(step.facility);
+                const batches = step.cycle_time > 0 ? (step.busy_units ?? step.facility_count) / step.cycle_time : 0;
                 jobs.push({
                     ability: task.ability, level: task.level, label,
-                    busy: RESIDENT_FACILITIES.has(step.facility) ? step.facility_count : task.busy,
+                    busy: resident ? step.facility_count : task.busy,
+                    siteKey: resident ? null : `${step.facility}|${step.item_name}`,
+                    visitsPerShare: !resident && task.busy > 0 ? batches * (task.jobs?.length || 1) / task.busy : 0,
                     personality: task.personality_bonus ? personalities.get(step.facility) : null,
                     family: task.ability === 'Leisure' ? families.get(step.item_name) : null,
                 });
             }
         }
-        cached = { jobs, results: new Map() };
+        cached = { jobs };
         bestTeamCache.set(plan, cached);
     }
-    if (!cached.results.has(haulingBusy)) {
-        if (cached.results.size >= 3) cached.results.clear();
-        cached.results.set(haulingBusy, recommendBestTeam(cached.jobs, haulingBusy));
+    if (!layout && !haulingBusy) return cached.baseline ??= recommendBestTeam(cached.jobs);
+    if (cached.layout !== layout || cached.haulingBusy !== haulingBusy) {
+        cached.layout = layout;
+        cached.haulingBusy = haulingBusy;
+        cached.result = recommendBestTeam(placeBestJobs(cached.jobs, layout), haulingBusy);
     }
-    return cached.results.get(haulingBusy);
+    return cached.result;
 }
 
 function bestRosterMember(shift) {
@@ -4839,7 +4852,7 @@ function renderAniimoSummary(plan) {
     const setup = selectedSetupTab();
     const custom = setup === 'custom';
     const workloadNote = document.getElementById('aniimo-workload-note');
-    const travelNote = custom ? ' Estimated walking and delivery times are tripled.' : '';
+    const travelNote = setup !== 'minimum' ? ' Estimated walking and delivery times are tripled.' : '';
     workloadNote.textContent = plan.hauling_busy != null ? HAULING_ESTIMATE_HINT + travelNote : '';
     workloadNote.hidden = plan.hauling_busy == null;
     if (custom) {

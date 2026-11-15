@@ -679,9 +679,14 @@ pub enum AniimoSetup {
 pub struct AniimoRequirements {
     by_item: std::collections::HashMap<String, (String, u32)>,
     families: std::collections::HashMap<String, String>,
+    best_catalog: bool,
 }
 
 impl AniimoRequirements {
+    pub(crate) fn use_best_catalog(&mut self) {
+        self.best_catalog = true;
+    }
+
     pub fn set_family(&mut self, item: &str, family: &str) {
         self.families.insert(item.into(), family.into());
     }
@@ -713,7 +718,13 @@ impl AniimoRequirements {
         match setup {
             AniimoSetup::Best(levels) => {
                 let ability = self.get(item).map_or("", |(ability, _)| ability);
-                Worker::new(levels.level_for(ability), has_personality_bonus(facility))
+                let level = levels.level_for(ability);
+                let level = if self.best_catalog {
+                    level.min(best_catalog_level(ability, self.family(item)).unwrap_or(level))
+                } else {
+                    level
+                };
+                Worker::new(level, has_personality_bonus(facility))
             }
             // A facility with no personality of its own never gets the bonus, whatever is said.
             AniimoSetup::PerFacility(workers) => {
@@ -743,6 +754,41 @@ impl AniimoRequirements {
             }
         }
     }
+}
+
+fn best_catalog_level(ability: &str, family: Option<&str>) -> Option<u32> {
+    use std::{collections::HashMap, sync::OnceLock};
+    #[derive(serde::Deserialize)]
+    struct Entry {
+        abilities: HashMap<String, u32>,
+        family: Option<String>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Catalog {
+        entries: Vec<Entry>,
+    }
+    type Levels = HashMap<String, HashMap<String, u32>>;
+    static LEVELS: OnceLock<Levels> = OnceLock::new();
+    let levels = LEVELS.get_or_init(|| {
+        let catalog: Catalog = serde_json::from_str(include_str!("../web/aniimo-catalog.json"))
+            .expect("embedded Aniimo catalog is valid");
+        let mut result = Levels::new();
+        for entry in catalog.entries {
+            for (ability, level) in entry.abilities {
+                let by_family = result.entry(ability.clone()).or_default();
+                let maximum = by_family.entry(String::new()).or_default();
+                *maximum = (*maximum).max(level);
+                if ability == "Leisure" {
+                    if let Some(family) = &entry.family {
+                        let maximum = by_family.entry(family.clone()).or_default();
+                        *maximum = (*maximum).max(level);
+                    }
+                }
+            }
+        }
+        result
+    });
+    levels.get(ability)?.get(if ability == "Leisure" { family.unwrap_or("") } else { "" }).copied()
 }
 
 /// One Aniimo job in a crop or tree's growing cycle, e.g. Sowing (Grass, workload 3).

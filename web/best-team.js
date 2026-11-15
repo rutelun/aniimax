@@ -1,5 +1,6 @@
 import catalog from './aniimo-catalog.json' with { type: 'json' };
 import { opposedPersonality } from './facility-config.js?v=leisure-families';
+import { workerTravelSeconds } from './worker-travel.js?v=travel-allowance';
 
 const EPSILON = 1e-6;
 const roleKey = ({ ability, level, family }) => `${ability}|${level}|${family || ''}`;
@@ -24,6 +25,26 @@ function indexCatalog(entries) {
 const catalogIndex = indexCatalog(catalog.entries);
 const noMatches = new Set();
 
+export function placeBestJobs(jobs, layout) {
+    if (!layout) return jobs;
+    const sites = new Map();
+    for (const piece of layout.pieces) for (const member of piece.members) {
+        const point = [member.x + member.w / 2, member.y + member.h / 2];
+        for (const job of member.jobs ?? [{ item: member.crop, rate: member.batchWeight ?? member.weight, electric_level: member.electric_level }]) {
+            if (!job.item || job.electric_level != null || !(job.rate > 0)) continue;
+            const key = `${member.facility}|${job.item}`;
+            if (!sites.has(key)) sites.set(key, []);
+            sites.get(key).push({ point, rate: job.rate });
+        }
+    }
+    return jobs.flatMap(job => {
+        const locations = sites.get(job.siteKey);
+        if (!locations) return [job];
+        const total = locations.reduce((sum, site) => sum + site.rate, 0);
+        return locations.map(({ point, rate }) => ({ ...job, point, busy: job.busy * rate / total }));
+    });
+}
+
 export function recommendBestTeam(jobs, haulingBusy = 0) {
     const shifts = [];
     const available = [];
@@ -35,12 +56,22 @@ export function recommendBestTeam(jobs, haulingBusy = 0) {
         if (!shift.candidates.size || !candidates.size) return null;
         return new Set([...shift.candidates].filter(entry => candidates.has(entry)));
     };
-    const add = (shift, job, share) => {
-        shift.busy += share;
+    const walkingPerShare = (shift, job) => {
+        if (!shift.point || !job.point || !job.visitsPerShare) return 0;
+        const distance = Math.hypot(shift.point[0] - job.point[0], shift.point[1] - job.point[1]);
+        return 2 * workerTravelSeconds(distance) * job.visitsPerShare;
+    };
+    const add = (shift, job, share, walking = 0) => {
+        shift.point ||= job.point;
+        shift.busy += share + walking;
         if (job.personality) shift.personalities.add(job.personality);
         const key = roleKey(job);
         if (!shift.roles.has(key)) shift.roles.set(key, job);
         shift.tasks.set(job.label, (shift.tasks.get(job.label) || 0) + share);
+        if (walking > 0) {
+            const label = 'Walking between jobs';
+            shift.tasks.set(label, (shift.tasks.get(label) || 0) + walking);
+        }
     };
     const place = (job, busy) => {
         const candidates = matches(job);
@@ -48,29 +79,37 @@ export function recommendBestTeam(jobs, haulingBusy = 0) {
             let share = Math.min(1, busy);
             let best;
             let narrowed;
+            let bestWalking = 0;
             let partial;
             let partialCandidates;
+            let partialCapacity = 0;
+            let partialWalking = 0;
             for (const shift of available) {
                 if (share === 1 || 1 - shift.busy <= EPSILON) continue;
                 const common = compatible(shift, job, candidates);
                 if (common == null || (common.size === 0 && !shift.roles.has(roleKey(job)))) continue;
-                if (1 - shift.busy < share - EPSILON) {
-                    if (!partial || shift.busy < partial.busy) {
+                const walking = walkingPerShare(shift, job);
+                const capacity = (1 - shift.busy) / (1 + walking);
+                if (capacity < share - EPSILON) {
+                    if (capacity > Math.max(EPSILON, partialCapacity)) {
                         partial = shift;
                         partialCandidates = common;
+                        partialCapacity = capacity;
+                        partialWalking = walking;
                     }
                     continue;
                 }
-                if (!best || shift.busy > best.busy + EPSILON
-                    || (Math.abs(shift.busy - best.busy) <= EPSILON && common.size > narrowed.size)) {
+                if (!best || walking < bestWalking || (walking === bestWalking && shift.busy > best.busy)) {
                     best = shift;
                     narrowed = common;
+                    bestWalking = walking;
                 }
             }
             if (!best && partial) {
                 best = partial;
                 narrowed = partialCandidates;
-                share = 1 - partial.busy;
+                share = partialCapacity;
+                bestWalking = partialWalking;
             }
             if (!best) {
                 best = { busy: 0, candidates, roles: new Map(), tasks: new Map(), personalities: new Set() };
@@ -79,7 +118,7 @@ export function recommendBestTeam(jobs, haulingBusy = 0) {
             } else {
                 best.candidates = narrowed;
             }
-            add(best, job, share);
+            add(best, job, share, share * bestWalking);
             busy -= share;
         }
     };
