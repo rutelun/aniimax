@@ -140,8 +140,8 @@ pub struct ExactPlan {
     pub crop_staffing: Vec<(String, u32, usize, f64)>,
     pub work_routes: Vec<WorkRoute>,
     pub work_posts: Vec<(String, usize, f64)>,
-    /// Member, walking days/day, reserved idle days/day at a dedicated workplace.
-    pub movement_staffing: Vec<(usize, f64, f64)>,
+    /// Member and walking days/day.
+    pub movement_staffing: Vec<(usize, f64)>,
     /// Hauling days/day assigned to each roster member, sharing its production capacity.
     pub hauling_staffing: Vec<(usize, f64)>,
     pub hauling_routes: Vec<(String, usize, f64)>,
@@ -445,10 +445,11 @@ fn work_groups(recipe: &ProductionItem, counts: &FacilityCounts) -> Vec<Option<(
         .map(|j| Some((j.ability.clone(), j.min_level))).collect::<std::collections::BTreeSet<_>>().into_iter().collect()
 }
 
-// Dedicated workers reserve the whole shift at one physical unit. Mobile workers may share
-// jobs, but pay the estimated walk to their next workplace on every batch/job visit.
+// Each worker can have one workplace with local visits. Other visits pay walking time.
+// Both kinds of work use their actual duration and share the worker's day.
 fn add_movement_work<'a>(model: &mut Model<'a>, rates: &[(&'a ProductionItem, usize)],
-    units: &[(&'a ProductionItem, usize)], counts: &FacilityCounts, busy: &mut [Vec<(usize, f64)>]) {
+    units: &[(&'a ProductionItem, usize)], counts: &FacilityCounts, busy: &mut [Vec<(usize, f64)>],
+    anchored: &mut [Vec<(usize, f64)>]) {
     let crew = counts.crew().unwrap();
     let mut posts = BTreeMap::<(String, usize), usize>::new();
     let mut local_work = BTreeMap::<usize, Vec<(usize, f64)>>::new();
@@ -462,7 +463,7 @@ fn add_movement_work<'a>(model: &mut Model<'a>, rates: &[(&'a ProductionItem, us
                 let post = *posts.entry(key.clone()).or_insert_with(|| {
                     let post = model.add(0.0, (0.0, counts.get_count(&recipe.facility).min(crew.members[member].count) as f64), true,
                         VarKind::WorkPost { station: key.0.clone(), member });
-                    busy[member].push((post, 1.0));
+                    anchored[member].push((post, 1.0));
                     if takes_turns(recipe) { turn_posts.entry(recipe.facility.clone()).or_default().push((post, 1.0)); }
                     else { model.constrain(vec![(post, 1.0), (unit, -1.0)], ComparisonOp::Le, 0.0); }
                     post
@@ -472,8 +473,8 @@ fn add_movement_work<'a>(model: &mut Model<'a>, rates: &[(&'a ProductionItem, us
                     let allocation = model.add(0.0, (0.0, f64::INFINITY), false, VarKind::WorkRoute {
                         recipe, member, crop: crop.clone(), mobile, seconds, travel });
                     demand.push((allocation, 1.0));
-                    if mobile { busy[member].push((allocation, seconds + travel)); }
-                    else {
+                    busy[member].push((allocation, seconds + travel));
+                    if !mobile {
                         local_work.entry(post).or_default().push((allocation, seconds));
                         if crop.is_some() {
                             model.constrain(vec![(allocation, recipe.production_time), (post, -1.0)], ComparisonOp::Le, 0.0);
@@ -486,8 +487,12 @@ fn add_movement_work<'a>(model: &mut Model<'a>, rates: &[(&'a ProductionItem, us
     }
     for (post, mut terms) in local_work { terms.push((post, -1.0)); model.constrain(terms, ComparisonOp::Le, 0.0); }
     for (facility, terms) in turn_posts { model.constrain(terms, ComparisonOp::Le, counts.get_count(&facility) as f64); }
+    for &post in posts.values() {
+        model.objective[post] -= 1e-9;
+        model.tiebreak.push((post, 1e-9));
+    }
     for terms in busy.iter() { for &(v, time) in terms {
-        if matches!(model.kinds[v], VarKind::WorkPost { .. } | VarKind::WorkRoute { .. }) {
+        if matches!(model.kinds[v], VarKind::WorkRoute { .. }) {
             let weight = 1e-8 * time;
             model.objective[v] -= weight; model.tiebreak.push((v, weight));
         }
@@ -495,7 +500,7 @@ fn add_movement_work<'a>(model: &mut Model<'a>, rates: &[(&'a ProductionItem, us
 }
 
 fn check_movement(plan: &ExactPlan, all: &HashMap<&str, &ProductionItem>, counts: &FacilityCounts,
-    busy: &mut [f64]) -> Result<(), String> {
+    busy: &mut [f64], anchored: &mut [f64]) -> Result<(), String> {
     const EPS: f64 = 1e-5;
     let mut posts = BTreeMap::<(&str, usize), f64>::new();
     for (station, member, count) in &plan.work_posts {
@@ -503,7 +508,7 @@ fn check_movement(plan: &ExactPlan, all: &HashMap<&str, &ProductionItem>, counts
             return Err("invalid dedicated worker count".into());
         }
         *posts.entry((station.as_str(), *member)).or_default() += count;
-        busy[*member] += count;
+        anchored[*member] += count;
     }
     let mut covered = BTreeMap::<(&str, Option<(String, u32)>), f64>::new();
     let mut local_used = BTreeMap::<(String, usize), f64>::new();
@@ -515,8 +520,9 @@ fn check_movement(plan: &ExactPlan, all: &HashMap<&str, &ProductionItem>, counts
             return Err("invalid workplace rate".into());
         }
         *covered.entry((&route.recipe, route.crop.clone())).or_default() += route.rate;
-        if route.mobile { busy[route.member] += route.rate * (seconds + visits as f64 * counts.member_movement_seconds(route.member)); }
-        else {
+        let travel = if route.mobile { visits as f64 * counts.member_movement_seconds(route.member) } else { 0.0 };
+        busy[route.member] += route.rate * (seconds + travel);
+        if !route.mobile {
             *local_used.entry((work_station(recipe), route.member)).or_default() += route.rate * seconds;
             *local_groups.entry((work_station(recipe), route.member, route.crop.clone())).or_default() += route.rate;
         }
@@ -1041,10 +1047,12 @@ fn build_model<'a>(
     let mut reserve_work = Vec::new();
     if let Some(crew) = facility_counts.crew() {
         let mut busy: Vec<Vec<(usize, f64)>> = vec![Vec::new(); crew.members.len()];
+        let mut anchored = vec![Vec::new(); crew.members.len()];
         for (&(recipe, rate), &(_, units)) in rate_of.iter().zip(&units_of) {
             let Some(member) = recipe.crew.filter(|&m| m < busy.len()) else { continue };
             if crew.residents.contains(&recipe.facility) {
                 busy[member].push((units, 1.0));
+                anchored[member].push((units, 1.0));
             } else if facility_counts.movement_seconds() <= 0.0 {
                 busy[member].push((rate, recipe.production_time));
             }
@@ -1087,6 +1095,7 @@ fn build_model<'a>(
                 let staff = model.add(0.0, (0.0, maximum as f64), integer, VarKind::Staff { building: building.clone(), member });
                 staffed.push((staff, 1.0));
                 busy[member].push((staff, 1.0));
+                anchored[member].push((staff, 1.0));
                 if building == GENERATOR {
                     if let Some(draw) = &mut roster_power_draw {
                         draw.push((staff, -facility_counts.power().unwrap().generator_output(aniimo.level("Lightning"))));
@@ -1105,7 +1114,7 @@ fn build_model<'a>(
         }
         let team_limit = facility_counts.power().and_then(|power| power.grid.max_aniimo.map(|n| (power, n)));
         if facility_counts.movement_seconds() > 0.0 {
-            add_movement_work(&mut model, &rate_of, &units_of, facility_counts, &mut busy);
+            add_movement_work(&mut model, &rate_of, &units_of, facility_counts, &mut busy, &mut anchored);
         } else if let Some(steps) = facility_counts.grower_steps() {
             for ((ability, level), mut needs) in crop_work(&rate_of, steps, crew) {
                 for (member, aniimo) in crew.members.iter().enumerate().filter(|(member, _)| crew.can_work(*member, ability, level)) {
@@ -1138,6 +1147,10 @@ fn build_model<'a>(
                 let count = model.add(0.0, (0.0, crew.members[member].count as f64), true, VarKind::ActiveAniimo { member });
                 terms.push((count, -1.0));
                 model.constrain(terms, ComparisonOp::Le, 0.0);
+                if !anchored[member].is_empty() {
+                    anchored[member].push((count, -1.0));
+                    model.constrain(std::mem::take(&mut anchored[member]), ComparisonOp::Le, 0.0);
+                }
                 active.push((count, 1.0));
             }
             if !active.is_empty() {
@@ -1147,6 +1160,9 @@ fn build_model<'a>(
             for (member, terms) in busy.into_iter().enumerate() {
                 if !terms.is_empty() {
                     model.constrain(terms, ComparisonOp::Le, crew.members[member].count as f64);
+                }
+                if !anchored[member].is_empty() {
+                    model.constrain(std::mem::take(&mut anchored[member]), ComparisonOp::Le, crew.members[member].count as f64);
                 }
             }
         }
@@ -1658,12 +1674,7 @@ fn plan_from(model: &Model, value: f64, upper_bound: f64, proven_optimal: bool, 
     // omit posts with no local work too, rather than inventing a worker at a missing machine.
     work_posts.retain(|(station, member, _)| local_used.get(&(station.clone(), *member)).copied().unwrap_or(0.0) > 0.0);
     let rate_per_second = model.earnings.iter().zip(values).map(|(c, v)| c * v).sum();
-    let mut idle = BTreeMap::<usize, f64>::new();
-    for (station, member, count) in &work_posts {
-        *idle.entry(*member).or_default() += (count - local_used.get(&(station.clone(), *member)).copied().unwrap_or(0.0)).max(0.0);
-    }
-    let movement_staffing = travel.keys().chain(idle.keys()).copied().collect::<std::collections::BTreeSet<_>>()
-        .into_iter().map(|member| (member, travel.get(&member).copied().unwrap_or(0.0), idle.get(&member).copied().unwrap_or(0.0))).collect();
+    let movement_staffing = travel.into_iter().filter(|(_, seconds)| *seconds > 1e-9).collect();
     ExactPlan {
         rate_per_second,
         objective: model.untied(value, values),
@@ -1813,7 +1824,7 @@ fn reassign_crew_pool(
         route.member = member(route.member);
     }
     for (_, id, _) in &mut candidate.staffing { *id = member(*id); }
-    for (id, _, _) in &mut candidate.movement_staffing { *id = member(*id); }
+    for (id, _) in &mut candidate.movement_staffing { *id = member(*id); }
     Some(candidate)
 }
 
@@ -2021,17 +2032,18 @@ pub fn check_plan_with_workload(
     let mut roster_workload = Vec::new();
     if let Some(crew) = facility_counts.crew() {
         let mut busy = vec![0.0; crew.members.len()];
+        let mut anchored = vec![0.0; crew.members.len()];
         for (name, &rate) in &plan.recipe_rates {
             let recipe = all.get(name.as_str()).ok_or(format!("unknown recipe {name}"))?;
             let Some(member) = recipe.crew else { continue };
             let slot = busy.get_mut(member).ok_or(format!("{name} is worked by roster member {member}, who isn't there"))?;
-            *slot += if crew.residents.contains(&recipe.facility) {
-                plan.units.get(name).copied().unwrap_or(0) as f64
+            if crew.residents.contains(&recipe.facility) {
+                let units = plan.units.get(name).copied().unwrap_or(0) as f64;
+                *slot += units;
+                anchored[member] += units;
             } else if facility_counts.movement_seconds() <= 0.0 {
-                rate * recipe.production_time
-            } else {
-                0.0
-            };
+                *slot += rate * recipe.production_time;
+            }
         }
         let mut staffed: HashMap<&str, f64> = HashMap::new();
         let mut generated = 0.0;
@@ -2045,6 +2057,7 @@ pub fn check_plan_with_workload(
                 return Err(format!("{building} requires whole dedicated Aniimo"));
             }
             busy[*member] += share;
+            anchored[*member] += share;
             *staffed.entry(building.as_str()).or_default() += share;
             if building == GENERATOR {
                 let power = facility_counts.power().ok_or("Crackle Generator staffed without a power grid")?;
@@ -2086,7 +2099,7 @@ pub fn check_plan_with_workload(
                 }
             }
         }
-        if facility_counts.movement_seconds() > 0.0 { check_movement(plan, &all, facility_counts, &mut busy)?; }
+        if facility_counts.movement_seconds() > 0.0 { check_movement(plan, &all, facility_counts, &mut busy, &mut anchored)?; }
         roster_workload = busy.clone();
         let mut delivered = BTreeMap::<&str, f64>::new();
         let mut haul_busy = BTreeMap::<usize, f64>::new();
@@ -2118,12 +2131,15 @@ pub fn check_plan_with_workload(
             }
         }
         if let Some(limit) = facility_counts.power().and_then(|power| power.grid.max_aniimo) {
-            let active: f64 = busy.iter().map(|n| (n - TOLERANCE).ceil().max(0.0)).sum();
+            let active: f64 = busy.iter().zip(&anchored).map(|(time, posts)| (time - TOLERANCE).ceil().max(*posts)).sum();
             if active > limit as f64 {
                 return Err(format!("{active} Aniimo working but limit is {limit}"));
             }
         }
         for (member, (&used, aniimo)) in busy.iter().zip(&crew.members).enumerate() {
+            if anchored[member] > aniimo.count as f64 + TOLERANCE {
+                return Err(format!("roster member {member} needs {} workplaces but there are {} copies", anchored[member], aniimo.count));
+            }
             if used > aniimo.count as f64 + TOLERANCE {
                 return Err(format!("roster member {member} works {used} days a day but there are {} of it", aniimo.count));
             }

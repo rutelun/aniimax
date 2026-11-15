@@ -41,6 +41,15 @@ test('delivery uses spare hours of active copies before increasing headcount', (
     assert.equal(result.unassigned, 0);
 });
 
+test('a local workplace uses a copy but its idle time fits other deliveries', () => {
+    const crew = [{ count: 2, abilities: { Hauling: 3 } }];
+    const result = allocateHauling(crew, [.3], .6, 1, [1]);
+    assert.deepEqual(result.assignments, [[0,.6]]);
+    assert.equal(result.unassigned,0);
+    const full = allocateHauling(crew, [.3], 1, 1, [1]);
+    assert.ok(full.unassigned > .29);
+});
+
 test('a full resident cannot also deliver; missing layouts do not make hauling free', () => {
     const allocation = allocateHauling([{count:1,abilities:{Hauling:3,Leisure:3}}], [1], .1, 1);
     assert.ok(allocation.unassigned > .09);

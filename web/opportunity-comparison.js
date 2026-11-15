@@ -57,10 +57,19 @@ export function usefulUpgrade(input, change, recipes) {
 export function workerUsage(plan, input) {
     if (!input.roster) return null;
     const busy = new Map();
+    const anchored = new Map(plan.workplace_anchors || []);
     const add = (member, share) => {
         if (member != null && Number.isFinite(share) && share > 0) busy.set(member, (busy.get(member) || 0) + share);
     };
     const residents = new Set(input.roster.residents || []);
+    for (const step of plan.coin_items || []) {
+        if (step.crew != null && step.status === 'producing' && residents.has(step.facility)) {
+            anchored.set(step.crew, (anchored.get(step.crew) || 0) + step.facility_count);
+        }
+    }
+    for (const [, member, share] of plan.staffing || []) {
+        anchored.set(member, (anchored.get(member) || 0) + share);
+    }
     if (plan.roster_workload?.length) {
         plan.roster_workload.forEach((share, member) => add(member, share));
     } else {
@@ -69,13 +78,13 @@ export function workerUsage(plan, input) {
         }
         for (const [, member, share] of plan.staffing || []) add(member, share);
         for (const [, , member, share] of plan.crop_assignments || []) add(member, share);
-        for (const [member, travel, idle] of plan.movement_staffing || []) add(member, travel + idle);
+        for (const [member, travel] of plan.movement_staffing || []) add(member, travel);
     }
     for (const [member, share] of plan.layout_walking || []) add(member, share);
     for (const [member, share] of plan.delivery_assignments || plan.hauling_staffing || []) add(member, share);
-    const heads = n => Math.max(0, Math.ceil(n - 1e-6));
-    return { busy, working: [...busy.values()].reduce((n, b) => n + heads(b), 0),
-        additional: [...busy].filter(([i]) => i >= input.roster.members.length).reduce((n, [, b]) => n + heads(b), 0),
+    const heads = (member, load) => Math.max(anchored.get(member) ?? 0, Math.ceil(load - 1e-6));
+    return { busy, working: [...busy].reduce((n, [member, load]) => n + heads(member, load), 0),
+        additional: [...busy].filter(([i]) => i >= input.roster.members.length).reduce((n, [member, load]) => n + heads(member, load), 0),
         hours: [...busy.values()].reduce((n, b) => n + b * 24, 0) };
 }
 

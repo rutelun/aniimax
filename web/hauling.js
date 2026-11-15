@@ -110,8 +110,8 @@ export function haulingWorkload(layout, steps, fallbackSeconds = 0, recipes = []
 
 // Use couriers' spare hours, then idle copies and neutral Lv.3 reserves. A headcount shortage
 // goes to the optimizer, which can redistribute both production and delivery by recipe.
-export function allocateHauling(members, busy, required, limit = Infinity) {
-    const active = busy.map(headcount);
+export function allocateHauling(members, busy, required, limit = Infinity, anchored = []) {
+    const active = busy.map((load, member) => Math.max(anchored[member] ?? 0, headcount(load)));
     let slots = Math.max(0, limit - active.reduce((sum, n) => sum + n, 0));
     const jobs = typeof required === 'number' ? [{rate:required, seconds:{1:1,2:1,3:1,4:1}}] : required.jobs;
     const couriers = members.map((member, index) => ({member,index,level:Math.min(4, member?.abilities.Hauling || 0),
@@ -125,13 +125,14 @@ export function allocateHauling(members, busy, required, limit = Infinity) {
             for (const {member,index,level} of couriers) {
                 const used = assigned.get(index) || 0;
                 const before = busy[index] + used;
-                const capacity = existingOnly ? active[index] : Math.min(member.count, headcount(before) + slots);
+                const alreadyWorking = Math.max(active[index], headcount(before));
+                const capacity = existingOnly ? active[index] : Math.min(member.count, alreadyWorking + slots);
                 const cost = job.seconds[level];
                 if (cost <= 0) { remaining = 0; break; }
                 const batches = Math.min(remaining, Math.max(0, capacity - before) / cost);
                 const hours = batches * cost;
                 if (hours > 1e-12) assigned.set(index, used + hours);
-                slots -= Math.max(0, headcount(before + hours) - headcount(before));
+                slots -= Math.max(0, headcount(before + hours) - alreadyWorking);
                 remaining -= batches;
             }
         }

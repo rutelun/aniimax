@@ -1,5 +1,5 @@
 // Connects the math window retypeset (see math-retypeset.js) to the page and its language changes.
-import { languageReady, translateTree } from './i18n.js?v=level-up-priority';
+import { languageReady, translateTree } from './i18n.js?v=shared-work-time';
 import { createMathRetypeset } from './math-retypeset.js';
 
 const queueRetypeset = createMathRetypeset({

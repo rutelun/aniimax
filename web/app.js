@@ -1,7 +1,7 @@
 // Aniimax Web Application
 
-import { currentLocale, sourceAttribute, translate } from './i18n.js?v=level-up-priority';
-import './math-translation.js?v=level-up-priority';
+import { currentLocale, sourceAttribute, translate } from './i18n.js?v=shared-work-time';
+import './math-translation.js?v=shared-work-time';
 import { autoMaximizeSeasonPoints } from './season-planning.js?v=optional-season-points';
 
 import {
@@ -14,8 +14,8 @@ import { createShareUrl, readShareHash, urlWithoutShare } from './share-config.j
 import { nearestStorage } from './layout.js?v=storage-power';
 import { workerTravelDistances, workerTravelSeconds } from './worker-travel.js?v=travel-allowance';
 import { assignFacilityStock, bufferedBatches, haulingWorkload, allocateHauling, haulingBatchTrips,
-    haulingTravelSeconds, pickupStockLimit } from './hauling.js?v=hauling-assignments';
-import { changeOneMember, personalityInput, reserveLevelFourInputs, comparePlans, usefulUpgrade, keepBetterComparison } from './opportunity-comparison.js?v=level-up-priority';
+    haulingTravelSeconds, pickupStockLimit } from './hauling.js?v=shared-work-time';
+import { changeOneMember, personalityInput, reserveLevelFourInputs, comparePlans, usefulUpgrade, keepBetterComparison } from './opportunity-comparison.js?v=shared-work-time';
 import { comparisonConcurrency, startComparisonQueue } from './comparison-queue.js?v=parallel-comparisons';
 import { prepareOpportunities, startedProcessing, increasedProcessing } from './opportunity-effects.js?v=auto-e-mode';
 import { aniimoPortrait, attachRosterPicker, rosterCatalogId, rosterFormName } from './roster-picker.js?v=game-heads';
@@ -1701,6 +1701,7 @@ function layoutOptionsFor(plan, homeLevel, setup = selectedSetupTab()) {
             limit: ownedPlan ? Math.min(rvLimit, maxWorkingAniimo() ?? Infinity) : rvLimit,
             members: team?.members,
             busy: team?.busy,
+            anchored: team?.anchored,
             minimumWorkers: ownedPlan ? 0 : aniimoTeam({ ...plan, hauling_busy: 0 }).total,
             movement: accountForTravel && plan.mobile_work?.length
                 ? { defaultDistance: movementDefaultDistance, byMember: movementDistances, visits } : null,
@@ -2581,9 +2582,9 @@ function assignLayoutHauling(layout, plan) {
     if (selectedSetupTab() !== 'custom') return false;
     if (!haulingBaseByPlan.has(plan)) haulingBaseByPlan.set(plan, [...(plan.assumed_aniimo || [])]);
     plan.assumed_aniimo = [...haulingBaseByPlan.get(plan)];
-    const { members, busy } = rosterWorkload(plan);
+    const { members, busy, anchored } = rosterWorkload(plan);
     const limit = maxWorkingAniimo() ?? Infinity;
-    const allocation = allocateHauling(members, busy, work, limit);
+    const allocation = allocateHauling(members, busy, work, limit, anchored);
     if (allocation.unassigned > 1e-6) {
         if (haulingDefaultSeconds >= bound && plan.hauling_staffing?.length) {
             // The final model used a whole-homeland route bound. Its independently checked
@@ -3187,24 +3188,29 @@ function rosterWorkload(plan) {
     });
     const busy = members.map(() => 0);
     const walking = members.map(() => 0);
-    const reservedAtWorkplace = members.map(() => 0);
+    const anchored = members.map(() => 0);
     const where = members.map(() => new Map());
     (plan.coin_items || []).forEach(step => {
         if (step.crew == null || step.status !== 'producing' || !members[step.crew]) return;
-        busy[step.crew] += RESIDENT_FACILITIES.has(step.facility) ? step.facility_count : (step.busy_units ?? step.facility_count);
+        const resident = RESIDENT_FACILITIES.has(step.facility);
+        busy[step.crew] += resident ? step.facility_count : (step.busy_units ?? step.facility_count);
+        if (resident) anchored[step.crew] += step.facility_count;
         const place = `${step.facility} (${prettyItem(step.item_name)})`;
         where[step.crew].set(place, (where[step.crew].get(place) || 0) + step.facility_count);
     });
     (plan.staffing || []).forEach(([building, member, share]) => {
         if (!members[member]) return;
         busy[member] += share;
+        anchored[member] += share;
         where[member].set(building, (where[member].get(building) || 0) + share);
     });
-    (plan.movement_staffing || []).forEach(([member, travel, reserved]) => {
+    (plan.movement_staffing || []).forEach(([member, travel]) => {
         if (!members[member]) return;
-        busy[member] += travel + reserved;
+        busy[member] += travel;
         walking[member] += travel;
-        reservedAtWorkplace[member] += reserved;
+    });
+    (plan.workplace_anchors || []).forEach(([member, count]) => {
+        if (members[member]) anchored[member] += count;
     });
     // Growing jobs are assigned by the same solver capacity constraints as production.
     // Keep their names for the locations column, but never invent a free assignment here.
@@ -3231,25 +3237,24 @@ function rosterWorkload(plan) {
         workload[member] += extra;
         walking[member] += extra;
     }
-    return { members, busy: workload, walking, where, reservedAtWorkplace };
+    return { members, busy: workload, walking, where, anchored };
 }
 
 function renderRosterSummary(plan) {
-    const { members, busy, walking, where, reservedAtWorkplace } = rosterWorkload(plan);
+    const { members, busy, walking, where, anchored } = rosterWorkload(plan);
     (plan.delivery_assignments || plan.hauling_staffing || []).forEach(([member, share]) => {
         if (!members[member] || share <= 0) return;
         busy[member] += share;
         where[member].set(translate('Hauling to Storage Units ({minutes} min/h)').replace('{minutes}', (share * 60).toFixed(1)), 1);
     });
     const have = roster.reduce((sum, a) => sum + a.count, 0);
-    const assigned = busy.map(load => Math.max(0, Math.ceil(load - 1e-6)));
+    const assigned = busy.map((load, member) => Math.max(anchored[member], Math.ceil(load - 1e-6)));
     const working = assigned.slice(0, roster.length).reduce((sum, n) => sum + n, 0);
     const reserves = assigned.slice(roster.length).reduce((sum, n) => sum + n, 0);
     const memberPlaces = i => [...where[i]].map(([place, n]) => Number.isInteger(n) && n > 1 ? `${translate(place)} ×${n}` : translate(place));
-    const memberNotes = i => [
-        walking[i] * 60 >= 0.05 ? translate('{minutes} min/h walking').replace('{minutes}', (walking[i] * 60).toFixed(1)) : '',
-        reservedAtWorkplace[i] * 60 >= 0.05 ? translate('{minutes} min/h reserved at a workplace').replace('{minutes}', (reservedAtWorkplace[i] * 60).toFixed(1)) : '',
-    ].filter(Boolean);
+    const memberNotes = i => walking[i] * 60 >= 0.05
+        ? [translate('{minutes} min/h walking').replace('{minutes}', (walking[i] * 60).toFixed(1))]
+        : [];
     refreshRosterTileWorkloads(roster.map((member, i) => ({
         assigned: assigned[i],
         summary: assigned[i]

@@ -1293,7 +1293,10 @@ pub struct JsProductionPlan {
     #[serde(default)]
     pub crop_assignments: Vec<(String, u32, usize, f64)>,
     #[serde(default)]
-    pub movement_staffing: Vec<(usize, f64, f64)>,
+    pub movement_staffing: Vec<(usize, f64)>,
+    /// Local workplaces per roster pool, used to count the copies needed on the plan.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workplace_anchors: Vec<(usize, u32)>,
     #[serde(default)]
     pub hauling_staffing: Vec<(usize, f64)>,
     /// Independently checked days of non-delivery work per roster pool.
@@ -1387,6 +1390,7 @@ fn empty_production_plan(success: bool, error: Option<String>) -> JsProductionPl
         crop_staffing: false,
         crop_assignments: Vec::new(),
         movement_staffing: Vec::new(),
+        workplace_anchors: Vec::new(),
         hauling_staffing: Vec::new(),
         roster_workload: Vec::new(),
         mobile_work: Vec::new(),
@@ -1761,6 +1765,11 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
     js.crop_staffing = prepared.crew.is_some();
     js.crop_assignments = exact.crop_staffing.clone();
     js.movement_staffing = exact.movement_staffing.clone();
+    let mut anchors = std::collections::BTreeMap::new();
+    for (_, member, count) in &exact.work_posts {
+        *anchors.entry(*member).or_insert(0) += count.round() as u32;
+    }
+    js.workplace_anchors = anchors.into_iter().collect();
     js.hauling_staffing = exact.hauling_staffing.clone();
     js.roster_workload = roster_workload;
     if prepared.input.fixed_homeland.is_some() {
@@ -2142,6 +2151,7 @@ impl PreparedInput {
             crop_staffing: false,
             crop_assignments: Vec::new(),
             movement_staffing: Vec::new(),
+            workplace_anchors: Vec::new(),
             hauling_staffing: Vec::new(),
             roster_workload: Vec::new(),
             mobile_work: Vec::new(),

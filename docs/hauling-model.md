@@ -58,6 +58,6 @@ is conservative rather than an exact simulation of the next placement. A deliver
 shortage similarly triggers one correction using a whole-map route bound for every recipe;
 the model's checked courier assignment is retained when a greedy reallocation misses it.
 
-Each active recipe occupies a separate building. Recipe switching is not used to share one
-Bench or Kiln between different material recipes. Optional worker travel treats them as
-different workplaces.
+Each active recipe occupies a separate building. Optional worker travel treats them as
+different workplaces. An Aniimo can work locally at one of them and use the time between
+batches for other work, with travel charged for visits to the other workplaces.

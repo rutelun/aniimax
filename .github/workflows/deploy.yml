@@ -35,6 +35,8 @@ jobs:
           cargo test --locked --test exact_tests electricity
           cargo test --locked --test exact_tests versatile_crew
           cargo test --locked --test exact_tests level_up_priority
+          cargo test --locked --test exact_tests walking_costs_shared_jobs
+          cargo test --locked --test exact_tests crop_visits_include_walking
           cargo test --locked --test exact_tests material_work_uses_spare_owned_artisans_before_slower_reserves
 
       - name: Install wasm-pack

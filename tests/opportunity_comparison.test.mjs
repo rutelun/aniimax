@@ -85,13 +85,14 @@ test('level-up strategy compares ETA before coins and handles an unreachable bas
     assert.equal(result.direction,1);assert.equal(result.decisive.id,'rv_time');
 });
 
-test('workload includes crop jobs, walking, reserved posts and delivery without double counting', () => {
+test('workload includes crop jobs, walking and delivery, and counts local workplaces separately', () => {
     const p={coin_items:[{status:'producing',crew:0,facility:'Crafting Table',busy_units:.5}],
-        staffing:[['Sunlamp',1,.2]],crop_assignments:[['Water',1,0,.1]],movement_staffing:[[0,.1,.2]],
+        staffing:[['Sunlamp',1,1]],crop_assignments:[['Water',1,0,.1]],movement_staffing:[[0,.1]],
+        workplace_anchors:[[0,2]],
         hauling_staffing:[[0,.9]],delivery_assignments:[[0,.05]]};
     const usage=workerUsage(p,input());
-    assert.ok(Math.abs(usage.busy.get(0)-.95)<1e-10);
-    assert.equal(usage.working,2); assert.equal(usage.additional,1);
+    assert.ok(Math.abs(usage.busy.get(0)-.75)<1e-10);
+    assert.equal(usage.working,3); assert.equal(usage.additional,1);
 });
 
 test('merely relabeling a reserve as newly owned is not a production gain', () => {
