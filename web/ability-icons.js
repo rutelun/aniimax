@@ -18,3 +18,15 @@ const shapes = {
 export function abilityGlyph(name) {
     return Object.hasOwn(shapes, name) ? shapes[name] : '';
 }
+
+const elements = {
+    Fire: 'Fire', Grass: 'Grass', Water: 'Water', Earth: 'Earth', Lightning: 'Electric',
+    Ice: 'Ice', Wind: 'Wind', Dark: 'Dark', Light: 'Light',
+};
+const jobs = { Hauling: 'Transport', Artisanship: 'Cropping', Leisure: 'Play', Perfumery: 'Incense_Making' };
+
+export function gameAbilityIcon(name) {
+    const texture = Object.hasOwn(elements, name) ? `UI_Popup_icon_${elements[name]}`
+        : Object.hasOwn(jobs, name) ? `UI_Img_Ability_${jobs[name]}` : '';
+    return texture ? `https://cdn.beskor.net/aniimo/icons/${texture}.webp?v=72` : '';
+}

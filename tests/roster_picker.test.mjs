@@ -18,6 +18,7 @@ test('saved names acquire the right portrait and nicknames keep their selected f
     assert.ok(aniimoPortrait(base));
     assert.ok(aniimoPortrait(form));
     assert.notEqual(aniimoPortrait(base), aniimoPortrait(form));
+    assert.match(aniimoPortrait(form), /\/UI_PetHead_1039301\.webp\b/);
     assert.equal(rosterCatalogId(form, 'My nickname'), form);
     assert.equal(rosterCatalogId('invalid', 'Whirlbite'), base);
     assert.equal(aniimoPortrait(undefined), '');

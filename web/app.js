@@ -18,10 +18,10 @@ import { assignFacilityStock, bufferedBatches, haulingWorkload, allocateHauling,
 import { changeOneMember, personalityInput, reserveLevelFourInputs, comparePlans, usefulUpgrade, keepBetterComparison } from './opportunity-comparison.js?v=income-aware-chains';
 import { comparisonConcurrency, startComparisonQueue } from './comparison-queue.js?v=parallel-comparisons';
 import { prepareOpportunities, startedProcessing, increasedProcessing } from './opportunity-effects.js?v=auto-e-mode';
-import { aniimoPortrait, attachRosterPicker, rosterCatalogId, rosterFormName } from './roster-picker.js?v=roster-rows';
+import { aniimoPortrait, attachRosterPicker, rosterCatalogId, rosterFormName } from './roster-picker.js?v=game-heads';
 import { placeRosterCopy, ROSTER_ROW_SIZE, rosterSlotsFor, swapRosterSlots } from './roster-slots.js';
 import facilityIcons from './facility-icons.json' with { type: 'json' };
-import { abilityGlyph } from './ability-icons.js';
+import { abilityGlyph, gameAbilityIcon } from './ability-icons.js?v=game-heads';
 
 let wasmReady = false;
 
@@ -2646,7 +2646,8 @@ function rosterLabel(aniimo, i) {
 
 function tileAbilities(abilities) {
     return Object.entries(abilities).map(([name, level]) => `<span class="roster-skill" style="--ability:${ABILITY_BY_NAME.get(name)?.color ?? 'var(--accent)'}"
-        aria-label="${escapeText(translate(name))} ${level}"><svg viewBox="0 0 24 24" aria-hidden="true">${abilityGlyph(name)}</svg><b aria-hidden="true">${level}</b></span>`).join('');
+        aria-label="${escapeText(translate(name))} ${level}"><svg viewBox="0 0 24 24" aria-hidden="true">${abilityGlyph(name)}</svg>
+        <img src="${gameAbilityIcon(name)}" alt="" width="24" height="24" loading="lazy" draggable="false"><b aria-hidden="true">${level}</b></span>`).join('');
 }
 
 function portraitTile(member, label, id = rosterCatalogId(member.catalogId, member.name)) {
@@ -2654,7 +2655,7 @@ function portraitTile(member, label, id = rosterCatalogId(member.catalogId, memb
     const traits = member.personalities?.map(personalityLetter).join('');
     const ability = Object.keys(member.abilities)[0];
     const glyph = abilityGlyph(ability);
-    return `<span class="roster-portrait${id?.includes('prismana') ? ' prismana' : ''}">
+    return `<span class="roster-portrait${id?.includes('prismana') ? ' prismana' : ''}${portrait.includes('/UI_PetHead_') ? ' game-head' : ''}">
         <span class="roster-portrait-fill"><span aria-hidden="true">${glyph ? `<svg viewBox="0 0 24 24">${glyph}</svg>` : '◇'}</span>
             ${portrait ? `<img src="${escapeText(portrait)}" alt="" width="96" height="96" loading="lazy" decoding="async" referrerpolicy="no-referrer" draggable="false">` : ''}</span>
         <span class="roster-card-tags">${tileAbilities(member.abilities)}</span></span>
@@ -2915,10 +2916,10 @@ async function measureSourceTeamHauling(plan, input, level) {
 function attachRosterHandlers() {
     const editor = document.getElementById('roster-editor');
     document.addEventListener('load', event => {
-        if (event.target.matches?.('.roster-portrait-fill img')) event.target.classList.add('loaded');
+        if (event.target.matches?.('.roster-portrait-fill img, .roster-skill img')) event.target.classList.add('loaded');
     }, true);
     document.addEventListener('error', event => {
-        if (event.target.matches?.('.roster-portrait-fill img')) event.target.hidden = true;
+        if (event.target.matches?.('.roster-portrait-fill img, .roster-skill img')) event.target.hidden = true;
     }, true);
     editor.innerHTML = `<div class="roster-tools">
         <div class="input-field"><label for="roster-filter">Filter your team</label>
@@ -2946,7 +2947,7 @@ function attachRosterHandlers() {
             <button type="button" class="skip-add-btn" data-catalog-more>Load more Aniimo</button>
         </div>
         <div class="roster-dialog-foot"><button type="button" class="skip-add-btn" data-catalog-manual>Add manually</button>
-            <small class="hint">Art · <a href="https://aniimo.gamevault.in/en/aniimo/" target="_blank" rel="noreferrer">Aniimo Wiki</a></small></div>
+            <small class="hint">Art · <a href="https://aniimo.gg/aniilog/" target="_blank" rel="noreferrer">Beskor Aniilog</a></small></div>
     </dialog>
     <dialog class="roster-dialog roster-edit-dialog" id="roster-edit-dialog" aria-labelledby="roster-edit-title">
         <div class="roster-dialog-head"><h3 id="roster-edit-title">Edit Aniimo</h3>

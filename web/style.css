@@ -2944,8 +2944,9 @@ tr:hover .skip-row,
 .roster-tile.is-idle .roster-tile-name { color: var(--text-muted); }
 .roster-tile-name { font-size: 0.8rem; line-height: 1.25; overflow-wrap: anywhere; }
 .roster-tile small { color: var(--text-muted); font-size: 0.7rem; }
+.roster-svg-defs { position: absolute; }
 .roster-portrait {
-    --hex: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+    --hex: url(#roster-hex);
     position: relative;
     display: grid;
     place-items: center;
@@ -2958,10 +2959,10 @@ tr:hover .skip-row,
     inset: 0;
 }
 .roster-portrait::before, .roster-portrait-fill::before { clip-path: var(--hex); }
-.roster-portrait::before { content: ""; background: #697387; }
-.roster-portrait.prismana::before { background: linear-gradient(145deg, #c29cff, #80d0ff, #ef96de); }
+.roster-portrait::before { content: ""; background: #48516a; }
+.roster-portrait.prismana::before { background: linear-gradient(145deg, #a68aff, #98b6ff 40%, #f1a5fb 75%); }
 .roster-portrait-fill {
-    inset: 2px;
+    inset: 2.5px;
     display: grid;
     place-items: center;
     color: #b7c3d9;
@@ -2969,8 +2970,12 @@ tr:hover .skip-row,
 }
 .roster-portrait-fill::before {
     content: "";
-    background: radial-gradient(at 50% 25%, #606b81, #333b4d 80%);
+    background: linear-gradient(140deg, #59617a, #393f54 80%);
 }
+.roster-portrait.prismana .roster-portrait-fill::before {
+    background: linear-gradient(145deg, #ffdad7 2%, #bfc7f6 28%, #fff1c9 53%, #bd9adf 92%);
+}
+.roster-portrait.prismana { filter: drop-shadow(0 0 0.28rem #a17be97d); }
 .roster-portrait-fill > span { position: relative; }
 .roster-portrait-fill > span:has(svg) { width: 46%; }
 .roster-portrait-fill > span > svg { display: block; width: 100%; }
@@ -2980,6 +2985,13 @@ tr:hover .skip-row,
     width: 90%;
     height: 84%;
     object-fit: contain;
+}
+.roster-portrait.game-head .roster-portrait-fill { clip-path: var(--hex); }
+.roster-portrait.game-head img {
+    inset: -5%;
+    width: 110%;
+    height: 110%;
+    object-fit: cover;
 }
 .roster-portrait-fill:has(img.loaded) > span { visibility: hidden; }
 .roster-tile.is-assigned .roster-portrait::after {
@@ -2998,6 +3010,7 @@ tr:hover .skip-row,
     display: flex;
     flex-wrap: wrap;
     justify-content: center;
+    width: max-content;
     max-width: calc(100% + 0.9rem);
     gap: 1px;
     position: absolute;
@@ -3020,6 +3033,14 @@ tr:hover .skip-row,
     line-height: 1;
 }
 .roster-skill svg { width: 70%; height: 70%; }
+.roster-skill img {
+    position: absolute;
+    inset: 12%;
+    width: 76%;
+    height: 76%;
+    object-fit: contain;
+}
+.roster-skill:has(img.loaded) svg { visibility: hidden; }
 .roster-skill b {
     position: absolute;
     right: -1px;

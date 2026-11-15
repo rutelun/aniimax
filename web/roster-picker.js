@@ -1,5 +1,5 @@
 import catalog from './aniimo-catalog.json' with { type: 'json' };
-import portraits from './aniimo-portraits.json?v=roster-rows' with { type: 'json' };
+import portraits from './aniimo-portraits.json?v=game-heads' with { type: 'json' };
 
 export const rosterFormName = ({ name, form }) => form ? `${name} (${form})` : name;
 
