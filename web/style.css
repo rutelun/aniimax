@@ -2880,9 +2880,6 @@ details.explain p {
 }
 .roster-editor-layout > .roster-cards {
     grid-area: board;
-    padding: 0;
-    border: 0;
-    background: none;
 }
 .roster-tools {
     grid-area: tools;
@@ -2918,10 +2915,6 @@ details.explain p {
     gap: 0.12rem;
     width: 100%;
     max-width: 28rem;
-    padding: 0.35rem;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: color-mix(in srgb, var(--accent) 8%, var(--bg));
 }
 .roster-slot-row {
     display: grid;
