@@ -1,4 +1,7 @@
 {
+  "This setup took too long. Try simplifying the priorities.": "計算耗時過長。請試著減少優先項目。",
+  "The planned deliveries could not be assigned. Try adding Storage Units.": "無法分配配送工作。請試著增加儲存單位。",
+  "Estimated walking and delivery times are tripled.": "移動與配送的估算時間以三倍計算。",
   "Plan setup": "方案設定",
   "Plan settings": "方案選項",
   "Team": "隊伍",

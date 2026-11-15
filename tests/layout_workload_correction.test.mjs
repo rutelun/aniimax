@@ -13,9 +13,8 @@ const layout = (distance, worker = 0) => ({pieces:[{members:[site(0,worker),site
 
 function page() {
     let updates = 0;
-    const context = {workerTravelDistances,haulingTravelSeconds,workerTravelEnabled:()=>true,selectedSetupTab:()=> 'custom',
+    const context = {workerTravelDistances,haulingTravelSeconds,selectedSetupTab:()=> 'custom',
         homelandPlots:()=>[{number:1,x:0,y:0,w:100,h:60}],layoutHomeLevel:()=>1,
-        maxWorkingAniimo:()=>1,
         stopRanking(){},switchAniimoSetup:()=>updates++,showError:message=>assert.fail(message),
         recipeIndex:[],rosterWorkload:()=>({members:[],busy:[]}),
         haulingWorkload:()=>({seconds:{'Mine|rock':1},busyByLevel:{3:1}}),

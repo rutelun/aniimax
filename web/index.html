@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Aniimax - Aniimo Production Optimizer</title>
-    <link rel="stylesheet" href="style.css?v=production-polish">
+    <link rel="stylesheet" href="style.css?v=inline-settings">
     <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
 </head>
 <body>
@@ -74,163 +74,160 @@
                     </section>
                     <aside class="planner-editor" aria-label="Plan settings">
                         <div class="planner-editor-options">
-                            <button type="button" data-planner-editor="team" aria-expanded="false" aria-controls="planner-edit-team">
-                                <strong>Team</strong><span id="planner-team-summary"></span>
-                            </button>
-                            <button type="button" data-planner-editor="season" aria-expanded="false" aria-controls="planner-edit-season">
-                                <strong>Season</strong><span id="planner-season-summary"></span>
-                            </button>
-                            <button type="button" data-planner-editor="recipes" aria-expanded="false" aria-controls="planner-edit-recipes">
-                                <strong>Recipes &amp; stock</strong><span id="recipe-count" class="skip-count"></span>
-                            </button>
-                        </div>
-                        <div id="planner-edit-team" class="planner-editor-panel" hidden>
-                            <div class="planner-team-settings">
-                                <h3 id="planner-team-label">Plan with</h3>
-                                <div class="tabs planner-team-options" role="radiogroup" aria-labelledby="planner-team-label" aria-describedby="aniimo-setup-hint">
-                                    <label><input type="radio" name="aniimo-setup" id="aniimo-custom" value="custom"> My Aniimo</label>
-                                    <label><input type="radio" name="aniimo-setup" id="aniimo-minimum" value="minimum"> Minimum</label>
-                                    <label><input type="radio" name="aniimo-setup" id="aniimo-best" value="best" checked> Best</label>
-                                </div>
-                                <div class="aniimo-setup-panel" id="aniimo-setup-panel">
-                                    <p class="hint small" id="aniimo-setup-hint"></p>
-                                    <details class="explain" id="ability-level-settings">
-                                        <summary>Ability levels</summary>
-                                        <div class="ability-levels" id="ability-levels"></div>
-                                    </details>
-                                    <div id="worker-travel-option" class="checkbox-field" hidden>
-                                        <label><input type="checkbox" id="worker-travel-on"> <span>Account for Aniimo travel</span> <span class="hint small">(3× travel time)</span></label>
-                                    </div>
-                                    <div id="roster-worker-limit" class="input-row" hidden>
-                                        <div class="input-field">
-                                            <label for="electricity-aniimo-limit">Max working Aniimo</label>
-                                            <input type="number" id="electricity-aniimo-limit" min="0" max="4294967295" step="1" placeholder="No limit">
+                            <div class="planner-editor-item">
+                                <button type="button" data-planner-editor="team" aria-expanded="false" aria-controls="planner-edit-team">
+                                    <strong>Team</strong><span id="planner-team-summary"></span>
+                                </button>
+                                <div id="planner-edit-team" class="planner-editor-panel" hidden>
+                                    <div class="planner-team-settings">
+                                        <h3 id="planner-team-label">Plan with</h3>
+                                        <div class="tabs planner-team-options" role="radiogroup" aria-labelledby="planner-team-label" aria-describedby="aniimo-setup-hint">
+                                            <label><input type="radio" name="aniimo-setup" id="aniimo-custom" value="custom"> My Aniimo</label>
+                                            <label><input type="radio" name="aniimo-setup" id="aniimo-minimum" value="minimum"> Minimum</label>
+                                            <label><input type="radio" name="aniimo-setup" id="aniimo-best" value="best" checked> Best</label>
+                                        </div>
+                                        <div class="aniimo-setup-panel" id="aniimo-setup-panel">
+                                            <p class="hint small" id="aniimo-setup-hint"></p>
+                                            <details class="explain" id="ability-level-settings">
+                                                <summary>Ability levels</summary>
+                                                <div class="ability-levels" id="ability-levels"></div>
+                                            </details>
+                                            <details id="roster-config" class="explain roster-config" open hidden>
+                                                <summary>My Aniimo <span id="roster-config-count"></span></summary>
+                                                <div class="roster-editor" id="roster-editor"></div>
+                                            </details>
                                         </div>
                                     </div>
-                                    <details id="roster-config" class="explain roster-config" hidden>
-                                        <summary>My Aniimo <span id="roster-config-count"></span></summary>
-                                        <div class="roster-editor" id="roster-editor"></div>
-                                    </details>
+
                                 </div>
                             </div>
+                            <div class="planner-editor-item">
+                                <button type="button" data-planner-editor="season" aria-expanded="false" aria-controls="planner-edit-season">
+                                    <strong>Season</strong><span id="planner-season-summary"></span>
+                                </button>
+                                <div id="planner-edit-season" class="planner-editor-panel" hidden>
+                                    <div class="season planner-season" id="season-section" hidden>
+                                        <label class="priority-switch season-switch">
+                                            <input type="checkbox" role="switch" id="season-on">
+                                            <span class="switch-track" aria-hidden="true"></span>
+                                            <span class="season-title" id="season-title">Seasonal event</span>
+                                        </label>
+                                        <div id="season-config" hidden>
+                                            <div class="input-field" id="season-event-row">
+                                                <label for="season-event">Event</label>
+                                                <select id="season-event"></select>
+                                            </div>
+                                            <p class="hint" id="season-hint"></p>
+                                            <div class="input-field season-budget">
+                                                <label for="season-currency-per-day" id="season-currency-label"></label>
+                                                <input type="number" id="season-currency-per-day" min="0" placeholder="No limit">
+                                            </div>
+                                            <div id="season-crop-minimums" hidden>
+                                                <p class="assume-title">Minimum Plots per Event Crop</p>
+                                                <p class="hint small">The plan grows these crops on at least this many plots. A tight seed budget can reduce the harvest rate. To maximize event points, select them under Priorities.</p>
+                                                <div class="stock-grid" id="season-crop-minimum-fields"></div>
+                                            </div>
+                                            <p class="assume-title">Recipe Notes</p>
+                                            <div class="special-grid" id="season-notes"></div>
+                                        </div>
+                                    </div>
 
-                        </div>
-                        <div id="planner-edit-season" class="planner-editor-panel" hidden>
-                            <div class="season planner-season" id="season-section" hidden>
-                                <label class="priority-switch season-switch">
-                                    <input type="checkbox" role="switch" id="season-on">
-                                    <span class="switch-track" aria-hidden="true"></span>
-                                    <span class="season-title" id="season-title">Seasonal event</span>
-                                </label>
-                                <div id="season-config" hidden>
-                                    <div class="input-field" id="season-event-row">
-                                        <label for="season-event">Event</label>
-                                        <select id="season-event"></select>
-                                    </div>
-                                    <p class="hint" id="season-hint"></p>
-                                    <div class="input-field season-budget">
-                                        <label for="season-currency-per-day" id="season-currency-label"></label>
-                                        <input type="number" id="season-currency-per-day" min="0" placeholder="No limit">
-                                    </div>
-                                    <div id="season-crop-minimums" hidden>
-                                        <p class="assume-title">Minimum Plots per Event Crop</p>
-                                        <p class="hint small">The plan grows these crops on at least this many plots. A tight seed budget can reduce the harvest rate. To maximize event points, select them under Priorities.</p>
-                                        <div class="stock-grid" id="season-crop-minimum-fields"></div>
-                                    </div>
-                                    <p class="assume-title">Recipe Notes</p>
-                                    <div class="special-grid" id="season-notes"></div>
+
                                 </div>
                             </div>
+                            <div class="planner-editor-item">
+                                <button type="button" data-planner-editor="recipes" aria-expanded="false" aria-controls="planner-edit-recipes">
+                                    <strong>Recipes &amp; stock</strong><span id="recipe-count" class="skip-count"></span>
+                                </button>
+                                <div id="planner-edit-recipes" class="planner-editor-panel" hidden>
+                                    <section class="recipes-section" id="recipes-section" aria-label="Recipes">
+                                        <p class="assume-title">Special recipes</p>
+                                        <p class="hint small">These take a rare currency to unlock. Plans only use the ones you tick.</p>
+                                        <div class="special-grid" id="special-grid"></div>
+                                        <p class="assume-title">Recipes to skip</p>
+                                        <p class="hint small">Plans won't use these, e.g. recipes behind unlocks you don't have yet. You can also skip a recipe from its production card.</p>
+                                        <div class="skip-add">
+                                            <input type="text" id="skip-input" list="skip-options" placeholder="Search recipes" autocomplete="off" aria-label="Recipe to skip">
+                                            <button type="button" id="skip-add-btn" class="skip-add-btn">Skip</button>
+                                        </div>
+                                        <datalist id="skip-options"></datalist>
+                                        <div class="skip-chips" id="skip-chips"></div>
+                                    </section>
 
+                                    <section id="level-up-config" aria-label="Level-up stock">
+                                        <h4>Level-up stock</h4>
+                                        <div class="input-field" id="level-up-target-row">
+                                            <label for="level-up-target">Level up to RV</label>
+                                            <select id="level-up-target"></select>
+                                        </div>
+                                        <div id="level-up-cost"></div>
+                                        <details class="explain" id="level-up-stock">
+                                            <summary>What you already have</summary>
+                                            <div class="stock-grid" id="level-up-stock-grid"></div>
+                                        </details>
+                                    </section>
 
-                        </div>
-                        <div id="planner-edit-recipes" class="planner-editor-panel" hidden>
-                            <section class="recipes-section" id="recipes-section" aria-label="Recipes">
-                                <p class="assume-title">Special recipes</p>
-                                <p class="hint small">These take a rare currency to unlock. Plans only use the ones you tick.</p>
-                                <div class="special-grid" id="special-grid"></div>
-                                <p class="assume-title">Recipes to skip</p>
-                                <p class="hint small">Plans won't use these, e.g. recipes behind unlocks you don't have yet. You can also skip a recipe from its production card.</p>
-                                <div class="skip-add">
-                                    <input type="text" id="skip-input" list="skip-options" placeholder="Search recipes" autocomplete="off" aria-label="Recipe to skip">
-                                    <button type="button" id="skip-add-btn" class="skip-add-btn">Skip</button>
+                                    <section aria-labelledby="building-setup-heading" class="planner-building-settings">
+                                        <h4 id="building-setup-heading">Buildings</h4>
+                                        <p class="hint small" id="building-setup-note">Uses all buildings and upgrades available at your RV level.</p>
+                                        <details class="explain" id="custom-buildings">
+                                            <summary>Edit building counts and levels</summary>
+                                            <button type="button" class="skip-add-btn" id="reset-buildings" hidden>Use RV defaults</button>
+                                            <div id="advanced-config">
+                                                <div id="advanced-facility-settings">
+                                                <h3>Facilities</h3>
+                                                <div class="input-field facility-search">
+                                                    <label for="facility-search">Find a facility</label>
+                                                    <input id="facility-search" type="search" placeholder="Search by building name" autocomplete="off">
+                                                </div>
+                                                <p id="facility-search-empty" class="hint small" hidden>No matching facilities.</p>
+                                                <!-- Facility cards are generated dynamically by app.js from the FACILITIES config,
+                                                     grouped into category sections (Materials / Environment / Materials
+                                                     Processing), so new facilities can be added without editing this file. -->
+                                                <div class="facilities-container" id="facilities-grid"></div>
+                                                </div>
+
+                                                <h3>Item Upgrade Modules</h3>
+                                                <p class="hint">Set the level for each upgrade module you have unlocked (0 = not unlocked).</p>
+
+                                                <div class="modules-grid">
+                                                    <div class="module-card">
+                                                        <h4>Ecological Module <span class="info-icon" data-tooltip="Lv.1: Quick Wheat&#10;Lv.2: Quick Bamboo&#10;Lv.3: Quick Potato&#10;Lv.4: Quick Lemon&#10;Lv.5: Quick Rice&#10;Lv.6: Quick Maple Syrup&#10;Lv.7: Quick Strawberry&#10;Lv.8: Quick Coconut">?</span></h4>
+                                                        <div class="input-field">
+                                                            <label for="ecological-module-level">Level</label>
+                                                            <input type="number" id="ecological-module-level" value="0" min="0" max="10">
+                                                        </div>
+                                                    </div>
+
+                                                    <div class="module-card">
+                                                        <h4>Kitchen Module <span class="info-icon" data-tooltip="Lv.2: Premium Bread&#10;Lv.3: Premium Potato Soup&#10;Lv.4: Premium Sweet Rice Wine&#10;Lv.5: Premium Salted Lemon&#10;Lv.6: Premium Jello&#10;Lv.7: Premium Berry Chocolate Coconut Pudding">?</span></h4>
+                                                        <div class="input-field">
+                                                            <label for="kitchen-module-level">Level</label>
+                                                            <input type="number" id="kitchen-module-level" value="0" min="0" max="10">
+                                                        </div>
+                                                    </div>
+
+                                                    <div class="module-card">
+                                                        <h4>Resource Detector <span class="info-icon" data-tooltip="Lv.1: Quick Well Water&#10;Lv.2: Quick Sea Salt&#10;Lv.3: Quick Aromathyst&#10;Lv.4: Quick Fresh Water&#10;Lv.5: Quick Wool&#10;Lv.6: Quick Deep Rock Spring Water&#10;Lv.7: Quick Natural Mineral Spring Water&#10;Lv.8: Quick Scales">?</span></h4>
+                                                        <div class="input-field">
+                                                            <label for="resource-detector-level">Level</label>
+                                                            <input type="number" id="resource-detector-level" value="0" min="0" max="10">
+                                                        </div>
+                                                    </div>
+
+                                                    <div class="module-card">
+                                                        <h4>Crafting Module <span class="info-icon" data-tooltip="Lv.1: Premium River-Washed Stones&#10;Lv.2: Premium Rose Freshener&#10;Lv.3: Advanced Lemon Incense&#10;Lv.4: Advanced Wind Chime&#10;Lv.5: Premium Soap&#10;Lv.6: Advanced Gemstone Dust&#10;Lv.7: Premium Mixed Perfume">?</span></h4>
+                                                        <div class="input-field">
+                                                            <label for="crafting-module-level">Level</label>
+                                                            <input type="number" id="crafting-module-level" value="0" min="0" max="10">
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </details>
+                                    </section>
                                 </div>
-                                <datalist id="skip-options"></datalist>
-                                <div class="skip-chips" id="skip-chips"></div>
-                            </section>
-
-                            <section id="level-up-config" aria-label="Level-up stock">
-                                <h4>Level-up stock</h4>
-                                <div class="input-field" id="level-up-target-row">
-                                    <label for="level-up-target">Level up to RV</label>
-                                    <select id="level-up-target"></select>
-                                </div>
-                                <div id="level-up-cost"></div>
-                                <details class="explain" id="level-up-stock">
-                                    <summary>What you already have</summary>
-                                    <div class="stock-grid" id="level-up-stock-grid"></div>
-                                </details>
-                            </section>
-
-                            <section aria-labelledby="building-setup-heading" class="planner-building-settings">
-                                <h4 id="building-setup-heading">Buildings</h4>
-                                <p class="hint small" id="building-setup-note">Uses all buildings and upgrades available at your RV level.</p>
-                                <details class="explain" id="custom-buildings">
-                                    <summary>Edit building counts and levels</summary>
-                                    <button type="button" class="skip-add-btn" id="reset-buildings" hidden>Use RV defaults</button>
-                                    <div id="advanced-config">
-                                        <div id="advanced-facility-settings">
-                                        <h3>Facilities</h3>
-                                        <div class="input-field facility-search">
-                                            <label for="facility-search">Find a facility</label>
-                                            <input id="facility-search" type="search" placeholder="Search by building name" autocomplete="off">
-                                        </div>
-                                        <p id="facility-search-empty" class="hint small" hidden>No matching facilities.</p>
-                                        <!-- Facility cards are generated dynamically by app.js from the FACILITIES config,
-                                             grouped into category sections (Materials / Environment / Materials
-                                             Processing), so new facilities can be added without editing this file. -->
-                                        <div class="facilities-container" id="facilities-grid"></div>
-                                        </div>
-
-                                        <h3>Item Upgrade Modules</h3>
-                                        <p class="hint">Set the level for each upgrade module you have unlocked (0 = not unlocked).</p>
-
-                                        <div class="modules-grid">
-                                            <div class="module-card">
-                                                <h4>Ecological Module <span class="info-icon" data-tooltip="Lv.1: Quick Wheat&#10;Lv.2: Quick Bamboo&#10;Lv.3: Quick Potato&#10;Lv.4: Quick Lemon&#10;Lv.5: Quick Rice&#10;Lv.6: Quick Maple Syrup&#10;Lv.7: Quick Strawberry&#10;Lv.8: Quick Coconut">?</span></h4>
-                                                <div class="input-field">
-                                                    <label for="ecological-module-level">Level</label>
-                                                    <input type="number" id="ecological-module-level" value="0" min="0" max="10">
-                                                </div>
-                                            </div>
-
-                                            <div class="module-card">
-                                                <h4>Kitchen Module <span class="info-icon" data-tooltip="Lv.2: Premium Bread&#10;Lv.3: Premium Potato Soup&#10;Lv.4: Premium Sweet Rice Wine&#10;Lv.5: Premium Salted Lemon&#10;Lv.6: Premium Jello&#10;Lv.7: Premium Berry Chocolate Coconut Pudding">?</span></h4>
-                                                <div class="input-field">
-                                                    <label for="kitchen-module-level">Level</label>
-                                                    <input type="number" id="kitchen-module-level" value="0" min="0" max="10">
-                                                </div>
-                                            </div>
-
-                                            <div class="module-card">
-                                                <h4>Resource Detector <span class="info-icon" data-tooltip="Lv.1: Quick Well Water&#10;Lv.2: Quick Sea Salt&#10;Lv.3: Quick Aromathyst&#10;Lv.4: Quick Fresh Water&#10;Lv.5: Quick Wool&#10;Lv.6: Quick Deep Rock Spring Water&#10;Lv.7: Quick Natural Mineral Spring Water&#10;Lv.8: Quick Scales">?</span></h4>
-                                                <div class="input-field">
-                                                    <label for="resource-detector-level">Level</label>
-                                                    <input type="number" id="resource-detector-level" value="0" min="0" max="10">
-                                                </div>
-                                            </div>
-
-                                            <div class="module-card">
-                                                <h4>Crafting Module <span class="info-icon" data-tooltip="Lv.1: Premium River-Washed Stones&#10;Lv.2: Premium Rose Freshener&#10;Lv.3: Advanced Lemon Incense&#10;Lv.4: Advanced Wind Chime&#10;Lv.5: Premium Soap&#10;Lv.6: Advanced Gemstone Dust&#10;Lv.7: Premium Mixed Perfume">?</span></h4>
-                                                <div class="input-field">
-                                                    <label for="crafting-module-level">Level</label>
-                                                    <input type="number" id="crafting-module-level" value="0" min="0" max="10">
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </details>
-                            </section>
+                            </div>
                         </div>
                     </aside>
                 </div>
@@ -683,6 +680,6 @@
             </linearGradient>
         </defs>
     </svg>
-    <script type="module" src="app.js?v=production-polish"></script>
+    <script type="module" src="app.js?v=inline-settings"></script>
 </body>
 </html>

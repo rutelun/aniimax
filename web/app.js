@@ -1,7 +1,7 @@
 // Aniimax Web Application
 
-import { currentLocale, sourceAttribute, translate } from './i18n.js?v=production-polish';
-import './math-translation.js?v=production-polish';
+import { currentLocale, sourceAttribute, translate } from './i18n.js?v=inline-settings';
+import './math-translation.js?v=inline-settings';
 import { autoMaximizeSeasonPoints } from './season-planning.js?v=optional-season-points';
 
 import {
@@ -90,7 +90,7 @@ function callWorker(type, payload, onProgress) {
         const id = ++nextRequestId;
         const timer = setTimeout(() => {
             pendingWorkerRequests.delete(id);
-            reject(new Error('The planner took too long. Try turning off Aniimo travel or simplifying the priorities.'));
+            reject(new Error('This setup took too long. Try simplifying the priorities.'));
             restartWorker();
         }, type === 'find_plan' ? SETUP_TIMEOUT : 30_000);
         pendingWorkerRequests.set(id, { resolve, reject, onProgress, timer });
@@ -149,7 +149,7 @@ let planRunId = 0;
 function selectedAniimoSetup() {
     const tab = selectedSetupTab();
     if (tab === 'minimum') return 'minimum';
-    if (tab === 'custom') return `roster:${JSON.stringify({ members: roster.map(({ count, abilities, personalities, family }) => ({ count, abilities, personalities, family })), maxWorkers: maxWorkingAniimo(), travel: workerTravelEnabled(), movementDistance: workerTravelEnabled() ? movementDefaultDistance : 0, movementDistances: workerTravelEnabled() ? movementDistances : {}, haulingSeconds, haulingDefaultSeconds })}`;
+    if (tab === 'custom') return `roster:${JSON.stringify({ members: roster.map(({ count, abilities, personalities, family }) => ({ count, abilities, personalities, family })), movementDistance: movementDefaultDistance, movementDistances, haulingSeconds, haulingDefaultSeconds })}`;
     return bestAniimoSetup();
 }
 
@@ -167,14 +167,13 @@ let lastPlanInput = null;
 let setupSolve = null;
 let mainSolve = null;
 const SETUP_TIMEOUT = 300_000;
-const workerTravelEnabled = () => document.getElementById('worker-travel-on').checked;
 function ensurePlanFor(setup) {
     if (plansBySetup[setup] || !lastPlanInput || setupSolve?.setup === setup
         || (mainSolve?.runId === planRunId && mainSolve.setup === setup)) return;
     stopSetupSolve();
     const runId = planRunId;
     const solver = new Worker(WORKER_URL, { type: 'module' });
-    const timer = setTimeout(() => done({ success: false, error: 'This setup took too long. Try turning off Aniimo travel or simplifying the priorities.' }), SETUP_TIMEOUT);
+    const timer = setTimeout(() => done({ success: false, error: 'This setup took too long. Try simplifying the priorities.' }), SETUP_TIMEOUT);
     setupSolve = { setup, worker: solver, timer };
     startProgress({ ...lastPlanInput, ...aniimoInput(setup) }, runId);
     document.getElementById('aniimo-pending').textContent = translate('Updating Aniimo setup...');
@@ -461,13 +460,13 @@ function getPersistedFieldIds() {
     return [
         'target-amount', 'current-amount',
         'crop-variety', 'level-up-target',
-        'electricity-on', 'electricity-aniimo-limit',
+        'electricity-on',
         'home-level',
         'ecological-module-level', 'kitchen-module-level',
         'resource-detector-level', 'crafting-module-level',
         'rate-unit', 'season-on', 'season-event', 'layout-sim-on', 'layout-recipes', 'layout-workers', 'layout-storage-count',
         'layout-style', 'layout-group-gap', 'layout-separate-sales', 'layout-icons',
-        'aniimo-best', 'aniimo-minimum', 'aniimo-custom', 'worker-travel-on'
+        'aniimo-best', 'aniimo-minimum', 'aniimo-custom'
     ];
 }
 
@@ -998,7 +997,7 @@ function rankImprovementsFor(setup, requested = null, detailed = false) {
         const base = structuredClone({ ...lastPlanInput, ...aniimoInput(setup) });
         if (base.roster && plan.hauling_estimates) {
             base.roster = { ...base.roster, hauling_seconds: plan.hauling_estimates,
-                hauling_default_seconds: haulingRouteBound(setup.startsWith('roster:') && workerTravelEnabled()) };
+                hauling_default_seconds: haulingRouteBound(setup.startsWith('roster:')) };
         }
         if (base.roster && plan.layout_walking?.length && lastLayout) {
             const distances = workerTravelDistances(lastLayout.layout.pieces.flatMap(piece => piece.members));
@@ -1352,7 +1351,7 @@ function homelandPieces(plan, input) {
         weight: 0, facility: 'Crackle Generator', generator: true, generatorTier: plan.power_generator_levels?.[i]?.[0],
         lightningLevel: plan.power_generator_levels?.[i]?.[1] }] });
     const physical = pieces.flatMap(p => p.cluster ? p.plots : p.members);
-    for (const [item, facility, worker, visits, cropWork] of (workerTravelEnabled() ? plan.mobile_work || [] : [])) {
+    for (const [item, facility, worker, visits, cropWork] of plan.mobile_work || []) {
         const targets = physical.filter(m => m.facility === facility && (m.jobs
             ? m.jobs.some(j => j.item === item && (cropWork || j.crew === worker))
             : m.crop === item && (cropWork || m.crew === worker)));
@@ -1672,23 +1671,22 @@ function layoutOptionsFor(plan, homeLevel, setup = selectedSetupTab()) {
     let staffing = null;
     if (recipes.length) {
         const ownedPlan = setup === 'custom';
-        const accountForTravel = ownedPlan && workerTravelEnabled();
         const team = ownedPlan ? rosterWorkload({ ...plan, layout_walking: [],
             assumed_aniimo: haulingBaseByPlan.get(plan) ?? plan.assumed_aniimo }) : null;
         const rvLimit = ANIIMO_MAX[homeLevel - 1] ?? Infinity;
         const visits = {};
         for (const [, , member, count] of plan.mobile_work || []) visits[member] = (visits[member] || 0) + count;
         staffing = {
-            limit: ownedPlan ? Math.min(rvLimit, maxWorkingAniimo() ?? Infinity) : rvLimit,
+            limit: rvLimit,
             members: team?.members,
             busy: team?.busy,
             anchored: team?.anchored,
             minimumWorkers: ownedPlan ? 0 : aniimoTeam({ ...plan, hauling_busy: 0 }).total,
-            movement: accountForTravel && plan.mobile_work?.length
+            movement: ownedPlan && plan.mobile_work?.length
                 ? { defaultDistance: movementDefaultDistance, byMember: movementDistances, visits } : null,
             haulingLevel: setup === 'minimum' ? 1 : 3,
-            haulingBound: haulingRouteBound(accountForTravel),
-            accountForTravel,
+            haulingBound: haulingRouteBound(ownedPlan),
+            accountForTravel: ownedPlan,
             facilities: lastPlanInput?.facilities,
             steps: (plan.coin_items || []).filter(step => step.status === 'producing'),
         };
@@ -2514,6 +2512,7 @@ function openPlannerEditor(panel) {
         button.setAttribute('aria-expanded', String(expanded));
         document.getElementById(button.getAttribute('aria-controls')).hidden = !expanded;
     });
+    if (panel === 'team' && selectedSetupTab() === 'custom') document.getElementById('roster-config').open = true;
 }
 
 function attachPlannerEditor() {
@@ -2573,7 +2572,7 @@ function haulingRouteBound(accountForTravel = false) {
 }
 
 function assignLayoutHauling(layout, plan) {
-    const accountForTravel = selectedSetupTab() === 'custom' && workerTravelEnabled();
+    const accountForTravel = selectedSetupTab() === 'custom';
     const bound = haulingRouteBound(accountForTravel);
     const work = haulingWorkload(layout, plan.coin_items || [], bound, recipeIndex, lastPlanInput?.facilities, accountForTravel);
     plan.hauling_estimates = work.seconds;
@@ -2582,8 +2581,7 @@ function assignLayoutHauling(layout, plan) {
     if (!haulingBaseByPlan.has(plan)) haulingBaseByPlan.set(plan, [...(plan.assumed_aniimo || [])]);
     plan.assumed_aniimo = [...haulingBaseByPlan.get(plan)];
     const { members, busy, anchored } = rosterWorkload(plan);
-    const limit = maxWorkingAniimo() ?? Infinity;
-    const allocation = allocateHauling(members, busy, work, limit, anchored);
+    const allocation = allocateHauling(members, busy, work, Infinity, anchored);
     if (allocation.unassigned > 1e-6) {
         if (haulingDefaultSeconds >= bound && plan.hauling_staffing?.length) {
             // The final model used a whole-homeland route bound. Its independently checked
@@ -2597,7 +2595,7 @@ function assignLayoutHauling(layout, plan) {
         haulingDefaultSeconds = bound;
         haulingSeconds = {};
         if (haulingRefinements > 1) {
-            showError('The planned deliveries do not fit the Aniimo limit. Increase the limit or add Storage Units.');
+            showError('The planned deliveries could not be assigned. Try adding Storage Units.');
             return true;
         }
         switchAniimoSetup();
@@ -2613,7 +2611,7 @@ function assignLayoutHauling(layout, plan) {
 }
 
 function refineWorkerMovement(layout, plan) {
-    if (!workerTravelEnabled() || selectedSetupTab() !== 'custom' || !plan.mobile_work?.length) return false;
+    if (selectedSetupTab() !== 'custom' || !plan.mobile_work?.length) return false;
     if (Array.isArray(layout.incomeWalking)) return false;
     const measured = workerTravelDistances(layout.pieces.flatMap(p => p.members));
     // A shorter measured route is already covered by the model's walking allowance. It
@@ -2644,12 +2642,11 @@ const RESIDENT_FACILITIES = new Set(FACILITIES.filter(f => f.category === 'Aniim
 
 // The roster for the solver (see `JsRoster` in wasm.rs).
 function rosterPayload() {
-    const accountForTravel = workerTravelEnabled();
     return {
         hauling_seconds: haulingSeconds,
         hauling_default_seconds: haulingDefaultSeconds,
-        movement_seconds: accountForTravel ? workerTravelSeconds(movementDefaultDistance) : 0,
-        movement_by_member: accountForTravel ? Object.fromEntries(Object.entries(movementDistances).map(([member, distance]) => [member, workerTravelSeconds(distance)])) : {},
+        movement_seconds: workerTravelSeconds(movementDefaultDistance),
+        movement_by_member: Object.fromEntries(Object.entries(movementDistances).map(([member, distance]) => [member, workerTravelSeconds(distance)])),
         members: roster.map(a => ({ count: a.count, abilities: a.abilities, personalities: a.personalities.filter(Boolean), family: a.family })),
         residents: [...RESIDENT_FACILITIES],
         environment: ENVIRONMENT_BUILDING_ABILITY,
@@ -2754,8 +2751,7 @@ function renderRoster() {
     const summary = document.getElementById('planner-team-summary');
     if (tab === 'custom') {
         const count = document.getElementById('roster-config-count').textContent;
-        const travel = document.getElementById('worker-travel-on').checked ? 'Travel on' : 'Travel off';
-        summary.textContent = `${translate('My Aniimo')} (${count}) · ${translate(travel)}`;
+        summary.textContent = `${translate('My Aniimo')} (${count})`;
     } else {
         summary.textContent = tab === 'minimum' ? 'Minimum' : 'Best';
     }
@@ -3342,11 +3338,6 @@ function eModeRv(input) {
     return rv >= 12 ? rv : null;
 }
 
-function maxWorkingAniimo() {
-    const limit = document.getElementById('electricity-aniimo-limit');
-    return limit.value === '' || !limit.validity.valid ? null : Number(limit.value);
-}
-
 function attachElectricityHandlers() {
     document.getElementById('electricity-section').addEventListener('input', () => {
         renderElectricity();
@@ -3653,7 +3644,7 @@ let aniimoLevels = {};
 // `aniimo_setup_from` and `JsRoster` in wasm.rs).
 function aniimoInput(setup) {
     if (setup.startsWith('roster')) return {
-        aniimo: 'roster', roster: rosterPayload(), aniimo_levels: {}, max_working_aniimo: maxWorkingAniimo(),
+        aniimo: 'roster', roster: rosterPayload(), aniimo_levels: {},
     };
     const levels = {};
     levelledAbilities().forEach(ability => { levels[ability] = bestAniimoLevel(ability); });
@@ -3701,9 +3692,9 @@ function showAniimoSetup() {
     const tab = selectedSetupTab();
     document.getElementById('ability-level-settings').hidden = tab !== 'best';
     document.getElementById('edit-roster-btn').hidden = tab !== 'custom';
-    document.getElementById('roster-config').hidden = tab !== 'custom';
-    document.getElementById('roster-worker-limit').hidden = tab !== 'custom';
-    document.getElementById('worker-travel-option').hidden = tab !== 'custom';
+    const rosterConfig = document.getElementById('roster-config');
+    rosterConfig.hidden = tab !== 'custom';
+    if (tab === 'custom') rosterConfig.open = true;
     const hints = {
         custom: 'The plan shares your Aniimo’s available hours between jobs.',
         minimum: 'Uses the minimum ability level each recipe requires.',
@@ -4692,7 +4683,7 @@ function aniimoTeam(plan) {
 function renderAniimoSummary(plan) {
     const custom = selectedSetupTab() === 'custom';
     const workloadNote = document.getElementById('aniimo-workload-note');
-    const travelNote = custom && workerTravelEnabled() ? ' The travel option triples the estimated time for walks and deliveries.' : '';
+    const travelNote = custom ? ' Estimated walking and delivery times are tripled.' : '';
     workloadNote.textContent = plan.hauling_busy != null ? HAULING_ESTIMATE_HINT + travelNote : '';
     workloadNote.hidden = plan.hauling_busy == null;
     if (custom) {
@@ -5176,7 +5167,7 @@ function renderFacilityPlan(plan) {
         return `
             <article data-search="${escapeText([unit.building, unit.partner[0], ...modes, middle,
                 ...zones.flatMap(z => z.rows.map(row => prettyItem(row.item_name)))].filter(Boolean).join(' '))}">
-                <h4 class="facility-category-title">${unit.building} ${modeTag(modes[0])}<span class="env-head-sep">|</span>${unit.partner[0]} ${modeTag(modes[1])}${middle ? `<span class="env-head-sep">|</span>Overlap ${modeTag(middle)}` : ''}</h4>
+                <h4 class="facility-category-title">${unit.building} ${modeTag(modes[0])}<span class="env-head-sep">|</span>${unit.partner[0]} ${modeTag(modes[1])}</h4>
                 <div class="env-unit">
                     ${renderEnvironmentDiagram(zones.flatMap(z => z.layout), zones[0].mode, unit.building, zones.flatMap(z => z.rows), unit, zones)}
                 </div>
@@ -5425,11 +5416,9 @@ async function runFindPlan() {
     haulingSeconds = {};
     haulingDefaultSeconds = 0;
     haulingRefinements = 0;
-    const invalid = (seasonActive() && document.querySelector('#season-crop-minimum-fields input:invalid'))
-        || (selectedSetupTab() === 'custom' && document.querySelector('#electricity-aniimo-limit:invalid'));
+    const invalid = seasonActive() && document.querySelector('#season-crop-minimum-fields input:invalid');
     if (invalid) {
-        if (invalid.closest('#planner-edit-season')) openPlannerEditor('season');
-        else if (invalid.closest('#planner-edit-team')) openPlannerEditor('team');
+        openPlannerEditor('season');
         invalid.reportValidity();
         return;
     }
@@ -5921,23 +5910,6 @@ async function initApp() {
             saveInputsToStorage();
             showAniimoSetup();
         }));
-    document.getElementById('electricity-aniimo-limit').addEventListener('change', event => {
-        if (!event.target.reportValidity()) return;
-        saveInputsToStorage();
-        switchAniimoSetup();
-    });
-    document.getElementById('worker-travel-on').addEventListener('change', () => {
-        travelRefinements = 0;
-        movementDistances = {};
-        movementDefaultDistance = 20;
-        haulingSeconds = {};
-        haulingDefaultSeconds = 0;
-        haulingRefinements = 0;
-        stopSetupSolve();
-        renderRoster();
-        saveInputsToStorage();
-        switchAniimoSetup();
-    });
     document.getElementById('aniimo-toggle').addEventListener('click', () => {
         aniimoExpansionChosen = true;
         setAniimoExpanded(document.getElementById('aniimo-body').hidden);

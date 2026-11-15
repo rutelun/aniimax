@@ -3425,10 +3425,11 @@ html { scroll-padding-top: calc(var(--planner-bar-height, 4rem) + 0.8rem); }
     padding-inline-start: 1.25rem;
 }
 .planner-editor-options { display: grid; gap: 0.36rem; }
-.planner-editor-options button {
+.planner-editor-options [data-planner-editor] {
     display: flex;
     align-items: center;
     gap: 0.5rem;
+    width: 100%;
     min-height: 2.75rem;
     padding: 0.4rem 0.7rem;
     background: var(--surface-2);
@@ -3440,17 +3441,18 @@ html { scroll-padding-top: calc(var(--planner-bar-height, 4rem) + 0.8rem); }
     overflow-wrap: anywhere;
     cursor: pointer;
 }
-.planner-editor-options button:hover,
-.planner-editor-options button[aria-expanded="true"] {
+.planner-editor-options [data-planner-editor]:hover,
+.planner-editor-options [data-planner-editor][aria-expanded="true"] {
     border-color: var(--accent);
 }
-.planner-editor-options button span {
+.planner-editor-options [data-planner-editor][aria-expanded="true"] { border-radius: var(--radius) var(--radius) 0 0; }
+.planner-editor-options [data-planner-editor] span {
     margin-inline-start: auto;
     color: var(--text-muted);
     font-size: 0.78rem;
     text-align: end;
 }
-.planner-editor-options button::after {
+.planner-editor-options [data-planner-editor]::after {
     content: "";
     flex: 0 0 auto;
     width: 0.33rem;
@@ -3459,12 +3461,13 @@ html { scroll-padding-top: calc(var(--planner-bar-height, 4rem) + 0.8rem); }
     border-block-end: 1px solid var(--text-muted);
     transform: translateY(-1px) rotate(45deg);
 }
-.planner-editor-options button[aria-expanded="true"]::after { transform: translateY(1px) rotate(225deg); }
+.planner-editor-options [data-planner-editor][aria-expanded="true"]::after { transform: translateY(1px) rotate(225deg); }
 .planner-editor-panel {
-    margin-top: 0.65rem;
+    min-width: 0;
     padding: 0.8rem;
     border: 1px solid var(--border);
-    border-radius: var(--radius);
+    border-top: 0;
+    border-radius: 0 0 var(--radius) var(--radius);
     overflow-wrap: anywhere;
 }
 .planner-editor-panel .planner-season { padding: 0; margin: 0; border: 0; }
@@ -3489,7 +3492,6 @@ html { scroll-padding-top: calc(var(--planner-bar-height, 4rem) + 0.8rem); }
     .planner-setup-grid { grid-template-columns: minmax(0, 1fr); gap: 0.75rem; }
     .planner-editor { border-inline-start: 0; padding-inline-start: 0; }
 }
-.planner-team-settings #worker-travel-option label { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.15rem 0.5rem; }
 .config-actions { gap: 0.1rem 0.85rem; }
 .config-actions button { min-height: 2.75rem; }
 .planner-team-options.tabs {
@@ -3515,9 +3517,7 @@ html { scroll-padding-top: calc(var(--planner-bar-height, 4rem) + 0.8rem); }
 }
 .planner-team-settings .aniimo-setup-panel { padding: 0; }
 .planner-team-settings #aniimo-setup-hint { margin: 0; }
-.planner-team-settings #ability-level-settings, .planner-team-settings .checkbox-field { margin-top: 0.5rem; }
-.planner-team-settings #roster-worker-limit { margin-bottom: 0; }
-.planner-team-settings #electricity-aniimo-limit { max-width: 15rem; }
+.planner-team-settings #ability-level-settings { margin-top: 0.5rem; }
 .planner-team-settings .level-picker label { min-height: 2rem; }
 .planner-team-settings .roster-config { margin-top: 0.75rem; }
 

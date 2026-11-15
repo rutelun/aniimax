@@ -19,7 +19,6 @@ function page() {
     const context = {
         document: { getElementById: element, querySelectorAll: () => [] },
         selectedSetupTab: () => state.tab, levelledAbilities: () => [],
-        maxWorkingAniimo: () => null,
         Worker: class {
             constructor() { workers.push(this); }
             postMessage(message) { this.request = message; }
@@ -84,23 +83,20 @@ test('an invalid or timed-out response settles as an error instead of waiting fo
     }
 });
 
-test('turning travel off cancels the costly solve and ignores previous distances', () => {
+test('a roster always accounts for walking and a corrected distance restarts its solve', () => {
     const p = page();
-    p.element('worker-travel-on').checked = true;
     p.run('showSelectedPlan();');
     const withTravel = JSON.parse(p.workers[0].request.payload).roster;
     assert.equal(withTravel.movement_seconds, 15);
     assert.deepEqual(withTravel.movement_by_member, {0:30});
-    p.element('worker-travel-on').checked = false;
-    p.run('switchAniimoSetup();');
+    const key = p.run('selectedAniimoSetup()');
+    p.run('movementDistances = {0:100}; switchAniimoSetup();');
     assert.ok(p.workers[0].stopped);
     assert.equal(p.timers.size, 1);
     const payload = JSON.parse(p.workers[1].request.payload);
-    assert.equal(payload.roster.movement_seconds, 0);
-    assert.deepEqual(payload.roster.movement_by_member, {});
-    const key = p.run('selectedAniimoSetup()');
-    p.run('movementDistances = {0:100};');
-    assert.equal(p.run('selectedAniimoSetup()'), key);
+    assert.equal(payload.roster.movement_seconds, 15);
+    assert.deepEqual(payload.roster.movement_by_member, {0:75});
+    assert.notEqual(p.run('selectedAniimoSetup()'), key);
     p.workers[1].onmessage({ data: { ok: true, result: '{"success":true}' } });
     assert.equal(p.element('aniimo-pending').style.display, 'none');
 });

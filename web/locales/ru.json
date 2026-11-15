@@ -1,4 +1,7 @@
 {
+  "This setup took too long. Try simplifying the priorities.": "Расчёт занял слишком много времени. Попробуйте сократить список приоритетов.",
+  "The planned deliveries could not be assigned. Try adding Storage Units.": "Не удалось распределить доставки. Попробуйте добавить склады.",
+  "Estimated walking and delivery times are tripled.": "Расчётное время переходов и доставки утраивается.",
   "Plan setup": "Настройки плана",
   "Plan settings": "Параметры плана",
   "Team": "Команда",
