@@ -4393,7 +4393,7 @@ function taskLabel(task, facility, tagged = false) {
     return `${ability} Lv.${task.level} · ${personality}${letter ? ` (${letter})` : ''}`;
 }
 
-function facilityPlanCards(rows, plan, heading) {
+function facilityPlanCards(rows, plan, heading, first = []) {
     const buildings = new Map();
     for (const step of rows) {
         if (!(step.facility_count > 0)) continue;
@@ -4401,7 +4401,10 @@ function facilityPlanCards(rows, plan, heading) {
         buildings.get(step.facility).push(step);
     }
     if (!buildings.size) return '';
-    const ordered = [...buildings].sort(([a], [b]) => translate(a).localeCompare(translate(b), currentLocale()));
+    const rank = new Map(first.map((name, index) => [name, index]));
+    const ordered = [...buildings].sort(([a], [b]) =>
+        (rank.get(a) ?? first.length) - (rank.get(b) ?? first.length)
+        || translate(a).localeCompare(translate(b), currentLocale()));
     return `
       <section class="production-section">
         <h3>${heading}</h3>
@@ -5192,7 +5195,8 @@ function renderFacilityPlan(plan) {
         const category = FACILITY_CATEGORY_BY_NAME.get(step.facility);
         (category === 'Materials' || category === 'Aniimo Materials' ? materials : other).push(step);
     }
-    container.innerHTML = facilityPlanCards(materials, plan, 'Raw material production') + (environmentSections
+    container.innerHTML = facilityPlanCards(materials, plan, 'Raw material production', ['Farmland', 'Woodland', 'Mine'])
+        + (environmentSections
         ? `<section class="production-section"><h3>Growing environments</h3>
             <div class="production-environment-grid">${environmentSections}</div></section>` : '')
         + facilityPlanCards(other, plan, 'Other buildings');
