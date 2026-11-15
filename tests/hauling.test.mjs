@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { assignFacilityStock, bufferedBatches, haulingBatchTrips, haulingTravelSeconds,
+import { assignFacilityStock, bufferedBatches, haulingBatchTrips, haulingTravelSeconds, haulingWorkSeconds,
     haulingWorkload, allocateHauling } from '../web/hauling.js';
 
 test('delivery goes through storage to the next frequency-weighted pickup', () => {
@@ -13,13 +13,14 @@ test('delivery goes through storage to the next frequency-weighted pickup', () =
         {facility:'Well',item_name:'near',status:'producing',facility_count:1,cycle_time:120},
     ];
     const work = haulingWorkload(layout, steps);
-    assert.equal(work.seconds['Mine|far'], 6.5); // double the loaded leg and weighted next pickup
-    assert.equal(work.seconds['Well|near'], 4.5);
-    assert.ok(Math.abs(work.busy - 200/3600) < 1e-12);
+    assert.equal(work.seconds['Mine|far'], 13);
+    assert.equal(work.seconds['Well|near'], 9);
+    assert.ok(Math.abs(work.busy - 400/3600) < 1e-12);
     const withTravel = haulingWorkload(layout, steps, 0, [], null, true);
-    assert.equal(withTravel.seconds['Mine|far'], 19.5);
-    assert.equal(withTravel.seconds['Well|near'], 13.5);
-    assert.ok(Math.abs(withTravel.busy - 600/3600) < 1e-12);
+    assert.equal(withTravel.seconds['Mine|far'], 39);
+    assert.equal(withTravel.seconds['Well|near'], 27);
+    assert.ok(Math.abs(withTravel.busy - 1200/3600) < 1e-12);
+    assert.equal(haulingWorkSeconds(40, true), 2 * haulingTravelSeconds(40, true));
 });
 
 test('couriers share existing work hours without assigning delivery to another ability', () => {
@@ -55,18 +56,18 @@ test('a full resident cannot also deliver; missing layouts do not make hauling f
     assert.ok(allocation.unassigned > .09);
     const work = haulingWorkload({pieces:[],storages:[]}, [
         {facility:'Well',item_name:'water',status:'producing',facility_count:1,cycle_time:10},
-    ], haulingTravelSeconds(40));
-    assert.equal(work.busy, 2);
+    ], haulingWorkSeconds(40));
+    assert.equal(work.busy, 4);
 });
 
 test('a large harvest takes multiple trips according to the actual couriers carrying level', () => {
     const work = haulingWorkload({storages:[{x:-1,y:-1,w:2,h:2}],pieces:[{members:[
         {x:7,y:-1,w:2,h:2,weight:180,facility:'Farmland',crop:'large',stockLimit:35},
-    ]}]}, [{facility:'Farmland',item_name:'large',status:'producing',facility_count:1,cycle_time:20}], 0,
+    ]}]}, [{facility:'Farmland',item_name:'large',status:'producing',facility_count:1,cycle_time:40}], 0,
     [{name:'large',yieldAmount:200}]);
-    assert.equal(work.seconds['Farmland|large|1'],32);
-    assert.equal(work.seconds['Farmland|large|2'],24);
-    assert.equal(work.seconds['Farmland|large|3'],16);
+    assert.equal(work.seconds['Farmland|large|1'],64);
+    assert.equal(work.seconds['Farmland|large|2'],48);
+    assert.equal(work.seconds['Farmland|large|3'],32);
     assert.ok(allocateHauling([{count:1,abilities:{Hauling:1}}], [0], work, 1).unassigned > 0);
     const stronger = allocateHauling([{count:1,abilities:{Hauling:3}}], [0], work, 1);
     assert.deepEqual(stronger.assignments,[[0,.8]]);
@@ -82,8 +83,8 @@ test('a building accumulates several batches before sending a delivery, includin
     assert.equal(bufferedBatches(recipes[0], crop.stockLimit), 6);
     const steps = [{ facility:'Farmland',item_name:'wheat',status:'producing',facility_count:1,cycle_time:60 }];
     const measured = haulingWorkload({ storages: [{ x:-1,y:-1,w:2,h:2 }], pieces: [{ members: [crop] }] }, steps, 0, recipes);
-    const bounded = haulingWorkload({ storages: [], pieces: [] }, steps, haulingTravelSeconds(16), recipes, facilities);
-    assert.equal(measured.seconds['Farmland|wheat'], 8 / 6);
+    const bounded = haulingWorkload({ storages: [], pieces: [] }, steps, haulingWorkSeconds(16), recipes, facilities);
+    assert.equal(measured.seconds['Farmland|wheat'], 16 / 6);
     assert.equal(bounded.seconds['Farmland|wheat'], measured.seconds['Farmland|wheat']);
     assert.equal(haulingBatchTrips({ yieldAmount: 4, byproductAmount: 2 }, 3, 18), 1 / 3);
 });

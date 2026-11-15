@@ -8,6 +8,8 @@ const levels = [1, 2, 3, 4];
 const headcount = n => Math.max(0, Math.ceil(n - 1e-6));
 export const haulingTravelSeconds = (distance, accountForTravel = false) =>
     2 * (accountForTravel ? workerTravelSeconds(distance) : distance / ANIIMO_WALK_SPEED);
+export const haulingWorkSeconds = (distance, accountForTravel = false) =>
+    2 * haulingTravelSeconds(distance, accountForTravel);
 const batchOutput = recipe => Math.max(1, recipe?.yieldAmount || 1) + Math.max(0, recipe?.byproductAmount || 0);
 export const facilityStockLimit = (facility, level = 1) =>
     facilityStock[facility]?.[Math.max(1, level) - 1] ?? facilityStock[facility]?.at(-1) ?? 0;
@@ -72,7 +74,7 @@ export function haulingWorkload(layout, steps, fallbackSeconds = 0, recipes = []
             if (!storage) continue;
             const distance = Math.hypot(member.x + member.w / 2 - storage.x - storage.w / 2,
                 member.y + member.h / 2 - storage.y - storage.h / 2);
-            const loaded = haulingTravelSeconds(distance, accountForTravel);
+            const loaded = haulingWorkSeconds(distance, accountForTravel);
             const cargo = member.jobs?.map(job => [job.item, job.rate * 3600]) || [[member.crop, member.batchWeight ?? member.weight]];
             const pool = pools.get(storage) || { trips: 0, pickupSeconds: 0 };
             for (const [item, batches] of cargo) {

@@ -14,7 +14,7 @@ import { createShareUrl, readShareHash, urlWithoutShare } from './share-config.j
 import { nearestStorage } from './layout.js?v=storage-power';
 import { workerTravelDistances, workerTravelSeconds } from './worker-travel.js?v=travel-allowance';
 import { assignFacilityStock, bufferedBatches, haulingWorkload, allocateHauling, haulingBatchTrips,
-    haulingTravelSeconds, pickupStockLimit } from './hauling.js?v=shared-work-time';
+    haulingTravelSeconds, haulingWorkSeconds, pickupStockLimit } from './hauling.js?v=double-hauling-workload';
 import { changeOneMember, personalityInput, reserveLevelFourInputs, comparePlans, usefulUpgrade, keepBetterComparison } from './opportunity-comparison.js?v=shared-work-time';
 import { comparisonConcurrency, startComparisonQueue } from './comparison-queue.js?v=parallel-comparisons';
 import { prepareOpportunities, startedProcessing, increasedProcessing } from './opportunity-effects.js?v=auto-e-mode';
@@ -2525,11 +2525,11 @@ let haulingSeconds = {};
 let haulingDefaultSeconds = 0;
 let haulingRefinements = 0;
 const haulingBaseByPlan = new WeakMap();
-const HAULING_ESTIMATE_HINT = 'Delivery estimates use facility stock limits, carrying capacity, and twice the basic walking time. Pickup timing is approximate.';
+const HAULING_ESTIMATE_HINT = 'Delivery estimates use facility stock limits, carrying capacity, and a 2× delivery workload allowance. Pickup timing is approximate.';
 
 function haulingRouteBound(accountForTravel = false) {
     const open = homelandPlots().filter(p => p.number <= layoutHomeLevel());
-    return open.length ? haulingTravelSeconds(2 * Math.hypot(
+    return open.length ? haulingWorkSeconds(2 * Math.hypot(
         Math.max(...open.map(p => p.x + p.w)) - Math.min(...open.map(p => p.x)),
         Math.max(...open.map(p => p.y + p.h)) - Math.min(...open.map(p => p.y))), accountForTravel) : 0;
 }
