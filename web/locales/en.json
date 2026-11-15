@@ -1,4 +1,9 @@
 [
+  "Plan results",
+  "Show rates",
+  "Seed cost",
+  "Finishes last: {items}",
+  "Use Recipes & stock to enable or skip recipes. Enter your RV upgrade stock beside the RV level selector.",
   "This setup took too long. Try simplifying the priorities.",
   "The planned deliveries could not be assigned. Try adding Storage Units.",
   "Estimated walking and delivery times are tripled.",

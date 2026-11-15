@@ -1,7 +1,7 @@
 // Aniimax Web Application
 
-import { currentLocale, sourceAttribute, translate } from './i18n.js?v=inline-settings';
-import './math-translation.js?v=inline-settings';
+import { currentLocale, sourceAttribute, translate } from './i18n.js?v=results-columns';
+import './math-translation.js?v=results-columns';
 import { autoMaximizeSeasonPoints } from './season-planning.js?v=optional-season-points';
 
 import {
@@ -246,7 +246,6 @@ function showSelectedPlan() {
     content.classList.toggle('stale', !plan);
     if (!plan) {
         pending.style.display = lastPlanInput ? 'block' : 'none';
-        updatePlannerNavigation();
         stopRanking();
         stopLayout();
         ensurePlanFor(setup);
@@ -2480,18 +2479,6 @@ function announcePlanner(message) {
     if (status.textContent !== text) status.textContent = text;
 }
 
-function updatePlannerNavigation() {
-    const picker = document.getElementById('planner-jump');
-    const results = document.getElementById('results-content');
-    const enabled = !!lastPlan?.success && !results.classList.contains('stale') && results.getClientRects().length > 0;
-    document.getElementById('planner-results-controls').hidden = !enabled;
-    if (!enabled) return;
-    for (const option of picker.options) {
-        if (option.value) option.disabled = !document.getElementById(option.value)?.getClientRects().length;
-    }
-    if (!picker.value || picker.selectedOptions[0].disabled) picker.value = 'plan-overview';
-}
-
 function jumpToPlannerSection(id) {
     const section = document.getElementById(id);
     if (!section) return;
@@ -2520,31 +2507,6 @@ function attachPlannerEditor() {
         const button = event.target.closest('[data-planner-editor]');
         if (!button) return;
         openPlannerEditor(button.getAttribute('aria-expanded') === 'true' ? null : button.dataset.plannerEditor);
-    });
-}
-
-function attachPlannerNavigation() {
-    const bar = document.querySelector('.planner-bar');
-    const syncScrollPadding = () => {
-        document.documentElement.style.setProperty('--planner-bar-height', `${bar.offsetHeight}px`);
-    };
-    syncScrollPadding();
-    new ResizeObserver(syncScrollPadding).observe(bar);
-
-    document.querySelectorAll('.planner-navigation a, .skip-to-planner').forEach(link => {
-        link.addEventListener('click', event => {
-            if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-            event.preventDefault();
-            jumpToPlannerSection(link.hash.slice(1));
-        });
-    });
-    const picker = document.getElementById('planner-jump');
-    picker.addEventListener('pointerdown', updatePlannerNavigation);
-    picker.addEventListener('focus', updatePlannerNavigation);
-    document.getElementById('planner-jump-go').addEventListener('click', () => {
-        updatePlannerNavigation();
-        if (!picker.value) return;
-        jumpToPlannerSection(picker.value);
     });
 }
 
@@ -3917,20 +3879,18 @@ function renderStrategy() {
     // Simple mode always plans the next RV level, so only Advanced picks one.
     document.getElementById('level-up-target-row').style.display = isSimpleMode() ? 'none' : '';
 
-    const costEl = document.getElementById('level-up-cost');
     const stockDetails = document.getElementById('level-up-stock');
+    const stockGrid = document.getElementById('level-up-stock-grid');
+    const stockNote = document.getElementById('level-up-stock-note');
+    stockDetails.hidden = Boolean(unavailable) && isSimpleMode();
     if (unavailable) {
-        costEl.innerHTML = `<p class="level-up-note">${unavailable}</p>`;
-        stockDetails.hidden = true;
+        stockNote.textContent = unavailable;
+        stockGrid.replaceChildren();
         return;
     }
     const cost = levelUpCost();
-    const chip = (amount, name) => `<div class="chip"><span><span class="chip-count">${formatNumber(amount)}</span> ${ITEM_NAMES[name] || prettyItem(name)}</span></div>`;
-    costEl.innerHTML = `
-        <p class="assume-title">RV ${levelUpTarget()} costs</p>
-        <div class="chip-grid">${chip(cost.coins, 'coins')}${cost.items.map(([item, n]) => chip(n, item)).join('')}</div>`;
-    stockDetails.hidden = false;
-    document.getElementById('level-up-stock-grid').innerHTML = stockNames(cost).map(name => `
+    stockNote.textContent = 'What you already have';
+    stockGrid.innerHTML = stockNames(cost).map(name => `
         <div class="input-field">
             <label for="stock-${name}">${ITEM_NAMES[name] || prettyItem(name)}</label>
             <input type="number" id="stock-${name}" data-stock="${name}" min="0" value="${stockAmount(name)}">
@@ -3992,15 +3952,15 @@ function renderLevelUp(plan) {
     const card = document.getElementById('level-up-card');
     const select = document.getElementById('rate-unit');
     const context = planContext;
-    if (!context || context.unavailable) {
-        card.style.display = 'none';
-        return;
-    }
-    card.style.display = 'block';
-    const label = document.getElementById('level-up-label');
+    const metric = document.getElementById('level-up-metric');
+    card.hidden = metric.hidden = !context || Boolean(context.unavailable);
+    if (card.hidden) return;
+    const bottleneck = document.getElementById('level-up-bottleneck');
+    bottleneck.hidden = true;
     const time = document.getElementById('level-up-time');
     const lines = document.getElementById('level-up-lines');
-    label.textContent = `RV ${context.target} level-up`;
+    document.getElementById('level-up-label').textContent = `RV ${context.target} level-up`;
+    document.getElementById('level-up-summary').textContent = `RV ${context.target} costs`;
     const report = plan.level_up_preview;
     if (context.ready) {
         time.textContent = 'Ready now';
@@ -4020,11 +3980,15 @@ function renderLevelUp(plan) {
     const unitLabel = select.selectedOptions[0].textContent;
     const perUnit = perSecond => formatRate(perSecond * multiplier);
     const slowest = Math.max(...report.requirements.map(r => r.seconds ?? Infinity));
+    const bottlenecks = report.requirements.filter(r => slowest > 0 && (r.seconds ?? Infinity) >= slowest * (1 - 1e-6));
+    if (bottlenecks.length) {
+        const items = bottlenecks.map(r => translate(ITEM_NAMES[r.name] || prettyItem(r.name))).join(', ');
+        bottleneck.textContent = translate('Finishes last: {items}').replace('{items}', items);
+        bottleneck.hidden = false;
+    }
     const rows = report.requirements.map(r => {
         const ready = r.seconds === null ? 'never' : r.seconds === 0 ? 'have it' : formatDuration(r.seconds);
-        const isSlowest = report.seconds == null
-            ? r.seconds === null
-            : r.seconds > 0 && r.seconds >= slowest * (1 - 1e-6);
+        const isSlowest = bottlenecks.includes(r);
         return `<tr${isSlowest ? ' class="slowest"' : ''}>
             <td data-label="Cost">${ITEM_NAMES[r.name] || prettyItem(r.name)}</td>
             <td data-label="Need">${formatNumber(r.need)}</td>
@@ -4054,9 +4018,10 @@ function renderLevelUp(plan) {
 // A seed per planting of each Farmland and Woodland crop, and what it costs.
 function renderSeedTable(plan) {
     const card = document.getElementById('seed-card');
+    const metric = document.getElementById('seed-cost-metric');
     const el = document.getElementById('seed-table');
-    const unit = document.getElementById('rate-unit').value;
-    const multiplier = (RATE_UNIT_SECONDS[unit] || RATE_UNIT_SECONDS.second).multiplier;
+    const unit = document.getElementById('rate-unit');
+    const multiplier = (RATE_UNIT_SECONDS[unit.value] || RATE_UNIT_SECONDS.second).multiplier;
     const rows = (plan.coin_items || [])
         .filter(s => (s.facility === 'Farmland' || s.facility === 'Woodland') && s.status === 'producing' && s.cycle_time > 0)
         .map(s => {
@@ -4068,20 +4033,23 @@ function renderSeedTable(plan) {
             return { name: s.item_name, facility: s.facility, plots: s.facility_count, seeds, cost: seeds * cost, wheat };
         })
         .sort((a, b) => b.seeds - a.seeds);
-    if (rows.length === 0) {
-        card.style.display = 'none';
-        return;
-    }
+    card.hidden = metric.hidden = !rows.length;
+    if (card.hidden) return;
     const amount = formatRate;
     const totalCost = rows.reduce((sum, r) => sum + r.cost, 0);
     const totalWheat = rows.reduce((sum, r) => sum + r.wheat, 0);
-    const totals = [
-        totalCost > 0 ? `${amount(totalCost)} Home Coins` : '',
-        totalWheat > 0 ? `${amount(totalWheat)} ${planSeason().currency}` : '',
-    ].filter(Boolean).join(' + ');
-    card.style.display = 'block';
-    const per = { second: 'per second', minute: 'per minute', hour: 'per hour', day: 'per day' }[unit] || 'per second';
-    document.getElementById('seed-card-unit').textContent = `Seeds ${per}: one per planting, for every Farmland and Woodland crop in the plan.`;
+    const currency = totalWheat > 0 ? planSeason().currency : '';
+    const costs = [
+        totalCost > 0 ? [totalCost, 'Home Coins'] : null,
+        totalWheat > 0 ? [totalWheat, currency] : null,
+    ].filter(Boolean);
+    const [first, second] = costs;
+    const extra = document.getElementById('seed-cost-extra');
+    const price = ([value, name]) => `${amount(value)} ${translate(name)}`;
+    document.getElementById('seed-cost-period').textContent = unit.selectedOptions[0].textContent;
+    document.getElementById('seed-cost-value').textContent = first ? amount(first[0]) : 'free';
+    extra.hidden = !first;
+    extra.textContent = first ? translate(first[1]) + (second ? ` + ${price(second)}` : '') : '';
     el.innerHTML = `
         <table>
             <thead><tr><th>Crop</th><th>Plots</th><th>Seeds</th><th>Cost</th></tr></thead>
@@ -4089,9 +4057,10 @@ function renderSeedTable(plan) {
                 <td>${prettyItem(r.name)}</td>
                 <td>${r.plots}</td>
                 <td>${amount(r.seeds)}</td>
-                <td>${r.wheat > 0 ? `${amount(r.wheat)} ${planSeason().currency}` : r.cost > 0 ? `${amount(r.cost)} Home Coins` : 'free'}</td>
+                <td>${r.wheat > 0 ? `${amount(r.wheat)} <span class="seed-cost-currency">${currency}</span>`
+                    : r.cost > 0 ? `${amount(r.cost)} <span class="seed-cost-currency">Home Coins</span>` : 'free'}</td>
             </tr>`).join('')}</tbody>
-            ${rows.length > 1 && totals ? `<tfoot><tr><td colspan="3">Total</td><td>${totals}</td></tr></tfoot>` : ''}
+            ${costs.length ? `<tfoot><tr><th scope="row" colspan="2">Total</th><td colspan="2">${costs.map(cost => `<span>${price(cost)}</span>`).join(' + ')}</td></tr></tfoot>` : ''}
         </table>`;
 }
 
@@ -4228,7 +4197,6 @@ function showError(message) {
     errorEl.style.display = 'block';
     resultsContent.style.display = 'none';
     resultsSection.style.display = 'block';
-    updatePlannerNavigation();
 }
 
 // The goal card's choices: coins and every priority that's on, in the player's order. Keeps the
@@ -5211,11 +5179,10 @@ function renderFacilityPlan(plan) {
 function updateRateDisplay(pickUnit = false) {
     if (!lastPlan || !lastPlan.success) return;
     const select = document.getElementById('rate-unit');
-    const rows = planContext ? priorityRows(lastPlan, true) : null;
+    const rows = priorityRows(lastPlan, true);
     // Step the unit up until the smallest rate reads at least 1 (Aniipods per hour, Rough Lumber
     // per hour, not 0.01 per second); a plain coin rate only needs to read above zero.
-    const costRates = (lastPlan.level_up?.requirements || []).map(r => r.per_second);
-    const rates = (rows ? rows.map(r => r.perSecond) : costRates).filter(r => r > 1e-9);
+    const rates = rows.filter(r => r.target !== 'level_up' && r.perSecond > 1e-9).map(r => r.perSecond);
     const smallest = rates.length ? Math.min(...rates) : lastPlan.rate_per_second;
     const least = rates.length ? 1 : 0.05;
     while (pickUnit && smallest * RATE_UNIT_SECONDS[select.value].multiplier < least) {
@@ -5223,47 +5190,34 @@ function updateRateDisplay(pickUnit = false) {
         if (!next) break;
         select.value = next;
     }
-    const { multiplier, suffix } = RATE_UNIT_SECONDS[select.value] || RATE_UNIT_SECONDS.second;
-    const rateLine = document.getElementById('rate-line');
-    const table = document.getElementById('priority-rates');
-    if (!rows) {
-        if (select.closest('#priority-rates')) rateLine.appendChild(select);
-        const label = CURRENCY_LABELS[lastPlan.currency] || lastPlan.currency;
-        const points = lastPlan.season_points > 1e-12 ? ` + ${formatRate(lastPlan.season_points * multiplier)} ${planSeason().points}` : '';
-        document.getElementById('plan-rate').textContent = `${formatRate(lastPlan.rate_per_second * multiplier)} ${label}${points}${suffix}`;
-        document.getElementById('rate-label').textContent = 'Your Rate';
-        rateLine.style.display = '';
-        table.innerHTML = '';
-        return;
-    }
+    const { multiplier } = RATE_UNIT_SECONDS[select.value] || RATE_UNIT_SECONDS.second;
+    const unitLabel = select.selectedOptions[0].textContent;
+    document.getElementById('plan-rate').textContent = formatRate(lastPlan.rate_per_second * multiplier);
+    document.getElementById('plan-rate-period').textContent = unitLabel;
     // Priorities: one row each, in the player's order, at the selected unit.
     const amount = formatRate;
     const body = rows.map(r => {
         if (r.target === 'level_up') {
             const seconds = lastPlan.level_up_preview?.seconds;
             const time = seconds === 0 ? 'Ready now' : seconds == null ? 'Not reached with this plan' : formatDuration(seconds);
-            return `<tr${r.rank === 1 ? ' class="top"' : ''}><td>${r.rank}</td><td>${r.label}</td><td>${time}</td><td></td></tr>`;
+            return `<tr${r.rank === 1 ? ' class="top"' : ''}><td>${r.rank ?? ''}</td><td>${r.label}</td><td>${time}</td></tr>`;
         }
-        const why = r.perSecond <= 1e-9 && r.missing ? `<span class="hint small">${r.missing}</span>` : '';
+        const why = r.perSecond <= 1e-9 ? r.missing || '' : '';
         // Aniimo EXP names the Growth items making it; an Aniipod row is already named by tier.
         const made = r.target === 'aniimo_exp'
             ? r.items.filter(([, n]) => n > 1e-9).map(([item, n]) => `${amount(n * multiplier)} ${prettyItem(item)}`).join(', ')
             : '';
         return `<tr${r.rank === 1 ? ' class="top"' : ''}>
             <td>${r.rank ?? ''}</td>
-            <td>${r.label}</td>
+            <td>${r.label}${why || made ? `<span class="priority-rate-note">${why || made}</span>` : ''}</td>
             <td>${why ? 'none' : amount(r.perSecond * multiplier)}</td>
-            <td>${why || made}</td>
         </tr>`;
     }).join('');
-    table.innerHTML = `
-        <table class="level-up-lines rate-table">
-            <thead><tr><th>#</th><th>Priority</th><th id="priority-rate-head"></th><th></th></tr></thead>
+    document.getElementById('priority-rates').innerHTML = `
+        <table class="rate-table">
+            <thead><tr><th scope="col">#</th><th scope="col">Priority</th><th scope="col">${escapeText(unitLabel)}</th></tr></thead>
             <tbody>${body}</tbody>
         </table>`;
-    document.getElementById('priority-rate-head').appendChild(select);
-    document.getElementById('rate-label').textContent = 'Your Rates';
-    rateLine.style.display = 'none';
 }
 
 // A Priorities plan's rate rows, in the player's order: each priority, then coins from what's
@@ -5319,7 +5273,6 @@ function displayPlan(plan) {
     resultsSection.style.display = 'block';
 
     if (!plan.success) {
-        updatePlannerNavigation();
         goalSection.style.display = 'none';
         if (selectedSetupTab() === 'custom') {
             showRosterShortfall();
@@ -5385,7 +5338,6 @@ function displayPlan(plan) {
     renderProfitBreakdown(plan);
     renderFacilityPlan(plan);
     renderAniimoSummary(plan);
-    updatePlannerNavigation();
     announcePlanner('Plan ready. Use Results to jump to a section.');
     // The page stays where the player is; the results appear without scrolling to them.
 }
@@ -5559,7 +5511,6 @@ function clearPlanResults() {
     renderProgress();
     resetPlanButton();
     document.getElementById('results-section').style.display = 'none';
-    updatePlannerNavigation();
     announcePlanner('');
 }
 
@@ -5860,7 +5811,6 @@ async function initApp() {
     attachAutoSave();
     attachFacilityTierHandlers();
     attachFacilitySearch();
-    attachPlannerNavigation();
     attachPlannerEditor();
     document.getElementById('plan-facility-search').addEventListener('input', filterFacilityPlan);
     attachModeHandlers();

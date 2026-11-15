@@ -4,11 +4,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Aniimax - Aniimo Production Optimizer</title>
-    <link rel="stylesheet" href="style.css?v=inline-settings">
+    <link rel="stylesheet" href="style.css?v=results-columns">
     <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
 </head>
 <body>
-    <a class="skip-to-planner" href="#planner-settings">Skip to planner</a>
+    <a class="skip-to-planner" href="#planner-heading">Skip to planner</a>
     <header>
         <div class="brand">
             <h1>aniimax</h1>
@@ -27,25 +27,6 @@
     <div class="container">
 
         <main class="planner-workspace">
-            <div class="planner-bar">
-                <nav class="planner-navigation" aria-label="Planner navigation">
-                    <a href="#planner-settings">Setup</a>
-                    <a href="#roster-config">My Aniimo</a>
-                    <span class="planner-results-controls" id="planner-results-controls" hidden>
-                        <label class="visually-hidden" for="planner-jump">Jump to result</label>
-                        <select id="planner-jump">
-                            <option value="">Results</option>
-                            <option value="plan-overview">Plan summary</option>
-                            <option value="aniimo-card">Aniimo Team</option>
-                            <option value="facility-plan-card">Production</option>
-                            <option value="layout-card">Homeland Layout</option>
-                            <option value="improve-card">Opportunities</option>
-                            <option value="goal-section">Set a Goal</option>
-                        </select>
-                        <button type="button" id="planner-jump-go" class="skip-add-btn">Go</button>
-                    </span>
-                </nav>
-            </div>
             <section class="card config-section" id="planner-settings" aria-labelledby="planner-heading">
                 <div class="card-head">
                     <h2 id="planner-heading" tabindex="-1">Plan setup</h2>
@@ -154,19 +135,6 @@
                                         <div class="skip-chips" id="skip-chips"></div>
                                     </section>
 
-                                    <section id="level-up-config" aria-label="Level-up stock">
-                                        <h4>Level-up stock</h4>
-                                        <div class="input-field" id="level-up-target-row">
-                                            <label for="level-up-target">Level up to RV</label>
-                                            <select id="level-up-target"></select>
-                                        </div>
-                                        <div id="level-up-cost"></div>
-                                        <details class="explain" id="level-up-stock">
-                                            <summary>What you already have</summary>
-                                            <div class="stock-grid" id="level-up-stock-grid"></div>
-                                        </details>
-                                    </section>
-
                                     <section aria-labelledby="building-setup-heading" class="planner-building-settings">
                                         <h4 id="building-setup-heading">Buildings</h4>
                                         <p class="hint small" id="building-setup-note">Uses all buildings and upgrades available at your RV level.</p>
@@ -232,9 +200,20 @@
                     </aside>
                 </div>
 
-                <div class="planner-rv input-field">
-                    <label for="home-level">RV level</label>
-                    <select id="home-level"></select>
+                <div class="planner-rv-settings">
+                    <div class="planner-rv input-field">
+                        <label for="home-level">RV level</label>
+                        <select id="home-level"></select>
+                    </div>
+                    <details class="explain planner-upgrade-stock" id="level-up-stock">
+                        <summary>Level-up stock</summary>
+                        <div class="input-field" id="level-up-target-row">
+                            <label for="level-up-target">Level up to RV</label>
+                            <select id="level-up-target"></select>
+                        </div>
+                        <p class="hint small" id="level-up-stock-note"></p>
+                        <div class="stock-grid" id="level-up-stock-grid"></div>
+                    </details>
                 </div>
 
                 <div class="planner-submit">
@@ -289,36 +268,58 @@
                                 <p>Workload is the average per assigned Aniimo. Dedicated posts count as full shifts.</p>
                                 <p id="aniimo-workload-note" hidden></p>
                                 <p><strong>Best</strong>: the best Aniimo you have of each ability, with each facility's personality. Choose their levels in the setup. <strong>My Aniimo</strong>: the Aniimo you list; each works what its abilities allow, for the hours it has. <strong>Minimum</strong>: the lowest ability level each recipe accepts, with no personality bonus. The plan follows whichever is picked.</p>
-                                <p>An Aniimo can take any job needing its ability at or below its level while it has hours to spare, as long as no two of its facilities want opposite personalities. It has four personalities, one from each pair, shown as letters over its portrait: Instinctive or Energetic (I/E), Nimble or Practical (N/S), Faithful or Tenacious (F/T), Playful or Judicious (P/J). Facilities with a resident Aniimo (Sandcastle, Dewy House and the like) need one each, and so does each Heat Furnace (Fire), Cooling Unit (Ice) and Sunlamp (Light) in use. With My Aniimo, crop jobs share the workers' available time; optional travel accounting also includes walking between workplaces. Not yet checked in game: each recipe's minimum ability level, the Farmland and Woodland jobs, and whether an environment building's Aniimo level or personality matters.</p>
+                                <p>An Aniimo can take any job needing its ability at or below its level while it has hours to spare, as long as no two of its facilities want opposite personalities. It has four personalities, one from each pair, shown as letters over its portrait: Instinctive or Energetic (I/E), Nimble or Practical (N/S), Faithful or Tenacious (F/T), Playful or Judicious (P/J). Facilities with a resident Aniimo (Sandcastle, Dewy House and the like) need one each, and so does each Heat Furnace (Fire), Cooling Unit (Ice) and Sunlamp (Light) in use. With My Aniimo, crop jobs share the workers' available time; the plan includes walking between workplaces. Not yet checked in game: each recipe's minimum ability level, the Farmland and Woodland jobs, and whether an environment building's Aniimo level or personality matters.</p>
                             </details>
                         </div>
                     </div>
 
-                    <div class="card rate-card" id="plan-overview" tabindex="-1">
-                        <!-- The upgrade estimate uses the current plan and stock. -->
-                        <div class="level-up-card" id="level-up-card" style="display: none;">
-                            <span class="summary-label" id="level-up-label">Level-Up</span>
-                            <div class="summary-value" id="level-up-time">-</div>
+                    <section class="card rate-card" id="plan-overview" aria-labelledby="plan-results-heading" tabindex="-1">
+                        <header class="plan-results-header">
+                            <h2 id="plan-results-heading">Plan results</h2>
+                            <label class="plan-rate-picker">Show rates
+                                <select id="rate-unit" class="rate-unit-select">
+                                    <option value="second">per second</option>
+                                    <option value="minute">per minute</option>
+                                    <option value="hour">per hour</option>
+                                    <option value="day" selected>per day</option>
+                                </select>
+                            </label>
+                        </header>
+                        <div class="plan-result-metrics">
+                            <div class="plan-result-metric">
+                                <span class="plan-result-label"><span>Home Coins</span> <span id="plan-rate-period"></span></span>
+                                <strong id="plan-rate"></strong>
+                            </div>
+                            <div class="plan-result-metric" id="level-up-metric" hidden>
+                                <span class="plan-result-label" id="level-up-label">Level-Up</span>
+                                <strong id="level-up-time">-</strong>
+                                <span class="plan-result-label" id="level-up-bottleneck" hidden></span>
+                            </div>
+                            <div class="plan-result-metric" id="seed-cost-metric" hidden>
+                                <span class="plan-result-label"><span>Seed cost</span> <span id="seed-cost-period"></span></span>
+                                <strong id="seed-cost-value"></strong>
+                                <span class="plan-result-label" id="seed-cost-extra" hidden></span>
+                            </div>
+                        </div>
+                        <div class="plan-results-columns">
+                            <section id="seed-card" aria-labelledby="seed-results-heading" hidden>
+                                <h3 id="seed-results-heading">Seeds to Plant</h3>
+                                <div class="seed-table" id="seed-table"></div>
+                            </section>
+                            <section id="rate-block" aria-labelledby="rate-label">
+                                <h3 id="rate-label">Your Rates</h3>
+                                <div id="priority-rates"></div>
+                            </section>
+                        </div>
+                        <details class="explain plan-upgrade-details" id="level-up-card" hidden>
+                            <summary id="level-up-summary">Level-Up</summary>
                             <div id="level-up-lines"></div>
-                        </div>
-                        <div id="rate-block">
-                        <span class="summary-label" id="rate-label">Your Rate</span>
-                        <div class="rate-line" id="rate-line">
-                            <span class="summary-value" id="plan-rate">-</span>
-                            <select id="rate-unit" class="rate-unit-select" aria-label="Rate unit">
-                                <option value="second">per second</option>
-                                <option value="minute">per minute</option>
-                                <option value="hour">per hour</option>
-                                <option value="day">per day</option>
-                            </select>
-                        </div>
-                        <div id="priority-rates"></div>
-                        </div>
+                        </details>
                         <p class="plan-proof" id="plan-explored-hint"></p>
                         <p class="hint small" id="material-work-hint" hidden></p>
                         <p class="plan-unverified" id="plan-unverified" style="display: none;"></p>
                         <p class="plan-skipped" id="plan-skipped" style="display: none;"></p>
-                    </div>
+                    </section>
 
                     <div class="card production-steps" id="improve-card" style="display: none;">
                         <h2>Opportunities</h2>
@@ -330,12 +331,6 @@
                             <span class="hint small" id="improve-status" role="status" aria-live="polite"></span>
                         </div>
                         <div id="improve-list"></div>
-                    </div>
-
-                    <div class="card production-steps" id="seed-card" style="display: none;">
-                        <h2>Seeds to Plant</h2>
-                        <p class="hint" id="seed-card-unit"></p>
-                        <div class="seed-table" id="seed-table"></div>
                     </div>
 
                     <div class="card production-steps" id="profit-card" style="display: none;">
@@ -588,7 +583,7 @@
             <div class="modal-body">
                 <h3>1. Tell It What You've Built</h3>
                 <p>Set your RV level. The plan assumes you have all buildings and upgrades available at that level. To enter your own inventory, open Recipes &amp; stock and edit the building counts and levels.</p>
-                <p>Use Recipes &amp; stock to enable special recipes you've unlocked, skip unavailable recipes and enter the stock you already have for the RV upgrade.</p>
+                <p>Use Recipes &amp; stock to enable or skip recipes. Enter your RV upgrade stock beside the RV level selector.</p>
 
                 <h3>2. Rank Your Priorities</h3>
                 <p>The plan optimizes each priority in order. By default it minimizes the time to the next RV, then maximizes Home Coins. Add, remove or reorder priorities to suit your goals.</p>
@@ -680,6 +675,6 @@
             </linearGradient>
         </defs>
     </svg>
-    <script type="module" src="app.js?v=raw-building-order"></script>
+    <script type="module" src="app.js?v=results-columns"></script>
 </body>
 </html>

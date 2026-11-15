@@ -1,4 +1,9 @@
 {
+  "Plan results": "規劃結果",
+  "Show rates": "顯示速率",
+  "Seed cost": "種子成本",
+  "Finishes last: {items}": "最後完成：{items}",
+  "Use Recipes & stock to enable or skip recipes. Enter your RV upgrade stock beside the RV level selector.": "可在「配方與庫存」啟用或略過配方。請在 RV 等級選擇器旁輸入升級庫存。",
   "This setup took too long. Try simplifying the priorities.": "計算耗時過長。請試著減少優先項目。",
   "The planned deliveries could not be assigned. Try adding Storage Units.": "無法分配配送工作。請試著增加儲存單位。",
   "Estimated walking and delivery times are tripled.": "移動與配送的估算時間以三倍計算。",
