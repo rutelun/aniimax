@@ -1,7 +1,7 @@
 // Aniimax Web Application
 
-import { currentLocale, sourceAttribute, translate } from './i18n.js?v=facility-grid';
-import './math-translation.js?v=facility-grid';
+import { currentLocale, sourceAttribute, translate } from './i18n.js?v=production-groups';
+import './math-translation.js?v=production-groups';
 import { autoMaximizeSeasonPoints } from './season-planning.js?v=optional-season-points';
 
 import {
@@ -4423,15 +4423,18 @@ function taskLabel(task, facility, tagged = false) {
     return `${ability} Lv.${task.level} · ${personality}${letter ? ` (${letter})` : ''}`;
 }
 
-function facilityPlanCards(rows, plan) {
+function facilityPlanCards(rows, plan, heading) {
     const buildings = new Map();
     for (const step of rows) {
         if (!(step.facility_count > 0)) continue;
         if (!buildings.has(step.facility)) buildings.set(step.facility, []);
         buildings.get(step.facility).push(step);
     }
+    if (!buildings.size) return '';
     const ordered = [...buildings].sort(([a], [b]) => translate(a).localeCompare(translate(b), currentLocale()));
     return `
+      <section class="production-section">
+        <h3>${heading}</h3>
         <div class="production-grid">${ordered.map(([facility, jobs]) => {
             const icon = facilityIconUrl(facility);
             const initials = facility.split(' ').map(word => word[0]).join('').slice(0, 3);
@@ -4446,6 +4449,7 @@ function facilityPlanCards(rows, plan) {
                 ${jobs.map(step => productionCard(step, plan)).join('')}
             </article>`;
         }).join('')}</div>
+      </section>
     `;
 }
 
@@ -4545,7 +4549,6 @@ function cycleDuration(seconds) {
 function filterFacilityPlan() {
     const terms = searchTerms(document.getElementById('plan-facility-search').value);
     const container = document.getElementById('facility-plan-container');
-    let found = false;
     for (const building of container.querySelectorAll('.production-building-card')) {
         const name = building.dataset.facility;
         const facility = `${name} ${translate(name)}`;
@@ -4554,9 +4557,15 @@ function filterFacilityPlan() {
             card.hidden = !matchesSearch(terms, `${facility} ${item} ${translate(item)}`);
         }
         building.hidden = !building.querySelector('.production-tile:not([hidden])');
-        found ||= !building.hidden;
     }
-    document.getElementById('plan-facility-empty').hidden = found || !container.querySelector('.production-building-card');
+    for (const diagram of container.querySelectorAll('.production-environment-grid > article')) {
+        diagram.hidden = !matchesSearch(terms, `${diagram.dataset.search} ${diagram.textContent}`);
+    }
+    const sections = [...container.querySelectorAll('.production-section')];
+    for (const section of sections) {
+        section.hidden = !section.querySelector('article:not([hidden])');
+    }
+    document.getElementById('plan-facility-empty').hidden = !sections.length || sections.some(section => !section.hidden);
 }
 
 // "Sowing", "Sowing and Collecting", "Reaping, Logging and Collecting".
@@ -5185,35 +5194,37 @@ function renderFacilityPlan(plan) {
         const modes = unit.pairModes || [unit.mode, unit.mode];
         const middle = zones.find(z => z.zone === 1)?.mode;
         return `
-            <div class="facility-category">
+            <article data-search="${escapeText([unit.building, unit.partner[0], ...modes, middle,
+                ...zones.flatMap(z => z.rows.map(row => prettyItem(row.item_name)))].filter(Boolean).join(' '))}">
                 <h4 class="facility-category-title">${unit.building} ${modeTag(modes[0])}<span class="env-head-sep">|</span>${unit.partner[0]} ${modeTag(modes[1])}${middle ? `<span class="env-head-sep">|</span>Overlap ${modeTag(middle)}` : ''}</h4>
                 <div class="env-unit">
                     ${renderEnvironmentDiagram(zones.flatMap(z => z.layout), zones[0].mode, unit.building, zones.flatMap(z => z.rows), unit, zones)}
                 </div>
-            </div>
+            </article>
         `;
     }).join('');
 
     const modeSections = ENVIRONMENT_MODE_ORDER.map(mode => {
         const units = singles.filter(s => s.mode === mode).map(s => s.unit);
-        if (units.length === 0) return '';
-        return `
-            <div class="facility-category">
-                <h4 class="facility-category-title">${units[0].building} ${modeTag(mode)}</h4>
-                ${units.map((unit, i) => `
-                    ${units.length > 1 ? `<p class="hint small">${unit.building} ${i + 1}</p>` : ''}
-                    <div class="env-unit">
-                        ${renderEnvironmentDiagram(unit.layout, mode, unit.building, unit.rows, unit)}
-                    </div>
-                `).join('')}
-            </div>
-        `;
+        return units.map((unit, i) => `
+            <article data-search="${escapeText([unit.building, mode, ...unit.rows.map(row => prettyItem(row.item_name))].filter(Boolean).join(' '))}">
+                <h4 class="facility-category-title"><span>${unit.building}</span>${units.length > 1 ? ` ${i + 1}` : ''} ${modeTag(mode)}</h4>
+                <div class="env-unit">${renderEnvironmentDiagram(unit.layout, mode, unit.building, unit.rows, unit)}</div>
+            </article>
+        `).join('');
     }).join('');
     const environmentSections = pairSections + modeSections;
 
-    container.innerHTML = facilityPlanCards(steps, plan) + (environmentSections
-        ? `<details class="explain production-environment"><summary>Growing environments</summary>
-            <div class="production-environment-grid">${environmentSections}</div></details>` : '');
+    const materials = [];
+    const other = [];
+    for (const step of steps) {
+        const category = FACILITY_CATEGORY_BY_NAME.get(step.facility);
+        (category === 'Materials' || category === 'Aniimo Materials' ? materials : other).push(step);
+    }
+    container.innerHTML = facilityPlanCards(materials, plan, 'Raw material production') + (environmentSections
+        ? `<section class="production-section"><h3>Growing environments</h3>
+            <div class="production-environment-grid">${environmentSections}</div></section>` : '')
+        + facilityPlanCards(other, plan, 'Other buildings');
     filterFacilityPlan();
 }
 
