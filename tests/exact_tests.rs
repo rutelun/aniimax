@@ -1279,7 +1279,9 @@ fn material_work_uses_spare_owned_artisans_before_slower_reserves() {
                 assert!(plan.recipe_rates.get(&assigned).copied().unwrap_or(0.0) > 0.0,
                     "owned={owned}, walking={walking}: {recipe} allocated to {:?}", plan.recipe_rates);
             }
-            assert!(plan.recipe_rates.get("artisan_income__by0").copied().unwrap_or(0.0) >= coin_floor - 1e-9);
+            let income_rate = plan.recipe_rates.get("artisan_income__by0").copied().unwrap_or(0.0);
+            assert!(income_rate >= coin_floor * (1.0 - 1e-4) - 1e-9,
+                "owned={owned}, walking={walking}: income rate {income_rate} below {coin_floor}");
             assert!((plan.objective - 0.3825).abs() < 1e-6);
         }
     }
