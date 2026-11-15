@@ -1310,7 +1310,7 @@ fn idle_dedicated_posts_are_removed_together_with_idle_machines() {
 #[test]
 fn consolidates_light_crop_work_for_reserves_when_they_can_walk() {
     use aniimax::models::{crew_variants, AniimoRequirements, GrowerStep, GrowerSteps};
-    let mut crop = walking_item("reserve_crop", "Farmland", 1000.0, "coins");
+    let mut crop = walking_item("reserve_crop", "Farmland", 200.0, "coins");
     crop.workload = None;
     let mut steps = GrowerSteps::default();
     steps.insert(&crop.name, GrowerStep { step: "Reaping".into(), ability: "Dark".into(), min_level: 3, workload: 1.4 });
@@ -1325,9 +1325,9 @@ fn consolidates_light_crop_work_for_reserves_when_they_can_walk() {
     let goal = Goal::Earn { floors: &[] };
     let problem = aniimax::exact::write_lp(&items, "coins", &counts, &modules, goal);
     // Twenty identical crops, each with its own local Dark worker.
-    let values = [0.02, 20.0, 0.02, 20.0, 0.02, 0.0];
+    let values = [0.1, 20.0, 0.1, 20.0, 0.1, 0.0];
     assert_eq!(problem.variables, values.len());
-    let plan = aniimax::exact::plan_from_values(&items, "coins", &counts, &modules, goal, &values, false, 0.02).unwrap();
+    let plan = aniimax::exact::plan_from_values(&items, "coins", &counts, &modules, goal, &values, false, 0.1).unwrap();
     let (_, load) = aniimax::exact::check_plan_with_workload(&plan, &items, "coins", &counts, &modules, None).unwrap();
     assert_eq!(plan.work_posts[0].2, 20.0);
     let shared = aniimax::exact::consolidate_reserve_workplaces(&plan, &load, &items, &counts).unwrap();
@@ -1336,7 +1336,7 @@ fn consolidates_light_crop_work_for_reserves_when_they_can_walk() {
     assert!(shared_load[0] > load[0] && shared_load[0] < 1.0);
     assert_eq!(shared.sold, plan.sold);
     assert_eq!(shared.recipe_rates, plan.recipe_rates);
-    counts.set_movement_seconds(1100.0);
+    counts.set_movement_seconds(300.0);
     assert!(aniimax::exact::consolidate_reserve_workplaces(&plan, &load, &items, &counts).is_none());
 }
 
