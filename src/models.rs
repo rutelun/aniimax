@@ -414,7 +414,6 @@ pub const WATERING_ABILITY: &str = "Water";
 
 /// How many times a plot asks for water as it grows.
 pub const WATERINGS_PER_CYCLE: u32 = 2;
-pub(crate) const GROWER_JOB_TIME_SCALE: f64 = 2.0;
 
 /// What each watering takes off a crop's timer, as a share of its own grow time: an eighth, twice
 /// over. A 40-minute crop loses 5 minutes at each, and a 4-minute one about 30 seconds, both seen
@@ -804,7 +803,7 @@ impl GrowerSteps {
                         step: "Watering".to_string(),
                         ability: WATERING_ABILITY.to_string(),
                         min_level: 1,
-                        workload: 3.0 * GROWER_JOB_TIME_SCALE,
+                        workload: 3.0,
                     },
                 );
             }

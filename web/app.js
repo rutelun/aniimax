@@ -21,6 +21,7 @@ import { prepareOpportunities, startedProcessing, increasedProcessing } from './
 import { aniimoPortrait, attachRosterPicker, rosterCatalogId, rosterFormName } from './roster-picker.js?v=game-heads';
 import { placeRosterCopy, ROSTER_ROW_SIZE, rosterSlotsFor, swapRosterSlots } from './roster-slots.js';
 import { scheduleRosterCopies } from './roster-work.js?v=individual-shifts';
+import { recommendBestTeam } from './best-team.js?v=best-multi-role';
 import facilityIcons from './facility-icons.json' with { type: 'json' };
 import { abilityGlyph, gameAbilityIcon } from './ability-icons.js?v=game-heads';
 
@@ -1673,6 +1674,7 @@ function layoutOptionsFor(plan, homeLevel, setup = selectedSetupTab()) {
         const ownedPlan = setup === 'custom';
         const team = ownedPlan ? rosterWorkload({ ...plan, layout_walking: [],
             assumed_aniimo: haulingBaseByPlan.get(plan) ?? plan.assumed_aniimo }) : null;
+        const bestTeam = setup === 'best' ? bestPlanTeam(plan, 0) : null;
         const rvLimit = ANIIMO_MAX[homeLevel - 1] ?? Infinity;
         const visits = {};
         for (const [, , member, count] of plan.mobile_work || []) visits[member] = (visits[member] || 0) + count;
@@ -1681,7 +1683,8 @@ function layoutOptionsFor(plan, homeLevel, setup = selectedSetupTab()) {
             members: team?.members,
             busy: team?.busy,
             anchored: team?.anchored,
-            minimumWorkers: ownedPlan ? 0 : aniimoTeam({ ...plan, hauling_busy: 0 }).total,
+            minimumWorkers: ownedPlan ? 0 : bestTeam?.shifts.length ?? aniimoTeam({ ...plan, hauling_busy: 0 }).total,
+            haulingSpare: bestTeam?.haulingSpare ?? 0,
             movement: ownedPlan && plan.mobile_work?.length
                 ? { defaultDistance: movementDefaultDistance, byMember: movementDistances, visits } : null,
             haulingLevel: setup === 'minimum' ? 1 : 3,
@@ -2872,10 +2875,29 @@ async function fillRosterFrom(setup) {
             status.textContent = 'No working team to copy from this plan.';
             return;
         }
-        const { kept } = aniimoTeam(plan);
         const haulingLevel = setup === 'minimum' ? 1 : 3;
         const haulingBusy = await measureSourceTeamHauling(plan, sourceInput, haulingLevel);
         if (runId !== planRunId || version !== rosterFillVersion) return;
+        if (setup === 'best') {
+            const { shifts } = bestPlanTeam(plan, haulingBusy);
+            if (!shifts.length) {
+                status.textContent = 'No working team to copy from this plan.';
+                return;
+            }
+            const cards = new Map();
+            for (const shift of shifts) {
+                const member = bestRosterMember(shift);
+                const key = JSON.stringify(member);
+                if (cards.has(key)) cards.get(key).count++;
+                else cards.set(key, member);
+            }
+            plansBySetup[setup] = plan;
+            roster = [...cards.values()];
+            rosterSlots = rosterSlotsFor(roster);
+            rosterChanged();
+            return;
+        }
+        const { kept } = aniimoTeam(plan);
         if (!kept.length && haulingBusy <= 1e-6) {
             status.textContent = 'No working team to copy from this plan.';
             return;
@@ -4628,6 +4650,106 @@ function aniimoNeeds(g) {
     return `Lv.${g.level}${g.family ? ` · ${leisureFamilyName(g.family)}` : ''}${personalities ? ` · ${personalities}` : ''}`;
 }
 
+function environmentTeamJobs(plan) {
+    const jobs = [];
+    const add = (building, busy, label, level) => {
+        const ability = ENVIRONMENT_BUILDING_ABILITY[building];
+        if (ability && busy) jobs.push({ ability, level: level || 1, anyLevel: !level, busy, label });
+    };
+    const pairs = new Map();
+    for (const a of plan.environment_assignments || []) {
+        if (!a.partner) {
+            add(a.building, a.units, `${a.building} (${a.mode})`);
+            continue;
+        }
+        const key = environmentPairKey(a);
+        const seen = pairs.get(key);
+        pairs.set(key, { building: a.building, partner: a.partner[0],
+            units: Math.max(seen?.units ?? 0, a.units), modes: a.pair_modes || [a.mode, a.mode] });
+    }
+    pairs.forEach(({ building, partner, units, modes }) => {
+        add(building, units, `${building} (${modes[0]})`);
+        add(partner, units, `${partner} (${modes[1]})`);
+    });
+    for (const [tier, lightning] of plan.power_generator_levels || []) {
+        add('Crackle Generator', 1, `Crackle Generator Lv.${tier}`, lightning);
+    }
+    return jobs;
+}
+
+const bestTeamCache = new WeakMap();
+
+function bestPlanTeam(plan, haulingBusy = plan.hauling_busy || 0) {
+    let cached = bestTeamCache.get(plan);
+    if (!cached) {
+        const jobs = environmentTeamJobs(plan);
+        const families = new Map(recipeIndex.filter(recipe => recipe.family).map(recipe => [recipe.name, recipe.family]));
+        const personalities = new Map(FACILITIES.map(facility => [facility.name, facility.personality]));
+        for (const step of plan.coin_items || []) {
+            if (step.status !== 'producing' || step.electric_level != null) continue;
+            for (const task of step.aniimo_tasks || []) {
+                const item = prettyItem(step.item_name);
+                const label = task.jobs?.length
+                    ? `${task.jobs.map(translate).join(' / ')} · ${item}`
+                    : `${translate(step.facility)} (${item})`;
+                jobs.push({
+                    ability: task.ability, level: task.level, label,
+                    busy: RESIDENT_FACILITIES.has(step.facility) ? step.facility_count : task.busy,
+                    personality: task.personality_bonus ? personalities.get(step.facility) : null,
+                    family: task.ability === 'Leisure' ? families.get(step.item_name) : null,
+                });
+            }
+        }
+        cached = { jobs, results: new Map() };
+        bestTeamCache.set(plan, cached);
+    }
+    if (!cached.results.has(haulingBusy)) {
+        if (cached.results.size >= 3) cached.results.clear();
+        cached.results.set(haulingBusy, recommendBestTeam(cached.jobs, haulingBusy));
+    }
+    return cached.results.get(haulingBusy);
+}
+
+function bestRosterMember(shift) {
+    const personalities = PERSONALITY_PAIRS.map(pair => pair.names.find(name => shift.personalities.has(name)) ?? null);
+    const member = { ...newRosterAniimo({ ...shift.abilities }, personalities), family: shift.family };
+    if (shift.entry) {
+        member.catalogId = shift.entry.id;
+        member.name = rosterFormName(shift.entry);
+    }
+    return member;
+}
+
+function renderBestTeam(plan) {
+    const { shifts } = bestPlanTeam(plan);
+    const total = shifts.length;
+    const cap = ANIIMO_MAX[layoutHomeLevel() - 1];
+    const summary = document.getElementById('aniimo-collapsed-summary');
+    summary.textContent = total
+        ? translate('{n} Aniimo assigned').replace('{n}', formatNumber(total))
+        : translate('No Aniimo needed.');
+    const capNote = cap && total > cap
+        ? `<p class="hint small">${translate('This RV level can host {n} Aniimo.').replace('{n}', cap)}</p>`
+        : '';
+    document.getElementById('roster-summary').hidden = true;
+    document.getElementById('aniimo-abilities').textContent = '';
+    document.getElementById('aniimo-count').hidden = true;
+    document.getElementById('aniimo-summary').innerHTML = total
+        ? `${capNote}<div class="roster-cards">${rosterBoard(shifts.map((_, index) => index), index => {
+            if (index == null) return emptyRosterCell();
+            const shift = shifts[index];
+            const member = bestRosterMember(shift);
+            const label = member.name || translate('Assumed Aniimo');
+            const tasks = [...shift.tasks].sort((a, b) => b[1] - a[1])
+                .map(([job, share]) => [translate(job), `${formatNumber(share * 100)}%`]);
+            const status = translate('{load} busy').replace('{load}', `${formatNumber(shift.busy * 100)}%`);
+            const traits = [...shift.personalities].map(translate).join(' · ');
+            return assignmentTile(member, label, tasks, status, true, traits);
+        })}</div>`
+        : '';
+    if (!aniimoExpansionChosen) setAniimoExpanded(true);
+}
+
 // The Aniimo team the shown plan needs, one row per distinct ability / level / personality.
 // A row asks for enough Aniimo to cover its work on average (a facility waiting on ingredients
 // frees its Aniimo), rounded up; facilities with a resident Aniimo (Sandcastle and the like) are
@@ -4661,37 +4783,16 @@ function aniimoTeam(plan) {
     });
     // Environment buildings in use each keep an Aniimo busy (abilities confirmed in game; whether
     // level or personality matters isn't known yet, so any level is shown).
-    const needsAniimo = (building, units, place, level) => {
-        const ability = ENVIRONMENT_BUILDING_ABILITY[building];
-        if (!ability || !units) return;
-        const key = `${ability} (environment:${level || 0})`;
+    const needsAniimo = ({ ability, busy, label, level, anyLevel }) => {
+        const key = `${ability} (environment:${anyLevel ? 0 : level})`;
         if (!groups.has(key)) {
-            groups.set(key, { label: level ? `${ability} Lv.${level}` : `${ability} any level`, ability, level: level || 1, anyLevel: !level, bonus: false, busy: 0, where: new Map(), jobs: new Map(), environment: true });
+            groups.set(key, { label: anyLevel ? `${ability} any level` : `${ability} Lv.${level}`, ability, level, anyLevel, bonus: false, busy: 0, where: new Map(), jobs: new Map(), environment: true });
         }
         const g = groups.get(key);
-        g.busy += units;
-        g.where.set(place, (g.where.get(place) || 0) + units);
+        g.busy += busy;
+        g.where.set(label, (g.where.get(label) || 0) + busy);
     };
-    // Two buildings placed to overlap report a zone each, all named after the first of them, so
-    // count the pair once and give each building its own Aniimo.
-    const pairUnits = new Map();
-    (plan.environment_assignments || []).forEach(a => {
-        if (a.partner) {
-            const key = environmentPairKey(a);
-            const seen = pairUnits.get(key);
-            pairUnits.set(key, { building: a.building, partner: a.partner[0],
-                units: Math.max(seen?.units ?? 0, a.units), modes: a.pair_modes || [a.mode, a.mode] });
-            return;
-        }
-        needsAniimo(a.building, a.units, `${a.building} (${a.mode})`);
-    });
-    pairUnits.forEach(({ building, partner, units, modes }) => {
-        needsAniimo(building, units, `${building} (${modes[0]})`);
-        needsAniimo(partner, units, `${partner} (${modes[1]})`);
-    });
-    for (const [tier, lightning] of plan.power_generator_levels || []) {
-        needsAniimo('Crackle Generator', 1, `Crackle Generator Lv.${tier}`, lightning);
-    }
+    environmentTeamJobs(plan).forEach(needsAniimo);
     // Each row gets its own Aniimo, which is the clearer team to keep. Only when that asks for
     // more than the homeland holds does work that takes any level (the Farmland and Woodland jobs)
     // move into another row's spare time, so a plot's watering is a job of its own where there's
@@ -4735,7 +4836,8 @@ function aniimoTeam(plan) {
 }
 
 function renderAniimoSummary(plan) {
-    const custom = selectedSetupTab() === 'custom';
+    const setup = selectedSetupTab();
+    const custom = setup === 'custom';
     const workloadNote = document.getElementById('aniimo-workload-note');
     const travelNote = custom ? ' Estimated walking and delivery times are tripled.' : '';
     workloadNote.textContent = plan.hauling_busy != null ? HAULING_ESTIMATE_HINT + travelNote : '';
@@ -4743,6 +4845,10 @@ function renderAniimoSummary(plan) {
     if (custom) {
         if (!aniimoExpansionChosen) setAniimoExpanded(true);
         renderRosterSummary(plan);
+        return;
+    }
+    if (setup === 'best') {
+        renderBestTeam(plan);
         return;
     }
     const container = document.getElementById('aniimo-summary');
@@ -4764,7 +4870,7 @@ function renderAniimoSummary(plan) {
             count: g.count, busy: g.busy, abilities: { [g.ability]: g.anyLevel ? '·' : g.level },
             label: `${translate(g.ability)} ${translate(aniimoNeeds(g))}`, detail: translate(whereText(g)),
         }));
-    const haulingLevel = selectedSetupTab() === 'minimum' ? 1 : 3;
+    const haulingLevel = 1;
     if (haulingCount) groups.push({
         count: haulingCount, busy: plan.hauling_busy, abilities: { Hauling: haulingLevel },
         label: `${translate('Hauling')} Lv.${haulingLevel}`, detail: translate('Carrying produce to storage'),

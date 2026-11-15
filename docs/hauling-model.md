@@ -25,9 +25,9 @@ The model groups nearby delivery jobs around their nearest Storage Unit. A deliv
 of carrying cargo to storage and walking to the next pickup. Next pickups are weighted by
 the delivery frequency of the buildings in that storage pool. There is no mandatory return
 to the building just serviced. The basic walking speed is the application's existing 4 tiles/s.
-The workload model applies a 2× time allowance to both legs. Enabling Aniimo travel in My
-Aniimo triples the walking-time estimates for workplace changes and deliveries. Estimated
-work for Farmland and Woodland jobs, including both waterings, is doubled separately.
+The workload model applies a 2× time allowance to both legs and a further 2× multiplier
+to delivery workload. My Aniimo triples the walking-time estimates for workplace changes
+and deliveries. Farmland and Woodland jobs use their base action times, including both waterings.
 
 Building stock limits by tier are shared by the browser and the Rust optimizer in
 `web/facility-stock.json`. They come from the `facilities[].lv[].lim` fields of the

@@ -4,6 +4,7 @@ import test from 'node:test';
 
 const source = await readFile(new URL('../web/app.js', import.meta.url), 'utf8');
 const teamCode = source.slice(source.indexOf('function aniimoTeam('), source.indexOf('function renderAniimoSummary('));
+const environmentCode = source.slice(source.indexOf('function environmentTeamJobs('), source.indexOf('const bestTeamCache'));
 const pairCode = source.slice(source.indexOf('function environmentPairKey('), source.indexOf('function splitByEnvironmentUnit('));
 const aniimoTeam = new Function(`
     const RESIDENT_FACILITIES = new Set(['Tidewhisper Sandcastle']);
@@ -12,11 +13,11 @@ const aniimoTeam = new Function(`
     const taskLabel = task => task.ability;
     const leisureFamilyName = family => family;
     const prettyItem = item => item;
-    ${pairCode} ${teamCode}
+    ${pairCode} ${environmentCode} ${teamCode}
     return aniimoTeam;
 `)();
 
-test('Best and Minimum need a resident per unit and count every separate climate pair', () => {
+test('Minimum needs a resident per unit and counts every separate climate pair', () => {
     const climate = [0, 1].flatMap(pair_id => [0, 1, 2].map(zone => ({
         pair_id, zone, building: 'Heat Furnace', partner: ['Cooling Unit', 4, 1],
         pair_modes: ['Scorching', 'Cool'], units: 1,

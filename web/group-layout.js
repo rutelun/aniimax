@@ -137,7 +137,7 @@ function makeGroup(lot, style, gap, offset) {
 // Use the same workload and route checks as the app so a move cannot trigger a lower-output solve.
 function incomeWalking(layout, staffing, recipes) {
     if (!staffing) return [];
-    const { movement, limit, minimumWorkers, members, busy, anchored, steps, haulingBound, haulingLevel, facilities, accountForTravel } = staffing;
+    const { movement, limit, minimumWorkers, members, busy, anchored, steps, haulingBound, haulingLevel, haulingSpare = 0, facilities, accountForTravel } = staffing;
     const walking = [], occupied = busy?.slice();
     if (movement) {
         const distances = workerTravelDistances(layout.pieces.flatMap(piece => piece.members));
@@ -156,7 +156,10 @@ function incomeWalking(layout, staffing, recipes) {
     const cargo = recipes.map(recipe => ({ name: recipe.item, facility_level: recipe.facility_level,
         yieldAmount: recipe.yield, byproductAmount: recipe.byproduct?.[1] }));
     const work = haulingWorkload(layout, steps, haulingBound, cargo, facilities, accountForTravel);
-    if (!members) return minimumWorkers + Math.ceil(work.busyByLevel[haulingLevel] - 1e-6) <= limit ? walking : null;
+    if (!members) {
+        const additional = Math.ceil(Math.max(0, work.busyByLevel[haulingLevel] - haulingSpare) - 1e-6);
+        return minimumWorkers + additional <= limit ? walking : null;
+    }
     if (occupied.reduce((sum, load, member) => sum + Math.max(anchored?.[member] ?? 0, Math.ceil(load - 1e-6)), 0) > limit) return null;
     return allocateHauling(members, occupied, work, limit, anchored).unassigned <= 1e-6 ? walking : null;
 }

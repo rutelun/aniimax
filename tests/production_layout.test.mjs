@@ -98,6 +98,9 @@ test('distance can increase when the same production and income still fit the te
     assert.equal(layoutKeepsIncome(map(2), staffing, recipes), true);
     assert.equal(layoutKeepsIncome(map(3), staffing, recipes), true);
     assert.equal(layoutKeepsIncome(map(10), staffing, recipes), false);
+    const best = { ...staffing, members: null, minimumWorkers: 1, haulingLevel: 3 };
+    assert.equal(layoutKeepsIncome(map(10), best, recipes), false);
+    assert.equal(layoutKeepsIncome(map(10), { ...best, haulingSpare: .05 }, recipes), true);
 });
 
 test('extra walking can use spare working time without lowering production', () => {
