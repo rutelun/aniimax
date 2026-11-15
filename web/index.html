@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Aniimax - Aniimo Production Optimizer</title>
-    <link rel="stylesheet" href="style.css?v=travel-allowance">
+    <link rel="stylesheet" href="style.css?v=facility-grid">
     <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
 </head>
 <body>
@@ -363,18 +363,12 @@
                                 <label for="plan-facility-search">Find a building or recipe</label>
                                 <input id="plan-facility-search" type="search" placeholder="Search by name" autocomplete="off">
                             </div>
-                            <label class="checkbox-field"><input id="plan-show-inactive" type="checkbox"> Show idle buildings</label>
                         </div>
-                        <p id="plan-facility-empty" class="hint small" hidden>No matching production rows.</p>
+                        <p id="plan-facility-empty" class="hint small" hidden>No matching buildings or recipes.</p>
                         <details class="explain">
                             <summary>How to read this</summary>
-                            <p>Each row is one product; a facility split between several products gets a row for each. Crops that need a growing environment are grouped by the Heat Furnace, Cooling Unit or Sunlamp setting that covers them, with its layout. Everything else is grouped like the facility list.</p>
-                            <p>Building load is the average time spent on a recipe per building. Time per batch is for a single production cycle. In the Aniimo column, a ring means the plan uses a personality bonus.</p>
+                            <p>The colored edge shows the abilities each recipe needs. Open a recipe for its workers, required levels and batch time. Load is the average percentage of time each building spends on that recipe.</p>
                         </details>
-                        <!-- Populated by app.js's renderFacilityPlan(): one section per
-                             environment mode in use (Cool/Warm/Freeze/Scorching/Adequate) first,
-                             then one table per facility category (Materials / Environment /
-                             Materials Processing) for everything else. -->
                         <div id="facility-plan-container" class="facilities-container"></div>
                     </div>
 
@@ -701,6 +695,6 @@
             </linearGradient>
         </defs>
     </svg>
-    <script type="module" src="app.js?v=shared-work-time"></script>
+    <script type="module" src="app.js?v=facility-grid"></script>
 </body>
 </html>

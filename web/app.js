@@ -1,7 +1,7 @@
 // Aniimax Web Application
 
-import { currentLocale, sourceAttribute, translate } from './i18n.js?v=shared-work-time';
-import './math-translation.js?v=shared-work-time';
+import { currentLocale, sourceAttribute, translate } from './i18n.js?v=facility-grid';
+import './math-translation.js?v=facility-grid';
 import { autoMaximizeSeasonPoints } from './season-planning.js?v=optional-season-points';
 
 import {
@@ -1877,10 +1877,15 @@ function pieceLabel(m, showRecipes, showIcons) {
     return `${fallback}${art}<text class="layout-recipe" x="${x}" y="${recipeY}" font-size="${size}">${escapeText(recipe)}</text>`;
 }
 
-function layoutFacilityIcon(facility, { x, y, w, h }, labelSpace = 0) {
+function facilityIconUrl(facility) {
     const id = facilityIcons[facility];
-    if (!id) return '';
-    return `<image class="layout-facility-icon" href="https://aniimo.gamevault.in/generated/media/items/ui_item_${id}.webp"
+    return id ? `https://aniimo.gamevault.in/generated/media/items/ui_item_${id}.webp` : '';
+}
+
+function layoutFacilityIcon(facility, { x, y, w, h }, labelSpace = 0) {
+    const icon = facilityIconUrl(facility);
+    if (!icon) return '';
+    return `<image class="layout-facility-icon" href="${icon}"
         x="${x}" y="${y}" width="${w}" height="${h * (1 - labelSpace)}" aria-hidden="true"/>`;
 }
 
@@ -3252,8 +3257,8 @@ function renderRosterSummary(plan) {
     const working = assigned.slice(0, roster.length).reduce((sum, n) => sum + n, 0);
     const reserves = assigned.slice(roster.length).reduce((sum, n) => sum + n, 0);
     const memberPlaces = i => [...where[i]].map(([place, n]) => Number.isInteger(n) && n > 1 ? `${translate(place)} ×${n}` : translate(place));
-    const memberNotes = i => walking[i] * 60 >= 0.05
-        ? [translate('{minutes} min/h walking').replace('{minutes}', (walking[i] * 60).toFixed(1))]
+    const memberNotes = i => walking[i] * 60 / assigned[i] >= 0.05
+        ? [translate('{minutes} min/h walking').replace('{minutes}', (walking[i] * 60 / assigned[i]).toFixed(1))]
         : [];
     refreshRosterTileWorkloads(roster.map((member, i) => ({
         assigned: assigned[i],
@@ -3579,8 +3584,14 @@ function attachSkipHandlers() {
         const name = e.target.closest('[data-unskip]')?.dataset.unskip;
         if (name) setSkipped(name, false);
     });
-    // The ✕ on a plan row skips that recipe and plans again.
-    document.getElementById('facility-plan-container').addEventListener('click', (e) => {
+    const cards = document.getElementById('facility-plan-container');
+    document.addEventListener('aniimax-language-change', () => {
+        if (lastPlan?.success) renderFacilityPlan(lastPlan);
+    });
+    cards.addEventListener('load', (e) => {
+        if (e.target.matches('img')) e.target.classList.add('loaded');
+    }, true);
+    cards.addEventListener('click', (e) => {
         const name = e.target.closest('[data-skip]')?.dataset.skip;
         if (!name) return;
         setSkipped(name, true);
@@ -4399,38 +4410,6 @@ function abilityTag(name) {
     return `<span class="ability${a.dark ? ' dark' : ''}" style="--ability:${a.color}" title="${a.about}">${name}</span>`;
 }
 
-// A colored circle with the Aniimo level in it, for the facility plan's Aniimo column; the
-// tooltip has the ability, level and personality.
-function abilityDot(name, level, note, bonus = Boolean(note)) {
-    const a = ABILITY_BY_NAME.get(name);
-    const color = a ? a.color : '#888888';
-    const tip = `${name} Lv.${level}${note ? ` · ${note}` : ''}`;
-    return `<span class="ability-dot${a && a.dark ? ' dark' : ''}${bonus ? ' bonus' : ''}" style="--ability:${color}" title="${tip}" aria-label="${tip}">${level}</span>`;
-}
-
-function aniimoLabel(step) {
-    if (step.electric_level != null) {
-        const label = `⚡ ${translate('E-mode')}`;
-        const requirement = recipeIndex.find(r => r.name === step.item_name && r.facility === step.facility)?.aniimo;
-        if (!requirement) return label;
-        const [ability, level] = requirement;
-        return `<span class="ability-dots"><span>${label}</span>${abilityDot(ability, level, translate('Minimum for normal mode'), false)}</span>`;
-    }
-    const a = step.aniimo;
-    if (!a) {
-        // Crops and trees: the abilities their planting and harvesting jobs need.
-        const tasks = step.aniimo_tasks || [];
-        if (tasks.length === 0) return '-';
-        return `<span class="ability-dots">${tasks.map(t => abilityDot(t.ability, t.level)).join('')}</span>`;
-    }
-    let note = lastPlan?.assumed_aniimo?.some(([index]) => index === step.crew) ? translate('Assumed Aniimo') : '';
-    if (a.personality_bonus) {
-        const personality = FACILITIES.find(f => f.name === step.facility)?.personality;
-        note = `${personality ? `${personality} personality` : 'matching personality'} (+20% speed)`;
-    }
-    return `<span class="ability-dots">${abilityDot(a.ability, a.level, note, a.personality_bonus)}</span>`;
-}
-
 // "Fire Lv.4 · Practical": one kind of Aniimo, with the facility's personality when the plan
 // counts on its bonus. `tagged` shows the ability as a colored tag.
 function taskLabel(task, facility, tagged = false) {
@@ -4444,62 +4423,114 @@ function taskLabel(task, facility, tagged = false) {
     return `${ability} Lv.${task.level} · ${personality}${letter ? ` (${letter})` : ''}`;
 }
 
-function facilityPlanTable(rows) {
-    return facilityPlanTableOf([{ rows }]);
-}
-
-// One table over several labelled groups, e.g. a paired environment's three zones: each group's
-// rows follow a band naming it, so the column headers are written once.
-function facilityPlanTableOf(groups) {
-    const body = groups
-        .map(group => (group.label ? `<tr class="facility-plan-group"><td colspan="6">${group.label}</td></tr>` : '') + planRows(group.rows))
-        .join('');
+function facilityPlanCards(rows, plan) {
+    const buildings = new Map();
+    for (const step of rows) {
+        if (!(step.facility_count > 0)) continue;
+        if (!buildings.has(step.facility)) buildings.set(step.facility, []);
+        buildings.get(step.facility).push(step);
+    }
+    const ordered = [...buildings].sort(([a], [b]) => translate(a).localeCompare(translate(b), currentLocale()));
     return `
-        <div class="table-wrapper">
-            <table class="facility-plan-table">
-                <thead>
-                    <tr>
-                        <th>Facility</th>
-                        <th>Count</th>
-                        <th>Producing</th>
-                        <th>Aniimo</th>
-                        <th>Building load</th>
-                        <th>Why</th>
-                    </tr>
-                </thead>
-                <tbody>${body}</tbody>
-            </table>
-        </div>
+        <div class="production-grid">${ordered.map(([facility, jobs]) => {
+            const icon = facilityIconUrl(facility);
+            const initials = facility.split(' ').map(word => word[0]).join('').slice(0, 3);
+            return `<article class="production-building-card${jobs.some(job => job.status === 'producing') ? '' : ' is-idle'}"
+                data-facility="${escapeText(facility)}">
+                <h4 class="production-building-title">
+                    <span class="production-building" aria-hidden="true">
+                        <span>${escapeText(initials)}</span>
+                        ${icon ? `<img src="${icon}" alt="" width="40" height="40" loading="lazy" decoding="async">` : ''}
+                    </span><span>${escapeText(facility)}</span>
+                </h4>
+                ${jobs.map(step => productionCard(step, plan)).join('')}
+            </article>`;
+        }).join('')}</div>
     `;
 }
 
-function planRows(rows) {
-    return rows.map(step => `
-                    <tr class="status-${step.status}" data-search="${escapeText(`${step.facility} ${prettyItem(step.item_name)}`)}">
-                        <td data-label="Facility">${step.facility}</td>
-                        <td data-label="Count">${step.facility_count}</td>
-                        <td data-label="Producing">${step.item_name ? prettyItem(step.item_name) : '-'}${unverifiedRowKeys.has(`${step.facility}|${step.item_name}`) ? '<span class="tag unverified" title="Not yet checked in game">unverified</span>' : ''}${step.item_name && step.status === 'producing' ? `<button type="button" class="skip-row" data-skip="${step.item_name}" title="Can't make this? Skip it and plan again" aria-label="Skip ${prettyItem(step.item_name)} and plan again">✕</button>` : ''}</td>
-                        <td data-label="Aniimo">${facilityWorkerLabel(step)}</td>
-                        <td data-label="Building load">${facilityWorkloadLabel(step)}</td>
-                        <td data-label="Why">${prettyReason(step.reason)}</td>
-                    </tr>
-                `).join('');
+function productionWorkers(step, recipe, plan) {
+    if (selectedSetupTab() !== 'custom' || step.electric_level != null) return [];
+    const crew = step.crew != null ? [[step.crew, step.aniimo?.ability]] : [...new Map((plan.crop_assignments || [])
+        .filter(([ability, required, , share]) => share > 1e-9
+            && recipe?.jobs.some(([, job, level]) => job === ability && level === required))
+        .map(([ability, , id]) => [id, ability]))].sort(([a], [b]) => a - b);
+    return crew.map(([id, job]) => {
+        const member = roster[id];
+        const assumed = (plan.assumed_aniimo || []).find(([index]) => index === id);
+        const ability = assumed?.[1] ?? job ?? (member ? Object.keys(member.abilities)[0] : '');
+        const name = member ? rosterTileLabel(member, id)
+            : [translate('Assumed Aniimo'), ability && translate(ability)].filter(Boolean).join(' · ');
+        const form = member && rosterCatalogId(member.catalogId, member.name);
+        const portrait = aniimoPortrait(form);
+        const fallback = abilityGlyph(ability);
+        return {
+            name: escapeText(name),
+            badge: `<span class="production-portrait${form?.includes('prismana') ? ' prismana' : ''}" title="${escapeText(name)}">
+                <span class="production-portrait-art">
+                    <span aria-hidden="true">${fallback ? `<svg viewBox="0 0 24 24">${fallback}</svg>` : '◇'}</span>
+                    ${portrait ? `<img class="${portrait.includes('/UI_PetHead_') ? 'game-head' : ''}" src="${escapeText(portrait)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">` : ''}
+                </span></span>`,
+        };
+    });
 }
 
-function facilityWorkerLabel(step) {
-    const member = roster[step.crew];
-    const name = member ? rosterLabel(member, step.crew) : step.crew != null ? translate('Assumed Aniimo') : '';
-    const abilities = aniimoLabel(step);
-    return name ? `<div class="facility-worker"><div>${name}</div>${abilities}</div>` : abilities;
-}
-
-function facilityWorkloadLabel(step) {
-    if (step.status !== 'producing' || !(step.cycle_time > 0) || !(step.facility_count > 0)) return '—';
-    const busy = step.busy_units ?? step.facility_count;
-    const load = Math.max(0, Math.min(1, busy / step.facility_count));
-    const percent = formatNumber(load * 100);
-    return `<div class="facility-load"><strong>${percent}%</strong>
-        <span class="assignment-meta">${translate('{duration} per batch').replace('{duration}', cycleDuration(step.cycle_time))}</span></div>`;
+function productionCard(step, plan) {
+    const producing = step.status === 'producing';
+    const item = prettyItem(step.item_name);
+    const recipe = item && recipeIndex.find(r => r.name === step.item_name && r.facility === step.facility);
+    const requirements = new Map();
+    const required = recipe?.aniimo ? [recipe.aniimo] : recipe?.jobs.map(([, ability, level]) => [ability, level]);
+    for (const [ability, level] of required?.length ? required : (step.aniimo_tasks || []).map(t => [t.ability, t.level])) {
+        requirements.set(ability, Math.max(level, requirements.get(ability) ?? 0));
+    }
+    if (!requirements.size && step.aniimo) requirements.set(step.aniimo.ability, step.aniimo.level);
+    const colors = [...requirements.keys()].map(ability => ABILITY_BY_NAME.get(ability)?.color).filter(Boolean);
+    const requirementText = [...requirements].map(([ability, level]) => translate('{ability} Lv.{level}')
+        .replace('{ability}', translate(ability)).replace('{level}', level)).join(', ');
+    const icons = [...requirements.keys()].map(ability => `<img class="production-ability-icon" src="${gameAbilityIcon(ability)}"
+        alt="" width="23" height="23" loading="lazy">`).join('');
+    const workers = producing ? productionWorkers(step, recipe, plan) : [];
+    const electric = step.electric_level != null;
+    const load = producing && step.cycle_time > 0 && step.facility_count > 0
+        ? Math.max(0, Math.min(100, (step.busy_units ?? step.facility_count) / step.facility_count * 100)) : null;
+    const loadText = load == null ? '' : `${formatNumber(load)}%`;
+    const crew = electric
+        ? `<span class="production-electric"><svg viewBox="0 0 24 24" aria-hidden="true">${abilityGlyph('Lightning')}</svg><span>E-mode</span></span>`
+        : workers.length
+            ? `<span class="production-workers">${workers.slice(0, 2).map(worker => worker.badge).join('')}${workers.length > 2 ? `<span class="production-more">+${workers.length - 2}</span>` : ''}</span>`
+            : icons ? `<span class="production-workers" title="${escapeText(requirementText)}">${icons}</span>` : '';
+    const unverified = unverifiedRowKeys.has(`${step.facility}|${step.item_name}`);
+    return `
+        <details class="production-tile" data-status="${escapeText(step.status)}" data-search="${escapeText(item || '')}">
+            <summary class="production-summary">
+                ${colors.length ? `<span class="production-edge" aria-hidden="true">${colors.map(color => `<span style="background:${color}"></span>`).join('')}</span>` : ''}
+                <span class="production-title">
+                    <span class="production-item">${escapeText(item || 'Idle')}</span>
+                    <span class="production-count">×${formatNumber(step.facility_count)}</span>
+                    ${unverified ? '<span class="tag unverified" title="Not yet checked in game">unverified</span>' : ''}
+                </span>
+                <span class="production-state">
+                    ${crew}
+                    ${loadText ? `<span class="production-load" title="${escapeText(translate('Building load'))}">
+                        <span class="production-load-track" aria-hidden="true"><span style="width:${load}%"></span></span><strong>${loadText}</strong>
+                    </span>` : ''}
+                </span>
+                <span class="production-chevron" aria-hidden="true"></span>
+            </summary>
+            <div class="production-detail">
+                ${step.reason ? `<p>${escapeText(prettyReason(step.reason))}</p>` : ''}
+                ${loadText ? `<p><span>Building load</span> <strong>${loadText}</strong> <span>·</span>
+                    <span>${translate('{duration} per batch').replace('{duration}', cycleDuration(step.cycle_time))}</span></p>` : ''}
+                ${requirementText ? `<p><span>${electric ? 'Minimum for normal mode' : 'Required abilities'}</span><strong>${escapeText(requirementText)}</strong></p>` : ''}
+                ${workers.length ? `<ul class="production-crew" aria-label="${escapeText(translate(step.crew != null ? 'Aniimo' : 'Shared field crew'))}">
+                    ${workers.map(worker => `<li>${worker.badge}<span>${worker.name}</span></li>`).join('')}
+                </ul>` : ''}
+                ${step.aniimo?.personality_bonus ? `<p>${escapeText(taskLabel(step.aniimo, step.facility))}</p>` : ''}
+                ${item && producing ? `<button type="button" class="production-skip" data-skip="${escapeText(step.item_name)}">Skip recipe and replan</button>` : ''}
+            </div>
+        </details>
+    `;
 }
 
 function cycleDuration(seconds) {
@@ -4513,36 +4544,19 @@ function cycleDuration(seconds) {
 
 function filterFacilityPlan() {
     const terms = searchTerms(document.getElementById('plan-facility-search').value);
-    const showIdle = document.getElementById('plan-show-inactive').checked;
     const container = document.getElementById('facility-plan-container');
     let found = false;
-    for (const category of container.querySelectorAll('.facility-category')) {
-        let categoryMatches = false;
-        for (const section of category.querySelectorAll('.table-wrapper, .env-unit')) {
-            const rows = [...section.querySelectorAll('tr[class^="status-"]')];
-            if (!rows.length) continue;
-            let sectionMatches = false;
-            for (const row of rows) {
-                const [facility, , recipe] = row.cells;
-                const match = (showIdle || row.classList.contains('status-producing'))
-                    && matchesSearch(terms, `${row.dataset.search} ${facility.textContent} ${recipe.textContent}`);
-                row.hidden = !match;
-                sectionMatches ||= match;
-            }
-            if (section.classList.contains('table-wrapper')) {
-                for (const heading of section.querySelectorAll('tr.facility-plan-group')) {
-                    let row = heading.nextElementSibling;
-                    while (row?.hidden && row.className.startsWith('status-')) row = row.nextElementSibling;
-                    heading.hidden = !row?.className.startsWith('status-');
-                }
-            }
-            section.hidden = !sectionMatches;
-            categoryMatches ||= sectionMatches;
+    for (const building of container.querySelectorAll('.production-building-card')) {
+        const name = building.dataset.facility;
+        const facility = `${name} ${translate(name)}`;
+        for (const card of building.querySelectorAll('.production-tile')) {
+            const item = card.dataset.search || 'Idle';
+            card.hidden = !matchesSearch(terms, `${facility} ${item} ${translate(item)}`);
         }
-        category.hidden = !categoryMatches;
-        found ||= categoryMatches;
+        building.hidden = !building.querySelector('.production-tile:not([hidden])');
+        found ||= !building.hidden;
     }
-    document.getElementById('plan-facility-empty').hidden = found || !container.querySelector('.facility-category');
+    document.getElementById('plan-facility-empty').hidden = found || !container.querySelector('.production-building-card');
 }
 
 // "Sowing", "Sowing and Collecting", "Reaping, Logging and Collecting".
@@ -5121,14 +5135,8 @@ function renderEnvironmentDiagram(layout, mode, building, rows = [], unit = null
     `;
 }
 
-// Renders `plan.coin_items` (one row per facility+product; see `PlanStep` in models.rs). Rows
-// for a crop that needs a growing environment (Cool/Warm/Freeze/Scorching/Adequate) are pulled
-// out into their own "Environment: X" group first; regardless of whether they're grown on
-// Farmland or Woodland; so it's obvious at a glance which facilities share the same environment
-// building, instead of that connection being spelled out in each row's own text. When a mode
-// needs more than one building unit, that group splits into one table per unit (see
-// `splitByEnvironmentUnit`) so it's clear which crops go in which physical building. Everything
-// else falls back to the original per-facility-category grouping (FACILITY_CATEGORIES).
+// List each facility once, with its recipes underneath. Environment diagrams show
+// which crops share a physical Heat Furnace, Cooling Unit or Sunlamp.
 function renderFacilityPlan(plan) {
     const container = document.getElementById('facility-plan-container');
     const steps = redistributeTurnFacilityRows(
@@ -5144,13 +5152,10 @@ function renderFacilityPlan(plan) {
     }
 
     const envGroups = new Map();
-    const ungatedSteps = [];
     steps.forEach(step => {
         if (step.environment) {
             if (!envGroups.has(step.environment)) envGroups.set(step.environment, []);
             envGroups.get(step.environment).push(step);
-        } else {
-            ungatedSteps.push(step);
         }
     });
 
@@ -5184,7 +5189,6 @@ function renderFacilityPlan(plan) {
                 <h4 class="facility-category-title">${unit.building} ${modeTag(modes[0])}<span class="env-head-sep">|</span>${unit.partner[0]} ${modeTag(modes[1])}${middle ? `<span class="env-head-sep">|</span>Overlap ${modeTag(middle)}` : ''}</h4>
                 <div class="env-unit">
                     ${renderEnvironmentDiagram(zones.flatMap(z => z.layout), zones[0].mode, unit.building, zones.flatMap(z => z.rows), unit, zones)}
-                    <div class="env-unit-table">${facilityPlanTableOf(zones.map(z => ({ label: modeTag(z.mode), rows: z.rows })))}</div>
                 </div>
             </div>
         `;
@@ -5192,22 +5196,7 @@ function renderFacilityPlan(plan) {
 
     const modeSections = ENVIRONMENT_MODE_ORDER.map(mode => {
         const units = singles.filter(s => s.mode === mode).map(s => s.unit);
-        if (units.length === 0) {
-            // Crops wanting this mode that no building's map accounted for, if any: the units
-            // hold copies of each row, so compare by how many plots each one placed.
-            const placed = {};
-            (byMode.get(mode) || []).forEach(u => u.rows.forEach(r => {
-                placed[`${r.facility}|${r.item_name}`] = (placed[`${r.facility}|${r.item_name}`] || 0) + r.facility_count;
-            }));
-            const orphans = (envGroups.get(mode) || [])
-                .map(step => withFacilityCount(step, step.facility_count - (placed[`${step.facility}|${step.item_name}`] || 0)))
-                .filter(step => step.facility_count > 0);
-            return orphans.length === 0 ? '' : `
-                <div class="facility-category">
-                    <h4 class="facility-category-title">${modeTag(mode)}</h4>
-                    ${facilityPlanTable(orphans)}
-                </div>`;
-        }
+        if (units.length === 0) return '';
         return `
             <div class="facility-category">
                 <h4 class="facility-category-title">${units[0].building} ${modeTag(mode)}</h4>
@@ -5215,7 +5204,6 @@ function renderFacilityPlan(plan) {
                     ${units.length > 1 ? `<p class="hint small">${unit.building} ${i + 1}</p>` : ''}
                     <div class="env-unit">
                         ${renderEnvironmentDiagram(unit.layout, mode, unit.building, unit.rows, unit)}
-                        <div class="env-unit-table">${facilityPlanTable(unit.rows)}</div>
                     </div>
                 `).join('')}
             </div>
@@ -5223,24 +5211,9 @@ function renderFacilityPlan(plan) {
     }).join('');
     const environmentSections = pairSections + modeSections;
 
-    const byCategory = new Map(FACILITY_CATEGORIES.map(c => [c, []]));
-    ungatedSteps.forEach(step => {
-        const category = FACILITY_CATEGORY_BY_NAME.get(step.facility) || 'Materials Processing';
-        byCategory.get(category).push(step);
-    });
-
-    const categorySections = FACILITY_CATEGORIES.map(category => {
-        const categorySteps = byCategory.get(category);
-        if (categorySteps.length === 0) return '';
-        return `
-            <div class="facility-category">
-                <h4 class="facility-category-title">${category}</h4>
-                ${facilityPlanTable(categorySteps)}
-            </div>
-        `;
-    }).join('');
-
-    container.innerHTML = environmentSections + categorySections;
+    container.innerHTML = facilityPlanCards(steps, plan) + (environmentSections
+        ? `<details class="explain production-environment"><summary>Growing environments</summary>
+            <div class="production-environment-grid">${environmentSections}</div></details>` : '');
     filterFacilityPlan();
 }
 
@@ -5905,7 +5878,6 @@ async function initApp() {
     attachFacilitySearch();
     attachPlannerNavigation();
     document.getElementById('plan-facility-search').addEventListener('input', filterFacilityPlan);
-    document.getElementById('plan-show-inactive').addEventListener('change', filterFacilityPlan);
     attachModeHandlers();
     attachStrategyHandlers();
     attachSkipHandlers();
