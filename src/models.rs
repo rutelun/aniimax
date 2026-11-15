@@ -1329,12 +1329,14 @@ impl FacilityCounts {
             return *seconds;
         }
         if let Some(seconds) = self.hauling_seconds.get(&key) { return *seconds; }
-        let capacity = match level { 0 | 1 => 60.0, 2 => 80.0, _ => 100.0 };
+        let capacity = (40 + 20 * level.clamp(1, 4)) as f64;
         let output = recipe.yield_amount.max(1) as f64;
         let byproduct = recipe.byproduct.as_ref().map_or(0.0, |(_, amount)| *amount as f64);
         let per_batch = |limit: u32| {
-            let batches = (limit as f64 / (output + byproduct)).floor().max(1.0);
-            ((output * batches / capacity).ceil() + (byproduct * batches / capacity).ceil()) / batches
+            let limit = if base_item_name(&recipe.name) == "quick_aromathyst" { limit.min(36) } else { limit };
+            let batches = limit as f64 / (output + byproduct);
+            let batches = if matches!(recipe.facility.as_str(), "Farmland" | "Woodland") { batches.ceil() } else { batches.floor() }.max(1.0);
+            ((output + byproduct) * batches / capacity).ceil() / batches
         };
         // The exact model does not choose a physical tier for every ordinary
         // recipe. For the route bound, use the busiest compatible buffer size.

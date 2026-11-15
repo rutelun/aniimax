@@ -1,6 +1,6 @@
 # Delivery workload model
 
-Checked 2026-11-07. This is an estimate of steady-state courier workload, not a reproduction
+Checked 2026-11-15. This is an estimate of steady-state courier workload, not a reproduction
 of the game's automatic dispatcher.
 
 ## Sources and limits
@@ -8,12 +8,11 @@ of the game's automatic dispatcher.
 - [GameVault's Hauling description](https://aniimo.gamevault.in/en/homeland/abilities/hauling/)
   describes collecting stockpiled products and taking them to Home storage. Its workload
   numbers are not carrying capacities and are not used as such.
-- Wikily lists carrying capacity 60 for [Skippy](https://wikily.gg/aniimo/aniilog/skippy/homeland/),
-  80 for [Fenrier](https://wikily.gg/aniimo/aniilog/fenrier/homeland), and 100 for
-  [Bouldus](https://new.wikily.gg/aniimo/aniilog/bouldus/homeland) and
-  [Glacy](https://wikily.gg/aniimo/aniilog/glacy/homeland), corresponding to Hauling levels 1–3.
-  These are community database values. Level 4's carrying count has not been verified;
-  the calculation conservatively uses the verified level-3 count of 100.
+- Hauling capacities are 60, 80, 100 and 120 items per trip at levels 1–4, based on the
+  profiles of [Skippy](https://wikily.gg/aniimo/aniilog/skippy/homeland/),
+  [Fenrier](https://wikily.gg/aniimo/aniilog/fenrier/homeland),
+  [Glacy](https://wikily.gg/aniimo/aniilog/glacy/homeland) and
+  [Prismana Glacy](https://wikily.gg/aniimo/aniilog/glacy-prismana-form/homeland/).
 - [GameWith's farming guide](https://gamewith.ai/aniimo/en/articles/how-to-farm)
   describes stock accumulation up to a facility's item limit before hauling, and harvests
   exceeding that limit. Consequently, a production batch is not necessarily one delivery.
@@ -26,9 +25,9 @@ The model groups nearby delivery jobs around their nearest Storage Unit. A deliv
 of carrying cargo to storage and walking to the next pickup. Next pickups are weighted by
 the delivery frequency of the buildings in that storage pool. There is no mandatory return
 to the building just serviced. The basic walking speed is the application's existing 4 tiles/s.
-The workload model applies a 2× time allowance to both legs. It also doubles the estimated
-work of each Farmland/Woodland job, including both waterings; crop growth time and ordinary
-worker travel between workplaces retain their existing values.
+The workload model applies a 2× time allowance to both legs. Enabling Aniimo travel in My
+Aniimo triples the walking-time estimates for workplace changes and deliveries. Estimated
+work for Farmland and Woodland jobs, including both waterings, is doubled separately.
 
 Building stock limits by tier are shared by the browser and the Rust optimizer in
 `web/facility-stock.json`. They come from the `facilities[].lv[].lim` fields of the
@@ -36,13 +35,15 @@ Building stock limits by tier are shared by the browser and the Rust optimizer i
 [GameWith's Farmland guide](https://gamewith.ai/aniimo/en/articles/how-to-farm#farmland-levels-and-item-count)
 also shows the 5–35 item limits and that farming can deliver a single oversized harvest intact.
 
-The estimate combines as many whole batches as fit in the building's local stock before
-collection. An oversized harvest still goes out as a whole batch. Output and byproducts share
-the estimated buffer and are carried in separate loads. If the building has no recorded
-limit or switches between recipes, the estimate uses one batch per pickup. With mixed
-building tiers the layout assigns compatible owned levels; the route bound uses the busiest
-compatible tier. The in-game pickup threshold and queues are not verified for every building.
-The animation shows accumulation, but does not simulate individual dispatch queues.
+For crops, the estimate includes the harvest that first reaches or exceeds the stock limit.
+For other facilities it uses the whole batches that fit. Quick Aromathyst uses a pickup
+threshold of 36 items based on [an observed Dewy House](https://www.reddit.com/r/Aniimo/comments/1wzy2m5/rv_hauling_issue/).
+The model lets products and byproducts use the same load, based on [a report of five items
+remaining after a 100-item pickup from a 105-item Maple harvest](https://www.reddit.com/r/Aniimo/comments/1x2bq37/maple_not_being_picked_up/).
+That observation suggests shared capacity but does not directly show the mix of items on
+each trip. A missing stock limit or a building switching recipes uses one batch per pickup.
+The route bound uses the busiest compatible building tier. The animation shows accumulation
+and omits the game's individual dispatch queues.
 
 Hauling shares the assigned courier's available hours with production, crop jobs, generator
 staffing and optional worker travel. The fast allocation uses free hours first. If a specified

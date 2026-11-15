@@ -1690,6 +1690,121 @@ pub fn check_plan(
         .map(|(earned, _)| earned)
 }
 
+/// Replace an assigned roster pool with an idle, more versatile owned pool when it can
+/// perform the same work. The whole workload moves together and the checked production
+/// plan, sales and recipe cycle times are preserved.
+pub fn prefer_versatile_crew(
+    plan: &mut ExactPlan,
+    workload: &mut Vec<f64>,
+    items: &[ProductionItem],
+    currency: &str,
+    counts: &FacilityCounts,
+    modules: &ModuleLevels,
+    level_up: Option<&LevelUp>,
+) {
+    let Some(crew) = counts.crew() else { return };
+    let owned = crew.assumed_from.unwrap_or(crew.members.len());
+    let skills: Vec<_> = crew.members[..owned].iter()
+        .map(|worker| worker.abilities.values().filter(|&&level| level > 0).count()).collect();
+    if skills.iter().min() == skills.iter().max() { return; }
+    let mut order: Vec<_> = (0..owned).collect();
+    order.sort_by_key(|&member| std::cmp::Reverse(skills[member]));
+    let all: HashMap<_, _> = items.iter().map(|item| (item.name.as_str(), item)).collect();
+    let mut total = workload.clone();
+    for &(member, share) in &plan.hauling_staffing { total[member] += share; }
+    for &to in &order {
+        if total[to] > 1e-9 || crew.members[to].count == 0 { continue; }
+        for &from in order.iter().rev() {
+            if skills[from] >= skills[to] { break; }
+            if total[from] <= 1e-6 || total[from] > crew.members[to].count as f64 + 1e-6 { continue; }
+            let Some(candidate) = reassign_crew_pool(plan, &all, counts, from, to) else { continue; };
+            let Ok((_, checked)) = check_plan_with_workload(&candidate, items, currency, counts, modules, level_up) else { continue; };
+            total[from] = 0.0;
+            total[to] = checked[to] + candidate.hauling_staffing.iter().filter(|(member, _)| *member == to)
+                .map(|(_, share)| share).sum::<f64>();
+            *workload = checked;
+            *plan = candidate;
+            break;
+        }
+    }
+}
+
+fn reassign_crew_pool(
+    plan: &ExactPlan,
+    all: &HashMap<&str, &ProductionItem>,
+    counts: &FacilityCounts,
+    from: usize,
+    to: usize,
+) -> Option<ExactPlan> {
+    let crew = counts.crew()?;
+    let old = &crew.members[from];
+    let new = &crew.members[to];
+    let member = |id| if id == from { to } else { id };
+    let mut names = HashMap::new();
+    for name in plan.recipe_rates.keys() {
+        let original = all[name.as_str()];
+        if original.crew != Some(from) { continue; }
+        let (base, _) = name.rsplit_once(crate::models::CREW_SUFFIX)?;
+        let matched = format!("{base}{}{to}", crate::models::CREW_SUFFIX);
+        let replacement = all.get(matched.as_str())?;
+        if replacement.production_time != original.production_time { return None; }
+        names.insert(name.as_str(), replacement.name.as_str());
+    }
+    for (building, id, _) in &plan.staffing {
+        if *id != from { continue; }
+        let ability = if building == GENERATOR { "Lightning" } else { crew.environment.get(building)?.as_str() };
+        if !crew.can_work(to, ability, 1) { return None; }
+        if building == GENERATOR {
+            let power = counts.power()?;
+            if power.generator_output(new.level(ability)) < power.generator_output(old.level(ability)) { return None; }
+        }
+    }
+    let mobile = plan.work_routes.iter().any(|route| route.member == from && route.mobile);
+    if mobile && counts.member_movement_seconds(to) != counts.member_movement_seconds(from) { return None; }
+    let mut candidate = plan.clone();
+    for (ability, level, id, share) in &mut candidate.crop_staffing {
+        if *id != from { continue; }
+        if !crew.can_work(to, ability, *level) { return None; }
+        let speed = |worker: &crate::models::RosterAniimo| crate::models::Worker::new(worker.level(ability), false).speed(*level, true);
+        if speed(new) < speed(old) || (counts.movement_seconds() > 0.0 && speed(new) != speed(old)) { return None; }
+        *share *= speed(old) / speed(new);
+        *id = to;
+    }
+    let mut delivery = 0.0;
+    for (name, id, batches) in &mut candidate.hauling_routes {
+        if let Some(&replacement) = names.get(name.as_str()) { *name = replacement.to_owned(); }
+        if *id != from { continue; }
+        if !crew.can_work(to, "Hauling", 1) { return None; }
+        let recipe = all[name.as_str()];
+        let time = counts.hauling_seconds_for(recipe, new.level("Hauling"));
+        if time > counts.hauling_seconds_for(recipe, old.level("Hauling")) { return None; }
+        delivery += time * *batches;
+        *id = to;
+    }
+    candidate.hauling_staffing.retain(|(id, _)| *id != from);
+    if delivery > 0.0 { candidate.hauling_staffing.push((to, delivery)); }
+    for (original, replacement) in &names {
+        if let Some(rate) = candidate.recipe_rates.remove(*original) { candidate.recipe_rates.insert((*replacement).into(), rate); }
+        if let Some(units) = candidate.units.remove(*original) { candidate.units.insert((*replacement).into(), units); }
+    }
+    for (name, _, _) in &mut candidate.fixed_sites {
+        if let Some(&replacement) = names.get(name.as_str()) { *name = replacement.to_owned(); }
+    }
+    for (station, id, _) in &mut candidate.work_posts {
+        if let Some(replacement) = station.strip_prefix("recipe:").and_then(|name| names.get(name)) {
+            *station = format!("recipe:{replacement}");
+        }
+        *id = member(*id);
+    }
+    for route in &mut candidate.work_routes {
+        if let Some(&replacement) = names.get(route.recipe.as_str()) { route.recipe = replacement.to_owned(); }
+        route.member = member(route.member);
+    }
+    for (_, id, _) in &mut candidate.staffing { *id = member(*id); }
+    for (id, _, _) in &mut candidate.movement_staffing { *id = member(*id); }
+    Some(candidate)
+}
+
 /// Also return each roster pool's checked workload before delivery. The map can
 /// then add its measured courier assignments without re-counting presentation rows.
 pub fn check_plan_with_workload(

@@ -1,7 +1,7 @@
 // Aniimax Web Application
 
-import { currentLocale, sourceAttribute, translate } from './i18n.js?v=travel-allowance';
-import './math-translation.js?v=travel-allowance';
+import { currentLocale, sourceAttribute, translate } from './i18n.js?v=hauling-assignments';
+import './math-translation.js?v=hauling-assignments';
 import { autoMaximizeSeasonPoints } from './season-planning.js?v=optional-season-points';
 
 import {
@@ -14,7 +14,7 @@ import { createShareUrl, readShareHash, urlWithoutShare } from './share-config.j
 import { nearestStorage } from './layout.js?v=storage-power';
 import { workerTravelDistances, workerTravelSeconds } from './worker-travel.js?v=travel-allowance';
 import { assignFacilityStock, bufferedBatches, haulingWorkload, allocateHauling, haulingBatchTrips,
-    haulingTravelSeconds, pickupStockLimit } from './hauling.js?v=travel-allowance';
+    haulingTravelSeconds, pickupStockLimit } from './hauling.js?v=hauling-assignments';
 import { changeOneMember, personalityInput, reserveLevelFourInputs, comparePlans, usefulUpgrade, keepBetterComparison } from './opportunity-comparison.js?v=income-aware-chains';
 import { comparisonConcurrency, startComparisonQueue } from './comparison-queue.js?v=parallel-comparisons';
 import { prepareOpportunities, startedProcessing, increasedProcessing } from './opportunity-effects.js?v=auto-e-mode';
@@ -1387,8 +1387,8 @@ function homelandPieces(plan, input) {
         member.batchWeight = member.weight;
         const limit = pickupStockLimit(member);
         member.weight = member.jobs ? member.jobs.reduce((sum, job) => sum + job.rate * 3600
-            * haulingBatchTrips(recipesByName.get(job.item), 3, limit), 0)
-            : member.weight * haulingBatchTrips(recipesByName.get(member.crop), 3, limit);
+            * haulingBatchTrips(recipesByName.get(job.item), 3, limit, member.facility), 0)
+            : member.weight * haulingBatchTrips(recipesByName.get(member.crop), 3, limit, member.facility);
     }
     return { pieces, unplaced: [...unplaced] };
 }
@@ -2030,7 +2030,7 @@ function homelandSvg(layout, homeLevel, plan) {
         const storage = nearestStorage(m, layout.storages);
         const away = storage ? Math.hypot(m.x + m.w / 2 - storage.x - storage.w / 2, m.y + m.h / 2 - storage.y - storage.h / 2) : 0;
         const electric = m.electric_level != null;
-        const electricDetail = electric ? ` · ${translate('E-mode · Building Lv.{level}').replace('{level}', m.electric_level)} · ${translate(m.power_connected ? 'Connected to power' : 'No power connection')}` : '';
+        const electricDetail = electric ? ` · ${translate('E-mode')} · ${translate(m.power_connected ? 'Connected to power' : 'No power connection')}` : '';
         const tip = tipAttrs(m.facility, {
             detail: m.generatorTier ? translate('Building Lv.{level}').replace('{level}', m.generatorTier)
                 : m.jobs ? m.jobs.map(j => prettyItem(j.item)).join(', ') : m.crop ? prettyItem(m.crop) : m.building && m.mode ? m.mode : 'Idle',
@@ -2151,7 +2151,7 @@ function layoutFlows(layout) {
         return {
             x1, y1, x2, y2, storage: layout.storages.indexOf(s), length: Math.hypot(x2 - x1, y2 - y1),
             ring, rx: m.x + m.w - ring - 0.12, ry: m.y + ring + 0.12,
-            trips: m.weight, stockLimit: pickupStockLimit(m),
+            trips: m.weight, stockLimit: pickupStockLimit(m), facility: m.facility,
             jobs: m.jobs || [{ item: m.crop, cycle: m.cycle, rate: (m.batchWeight ?? m.weight) / 3600 }],
         };
     });
@@ -2300,7 +2300,7 @@ function stepLayoutSim(sim, dt) {
             unit.pending.set(makes, (unit.pending.get(makes) || 0) + amount);
             if (byproduct) unit.pending.set(byproduct[0], (unit.pending.get(byproduct[0]) || 0) + byproduct[1]);
             unit.buffered++;
-            if (unit.buffered >= bufferedBatches({ yieldAmount: amount, byproductAmount: byproduct?.[1] }, unit.flow.stockLimit)) {
+            if (unit.buffered >= bufferedBatches({ name: unit.job.item, yieldAmount: amount, byproductAmount: byproduct?.[1] }, unit.flow.stockLimit, unit.flow.facility)) {
                 for (const [item, count] of unit.pending) sim.store.set(item, (sim.store.get(item) || 0) + count);
                 unit.pending.clear();
                 unit.buffered = 0;
@@ -2562,7 +2562,7 @@ let haulingSeconds = {};
 let haulingDefaultSeconds = 0;
 let haulingRefinements = 0;
 const haulingBaseByPlan = new WeakMap();
-const HAULING_ESTIMATE_HINT = 'Delivery estimates use facility stock limits, carrying capacity, and twice the basic walking time. Pickup timing is approximate; Hauling Lv.4 uses Lv.3 capacity.';
+const HAULING_ESTIMATE_HINT = 'Delivery estimates use facility stock limits, carrying capacity, and twice the basic walking time. Pickup timing is approximate.';
 
 function haulingRouteBound(accountForTravel = false) {
     const open = homelandPlots().filter(p => p.number <= layoutHomeLevel());
@@ -4403,7 +4403,7 @@ function abilityDot(name, level, note, bonus = Boolean(note)) {
 
 function aniimoLabel(step) {
     if (step.electric_level != null) {
-        const label = `⚡ ${translate('E-mode · Building Lv.{level}').replace('{level}', step.electric_level)}`;
+        const label = `⚡ ${translate('E-mode')}`;
         const requirement = recipeIndex.find(r => r.name === step.item_name && r.facility === step.facility)?.aniimo;
         if (!requirement) return label;
         const [ability, level] = requirement;

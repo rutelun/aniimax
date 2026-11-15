@@ -1696,7 +1696,7 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
         crate::exact::Goal::EarnWhileLevelingUp(level_up, ..) | crate::exact::Goal::StockUp(level_up, ..) => Some(level_up),
         _ => None,
     };
-    let Some(exact) = crate::exact::plan_from_values(
+    let Some(mut exact) = crate::exact::plan_from_values(
         &prepared.items,
         &currency,
         &prepared.facility_counts,
@@ -1713,13 +1713,17 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
     }
     // Independent re-check of every limit before trusting the plan; the caller falls back to the
     // heuristic planner if this ever fails.
-    let (_, roster_workload) = match crate::exact::check_plan_with_workload(
+    let (_, mut roster_workload) = match crate::exact::check_plan_with_workload(
         &exact, &prepared.items, &currency, &prepared.facility_counts, &prepared.module_levels, level_up,
     ) {
         Ok(checked) => checked,
         Err(problem) => return serde_json::to_string(&empty_production_plan(false, Some(format!("Exact plan failed its check: {problem}"))))
             .unwrap_or_default(),
     };
+    crate::exact::prefer_versatile_crew(
+        &mut exact, &mut roster_workload, &prepared.items, &currency,
+        &prepared.facility_counts, &prepared.module_levels, level_up,
+    );
     let proof = (exact.proven_optimal, exact.upper_bound);
     let report_at = |target, seconds| {
         let net = crate::exact::net_rates(&exact, &prepared.items);

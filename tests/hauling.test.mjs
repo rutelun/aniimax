@@ -76,7 +76,23 @@ test('a building accumulates several batches before sending a delivery, includin
     const bounded = haulingWorkload({ storages: [], pieces: [] }, steps, haulingTravelSeconds(16), recipes, facilities);
     assert.equal(measured.seconds['Farmland|wheat'], 8 / 6);
     assert.equal(bounded.seconds['Farmland|wheat'], measured.seconds['Farmland|wheat']);
-    assert.equal(haulingBatchTrips({ yieldAmount: 4, byproductAmount: 2 }, 3, 18), 2 / 3);
+    assert.equal(haulingBatchTrips({ yieldAmount: 4, byproductAmount: 2 }, 3, 18), 1 / 3);
+});
+
+test('a full crop buffer can include the last harvest and Hauling 4 can carry 105 mixed items', () => {
+    const maple = { name: 'quick_maple_syrup', yieldAmount: 30, byproductAmount: 75 };
+    assert.equal(haulingBatchTrips(maple, 3, 28, 'Woodland'), 2);
+    assert.equal(haulingBatchTrips(maple, 4, 28, 'Woodland'), 1);
+    assert.equal(bufferedBatches({ yieldAmount: 8 }, 35, 'Farmland'), 5);
+    assert.equal(bufferedBatches({ name: 'quick_aromathyst', yieldAmount: 12 }, 240, 'Dewy House'), 3);
+});
+
+test('prefer a more versatile courier at the same rate and keep a faster specialist', () => {
+    const crew = [{ count: 1, abilities: { Hauling: 4 } }, { count: 1, abilities: { Hauling: 4, Water: 3 } }];
+    const work = { jobs: [{ rate: .5, seconds: { 1: 2, 2: 2, 3: 2, 4: 1 } }] };
+    assert.deepEqual(allocateHauling(crew, [0, 0], work, 1).assignments, [[1, .5]]);
+    crew[1].abilities.Hauling = 3;
+    assert.deepEqual(allocateHauling(crew, [0, 0], work, 1).assignments, [[0, .5]]);
 });
 
 test('a powered building keeps the stock limit of its exact tier', () => {

@@ -2,24 +2,27 @@ import { nearestStorage } from './layout.js?v=optional-worker-travel';
 import { ANIIMO_WALK_SPEED, workerTravelSeconds } from './worker-travel.js?v=travel-allowance';
 import facilityStock from './facility-stock.json' with { type: 'json' };
 
-// Client-derived Wikily profiles: Skippy 60, Fenrier 80, Bouldus/Glacy 100.
-// Lv.4's carrying count is unverified; retain the verified Lv.3 capacity conservatively.
-export const HAULING_CAPACITY = Object.freeze({1:60, 2:80, 3:100, 4:100});
+// Hauling capacity from Skippy, Fenrier, Glacy and Prismana Glacy's Homeland profiles.
+export const HAULING_CAPACITY = Object.freeze({1:60, 2:80, 3:100, 4:120});
 const levels = [1, 2, 3, 4];
 const headcount = n => Math.max(0, Math.ceil(n - 1e-6));
 export const haulingTravelSeconds = (distance, accountForTravel = false) =>
     2 * (accountForTravel ? workerTravelSeconds(distance) : distance / ANIIMO_WALK_SPEED);
-const batchOutput = recipe => [Math.max(1, recipe?.yieldAmount || 1), Math.max(0, recipe?.byproductAmount || 0)];
+const batchOutput = recipe => Math.max(1, recipe?.yieldAmount || 1) + Math.max(0, recipe?.byproductAmount || 0);
 export const facilityStockLimit = (facility, level = 1) =>
     facilityStock[facility]?.[Math.max(1, level) - 1] ?? facilityStock[facility]?.at(-1) ?? 0;
 
-export function bufferedBatches(recipe, limit = 0) {
-    return Math.max(1, Math.floor(limit / batchOutput(recipe).reduce((sum, amount) => sum + amount, 0)));
+export function bufferedBatches(recipe, limit = 0, facility) {
+    // A crop can finish a harvest while below its item limit. Quick Aromathyst has been
+    // observed to leave Dewy House after three batches, before local storage fills.
+    if (recipe?.name === 'quick_aromathyst') limit = Math.min(limit, 36);
+    const batches = limit / batchOutput(recipe);
+    return Math.max(1, facility === 'Farmland' || facility === 'Woodland' ? Math.ceil(batches) : Math.floor(batches));
 }
 
-export function haulingBatchTrips(recipe, level = 3, limit = 0) {
-    const batches = bufferedBatches(recipe, limit), capacity = HAULING_CAPACITY[level];
-    return batchOutput(recipe).reduce((sum, amount) => sum + Math.ceil(amount * batches / capacity), 0) / batches;
+export function haulingBatchTrips(recipe, level = 3, limit = 0, facility) {
+    const batches = bufferedBatches(recipe, limit, facility);
+    return Math.ceil(batchOutput(recipe) * batches / HAULING_CAPACITY[level]) / batches;
 }
 
 export function assignFacilityStock(members, facilities, recipeOf) {
@@ -51,7 +54,7 @@ function fallbackTrips(step, recipe, level, facilities) {
     const tiers = (facilities?.[step.facility] ?? []).filter(tier => tier.count > 0 && (step.electric_level != null
         ? tier.level === step.electric_level : tier.level >= (recipe?.facility_level ?? 1)));
     return tiers.length ? Math.max(...tiers.map(tier =>
-        haulingBatchTrips(recipe, level, facilityStockLimit(step.facility, tier.level)))) : haulingBatchTrips(recipe, level);
+        haulingBatchTrips(recipe, level, facilityStockLimit(step.facility, tier.level), step.facility))) : haulingBatchTrips(recipe, level);
 }
 
 // Accumulate whole batches in the building's output buffer, then split the
@@ -73,7 +76,7 @@ export function haulingWorkload(layout, steps, fallbackSeconds = 0, recipes = []
             const cargo = member.jobs?.map(job => [job.item, job.rate * 3600]) || [[member.crop, member.batchWeight ?? member.weight]];
             const pool = pools.get(storage) || { trips: 0, pickupSeconds: 0 };
             for (const [item, batches] of cargo) {
-                const trips = batches * haulingBatchTrips(recipeOf.get(item), level, pickupStockLimit(member));
+                const trips = batches * haulingBatchTrips(recipeOf.get(item), level, pickupStockLimit(member), member.facility);
                 pool.trips += trips;
                 pool.pickupSeconds += trips * loaded;
                 pickups.push({key:`${member.facility}|${item}`, storage, loaded, trips, batches});
@@ -111,8 +114,9 @@ export function allocateHauling(members, busy, required, limit = Infinity) {
     const active = busy.map(headcount);
     let slots = Math.max(0, limit - active.reduce((sum, n) => sum + n, 0));
     const jobs = typeof required === 'number' ? [{rate:required, seconds:{1:1,2:1,3:1,4:1}}] : required.jobs;
-    const couriers = members.map((member, index) => ({member,index,level:Math.min(4, member?.abilities.Hauling || 0)}))
-        .filter(courier => courier.level > 0).sort((a,b) => b.level - a.level);
+    const couriers = members.map((member, index) => ({member,index,level:Math.min(4, member?.abilities.Hauling || 0),
+        versatility: Object.values(member?.abilities ?? {}).filter(level => level > 0).length}))
+        .filter(courier => courier.level > 0).sort((a,b) => b.level - a.level || b.versatility - a.versatility);
     const assigned = new Map();
     let reserveBusy = 0, unassigned = 0;
     for (const job of [...jobs].sort((a,b) => b.seconds[1] / (b.seconds[3] || 1) - a.seconds[1] / (a.seconds[3] || 1))) {

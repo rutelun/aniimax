@@ -960,6 +960,38 @@ fn crew_one_aniimo_works_one_day() {
 }
 
 #[test]
+fn versatile_crew_replaces_an_equally_fast_specialist_without_changing_production() {
+    use aniimax::exact::{check_plan_with_workload, prefer_versatile_crew};
+    let Some(originals) = load_items() else { return };
+    let requirements = load_aniimo_requirements(Path::new("data")).unwrap();
+    let crew = crew_of(&[
+        (1, &[("Earth", 4)]),
+        (1, &[("Earth", 1), ("Water", 3), ("Fire", 3)]),
+        (1, &[("Earth", 4), ("Hauling", 4)]),
+    ]);
+    let crops = aniimax::models::GrowerSteps::default();
+    let items = aniimax::models::crew_variants(
+        originals.into_iter().filter(|item| item.name == "rock").collect(), &crew, &requirements, &crops,
+    );
+    let starting_items = items.iter().filter(|item| item.crew.is_none_or(|member| member == 0)).cloned().collect::<Vec<_>>();
+    let modules = ModuleLevels::default();
+    for walking in [0.0, 15.0] {
+        let mut counts = FacilityCounts::only(&[("Mine", 1, 1)]);
+        counts.set_crew(crew.clone());
+        counts.set_movement_seconds(walking);
+        let mut plan = solve_exact(&starting_items, "coins", &counts, &modules, Goal::Earn { floors: &[] }, None, None).unwrap();
+        let (income, mut workload) = check_plan_with_workload(&plan, &items, "coins", &counts, &modules, None).unwrap();
+        let original_rate = plan.recipe_rates["rock__by0"];
+        prefer_versatile_crew(&mut plan, &mut workload, &items, "coins", &counts, &modules, None);
+        assert_eq!(plan.recipe_rates.get("rock__by2"), Some(&original_rate));
+        assert_eq!(plan.recipe_rates.len(), 1);
+        assert_eq!(workload[0], 0.0);
+        assert!(workload[2] > 0.0);
+        assert_eq!(check_plan(&plan, &items, "coins", &counts, &modules, None).unwrap(), income);
+    }
+}
+
+#[test]
 fn reserve_crew_fills_open_shifts_and_prefers_equally_fast_owned_aniimo() {
     let mut crew = crew_of(&[(1, &[("Earth", 3)])]);
     crew.add_reserve_workers([("Earth", 1), ("Earth", 2), ("Fire", 4), ("Lightning", 1)], 4);

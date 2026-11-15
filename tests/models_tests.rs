@@ -149,6 +149,18 @@ fn test_production_item_creation() {
 }
 
 #[test]
+fn test_hauling_capacity_and_pickup_thresholds() {
+    let items = aniimax::data::load_all_data(std::path::Path::new("data")).unwrap();
+    let maple = items.iter().find(|item| item.name == "quick_maple_syrup").unwrap();
+    let dewy = items.iter().find(|item| item.name == "quick_aromathyst").unwrap();
+    let mut counts = FacilityCounts::only(&[("Woodland", 1, 5), ("Dewy House", 1, 2)]);
+    counts.set_hauling(12.0, Default::default());
+    assert_eq!(counts.hauling_seconds_for(maple, 3), 24.0);
+    assert_eq!(counts.hauling_seconds_for(maple, 4), 12.0);
+    assert_eq!(counts.hauling_seconds_for(dewy, 3), 4.0);
+}
+
+#[test]
 fn test_processed_item_creation() {
     let item = ProductionItem {
         name: "wheatmeal".to_string(),
