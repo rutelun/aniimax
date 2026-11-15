@@ -2699,38 +2699,54 @@ pub fn prefer_electric_staffing(
         let worker_time = rate * all.get(normal)?.production_time;
         let units = (rate * item.production_time - 1e-6).ceil() as u32;
         let watts = watts_per_level(&item.facility) * level * units;
-        (units > 0 && units <= counts.get_count(&item.facility) && watts > 0)
-            .then_some((item, normal, rate, worker_time, watts))
+        (units > 0 && watts > 0).then_some((item, normal, worker_time, watts))
     }).collect();
     options.sort_by(|a, b| {
-        let score = |option: &(&ProductionItem, &str, f64, f64, u32)| ((option.3 + 1e-6).floor() * 10.0 + option.3) / option.4 as f64;
+        let score = |option: &(&ProductionItem, &str, f64, u32)| ((option.2 + 1e-6).floor() * 10.0 + option.2) / option.3 as f64;
         score(b).total_cmp(&score(a))
     });
     let mut trial = plan.clone();
     let mut best = None;
     let mut shifts_saved = 0;
-    let mut best_savings = 0;
+    let mut time_saved = 0.0;
+    let mut best_savings = (0, 0.0);
     let mut checks = 0;
-    for (item, normal, rate, worker_time, _) in options {
-        if !trial.recipe_rates.contains_key(normal) || checks >= 24 { continue; }
-        let mut candidate = trial.clone();
-        candidate.recipe_rates.remove(normal);
-        candidate.units.remove(normal);
-        let combined_rate = candidate.recipe_rates.entry(item.name.clone()).or_default();
-        *combined_rate += rate;
-        candidate.units.insert(item.name.clone(), (*combined_rate * item.production_time - 1e-6).ceil() as u32);
-
-        let generators = generator_count(&candidate);
-        let freed = shifts_saved + (worker_time + 1e-6).floor() as u32;
-        if generators > power.generator_limit() || generators > normal_generators + freed { continue; }
-        checks += 1;
-        if check_plan_with_workload(&candidate, items, currency, counts, modules, level_up).is_err() { continue; }
-        trial = candidate;
-        shifts_saved = freed;
-        let savings = normal_generators + freed - generators;
-        if savings >= best_savings && (savings > 0 || generators <= normal_generators) {
-            best_savings = savings;
-            best = Some(trial.clone());
+    let whole = |load: f64| (load + 1e-6).floor() as i32;
+    for (item, normal, _, _) in options {
+        let Some(&remaining) = trial.recipe_rates.get(normal) else { continue };
+        let original = plan.recipe_rates[normal];
+        let normal_time = all[normal].production_time;
+        let max_units = counts.get_count(&item.facility).min((remaining * item.production_time - 1e-6).ceil() as u32);
+        for units in (1..=max_units).rev() {
+            if checks >= 40 { return best; }
+            let rate = remaining.min(units as f64 / item.production_time);
+            let leftover = remaining - rate;
+            let mut candidate = trial.clone();
+            if leftover > 1e-9 {
+                candidate.recipe_rates.insert(normal.into(), leftover);
+                candidate.units.insert(normal.into(), (leftover * normal_time - 1e-6).ceil() as u32);
+            } else {
+                candidate.recipe_rates.remove(normal);
+                candidate.units.remove(normal);
+            }
+            let combined_rate = candidate.recipe_rates.entry(item.name.clone()).or_default();
+            *combined_rate += rate;
+            candidate.units.insert(item.name.clone(), (*combined_rate * item.production_time - 1e-6).ceil() as u32);
+            let generators = generator_count(&candidate);
+            if generators > power.generator_limit() { continue; }
+            checks += 1;
+            if check_plan_with_workload(&candidate, items, currency, counts, modules, level_up).is_err() { continue; }
+            trial = candidate;
+            shifts_saved += whole((original - leftover) * normal_time) - whole((original - remaining) * normal_time);
+            time_saved += rate * normal_time;
+            let generator_change = generators as i32 - normal_generators as i32;
+            let savings = (shifts_saved - generator_change, time_saved - generator_change as f64);
+            if savings.0 >= 0 && (savings.0 > best_savings.0
+                || (savings.0 == best_savings.0 && savings.1 > best_savings.1 + 1e-6)) {
+                best_savings = savings;
+                best = Some(trial.clone());
+            }
+            break;
         }
     }
     best

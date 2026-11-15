@@ -1830,6 +1830,7 @@ function renderHomelandLayout(plan) {
         stopLayout();
         document.getElementById('layout-summary').textContent = 'The layout couldn\'t be worked out.';
         setStep('layout', 'fail');
+        if (selectedSetupTab() === 'best') renderBestTeam(plan, translate('Unavailable'));
         rankImprovementsFor(selectedAniimoSetup());
     };
     solver.postMessage({ pieces, ...layoutOptions });
@@ -4733,7 +4734,7 @@ function bestRosterMember(shift) {
     return member;
 }
 
-function renderBestTeam(plan) {
+function renderBestTeam(plan, routeStatus = translate('Calculating…')) {
     const { shifts } = bestPlanTeam(plan);
     const total = shifts.length;
     const cap = ANIIMO_MAX[layoutHomeLevel() - 1];
@@ -4747,15 +4748,24 @@ function renderBestTeam(plan) {
     document.getElementById('roster-summary').hidden = true;
     document.getElementById('aniimo-abilities').textContent = '';
     document.getElementById('aniimo-count').hidden = true;
-    document.getElementById('aniimo-summary').innerHTML = total
+    const container = document.getElementById('aniimo-summary');
+    if (container.contains(tipTarget)) hideTip();
+    const routesReady = bestTeamLayouts.has(plan);
+    const routeLabels = ['Walking between jobs', 'Hauling to Storage Units'];
+    const percent = share => share > 0 && share < .0001 ? '<0.01%' : `${formatNumber(share * 100)}%`;
+    container.innerHTML = total
         ? `${capNote}<div class="roster-cards">${rosterBoard(shifts.map((_, index) => index), index => {
             if (index == null) return emptyRosterCell();
             const shift = shifts[index];
             const member = bestRosterMember(shift);
             const label = member.name || translate('Assumed Aniimo');
-            const tasks = [...shift.tasks].sort((a, b) => b[1] - a[1])
-                .map(([job, share]) => [translate(job), `${formatNumber(share * 100)}%`]);
-            const status = translate('{load} busy').replace('{load}', `${formatNumber(shift.busy * 100)}%`);
+            const tasks = routeLabels.map(label => [
+                translate(label), routesReady ? percent(shift.tasks.get(label) || 0) : routeStatus,
+            ]);
+            for (const [job, share] of [...shift.tasks].sort((a, b) => b[1] - a[1])) {
+                if (!routeLabels.includes(job)) tasks.push([translate(job), percent(share)]);
+            }
+            const status = translate('{load} busy').replace('{load}', percent(shift.busy));
             const traits = [...shift.personalities].map(translate).join(' · ');
             return assignmentTile(member, label, tasks, status, true, traits);
         })}</div>`

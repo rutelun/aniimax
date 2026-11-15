@@ -524,7 +524,7 @@ export function layOut(pieces, options = {}) {
 // whichever walks least with everything placed. Returns what `layOut` does, moved into the
 // homeland's own frame, plus the first storage center for older callers.
 // Additional storage locations are chosen up to `storageCount`.
-export function layOutHomeland(pieces, cells, storage = { w: 2, h: 2 }, storageCount = 1) {
+export function layOutHomeland(pieces, cells, storage = { w: 2, h: 2 }, storageCount = 1, { fast = false } = {}) {
     if (!cells.length) {
         return { storage: null, storages: [], storageAt: null, pieces: pieces.map(p => ({ ...p, members: [], cost: 0 })), unplaced: pieces.map((_, i) => i), tried: 0 };
     }
@@ -545,12 +545,14 @@ export function layOutHomeland(pieces, cells, storage = { w: 2, h: 2 }, storageC
         const storageRect = { x: at.x - storage.w / 2, y: at.y - storage.h / 2, w: storage.w, h: storage.h };
         if (cells.reduce((sum, c) => sum + overlapArea(storageRect, c), 0) < storage.w * storage.h - EPSILON) continue;
         const relative = cells.map(c => ({ x: c.x - at.x, y: c.y - at.y, w: c.w, h: c.h }));
-        const out = layOut(pieces, { storage, cells: relative, ...(storageCount === 0 ? { storages: [] } : {}) });
+        const out = layOut(pieces, { storage, cells: relative, ...(fast ? { passes: 0 } : {}),
+            ...(storageCount === 0 ? { storages: [] } : {}) });
         tried += out.tried;
         const cost = layoutCost(out);
         const better = !best || out.unplaced.length < best.out.unplaced.length
             || (out.unplaced.length === best.out.unplaced.length && cost < best.cost - EPSILON);
         if (better) best = { out, cost, at };
+        if (fast && !out.unplaced.length) break;
     }
     if (!best) {
         return { storage: null, storages: [], storageAt: null, pieces: pieces.map(p => ({ ...p, members: [], cost: 0 })), unplaced: pieces.map((_, i) => i), tried };
@@ -565,7 +567,7 @@ export function layOutHomeland(pieces, cells, storage = { w: 2, h: 2 }, storageC
         storages: out.storages.map(move),
         pieces: out.pieces.map(p => ({ ...p, members: p.members.map(move) })),
     };
-    if (storageCount > 1) layout = improveStorageLayout(layout, pieces, cells, storage, storageCount);
+    if (storageCount > 1) layout = improveStorageLayout(layout, pieces, cells, storage, storageCount, fast);
     return layout;
 }
 
@@ -877,7 +879,7 @@ export function* seededStorageLayouts(layout, pieces, cells, storage, maximum) {
 
 // Add useful storage locations, then alternate relocating storage and laying facilities out.
 // Each accepted step keeps every placed piece and reduces weighted hauling distance.
-function improveStorageLayout(layout, pieces, cells, storage, maximum) {
+function improveStorageLayout(layout, pieces, cells, storage, maximum, fast) {
     const candidates = storageSites(cells, storage);
     const membersOf = current => current.pieces.flatMap(piece => piece.members);
     const costOf = (members, stores) => members.reduce((sum, member) => {
@@ -891,15 +893,23 @@ function improveStorageLayout(layout, pieces, cells, storage, maximum) {
             && layoutCost(candidate) < layoutCost(current) - 1e-9);
     const findSpot = (members, others) => {
         const occupied = [...members, ...others];
+        const destinations = members.filter(member => member.weight > 0).map(member => {
+            const x = member.x + member.w / 2, y = member.y + member.h / 2;
+            const existing = nearestStorage(member, others);
+            const distance = existing ? Math.hypot(x - existing.x - existing.w / 2, y - existing.y - existing.h / 2) : Infinity;
+            return { x, y, distance, weight: member.weight };
+        });
         let best = null;
         for (const candidate of candidates) {
             if (occupied.some(rect => overlaps(candidate, rect))) continue;
-            const cost = costOf(members, [...others, candidate]);
+            const x = candidate.x + candidate.w / 2, y = candidate.y + candidate.h / 2;
+            const cost = destinations.reduce((sum, member) =>
+                sum + member.weight * Math.min(member.distance, Math.hypot(x - member.x, y - member.y)), 0);
             if (!best || cost < best.cost - EPSILON) best = { storage: candidate, cost };
         }
         return best;
     };
-    for (let pass = 0; pass < 2; pass++) {
+    for (let pass = 0; pass < (fast ? 1 : 2); pass++) {
         const members = membersOf(layout);
         const stores = [...layout.storages];
         let changed = false;
@@ -921,7 +931,7 @@ function improveStorageLayout(layout, pieces, cells, storage, maximum) {
         const updated = { ...layout, storages: stores, storage: stores[0], storageAt: {
             x: stores[0].x + storage.w / 2, y: stores[0].y + storage.h / 2,
         } };
-        const repacked = layOut(pieces, { storage, storages: stores, cells, passes: 3, initialLayout: updated });
+        const repacked = layOut(pieces, { storage, storages: stores, cells, passes: fast ? 1 : 3, initialLayout: updated });
         repacked.storageAt = updated.storageAt;
         repacked.tried += layout.tried;
         layout = better(repacked, updated) ? repacked : updated;

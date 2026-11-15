@@ -449,6 +449,37 @@ fn test_electricity_uses_spare_buildings_to_save_workers_at_the_same_output() {
 }
 
 #[test]
+fn test_electricity_adds_a_generator_at_equal_headcount_when_shifts_get_shorter() {
+    use aniimax::exact::{prefer_electric_staffing, rated_power_draw};
+    use aniimax::models::GrowerSteps;
+    use aniimax::power::{Electricity, GeneratorLimits, PowerPlan};
+    let powered_mine = walking_item("ore__electric4", "Mine", 30.0, "coins");
+    let normal = walking_item("board", "Woodworking Bench", 30.0, "coins");
+    let mut powered_bench = normal.clone();
+    powered_bench.name = "board__electric5".into();
+    powered_bench.production_time = 20.0;
+    let generator = GeneratorLimits::for_rv(15, 4).unwrap();
+    let mut counts = FacilityCounts::only(&[("Mine", 5, 4), ("Woodworking Bench", 2, 5)]);
+    counts.set_power(PowerPlan {
+        grid: Electricity { watts: generator.count * generator.max_output(), percent: 120, max_aniimo: None },
+        grower_steps: GrowerSteps::default(), automatic: Some(generator),
+    });
+    let modules = ModuleLevels::default();
+    let mut source = solve_and_check(&[powered_mine.clone(), normal.clone()], &counts, &modules);
+    let rate = 1.5 / normal.production_time;
+    source.rate_per_second -= source.sold["board"] - rate;
+    source.recipe_rates.insert("board".into(), rate);
+    source.sold.insert("board".into(), rate);
+    let items = vec![powered_mine, normal, powered_bench];
+    assert_eq!(generator.staffing(rated_power_draw(&source, &items) * 1.2).len(), 1);
+    let result = prefer_electric_staffing(&source, &items, "coins", &counts, &modules, None).unwrap();
+    assert_eq!(generator.staffing(rated_power_draw(&result, &items) * 1.2).len(), 2);
+    assert_eq!(result.recipe_rates["board__electric5"], rate);
+    assert_eq!(result.rate_per_second, source.rate_per_second);
+    check_plan(&result, &items, "coins", &counts, &modules, None).unwrap();
+}
+
+#[test]
 fn test_electricity_compares_bottlenecked_processors_and_the_generator_shift() {
     use aniimax::models::{AniimoLevels, AniimoRequirements, GrowerSteps};
     use aniimax::power::{add_electric_variants, Electricity, GeneratorLimits, PowerPlan};

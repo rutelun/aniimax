@@ -101,12 +101,14 @@ export function connectPower(layout, cells, maximum, repack = true, canRelocate 
     while (connected.size && targets.some(t => !connected.has(t)) && poles.length < maximum) {
         const available = candidates.filter(r => !poles.some(p => overlap(r, p, EPS * 2)));
         const buckets = new Map();
-        for (const r of available) { const key = bucket(r).join(','); if (!buckets.has(key)) buckets.set(key, []); buckets.get(key).push(r); }
+        for (const r of available) { const key = bucket(r).join(','); if (!buckets.has(key)) buckets.set(key, new Set()); buckets.get(key).add(r); }
         const parents = new Map();
         const depth = new Map();
         const queue = [];
-        for (const r of available) if ([...connected].some(n => relaysPower(n) && powerLinked(n, r))) {
+        const relays = [...connected].filter(relaysPower);
+        for (const r of available) if (relays.some(n => powerLinked(n, r))) {
             parents.set(r, null); depth.set(r, 1); queue.push(r);
+            buckets.get(bucket(r).join(',')).delete(r);
         }
         let end = null;
         const remaining = targets.filter(t => !connected.has(t));
@@ -116,14 +118,17 @@ export function connectPower(layout, cells, maximum, repack = true, canRelocate 
             if (depth.get(r) >= maximum - poles.length) continue;
             const [bx, by] = bucket(r);
             for (let y = by - 2; y <= by + 2; y++) for (let x = bx - 2; x <= bx + 2; x++) {
-                for (const next of buckets.get(`${x},${y}`) || []) {
-                    if (parents.has(next) || !powerLinked(r, next) || overlap(r, next, EPS * 2)) continue;
+                const unvisited = buckets.get(`${x},${y}`);
+                if (!unvisited) continue;
+                for (const next of unvisited) {
+                    if (!powerLinked(r, next) || overlap(r, next, EPS * 2)) continue;
                     let blockedByRoute = false;
                     for (let previous = parents.get(r); previous; previous = parents.get(previous)) {
                         if (overlap(previous, next, EPS * 2)) { blockedByRoute = true; break; }
                     }
                     if (blockedByRoute) continue;
                     parents.set(next, r); depth.set(next, depth.get(r) + 1); queue.push(next);
+                    unvisited.delete(next);
                 }
             }
         }
@@ -150,6 +155,20 @@ export function connectPower(layout, cells, maximum, repack = true, canRelocate 
         const my = electricMembers.reduce((sum, m) => sum + center(m).y, 0) / electricMembers.length;
         const anchors = cells.map(c => ({ x: c.x + c.w / 2, y: c.y + c.h / 2 }))
             .sort((a, b) => Math.hypot(a.x - mx, a.y - my) - Math.hypot(b.x - mx, b.y - my)).slice(0, 8);
+        const positions = new Map();
+        const sitesFor = ({ w, h }) => {
+            const key = `${w}|${h}`;
+            if (!positions.has(key)) {
+                const sites = [];
+                for (const cell of cells) for (let y = cell.y; y < cell.y + cell.h; y += .5) for (let x = cell.x; x < cell.x + cell.w; x += .5) {
+                    const covered = cells.reduce((sum, c) => sum + Math.max(0, Math.min(x + w, c.x + c.w) - Math.max(x, c.x))
+                        * Math.max(0, Math.min(y + h, c.y + c.h) - Math.max(y, c.y)), 0);
+                    if (covered >= w * h - EPS) sites.push({ x, y, w, h });
+                }
+                positions.set(key, sites);
+            }
+            return positions.get(key);
+        };
         let best = layout;
         for (const anchor of anchors) {
             const trial = structuredClone(layout);
@@ -157,20 +176,18 @@ export function connectPower(layout, cells, maximum, repack = true, canRelocate 
             const movable = all.filter(m => m.generator || m.electric_level != null)
                 .sort((a, b) => Number(!!b.generator) - Number(!!a.generator) || b.w * b.h - a.w * a.h);
             const occupied = [...trial.storages, ...all.filter(m => !movable.includes(m))];
+            const byDistance = new Map();
+            const near = member => {
+                const sites = sitesFor(member);
+                if (!byDistance.has(sites)) {
+                    const cost = r => (r.x + r.w / 2 - anchor.x) ** 2 + (r.y + r.h / 2 - anchor.y) ** 2;
+                    byDistance.set(sites, sites.map(r => [r, cost(r)]).sort((a, b) => a[1] - b[1]).map(([r]) => r));
+                }
+                return byDistance.get(sites);
+            };
             let fits = true;
             for (const m of movable) {
-                let spot = null;
-                for (const cell of cells) for (let y = cell.y; y < cell.y + cell.h; y += 0.5) for (let x = cell.x; x < cell.x + cell.w; x += 0.5) {
-                    const r = { x, y, w: m.w, h: m.h };
-                    if (canRelocate && !canRelocate(m, r)) continue;
-                    const c = center(r);
-                    const cost = (c.x - anchor.x) ** 2 + (c.y - anchor.y) ** 2;
-                    if (spot && cost >= spot.cost) continue;
-                    const area = cells.reduce((sum, cell) => sum + Math.max(0, Math.min(x + r.w, cell.x + cell.w) - Math.max(x, cell.x))
-                        * Math.max(0, Math.min(y + r.h, cell.y + cell.h) - Math.max(y, cell.y)), 0);
-                    if (area < r.w * r.h - EPS || occupied.some(o => overlap(r, o, EPS * 2))) continue;
-                    spot = { x, y, cost };
-                }
+                const spot = near(m).find(r => (!canRelocate || canRelocate(m, r)) && !occupied.some(o => overlap(r, o, EPS * 2)));
                 if (!spot) { fits = false; break; }
                 m.x = spot.x; m.y = spot.y; occupied.push(m);
             }

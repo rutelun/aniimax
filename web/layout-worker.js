@@ -24,8 +24,12 @@ self.onmessage = async (event) => {
         }
     }
     const storage = { w: 2, h: 2 };
-    const layout = layOutHomeland(pieces, cells, storage, storageCount);
+    const layout = layOutHomeland(pieces, cells, storage, storageCount, { fast: true });
     const powered = connectPower(layout, cells, poleLimit);
+    if (!grouped && !powered.unplaced.length && !powered.power.disconnected) {
+        self.postMessage(powered);
+        return;
+    }
     // Routing can relocate electric facilities and vacate useful positions. Fill those holes
     // after routing too, without moving infrastructure or disconnecting any electric consumer.
     let best = updatePowerConnections(refineSuppliedLayout(powered, pieces, cells));
