@@ -1094,5 +1094,13 @@
   "{hours} h/day",
   "{duration} per batch",
   "Workload is the average per assigned Aniimo. Dedicated posts count as full shifts.",
-  "Building load is the average time spent on a recipe per building. Time per batch is for a single production cycle. In the Aniimo column, a ring means the plan uses a personality bonus."
+  "Building load is the average time spent on a recipe per building. Time per batch is for a single production cycle. In the Aniimo column, a ring means the plan uses a personality bonus.",
+  "Add Aniimo",
+  "Edit Aniimo",
+  "Close",
+  "Load more Aniimo",
+  "Calculate a plan with My Aniimo to see assignments.",
+  "Shared field crew",
+  "Show workers",
+  "Art"
 ]

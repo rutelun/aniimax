@@ -28,7 +28,7 @@ function page() {
         clearTimeout(id) { timers.delete(id); },
         displayPlan: plan => shown.push(plan), runTimeToGoal() {}, updatePlannerNavigation() {},
         startProgress() {}, finishSolveSteps() {}, renderProgress() {}, setStep: (...args) => steps.push(args), translate: s => s,
-        stopRanking() {}, stopLayout() {}, renderImprovements() {}, restartWorker() {},
+        stopRanking() {}, stopLayout() {}, renderImprovements() {}, restartWorker() {}, refreshRosterTileWorkloads() {},
         ENVIRONMENT_BUILDING_ABILITY: {}, RESIDENT_FACILITIES: [], FACILITIES: [], ANIIMO_WALK_SPEED: 4,
     };
     const run = code => runInNewContext(code, context);

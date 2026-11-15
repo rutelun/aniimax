@@ -1094,5 +1094,13 @@
   "{hours} h/day": "{hours} ч/сутки",
   "{duration} per batch": "{duration} на партию",
   "Workload is the average per assigned Aniimo. Dedicated posts count as full shifts.": "Показана средняя загрузка на одного назначенного Анимо. Постоянные рабочие места считаются полной сменой.",
-  "Building load is the average time spent on a recipe per building. Time per batch is for a single production cycle. In the Aniimo column, a ring means the plan uses a personality bonus.": "Загрузка показывает, какую долю времени каждое здание в среднем занято рецептом. Время партии — один производственный цикл. Кольцо в столбце Анимо означает бонус характера."
+  "Building load is the average time spent on a recipe per building. Time per batch is for a single production cycle. In the Aniimo column, a ring means the plan uses a personality bonus.": "Загрузка показывает, какую долю времени каждое здание в среднем занято рецептом. Время партии — один производственный цикл. Кольцо в столбце Анимо означает бонус характера.",
+  "Add Aniimo": "Добавить Анимо",
+  "Edit Aniimo": "Редактировать Анимо",
+  "Close": "Закрыть",
+  "Load more Aniimo": "Загрузить ещё Анимо",
+  "Calculate a plan with My Aniimo to see assignments.": "Рассчитай план в режиме «Мои Анимо», чтобы увидеть назначения.",
+  "Shared field crew": "Общая команда на грядках и в лесу",
+  "Show workers": "Показать работников",
+  "Art": "Портреты"
 }

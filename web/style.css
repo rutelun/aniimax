@@ -2889,57 +2889,168 @@ tr:hover .skip-row,
 }
 
 .roster-tools {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.65rem 1rem;
+    align-items: end;
+}
+.roster-tools .input-field { flex: 0 1 20rem; min-width: 0; margin: 0; }
+.roster-tools .planner-checkbox { min-height: 2.65rem; }
+.roster-cards, .roster-catalog-results {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 7rem), 1fr));
+    gap: 0.45rem;
     align-items: start;
-    gap: 0.6rem;
 }
-.roster-tools .input-field { min-width: 0; }
-.roster-tools > button { margin-top: 1.5rem; }
 .roster-cards {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
-    gap: 0.4rem;
-}
-.roster-cards .roster-card { padding: 0.4rem 0.6rem; min-width: 0; }
-.roster-cards .roster-card[open] { grid-column: 1 / -1; }
-.roster-card-summary { cursor: pointer; font-size: 0.85rem; }
-.roster-card-meta { float: right; display: inline-flex; gap: 0.6rem; opacity: 0.8; }
-.roster-card-tags { display: flex; flex-wrap: wrap; gap: 0.25rem 0.5rem; margin-top: 0.25rem; }
-.roster-card-tags > span { font-size: 0.75rem; white-space: nowrap; }
-.roster-card-fields { margin-top: 0.65rem; }
-.roster-card:not([open]) .roster-card-fields { display: none; }
-.roster-catalog-results {
-    display: grid;
-    gap: 0.25rem;
-    margin-top: 0.3rem;
-}
-.roster-catalog-results[hidden] { display: none; }
-.roster-catalog-results button {
-    display: grid;
-    text-align: left;
-    gap: 0.15rem;
-    padding: 0.4rem 0.6rem;
+    padding: 0.6rem;
     border: 1px solid var(--border);
-    border-radius: 0.4rem;
-    background: var(--surface-2);
-    color: inherit;
+    border-radius: var(--radius);
+    background: color-mix(in srgb, var(--accent) 8%, var(--bg));
+}
+.roster-tile {
+    display: grid;
+    width: 100%;
+    min-width: 0;
+    align-content: start;
+    justify-items: center;
+    gap: 0.33rem;
+    padding: 0.42rem 0.2rem;
+    border: 1px solid transparent;
+    border-radius: 0.65rem;
+    background: transparent;
+    color: var(--text);
+    font: inherit;
     cursor: pointer;
 }
-.roster-catalog-results button:hover, .roster-catalog-results button:focus-visible { border-color: currentColor; }
-@media (max-width: 570px) {
-    .roster-tools { grid-template-columns: minmax(0, 1fr); }
-    .roster-tools > button { margin-top: 0; justify-self: start; }
-}
-
-.roster-card {
-    min-width: 0;
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 0.6rem 0.75rem;
+.roster-tile[hidden] { display: none; }
+.roster-tile:hover, .roster-tile:focus-visible { border-color: var(--accent); background: var(--surface-2); }
+.roster-tile-name { font-size: 0.8rem; line-height: 1.25; overflow-wrap: anywhere; }
+.roster-tile small { color: var(--text-muted); font-size: 0.7rem; }
+.roster-portrait {
+    --hex: polygon(50% 0%, 93% 22%, 98% 31%, 98% 69%, 93% 78%, 50% 100%, 7% 78%, 2% 69%, 2% 31%, 7% 22%);
+    position: relative;
     display: grid;
+    place-items: center;
+    width: min(100%, 5.6rem);
+    aspect-ratio: 1;
+    margin-bottom: 0.55rem;
+}
+.roster-portrait::before, .roster-portrait-fill {
+    position: absolute;
+    inset: 0;
+    clip-path: var(--hex);
+}
+.roster-portrait::before { content: ""; background: #697387; }
+.roster-portrait.prismana::before { background: linear-gradient(145deg, #c29cff, #80d0ff, #ef96de); }
+.roster-portrait-fill {
+    inset: 2px;
+    display: grid;
+    place-items: center;
+    color: #b7c3d9;
+    background: radial-gradient(at 50% 25%, #606b81, #333b4d 80%);
+    font-size: 2rem;
+}
+.roster-portrait-fill img, .roster-skill img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+}
+.roster-portrait-fill:has(img:not([hidden])) > span, .roster-skill:has(img:not([hidden])) > span { visibility: hidden; }
+.roster-portrait-count {
+    position: absolute;
+    right: 0;
+    top: 0.2rem;
+    padding: 0.03rem 0.34rem;
+    border: 1px solid #6b768a;
+    border-radius: 1rem;
+    background: #182131;
+    color: white;
+    font-size: 0.7rem;
+}
+.roster-tile.is-assigned .roster-portrait::after {
+    content: "";
+    position: absolute;
+    top: 0.45rem;
+    left: 0.25rem;
+    width: 0.55rem;
+    aspect-ratio: 1;
+    border: 1px solid #15222a;
+    border-radius: 50%;
+    background: #78dab3;
+}
+.roster-card-tags {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    max-width: calc(100% + 0.65rem);
+    gap: 1px;
+    position: absolute;
+    bottom: -0.38rem;
+    padding: 2px;
+    border-radius: 0.7rem;
+    background: #27303f;
+}
+.roster-card-tags:empty { display: none; }
+.roster-skill {
+    position: relative;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    background: var(--ability);
+    color: white;
+    width: 1.25rem;
+    height: 1.25rem;
+    font-size: 0.7rem;
+    line-height: 1;
+}
+.roster-skill b {
+    position: absolute;
+    right: -1px;
+    bottom: -1px;
+    font-size: 0.66rem;
+    text-shadow: 1px 0 #172131, -1px 0 #172131, 0 -1px #172131, 0 1px #172131;
+}
+.roster-empty-tile .roster-portrait {
+    isolation: isolate;
+    color: var(--accent);
+    font-size: 1.8rem;
+    font-weight: 400;
+}
+.roster-empty-tile .roster-portrait::before { z-index: -1; background: color-mix(in srgb, var(--accent) 15%, var(--surface)); }
+.roster-dialog {
+    position: fixed;
+    margin: auto;
+    width: min(50rem, calc(100% - 1rem));
+    max-height: calc(100dvh - 1rem);
+    padding: clamp(0.7rem, 2vw, 1.15rem);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    color: var(--text);
+}
+.roster-dialog[open] { display: flex; flex-direction: column; gap: 0.7rem; }
+.roster-dialog::backdrop { background: #080c16bc; }
+.roster-edit-dialog { width: min(35rem, calc(100% - 1rem)); }
+.roster-dialog-head, .roster-dialog-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
     gap: 0.45rem;
 }
+.roster-dialog-head .roster-x { min-width: 2.75rem; min-height: 2.75rem; }
+.roster-dialog .input-field { margin: 0; }
+.roster-catalog-scroll {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+    scrollbar-color: var(--text-muted) transparent;
+}
+.roster-catalog-scroll > :not(.roster-catalog-results) { margin: 0.4rem; }
+.roster-edit-workload { white-space: pre-line; margin-bottom: 0.8rem; }
 
 .roster-head {
     display: flex;
@@ -3291,9 +3402,11 @@ html { scroll-padding-top: calc(var(--planner-bar-height, 4rem) + 0.8rem); }
 .layout-arrangement > label { display: flex; align-items: baseline; gap: 0.5rem; }
 .layout-arrangement > label input { flex: none; }
 .layout-svg.zoomed { touch-action: none; }
-.roster-card-summary strong { overflow-wrap: anywhere; }
-.roster-card-meta { float: none; margin-inline-start: 0.4rem; white-space: nowrap; }
-.roster-card-tags { padding-inline-start: 0.2rem; }
+.tip-detail, .tip-work { white-space: pre-line; overflow-wrap: anywhere; }
+.tip-work { border-top: 1px solid var(--border); margin-top: 0.35rem; padding-top: 0.35rem; }
+.layout-worker-badges { pointer-events: none; }
+.layout-worker-more { paint-order: stroke; stroke: #151820; stroke-width: 0.14; }
+:is(.layout-piece, .env-building):focus-visible > rect { stroke: var(--accent); stroke-width: 0.17; }
 .seed-table { overflow-x: auto; }
 .priority-name, .step-label { min-width: 0; overflow-wrap: anywhere; }
 .progress-step { grid-template-columns: 1.1rem minmax(0, 1fr) auto; }
@@ -3359,6 +3472,9 @@ html { scroll-padding-top: calc(var(--planner-bar-height, 4rem) + 0.8rem); }
 }
 .assignment-row + .assignment-row { border-top: 1px solid var(--border); }
 .assignment-identity, .assignment-load { display: grid; gap: 0.2rem; }
+.assignment-with-portrait { display: flex; gap: 0.6rem; align-items: start; min-width: 0; }
+.assignment-with-portrait img { flex: none; object-fit: contain; border-radius: 0.6rem; background: var(--surface-2); }
+.assignment-with-portrait > div { display: grid; min-width: 0; gap: 0.2rem; }
 .assignment-meta { color: var(--text-muted); font-size: 0.78rem; }
 .assignment-abilities { display: flex; flex-wrap: wrap; gap: 0.15rem 0.4rem; font-size: 0.78rem; }
 .assignment-abilities > span { white-space: nowrap; }
