@@ -453,7 +453,9 @@ fn test_electricity_adds_a_generator_at_equal_headcount_when_shifts_get_shorter(
     use aniimax::exact::{prefer_electric_staffing, rated_power_draw};
     use aniimax::models::GrowerSteps;
     use aniimax::power::{Electricity, GeneratorLimits, PowerPlan};
-    let mut powered_mine = walking_item("ore__electric4", "Mine", 30.0, "coins");
+    let ore = walking_item("ore", "Mine", 30.0, "coins");
+    let mut powered_mine = ore.clone();
+    powered_mine.name = "ore__electric4".into();
     powered_mine.facility_level = 4;
     let normal = walking_item("board", "Woodworking Bench", 30.0, "coins");
     let mut powered_bench = normal.clone();
@@ -476,7 +478,7 @@ fn test_electricity_adds_a_generator_at_equal_headcount_when_shifts_get_shorter(
     source.recipe_rates.insert(powered_mine.name.clone(), ore_rate);
     source.units.insert(powered_mine.name.clone(), 5);
     source.sold.insert("ore".into(), ore_rate);
-    let items = vec![powered_mine, normal, powered_bench];
+    let items = vec![ore, powered_mine, normal, powered_bench];
     check_plan(&source, &items, "coins", &counts, &modules, None).unwrap();
     assert_eq!(generator.staffing(rated_power_draw(&source, &items) * 1.2).len(), 1);
     let result = prefer_electric_staffing(&source, &items, "coins", &counts, &modules, None).unwrap();
