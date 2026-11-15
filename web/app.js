@@ -19,6 +19,7 @@ import { changeOneMember, personalityInput, reserveLevelFourInputs, comparePlans
 import { comparisonConcurrency, startComparisonQueue } from './comparison-queue.js?v=parallel-comparisons';
 import { prepareOpportunities, startedProcessing, increasedProcessing } from './opportunity-effects.js?v=auto-e-mode';
 import { aniimoPortrait, attachRosterPicker, rosterCatalogId, rosterFormName } from './roster-picker.js?v=roster-portraits';
+import facilityIcons from './facility-icons.json' with { type: 'json' };
 
 let wasmReady = false;
 
@@ -1507,7 +1508,11 @@ function attachLayoutHandlers() {
     document.getElementById('layout-replay').addEventListener('click', () => {
         if (layoutSim) resetLayoutSim(layoutSim);
     });
-    attachLayoutZoom(document.getElementById('layout-diagram'));
+    const diagram = document.getElementById('layout-diagram');
+    diagram.addEventListener('load', event => {
+        if (event.target.matches?.('.layout-facility-icon')) event.target.classList.add('loaded');
+    }, true);
+    attachLayoutZoom(diagram);
 }
 
 // --- Layout zoom -----------------------------------------------------------------------
@@ -1849,21 +1854,24 @@ function stopLayout() {
     lastLayout = null;
 }
 
-// A piece's name on the layout: the facility's initials, and with "Show recipe" on, what it makes
-// under them ("Quick Wool", "Gem"), shrunk to fit the piece's width. Several recipes taking turns
-// are listed together.
+// A map piece's game icon and optional recipe names. Use initials while the art loads.
 function pieceLabel(m, showRecipes) {
     const x = m.x + m.w / 2;
     const y = m.y + m.h / 2;
     const initials = Math.min(0.8, m.w / 3);
     const recipe = showRecipes ? (m.jobs ? m.jobs.map(j => prettyItem(j.item)).join(', ') : m.crop ? prettyItem(m.crop) : '') : '';
-    if (!recipe) return `<text x="${x}" y="${y}" font-size="${initials}">${initialsOf(m.facility)}</text>`;
-    // A character is about 0.55 of the font size wide.
-    const size = Math.min(initials * 0.55, (m.w - 0.3) / (recipe.length * 0.55));
-    // The two lines centered together on the piece.
-    const half = (initials + 0.1 + size) / 2;
-    return `<text x="${x}" y="${(y - half + initials / 2).toFixed(3)}" font-size="${initials}">${initialsOf(m.facility)}</text>
-        <text class="layout-recipe" x="${x}" y="${(y + half - size / 2).toFixed(3)}" font-size="${size.toFixed(3)}">${recipe}</text>`;
+    const fallback = `<text class="layout-icon-fallback" x="${x}" y="${y}" font-size="${initials}">${initialsOf(m.facility)}</text>`;
+    const art = layoutFacilityIcon(m.facility, m, recipe ? 0.24 : 0.05);
+    if (!recipe) return fallback + art;
+    const size = Math.min(initials * 0.62, (m.w - 0.16) / (recipe.length * 0.56));
+    return `${fallback}${art}<text class="layout-recipe" x="${x}" y="${m.y + m.h - size * 0.8}" font-size="${size}">${escapeText(recipe)}</text>`;
+}
+
+function layoutFacilityIcon(facility, { x, y, w, h }, labelSpace = 0.15) {
+    const id = facilityIcons[facility];
+    if (!id) return '';
+    return `<image class="layout-facility-icon" href="https://aniimotools.dev/assets/items/ui_item_${id}.webp"
+        x="${x + w * 0.04}" y="${y + h * 0.03}" width="${w * 0.92}" height="${h * (0.97 - labelSpace)}" aria-hidden="true"/>`;
 }
 
 // Whether the layout shows the whole homeland rather than just what's placed; the player's toggle.
@@ -2008,15 +2016,14 @@ function homelandSvg(layout, homeLevel, plan) {
         const focus = workAtSites[index].length ? 'tabindex="0" role="group"' : '';
         const workers = showWorkers ? layoutWorkerBadges(m, workAtSites[index]) : '';
         const badge = electric ? `<g class="layout-emode-badge${m.power_connected ? '' : ' disconnected'}" aria-label="E-mode"><circle cx="${m.x + m.w - 0.4}" cy="${m.y + 0.4}" r="0.45" /><text x="${m.x + m.w - 0.4}" y="${m.y + 0.4}" font-size="0.65">⚡</text></g>` : '';
-        const label = m.generator ? `<text x="${m.x + m.w / 2}" y="${m.y + m.h / 2}" font-size="0.8">⚡G</text>`
-            : Math.min(m.w, m.h) >= 1.5 ? pieceLabel(m, showRecipes) : '';
+        const label = pieceLabel(m, showRecipes);
         // Busier pieces are filled more solidly; idle ones are an outline.
         const fill = m.building ? 0.9 : m.weight > 0 ? 0.35 + 0.55 * Math.sqrt(m.weight / maxTrips) : 0.08;
         if (m.building) {
-            // As on the building's own map: its mode's color, with the game's symbol for it.
+            // The footprint and coverage stay colored by climate mode.
             return `<g class="env-building" ${focus} ${tip}><rect x="${m.x + 0.05}" y="${m.y + 0.05}" width="${m.w - 0.1}" height="${m.h - 0.1}" rx="0.3"
                 fill="${color}" fill-opacity="${m.mode ? 1 : 0.25}" stroke="currentColor" stroke-opacity="0.6" stroke-width="0.08" />
-                ${m.mode ? environmentBuildingIcon(m.facility, m.mode, m.x + m.w / 2, m.y + m.h / 2) : ''}${workers}</g>`;
+                ${label}${workers}</g>`;
         }
         return `<g class="layout-piece${electric ? ' layout-emode' : ''}${m.generator ? ' layout-generator' : ''}" data-layout-site="${index}" ${focus} ${tip}><rect x="${m.x + 0.04}" y="${m.y + 0.04}" width="${m.w - 0.08}" height="${m.h - 0.08}" rx="0.2"
             fill="${m.generator ? '#f6cd58' : color}" fill-opacity="${m.generator ? 0.5 : fill.toFixed(2)}" stroke="${color}" stroke-width="0.06" />${label}${badge}${workers}</g>`;
@@ -2042,7 +2049,8 @@ function homelandSvg(layout, homeLevel, plan) {
         const trips = flowList.filter(flow => flow.storage === index).reduce((sum, flow) => sum + flow.trips, 0);
         return `<g class="layout-piece layout-storage-unit" ${tipAttrs('Storage Unit', { detail: 'Nearest storage for its deliveries', stats: trips > 0 ? `${formatRate(trips)} trips/hour` : '' })}>
             <rect x="${s.x + 0.04}" y="${s.y + 0.04}" width="${s.w - 0.08}" height="${s.h - 0.08}" rx="0.2" class="layout-storage" />
-            <text x="${s.x + s.w / 2}" y="${s.y + s.h / 2}" font-size="0.65" class="layout-storage-text">SU${index + 1}</text></g>`;
+            ${layoutFacilityIcon('Storage Unit', s, 0.27)}
+            <text x="${s.x + s.w / 2}" y="${s.y + s.h * 0.82}" font-size="0.52" class="layout-number-label">SU${index + 1}</text></g>`;
     }).join('');
     const view = `${minX} ${minY} ${maxX - minX} ${maxY - minY}`;
     const power = layout.power;
@@ -2050,7 +2058,8 @@ function homelandSvg(layout, homeLevel, plan) {
     const powerLines = (power?.links || []).map(link => `<line x1="${link.from.x}" y1="${link.from.y}" x2="${link.to.x}" y2="${link.to.y}" />`).join('');
     const poleShapes = (power?.poles || []).map((p, i) => `<g class="layout-power-pole" ${tipAttrs('Crackle Power Pole', { detail: `${i + 1} · 7×7` })}>
         <rect x="${p.x + 0.04}" y="${p.y + 0.04}" width="${p.w - 0.08}" height="${p.h - 0.08}" rx="0.2" />
-        <text x="${p.x + p.w / 2}" y="${p.y + p.h / 2}" font-size="0.7">⚡${i + 1}</text></g>`).join('');
+        ${layoutFacilityIcon('Crackle Power Pole', p, 0.27)}
+        <text x="${p.x + p.w / 2}" y="${p.y + p.h * 0.82}" font-size="0.48" class="layout-number-label">${i + 1}</text></g>`).join('');
     const rectangle = (r, css) => `<rect class="${css}" x="${r.x}" y="${r.y}" width="${r.w}" height="${r.h}" />`;
     const districts = layout.groupStyle === 'districts';
     const groupShapes = groups.map(group => `<g class="layout-district${districts ? ' layout-district-structured' : ''}" data-purpose="${group.purpose}" data-theme="${resourceZoneTheme(group)}">

@@ -2563,9 +2563,15 @@ tr:hover .skip-row,
     pointer-events: none;
 }
 
-/* What a piece makes, under its initials (the "Show recipe" toggle). */
-.layout-svg .layout-recipe {
-    font-weight: 500;
+.layout-facility-icon { pointer-events: none; }
+.layout-facility-icon.loaded { filter: drop-shadow(0 0.07rem 0.09rem #1118); }
+.layout-svg :has(> .layout-facility-icon.loaded) > .layout-icon-fallback { display: none; }
+.layout-svg :is(.layout-recipe, .layout-number-label) {
+    fill: white;
+    stroke: #10141c;
+    stroke-width: 0.16;
+    stroke-linejoin: round;
+    paint-order: stroke;
 }
 
 /* Zoomed in (Ctrl + scroll), the layout can be dragged around. */
@@ -2585,10 +2591,6 @@ tr:hover .skip-row,
     fill: var(--accent);
     stroke: var(--text);
     stroke-width: 0.08;
-}
-
-.layout-svg .layout-storage-text {
-    fill: var(--bg, #111);
 }
 
 /* Deliveries to the Storage Unit (see "Deliveries" in app.js): a piece's line shows once its
