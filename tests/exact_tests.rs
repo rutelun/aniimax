@@ -453,11 +453,13 @@ fn test_electricity_adds_a_generator_at_equal_headcount_when_shifts_get_shorter(
     use aniimax::exact::{prefer_electric_staffing, rated_power_draw};
     use aniimax::models::GrowerSteps;
     use aniimax::power::{Electricity, GeneratorLimits, PowerPlan};
-    let powered_mine = walking_item("ore__electric4", "Mine", 30.0, "coins");
+    let mut powered_mine = walking_item("ore__electric4", "Mine", 30.0, "coins");
+    powered_mine.facility_level = 4;
     let normal = walking_item("board", "Woodworking Bench", 30.0, "coins");
     let mut powered_bench = normal.clone();
     powered_bench.name = "board__electric5".into();
     powered_bench.production_time = 20.0;
+    powered_bench.facility_level = 5;
     let generator = GeneratorLimits::for_rv(15, 4).unwrap();
     let mut counts = FacilityCounts::only(&[("Mine", 5, 4), ("Woodworking Bench", 2, 5)]);
     counts.set_power(PowerPlan {
@@ -465,12 +467,17 @@ fn test_electricity_adds_a_generator_at_equal_headcount_when_shifts_get_shorter(
         grower_steps: GrowerSteps::default(), automatic: Some(generator),
     });
     let modules = ModuleLevels::default();
-    let mut source = solve_and_check(&[powered_mine.clone(), normal.clone()], &counts, &modules);
+    let mut source = solve_and_check(std::slice::from_ref(&normal), &counts, &modules);
     let rate = 1.5 / normal.production_time;
-    source.rate_per_second -= source.sold["board"] - rate;
+    let ore_rate = 5.0 / powered_mine.production_time;
+    source.rate_per_second = rate + ore_rate;
     source.recipe_rates.insert("board".into(), rate);
     source.sold.insert("board".into(), rate);
+    source.recipe_rates.insert(powered_mine.name.clone(), ore_rate);
+    source.units.insert(powered_mine.name.clone(), 5);
+    source.sold.insert("ore".into(), ore_rate);
     let items = vec![powered_mine, normal, powered_bench];
+    check_plan(&source, &items, "coins", &counts, &modules, None).unwrap();
     assert_eq!(generator.staffing(rated_power_draw(&source, &items) * 1.2).len(), 1);
     let result = prefer_electric_staffing(&source, &items, "coins", &counts, &modules, None).unwrap();
     assert_eq!(generator.staffing(rated_power_draw(&result, &items) * 1.2).len(), 2);
