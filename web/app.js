@@ -20,6 +20,7 @@ import { comparisonConcurrency, startComparisonQueue } from './comparison-queue.
 import { prepareOpportunities, startedProcessing, increasedProcessing } from './opportunity-effects.js?v=auto-e-mode';
 import { aniimoPortrait, attachRosterPicker, rosterCatalogId, rosterFormName } from './roster-picker.js?v=game-heads';
 import { placeRosterCopy, ROSTER_ROW_SIZE, rosterSlotsFor, swapRosterSlots } from './roster-slots.js';
+import { scheduleRosterCopies } from './roster-work.js?v=individual-shifts';
 import facilityIcons from './facility-icons.json' with { type: 'json' };
 import { abilityGlyph, gameAbilityIcon } from './ability-icons.js?v=game-heads';
 
@@ -2681,14 +2682,12 @@ function refreshRosterTileWorkloads(workloads = []) {
         const i = Number(tile.dataset.rosterTile);
         const member = roster[i];
         if (!member) return;
-        const work = workloads[i];
-        const active = work?.assigned > Number(tile.dataset.rosterCopy);
+        const work = workloads[i]?.[Number(tile.dataset.rosterCopy)];
         tile.dataset.tip = rosterTileLabel(member, i);
-        tile.dataset.tipStats = work ? (active ? work.summary : translate('Unassigned'))
-            : translate('Calculate a plan with My Aniimo to see assignments.');
-        tile.dataset.tipDetail = active ? work.lines.join('\n') : '';
-        tile.dataset.rosterTasks = active ? JSON.stringify(work.tasks) : '[]';
-        tile.classList.toggle('is-assigned', active);
+        tile.dataset.tipStats = work ? work.summary : translate('Calculate a plan with My Aniimo to see assignments.');
+        tile.dataset.tipDetail = work?.lines.join('\n') ?? '';
+        tile.dataset.rosterTasks = JSON.stringify(work?.tasks ?? []);
+        tile.classList.toggle('is-assigned', work?.active ?? false);
         tile.setAttribute('aria-description', [tile.dataset.tipStats, tile.dataset.tipDetail].filter(Boolean).join('. '));
     });
     const fields = document.querySelector('#roster-edit-dialog[open] .roster-card-fields');
@@ -2696,7 +2695,9 @@ function refreshRosterTileWorkloads(workloads = []) {
 }
 
 function updateRosterEditorWorkload(fields) {
-    const work = rosterTileWorkloads[Number(fields.dataset.rosterCard)];
+    const member = Number(fields.dataset.rosterCard);
+    const copy = rosterSlots.slice(0, openRosterSlot).filter(slot => slot === member).length;
+    const work = rosterTileWorkloads[member]?.[copy];
     const workload = fields.querySelector('.roster-edit-workload');
     workload.hidden = !work;
     workload.textContent = work ? [work.summary, ...work.lines].join('\n') : '';
@@ -3157,23 +3158,16 @@ function rosterWorkload(plan) {
     const busy = members.map(() => 0);
     const walking = members.map(() => 0);
     const anchored = members.map(() => 0);
-    const jobs = members.map(() => new Map());
-    const addJob = (member, name, share) => {
-        jobs[member].set(name, (jobs[member].get(name) || 0) + share);
-    };
     (plan.coin_items || []).forEach(step => {
         if (step.crew == null || step.status !== 'producing' || !members[step.crew]) return;
         const resident = RESIDENT_FACILITIES.has(step.facility);
         busy[step.crew] += resident ? step.facility_count : (step.busy_units ?? step.facility_count);
         if (resident) anchored[step.crew] += step.facility_count;
-        const place = `${step.facility} (${prettyItem(step.item_name)})`;
-        addJob(step.crew, place, resident ? step.facility_count : (step.busy_units ?? step.facility_count));
     });
-    (plan.staffing || []).forEach(([building, member, share]) => {
+    (plan.staffing || []).forEach(([, member, share]) => {
         if (!members[member]) return;
         busy[member] += share;
         anchored[member] += share;
-        addJob(member, building, share);
     });
     (plan.movement_staffing || []).forEach(([member, travel]) => {
         if (!members[member]) return;
@@ -3183,13 +3177,9 @@ function rosterWorkload(plan) {
     (plan.workplace_anchors || []).forEach(([member, count]) => {
         if (members[member]) anchored[member] += count;
     });
-    for (const [item, job, member, share] of plan.crop_jobs || []) {
-        if (members[member] && share > 1e-9) addJob(member, `${translate(job)} · ${prettyItem(item)}`, share);
-    }
-    for (const [ability, , member, share] of plan.crop_assignments || []) {
+    for (const [, , member, share] of plan.crop_assignments || []) {
         if (!members[member] || share <= 0) continue;
         busy[member] += share;
-        if (!plan.crop_jobs?.length) addJob(member, `${translate('Crop work')} · ${translate(ability)}`, share);
     }
     const checked = plan.roster_workload;
     const workload = checked?.length ? members.map((_, i) => checked[i] ?? 0) : busy;
@@ -3198,54 +3188,99 @@ function rosterWorkload(plan) {
         workload[member] += extra;
         walking[member] += extra;
     }
-    return { members, busy: workload, walking, jobs, anchored };
+    return { members, busy: workload, walking, anchored };
+}
+
+function rosterCopyShifts(plan, members, assigned, walking) {
+    const fixed = members.map(() => []);
+    const posts = members.map(() => []);
+    const routes = members.map(() => []);
+    const addMobile = (member, label, share) => routes[member]?.push({ jobs: [[label, share]] });
+    const walkingLabel = translate('Walking between jobs');
+    const detailed = plan.roster_routes?.length > 0;
+    for (const step of plan.coin_items || []) {
+        if (step.status !== 'producing' || !members[step.crew]) continue;
+        const label = `${translate(step.facility)} (${prettyItem(step.item_name)})`;
+        if (RESIDENT_FACILITIES.has(step.facility)) {
+            fixed[step.crew].push([label, step.facility_count]);
+        } else if (!detailed) {
+            addMobile(step.crew, label, step.busy_units ?? step.facility_count);
+        }
+    }
+    for (const [building, member, share] of plan.staffing || []) {
+        fixed[member]?.push([translate(building), Math.round(share)]);
+    }
+    for (const [station, member, count] of plan.roster_posts || []) {
+        posts[member]?.push([station, Math.round(count)]);
+    }
+    if (detailed) {
+        const visits = members.map(() => 0);
+        for (const route of plan.roster_routes) visits[route.member] += route.visits;
+        const extraWalking = new Map(plan.layout_walking || []);
+        for (const route of plan.roster_routes) {
+            const item = prettyItem(route.item);
+            const jobs = route.jobs.map(([job, share]) => [
+                job ? `${translate(job)} · ${item}` : `${translate(route.facility)} (${item})`, share,
+            ]);
+            if (route.visits > 0) {
+                const extra = (extraWalking.get(route.member) || 0) * route.visits / visits[route.member];
+                jobs.push([walkingLabel, route.walking + extra]);
+            }
+            routes[route.member].push({ station: route.station, jobs, localPlots: route.local_plots });
+        }
+    } else {
+        for (const [ability, , member, share] of plan.crop_assignments || []) {
+            addMobile(member, `${translate('Crop work')} · ${translate(ability)}`, share);
+        }
+        for (const [member, share] of walking.entries()) {
+            if (share > 0) addMobile(member, walkingLabel, share);
+        }
+    }
+    for (const [member, share] of plan.delivery_assignments || plan.hauling_staffing || []) {
+        addMobile(member, translate('Hauling to Storage Units'), share);
+    }
+    return members.map((_, member) => scheduleRosterCopies(assigned[member], fixed[member], posts[member], routes[member]));
 }
 
 function renderRosterSummary(plan) {
-    const { members, busy, walking, jobs, anchored } = rosterWorkload(plan);
+    const { members, busy, walking, anchored } = rosterWorkload(plan);
     (plan.delivery_assignments || plan.hauling_staffing || []).forEach(([member, share]) => {
         if (!members[member] || share <= 0) return;
         busy[member] += share;
-        const label = translate('Hauling to Storage Units');
-        jobs[member].set(label, (jobs[member].get(label) || 0) + share);
     });
     const have = roster.reduce((sum, a) => sum + a.count, 0);
     const assigned = busy.map((load, member) => Math.max(anchored[member], Math.ceil(load - 1e-6)));
     const working = assigned.slice(0, roster.length).reduce((sum, n) => sum + n, 0);
     const reserves = assigned.slice(roster.length).reduce((sum, n) => sum + n, 0);
-    const workload = (share, count) => {
-        const percent = share / count * 100;
+    const workload = share => {
+        const percent = share * 100;
         if (percent > 0 && percent < 0.01) return '<0.01%';
         if (percent < 100 - 1e-5 && percent > 99.99) return '99.99%';
         return `${formatNumber(percent)}%`;
     };
-    const memberTasks = members.map((_, i) => {
-        if (!assigned[i]) return [];
-        const tasks = [...jobs[i]];
-        if (walking[i] > 1e-9) tasks.push([translate('Walking between jobs'), walking[i]]);
-        return tasks.sort((a, b) => b[1] - a[1]).map(([job, share]) => [translate(job), workload(share, assigned[i])]);
-    });
-    const busyLabel = i => translate(assigned[i] > 1 ? '{load} average per assigned Aniimo' : '{load} busy')
-        .replace('{load}', workload(busy[i], assigned[i]));
-    refreshRosterTileWorkloads(roster.map((member, i) => ({
-        assigned: assigned[i],
-        summary: assigned[i]
-            ? `${assigned[i]} / ${member.count} ${translate('assigned')} · ${busyLabel(i)}`
-            : translate('Unassigned'),
-        lines: memberTasks[i].map(([job, share]) => `${job} · ${share}`),
-        tasks: memberTasks[i],
-    })));
+    const shifts = rosterCopyShifts(plan, members, assigned, walking);
+    const unassigned = { active: false, summary: translate('Unassigned'), tasks: [], lines: [] };
+    const copyWork = (i, copy) => {
+        const shift = shifts[i][copy];
+        if (!shift) return unassigned;
+        const tasks = [...shift.tasks].sort((a, b) => b[1] - a[1]).map(([job, share]) => [job, workload(share)]);
+        const summary = translate('{load} busy').replace('{load}', workload(shift.busy));
+        return { active: true, summary, tasks, lines: tasks.map(([job, share]) => `${job} · ${share}`) };
+    };
+    refreshRosterTileWorkloads(roster.map((member, i) =>
+        Array.from({ length: member.count }, (_, copy) => copyWork(i, copy))
+    ));
     const buildTile = (i, _position, copy) => {
         if (i == null) return emptyRosterCell();
         const member = members[i];
-        const active = copy < assigned[i];
+        const work = copyWork(i, copy);
         const label = member.assumed ? translate('Assumed Aniimo') : rosterTileLabel(member, i);
-        const status = active ? busyLabel(i) : translate('Unassigned');
-        const context = member.count > 1
+        const count = member.assumed ? assigned[i] : member.count;
+        const context = count > 1
             ? translate('Copy {copy} of {total} · {assigned} assigned').replace('{copy}', copy + 1)
-                .replace('{total}', member.count).replace('{assigned}', assigned[i])
+                .replace('{total}', count).replace('{assigned}', assigned[i])
             : '';
-        return assignmentTile(member, label, active ? memberTasks[i] : [], status, active, context);
+        return assignmentTile(member, label, work.tasks, work.summary, work.active, context);
     };
     const additional = members.flatMap((member, i) => member.assumed && assigned[i] > 0 ? Array(assigned[i]).fill(i) : []);
     const summary = document.getElementById('roster-summary');

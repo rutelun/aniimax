@@ -414,7 +414,7 @@ fn crop_work<'a, T: Copy>(
     work
 }
 
-fn work_station(recipe: &ProductionItem) -> String {
+pub(crate) fn work_station(recipe: &ProductionItem) -> String {
     if takes_turns(recipe) { format!("facility:{}", recipe.facility) } else { format!("recipe:{}", recipe.name) }
 }
 

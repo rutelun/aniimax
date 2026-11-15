@@ -1292,9 +1292,11 @@ pub struct JsProductionPlan {
     /// Crop task capacity actually reserved by the solver: ability, required level, member, days/day.
     #[serde(default)]
     pub crop_assignments: Vec<(String, u32, usize, f64)>,
-    /// Item, crop task, roster pool, and days of hands-on work per day.
+    /// Task routes retain their local workplace or mobile walking cost for per-copy scheduling.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub crop_jobs: Vec<(String, String, usize, f64)>,
+    pub roster_routes: Vec<JsRosterRoute>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub roster_posts: Vec<(String, usize, f64)>,
     #[serde(default)]
     pub movement_staffing: Vec<(usize, f64)>,
     /// Local workplaces per roster pool, used to count the copies needed on the plan.
@@ -1310,6 +1312,18 @@ pub struct JsProductionPlan {
     pub mobile_work: Vec<(String, String, usize, f64, bool)>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fixed_site_jobs: Vec<JsFixedSiteJob>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JsRosterRoute {
+    member: usize,
+    item: String,
+    facility: String,
+    station: Option<String>,
+    jobs: Vec<(String, f64)>,
+    visits: f64,
+    walking: f64,
+    local_plots: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1392,7 +1406,8 @@ fn empty_production_plan(success: bool, error: Option<String>) -> JsProductionPl
         power_generated: None,
         crop_staffing: false,
         crop_assignments: Vec::new(),
-        crop_jobs: Vec::new(),
+        roster_routes: Vec::new(),
+        roster_posts: Vec::new(),
         movement_staffing: Vec::new(),
         workplace_anchors: Vec::new(),
         hauling_staffing: Vec::new(),
@@ -1779,14 +1794,30 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
     js.crop_staffing = prepared.crew.is_some();
     js.crop_assignments = exact.crop_staffing.clone();
     if let Some(crew) = &prepared.crew {
+        let items: std::collections::HashMap<_, _> =
+            prepared.items.iter().map(|item| (item.name.as_str(), item)).collect();
         for route in &exact.work_routes {
-            let Some((ability, level)) = &route.crop else { continue };
-            let worker = crate::models::Worker::new(crew.members[route.member].level(ability), false);
-            for job in prepared.grower_steps.get(&route.recipe).iter()
-                .filter(|job| job.ability == *ability && job.min_level == *level) {
-                let share = route.rate * worker.seconds_for(job.workload, *level, true);
-                js.crop_jobs.push((crate::models::base_item_name(&route.recipe).into(), job.step.clone(), route.member, share));
-            }
+            let item = items[route.recipe.as_str()];
+            let jobs = if let Some((ability, level)) = &route.crop {
+                let worker = crate::models::Worker::new(crew.members[route.member].level(ability), false);
+                prepared.grower_steps.get(&route.recipe).iter()
+                    .filter(|job| job.ability == *ability && job.min_level == *level)
+                    .map(|job| (job.step.clone(), route.rate * worker.seconds_for(job.workload, *level, true)))
+                    .collect::<Vec<_>>()
+            } else {
+                vec![(String::new(), route.rate * item.production_time)]
+            };
+            let visits = if route.mobile { route.rate * jobs.len() as f64 } else { 0.0 };
+            js.roster_routes.push(JsRosterRoute {
+                member: route.member,
+                item: crate::models::base_item_name(&route.recipe).into(),
+                facility: item.facility.clone(),
+                station: (!route.mobile).then(|| crate::exact::work_station(item)),
+                jobs,
+                visits,
+                walking: visits * prepared.facility_counts.member_movement_seconds(route.member),
+                local_plots: if !route.mobile && route.crop.is_some() { route.rate * item.production_time } else { 0.0 },
+            });
         }
     }
     js.movement_staffing = exact.movement_staffing.clone();
@@ -1795,6 +1826,7 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
         *anchors.entry(*member).or_insert(0) += count.round() as u32;
     }
     js.workplace_anchors = anchors.into_iter().collect();
+    js.roster_posts = exact.work_posts.clone();
     js.hauling_staffing = exact.hauling_staffing.clone();
     js.roster_workload = roster_workload;
     if prepared.input.fixed_homeland.is_some() {
@@ -2175,7 +2207,8 @@ impl PreparedInput {
             power_generated: None,
             crop_staffing: false,
             crop_assignments: Vec::new(),
-            crop_jobs: Vec::new(),
+            roster_routes: Vec::new(),
+            roster_posts: Vec::new(),
             movement_staffing: Vec::new(),
             workplace_anchors: Vec::new(),
             hauling_staffing: Vec::new(),
