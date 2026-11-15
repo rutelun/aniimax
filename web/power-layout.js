@@ -56,7 +56,8 @@ export function updatePowerConnections(layout) {
     return layout;
 }
 
-export function connectPower(layout, cells, maximum, repack = true, canRelocate = null, canPlacePole = null) {
+export function connectPower(layout, cells, maximum, repack = true, canRelocate = null, canPlacePole = null, deadline = Infinity) {
+    const expired = () => deadline !== Infinity && performance.now() >= deadline;
     const members = layout.pieces.flatMap(p => p.members);
     const generators = members.filter(m => m.generator);
     const consumers = members.filter(m => m.electric_level != null);
@@ -69,6 +70,7 @@ export function connectPower(layout, cells, maximum, repack = true, canRelocate 
         const obstacles = [...members.filter(m => m !== generator), ...layout.storages];
         let best = null;
         for (const cell of destinations.length ? cells : []) {
+            if (expired()) break;
             for (let y = cell.y; y < cell.y + cell.h; y += 0.5) for (let x = cell.x; x < cell.x + cell.w; x += 0.5) {
                 const r = { x, y, w: generator.w, h: generator.h };
                 if (canRelocate && !canRelocate(generator, r)) continue;
@@ -94,7 +96,8 @@ export function connectPower(layout, cells, maximum, repack = true, canRelocate 
     const candidates = [];
     const seen = new Set();
     const needsRoute = connected.size && maximum > 0 && targets.some(t => !connected.has(t));
-    for (const c of needsRoute ? cells : []) for (let y = c.y; y < c.y + c.h; y += 0.5) for (let x = c.x; x < c.x + c.w; x += 0.5) {
+    scan: for (const c of needsRoute ? cells : []) for (let y = c.y; y < c.y + c.h; y += 0.5) for (let x = c.x; x < c.x + c.w; x += 0.5) {
+        if (x === c.x && expired()) break scan;
         const key = `${x},${y}`;
         if (seen.has(key)) continue;
         seen.add(key);
@@ -108,7 +111,7 @@ export function connectPower(layout, cells, maximum, repack = true, canRelocate 
     // BFS finds a route with the fewest extra poles to one of the remaining targets.
     // A spatial index bounds each expansion to nearby candidates rather than all land.
     const bucket = r => { const c = center(r); return [Math.floor(c.x / 4), Math.floor(c.y / 4)]; };
-    while (connected.size && targets.some(t => !connected.has(t)) && poles.length < maximum) {
+    while (!expired() && connected.size && targets.some(t => !connected.has(t)) && poles.length < maximum) {
         const available = candidates.filter(r => !poles.some(p => overlap(r, p, EPS * 2)));
         const buckets = new Map();
         for (const r of available) { const key = bucket(r).join(','); if (!buckets.has(key)) buckets.set(key, new Set()); buckets.get(key).add(r); }
@@ -123,6 +126,7 @@ export function connectPower(layout, cells, maximum, repack = true, canRelocate 
         let end = null;
         const remaining = targets.filter(t => !connected.has(t));
         for (let head = 0; head < queue.length; head++) {
+            if ((head & 63) === 0 && expired()) break;
             const r = queue[head];
             if (remaining.some(t => powerLinked(r, t))) { end = r; break; }
             if (depth.get(r) >= maximum - poles.length) continue;
@@ -160,7 +164,7 @@ export function connectPower(layout, cells, maximum, repack = true, canRelocate 
     // Hauling alone can scatter electric facilities farther apart than the pole cap allows.
     // Try gathering only those facilities in free land. Climate clusters and other facilities
     // stay fixed. Connectivity takes precedence over the hauling-distance preference here.
-    if (repack && layout.power.disconnected && generators.length && consumers.length) {
+    if (!expired() && repack && layout.power.disconnected && generators.length && consumers.length) {
         const electricMembers = [...consumers, ...generators];
         const mx = electricMembers.reduce((sum, m) => sum + center(m).x, 0) / electricMembers.length;
         const my = electricMembers.reduce((sum, m) => sum + center(m).y, 0) / electricMembers.length;
@@ -182,6 +186,7 @@ export function connectPower(layout, cells, maximum, repack = true, canRelocate 
         };
         let best = layout;
         for (const anchor of anchors) {
+            if (expired()) break;
             const trial = structuredClone(layout);
             const all = trial.pieces.flatMap(p => p.members);
             const movable = all.filter(m => m.generator || m.electric_level != null)
@@ -203,7 +208,7 @@ export function connectPower(layout, cells, maximum, repack = true, canRelocate 
                 m.x = spot.x; m.y = spot.y; occupied.push(m);
             }
             if (!fits) continue;
-            connectPower(trial, cells, maximum, false, canRelocate, canPlacePole);
+            connectPower(trial, cells, maximum, false, canRelocate, canPlacePole, deadline);
             if (trial.power.disconnected < best.power.disconnected || (trial.power.disconnected === best.power.disconnected
                 && trial.power.poles.length < best.power.poles.length)) best = trial;
             if (!best.power.disconnected) break;

@@ -1393,6 +1393,29 @@ let layoutWorker = null;
 const layoutsByPlan = new WeakMap();
 let layoutStorageTimer = null;
 
+function startLayoutTask(input, resolve, reject) {
+    const worker = new Worker(WORKER_URL.replace('worker.js', 'layout-worker.js'), { type: 'module' });
+    const budgetMs = 2300;
+    let latest = null;
+    const cancel = () => {
+        clearTimeout(timer);
+        worker.terminate();
+    };
+    const finish = (layout, error) => {
+        cancel();
+        if (layout) resolve(layout);
+        else reject(error);
+    };
+    const timer = setTimeout(() => finish(latest && { ...latest, searchLimited: true }, new Error('Layout time limit reached.')), budgetMs + 400);
+    worker.onmessage = ({ data: { layout, done } }) => {
+        latest = layout;
+        if (done) finish(layout);
+    };
+    worker.onerror = event => finish(latest, new Error(event.message || 'The layout worker stopped.'));
+    worker.postMessage({ ...input, budgetMs });
+    return { cancel };
+}
+
 // Every plot of the homeland, `{ number, x, y, w, h }` in tiles, with the top left at the origin.
 function homelandPlots() {
     return HOMELAND_PLOTS.flatMap((row, r) => row.map((number, c) => ({
@@ -1743,7 +1766,7 @@ function renderHomelandLayout(plan) {
     if (storageInput.value !== '') storageInput.value = layoutOptions.storageCount;
     document.getElementById('layout-storage-limit').textContent = translate('Maximum at RV {level}: {n}')
         .replace('{level}', homeLevel).replace('{n}', storageLimit);
-    if (layoutWorker) layoutWorker.terminate();
+    layoutWorker?.cancel();
     layoutWorker = null;
     const applyLayout = layout => {
         if (runId !== layoutRunId) return;
@@ -1774,9 +1797,10 @@ function renderHomelandLayout(plan) {
             unplaced.length ? `Not placed, size unknown: ${unplaced.join(', ')}.` : '',
         ].filter(Boolean).join(' ');
         const arrangementNotice = [
+            layout.searchLimited ? translate('Layout search reached its time limit. Showing the best layout found.') : '',
             layout.groupFallback === 'storage' ? translate('Grouped maps need at least one Storage Unit. Showing the delivery layout.') : '',
-            layout.groupFallback === 'space' ? translate('The grouped map could not fit every facility and connect the grid. Showing the delivery layout.') : '',
-            layout.groupFallback === 'ranges' ? translate('No separate workshop blocks could fit with this plan. Showing the delivery layout.') : '',
+            !layout.searchLimited && layout.groupFallback === 'space' ? translate('The grouped map could not fit every facility and connect the grid. Showing the delivery layout.') : '',
+            !layout.searchLimited && layout.groupFallback === 'ranges' ? translate('No separate workshop blocks could fit with this plan. Showing the delivery layout.') : '',
             layout.groupPurposeFallback ? translate('Separate sale and support groups did not fit. Showing mixed groups.') : '',
             layout.rangeMixedPurposes ? translate('Some sale and support workshops share a block to keep letter ranges intact.') : '',
             layout.groupGap < layout.requestedGroupGap ? translate('The selected gap did not fit. The map uses {gap} tile(s) between groups.')
@@ -1817,23 +1841,18 @@ function renderHomelandLayout(plan) {
         queueMicrotask(() => applyLayout(cached));
         return;
     }
-    const solver = new Worker(WORKER_URL.replace('worker.js', 'layout-worker.js'), { type: 'module' });
-    layoutWorker = solver;
-    solver.onmessage = (event) => {
-        solver.terminate();
-        if (layoutWorker === solver) layoutWorker = null;
-        applyLayout(event.data);
-    };
-    solver.onerror = (event) => {
-        console.error('Homeland layout failed:', event.message || event);
+    layoutWorker = startLayoutTask({ pieces, ...layoutOptions }, layout => {
+        layoutWorker = null;
+        applyLayout(layout);
+    }, error => {
+        console.error('Homeland layout failed:', error);
         if (runId !== layoutRunId) return;
         stopLayout();
         document.getElementById('layout-summary').textContent = 'The layout couldn\'t be worked out.';
         setStep('layout', 'fail');
         if (selectedSetupTab() === 'best') renderBestTeam(plan, translate('Unavailable'));
         rankImprovementsFor(selectedAniimoSetup());
-    };
-    solver.postMessage({ pieces, ...layoutOptions });
+    });
 }
 
 // Stops a layout still being worked out, so it can't land over a newer plan.
@@ -1841,7 +1860,7 @@ function stopLayout() {
     clearTimeout(layoutStorageTimer);
     stopLayoutSim();
     layoutRunId++;
-    layoutWorker?.terminate();
+    layoutWorker?.cancel();
     layoutWorker = null;
     lastLayout = null;
 }
@@ -2419,7 +2438,7 @@ function setStep(key, state, detail, proven) {
     if (!step) return;
     const now = performance.now();
     if (state === 'start') {
-        if (step.state !== 'running') step.started = now;
+        if (step.state !== 'running' || key === 'layout') step.started = now;
         step.state = 'running';
     } else if (state === 'done' || state === 'fail') {
         step.ms = step.started ? now - step.started : null;
@@ -2932,19 +2951,7 @@ async function sourceTeamLayout(plan, input, setup) {
     let layout = layoutsByPlan.get(plan)?.get(key);
     if (!layout) {
         const { pieces } = homelandPieces(plan, input);
-        layout = await new Promise((resolve, reject) => {
-            const solver = new Worker(WORKER_URL.replace('worker.js', 'layout-worker.js'), { type: 'module' });
-            const finish = (error, result) => {
-                clearTimeout(timer);
-                solver.terminate();
-                if (error) reject(error);
-                else resolve(result);
-            };
-            const timer = setTimeout(() => finish(new Error('Could not measure the source team delivery routes')), 30_000);
-            solver.onerror = event => finish(new Error(event.message || 'The layout worker stopped'));
-            solver.onmessage = event => finish(null, event.data);
-            solver.postMessage({ pieces, ...options });
-        });
+        layout = await new Promise((resolve, reject) => startLayoutTask({ pieces, ...options }, resolve, reject));
         rememberLayout(plan, key, layout);
     }
     return layout;
