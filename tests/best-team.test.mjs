@@ -55,3 +55,16 @@ test('walking consumes shift time before delivery and can force an additional wo
     assert.equal(far.shifts.length, 2);
     assert.ok(far.shifts.every(shift => shift.busy <= 1 + 1e-6));
 });
+
+test('Best gives equal farming work to a specialist if another shift can handle deliveries', () => {
+    const { shifts } = recommendBestTeam([
+        { ability: 'Grass', level: 2, label: 'Sowing', growing: true, visitsPerShare: .01, cropDistance: 8, busy: .3,
+            point: [0, 0] },
+        { ability: 'Earth', level: 3, label: 'Mine', busy: .6, visitsPerShare: .15, point: [80, 80] },
+    ], .2, .005);
+    const farmer = shifts.find(shift => shift.tasks.has('Sowing'));
+    const courier = shifts.find(shift => shift.tasks.has('Hauling to Storage Units'));
+    assert.ok(farmer && courier && farmer !== courier);
+    assert.equal(farmer.abilities.Hauling, undefined);
+    assert.equal(farmer.busy, .3);
+});

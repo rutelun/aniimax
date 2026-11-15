@@ -1,6 +1,7 @@
 import catalog from './aniimo-catalog.json' with { type: 'json' };
 import { opposedPersonality } from './facility-config.js?v=leisure-families';
 import { workerTravelSeconds } from './worker-travel.js?v=travel-allowance';
+import { cropStorageDistance, cropSwitchingShare, TASK_SWITCHING } from './task-switching.js?v=opportunistic-jobs';
 
 const EPSILON = 1e-6;
 const roleKey = ({ ability, level, family }) => `${ability}|${level}|${family || ''}`;
@@ -30,26 +31,46 @@ export function placeBestJobs(jobs, layout) {
     const sites = new Map();
     for (const piece of layout.pieces) for (const member of piece.members) {
         const point = [member.x + member.w / 2, member.y + member.h / 2];
+        const cropDistance = member.facility === 'Farmland' || member.facility === 'Woodland'
+            ? cropStorageDistance(member, layout.storages || []) : 0;
         for (const job of member.jobs ?? [{ item: member.crop, rate: member.batchWeight ?? member.weight, electric_level: member.electric_level }]) {
             if (!job.item || job.electric_level != null || !(job.rate > 0)) continue;
             const key = `${member.facility}|${job.item}`;
             if (!sites.has(key)) sites.set(key, []);
-            sites.get(key).push({ point, rate: job.rate });
+            sites.get(key).push({ point, rate: job.rate, cropDistance });
         }
     }
     return jobs.flatMap(job => {
         const locations = sites.get(job.siteKey);
         if (!locations) return [job];
         const total = locations.reduce((sum, site) => sum + site.rate, 0);
-        return locations.map(({ point, rate }) => ({ ...job, point, busy: job.busy * rate / total }));
+        return locations.map(({ point, rate, cropDistance }) => ({ ...job, point, cropDistance, busy: job.busy * rate / total }));
     });
 }
 
-export function recommendBestTeam(jobs, haulingBusy = 0) {
+export function recommendBestTeam(jobs, haulingBusy = 0, haulTrips = 0) {
     const shifts = [];
     const available = [];
     const haul = { ability: 'Hauling', level: 3, label: 'Hauling to Storage Units' };
     const matches = job => catalogIndex.get(roleKey(job)) ?? noMatches;
+    const outsideCrops = new Set(jobs.filter(job => !job.growing && !job.fixed).map(job => job.ability));
+    if (haulingBusy > EPSILON) outsideCrops.add('Hauling');
+    const candidateFor = shift => {
+        let best;
+        let lowest = Infinity;
+        for (const entry of shift.candidates) {
+            const skills = Object.keys(entry.abilities);
+            let excess = 0;
+            for (const role of shift.roles.values()) excess += entry.abilities[role.ability] - role.level;
+            const distractions = shift.cropVisits ? skills.filter(skill => outsideCrops.has(skill)).length : 0;
+            const value = excess * 100 + distractions * 10 - skills.length;
+            if (value < lowest) {
+                best = entry;
+                lowest = value;
+            }
+        }
+        return best;
+    };
     const compatible = (shift, job, candidates) => {
         if (job.personality && shift.personalities.has(opposedPersonality(job.personality))) return null;
         if (shift.roles.has(roleKey(job))) return shift.candidates;
@@ -68,6 +89,11 @@ export function recommendBestTeam(jobs, haulingBusy = 0) {
         const key = roleKey(job);
         if (!shift.roles.has(key)) shift.roles.set(key, job);
         shift.tasks.set(job.label, (shift.tasks.get(job.label) || 0) + share);
+        if (job.growing) {
+            const visits = share * (job.visitsPerShare || 0);
+            shift.cropVisits += visits;
+            shift.cropDistance += visits * (job.cropDistance || 0);
+        }
         if (walking > 0) {
             const label = 'Walking between jobs';
             shift.tasks.set(label, (shift.tasks.get(label) || 0) + walking);
@@ -91,6 +117,7 @@ export function recommendBestTeam(jobs, haulingBusy = 0) {
                 const walking = walkingPerShare(shift, job);
                 const capacity = (1 - shift.busy) / (1 + walking);
                 if (capacity < share - EPSILON) {
+                    if (walking > EPSILON && Boolean(job.growing) !== Boolean(shift.cropVisits)) continue;
                     if (capacity > Math.max(EPSILON, partialCapacity)) {
                         partial = shift;
                         partialCandidates = common;
@@ -112,7 +139,8 @@ export function recommendBestTeam(jobs, haulingBusy = 0) {
                 bestWalking = partialWalking;
             }
             if (!best) {
-                best = { busy: 0, candidates, roles: new Map(), tasks: new Map(), personalities: new Set() };
+                best = { busy: 0, candidates, roles: new Map(), tasks: new Map(), personalities: new Set(),
+                    cropVisits: 0, cropDistance: 0 };
                 shifts.push(best);
                 if (share < 1 - EPSILON) available.push(best);
             } else {
@@ -130,11 +158,37 @@ export function recommendBestTeam(jobs, haulingBusy = 0) {
 
     let haulingSpare = 0;
     const courierForms = matches(haul);
-    for (const shift of available) {
-        const eligible = compatible(shift, haul, courierForms);
-        if (!eligible?.size) continue;
+    const couriers = available.map(shift => ({ shift, eligible: compatible(shift, haul, courierForms) }))
+        .filter(({ shift, eligible }) => eligible?.size && shift.busy < 1 - EPSILON)
+        .sort((a, b) => Number(a.shift.cropVisits > 0) - Number(b.shift.cropVisits > 0));
+    const currentCouriers = new Set(haulTrips > 0
+        ? available.filter(shift => shift.busy < 1 - EPSILON && candidateFor(shift)?.abilities.Hauling > 0) : []);
+    const eligibleCouriers = Math.max(couriers.length, currentCouriers.size);
+    const reserveSwitching = shift => {
         const spare = Math.max(0, 1 - shift.busy);
+        const share = cropSwitchingShare(shift.cropVisits, shift.cropDistance, haulTrips, eligibleCouriers, spare);
+        if (share > EPSILON) {
+            shift.busy += share;
+            shift.tasks.set(TASK_SWITCHING, share);
+            return spare - share;
+        }
+        return spare;
+    };
+    currentCouriers.forEach(reserveSwitching);
+    for (const { shift, eligible } of couriers) {
+        let spare = Math.max(0, 1 - shift.busy);
         haulingSpare += spare;
+        if (haulingBusy <= EPSILON || spare <= EPSILON) continue;
+        if (!currentCouriers.has(shift)) {
+            const original = spare;
+            spare = reserveSwitching(shift);
+            if (spare <= EPSILON) {
+                // The extra workload belongs to an Aniimo able to take that delivery.
+                shift.tasks.delete(TASK_SWITCHING);
+                shift.busy -= original - spare;
+                continue;
+            }
+        }
         const load = Math.min(spare, haulingBusy);
         if (load <= EPSILON) continue;
         shift.candidates = eligible;
@@ -145,20 +199,10 @@ export function recommendBestTeam(jobs, haulingBusy = 0) {
 
     return {
         haulingSpare,
-        shifts: shifts.map(({ candidates, roles, ...shift }) => {
+        shifts: shifts.map(pool => {
+            const { candidates, roles, cropVisits, cropDistance, ...shift } = pool;
             const requirements = [...roles.values()];
-            // A role's planned rate is achievable at or above its requested level.
-            // Prefer the closest match, then useful additional abilities.
-            const score = entry => requirements.reduce((sum, role) => sum + entry.abilities[role.ability] - role.level, 0)
-                * 10 - Object.keys(entry.abilities).length;
-            let entry;
-            let bestScore = Infinity;
-            for (const candidate of candidates) {
-                const value = score(candidate);
-                if (value >= bestScore) continue;
-                bestScore = value;
-                entry = candidate;
-            }
+            const entry = candidateFor(pool);
             const abilities = entry?.abilities ?? Object.fromEntries(requirements.map(role => [role.ability, role.level]));
             return { ...shift, entry, abilities, family: entry?.family ?? requirements.find(role => role.family)?.family ?? null };
         }),

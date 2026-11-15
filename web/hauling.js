@@ -65,7 +65,7 @@ function fallbackTrips(step, recipe, level, facilities) {
 // Pickup thresholds are estimates. Fallback seconds already include the time allowance.
 export function haulingWorkload(layout, steps, fallbackSeconds = 0, recipes = [], facilities = null, accountForTravel = false) {
     const recipeOf = new Map(recipes.map(recipe => [recipe.name, recipe]));
-    const seconds = {}, jobs = new Map();
+    const seconds = {}, tripsPerBatch = {}, jobs = new Map();
     for (const level of levels) {
         const routes = new Map(), pickups = [], pools = new Map();
         for (const member of layout.pieces.flatMap(piece => piece.members)) {
@@ -87,12 +87,16 @@ export function haulingWorkload(layout, steps, fallbackSeconds = 0, recipes = []
         }
         for (const pickup of pickups) {
             const pool = pools.get(pickup.storage);
-            const route = routes.get(pickup.key) || { batches: 0, seconds: 0 };
+            const route = routes.get(pickup.key) || { batches: 0, seconds: 0, trips: 0 };
             route.batches += pickup.batches;
+            route.trips += pickup.trips;
             route.seconds += pickup.trips * (pickup.loaded + pool.pickupSeconds / pool.trips);
             routes.set(pickup.key, route);
         }
-        for (const [key, route] of routes) seconds[`${key}|${level}`] = route.seconds / route.batches;
+        for (const [key, route] of routes) {
+            seconds[`${key}|${level}`] = route.seconds / route.batches;
+            if (level === 3) tripsPerBatch[key] = route.trips / route.batches;
+        }
     }
     for (const step of steps) {
         if (step.status !== 'producing' || !(step.cycle_time > 0)) continue;
@@ -101,24 +105,27 @@ export function haulingWorkload(layout, steps, fallbackSeconds = 0, recipes = []
             seconds[`${key}|${level}`] ?? fallbackSeconds * fallbackTrips(step, recipeOf.get(step.item_name), level, facilities)]));
         for (const level of levels) seconds[`${key}|${level}`] = costs[level];
         seconds[key] = costs[3];
-        const job = jobs.get(key) || { key, rate: 0, seconds: costs };
+        const trips = tripsPerBatch[key] ?? fallbackTrips(step, recipeOf.get(step.item_name), 3, facilities);
+        const job = jobs.get(key) || { key, rate: 0, seconds: costs, trips };
         job.rate += (step.busy_units ?? step.facility_count) / step.cycle_time;
         jobs.set(key, job);
     }
     const busyByLevel = Object.fromEntries(levels.map(level => [level,
         [...jobs.values()].reduce((sum, job) => sum + job.rate * job.seconds[level], 0)]));
-    return { seconds, busy: busyByLevel[3], busyByLevel, jobs: [...jobs.values()] };
+    const trips = [...jobs.values()].reduce((sum, job) => sum + job.rate * job.trips, 0);
+    return { seconds, busy: busyByLevel[3], busyByLevel, trips, jobs: [...jobs.values()] };
 }
 
 // Use couriers' spare hours, then idle copies and neutral Lv.3 reserves. A headcount shortage
 // goes to the optimizer, which can redistribute both production and delivery by recipe.
-export function allocateHauling(members, busy, required, limit = Infinity, anchored = []) {
+export function allocateHauling(members, busy, required, limit = Infinity, anchored = [], switching = []) {
     const active = busy.map((load, member) => Math.max(anchored[member] ?? 0, headcount(load)));
     let slots = Math.max(0, limit - active.reduce((sum, n) => sum + n, 0));
     const jobs = typeof required === 'number' ? [{rate:required, seconds:{1:1,2:1,3:1,4:1}}] : required.jobs;
     const couriers = members.map((member, index) => ({member,index,level:Math.min(4, member?.abilities.Hauling || 0),
         versatility: Object.values(member?.abilities ?? {}).filter(level => level > 0).length}))
-        .filter(courier => courier.level > 0).sort((a,b) => b.level - a.level || b.versatility - a.versatility);
+        .filter(courier => courier.level > 0).sort((a,b) => b.level - a.level
+            || Number(switching[a.index] > 0) - Number(switching[b.index] > 0) || b.versatility - a.versatility);
     const assigned = new Map();
     let reserveBusy = 0, unassigned = 0;
     for (const job of [...jobs].sort((a,b) => b.seconds[1] / (b.seconds[3] || 1) - a.seconds[1] / (a.seconds[3] || 1))) {

@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { assignFacilityStock, bufferedBatches, haulingBatchTrips, haulingTravelSeconds, haulingWorkSeconds,
     haulingWorkload, allocateHauling } from '../web/hauling.js';
+import { rosterCropSwitching } from '../web/task-switching.js';
 
 test('delivery goes through storage to the next frequency-weighted pickup', () => {
     const layout = { storages: [{x:-1,y:-1,w:2,h:2}], pieces: [{members:[
@@ -16,11 +17,28 @@ test('delivery goes through storage to the next frequency-weighted pickup', () =
     assert.equal(work.seconds['Mine|far'], 13);
     assert.equal(work.seconds['Well|near'], 9);
     assert.ok(Math.abs(work.busy - 400/3600) < 1e-12);
+    assert.ok(Math.abs(work.trips - 40/3600) < 1e-12);
     const withTravel = haulingWorkload(layout, steps, 0, [], null, true);
     assert.equal(withTravel.seconds['Mine|far'], 39);
     assert.equal(withTravel.seconds['Well|near'], 27);
     assert.ok(Math.abs(withTravel.busy - 1200/3600) < 1e-12);
     assert.equal(haulingWorkSeconds(40, true), 2 * haulingTravelSeconds(40, true));
+});
+
+test('an available delivery can interrupt field work even without a planned delivery assignment', () => {
+    const members = [
+        { count: 1, abilities: { Grass: 3, Hauling: 3 } },
+        { count: 1, abilities: { Grass: 3 } },
+        { count: 1, abilities: { Water: 3, Hauling: 3 } },
+    ];
+    const routes = [0, 1].map(member => ({ member, facility: 'Farmland', item: 'wheat', crop_visits: .05 }));
+    const layout = { storages: [{ x: 0, y: 0, w: 2, h: 2 }], pieces: [{ members: [
+        { facility: 'Farmland', crop: 'wheat', x: 8, y: 0, w: 2, h: 2 },
+    ] }] };
+    assert.deepEqual(rosterCropSwitching(layout, routes, members, [.5, .5, .5], [], 0), []);
+    assert.deepEqual(rosterCropSwitching(layout, routes, members, [.5, .5, .5], [], .01), [[0, .015]]);
+    const cargo = allocateHauling(members, [.515, .5, .5], .2, Infinity, [], [.015, 0, 0]);
+    assert.deepEqual(cargo.assignments, [[2, .2]]);
 });
 
 test('couriers share existing work hours without assigning delivery to another ability', () => {

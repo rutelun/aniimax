@@ -1096,6 +1096,26 @@ fn versatile_crew_replaces_an_equally_fast_specialist_without_changing_productio
 }
 
 #[test]
+fn versatile_crew_prefers_a_crop_specialist_to_an_equally_fast_courier() {
+    use aniimax::exact::{check_plan_with_workload, prefer_versatile_crew};
+    let items: Vec<_> = load_items().unwrap().into_iter().filter(|item| item.name == "wheat").collect();
+    let mut counts = FacilityCounts::only(&[("Farmland", 4, 1)]);
+    counts.set_grower_steps(aniimax::data::load_grower_steps(Path::new("data")).unwrap());
+    counts.set_crew(crew_of(&[
+        (1, &[("Earth", 1), ("Grass", 1), ("Dark", 1), ("Hauling", 3)]),
+        (1, &[("Earth", 1), ("Grass", 1), ("Dark", 1)]),
+    ]));
+    let modules = ModuleLevels::default();
+    let mut plan = solve_exact(&items, "coins", &counts, &modules, Goal::Earn { floors: &[] }, None, None).unwrap();
+    assert!(!plan.crop_staffing.is_empty());
+    for (_, _, member, _) in &mut plan.crop_staffing { *member = 0; }
+    let (income, mut busy) = check_plan_with_workload(&plan, &items, "coins", &counts, &modules, None).unwrap();
+    prefer_versatile_crew(&mut plan, &mut busy, &items, "coins", &counts, &modules, None);
+    assert!(plan.crop_staffing.iter().all(|(_, _, member, _)| *member == 1));
+    assert_eq!(check_plan(&plan, &items, "coins", &counts, &modules, None).unwrap(), income);
+}
+
+#[test]
 fn reserve_crew_fills_open_shifts_and_prefers_equally_fast_owned_aniimo() {
     let mut crew = crew_of(&[(1, &[("Earth", 3)])]);
     crew.add_reserve_workers([("Earth", 1), ("Earth", 2), ("Fire", 4), ("Lightning", 1)], 4);

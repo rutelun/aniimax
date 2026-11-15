@@ -1211,6 +1211,30 @@ fn build_model<'a>(
         model.objective[variable] -= weight;
         model.tiebreak.push((variable, weight));
     }
+    if let Some(crew) = facility_counts.crew() {
+        let owned = crew.assumed_from.unwrap_or(crew.members.len());
+        let mut specialists = HashMap::<&str, std::collections::BTreeSet<u32>>::new();
+        for member in &crew.members[..owned] {
+            if member.count == 0 || member.level("Hauling") > 0 { continue; }
+            for (ability, &level) in &member.abilities {
+                specialists.entry(ability).or_default().insert(level);
+            }
+        }
+        for (variable, kind) in model.kinds.iter().enumerate() {
+            let (member, ability, seconds) = match kind {
+                VarKind::WorkRoute { member, crop: Some((ability, _)), seconds, .. } => (*member, ability, *seconds),
+                VarKind::CropStaff { member, ability, .. } => (*member, ability, 1.0),
+                _ => continue,
+            };
+            if member >= owned || crew.members[member].level("Hauling") == 0
+                || !specialists.get(ability.as_str()).is_some_and(|levels| levels.contains(&crew.members[member].level(ability))) {
+                continue;
+            }
+            let weight = 4e-5 * seconds;
+            model.objective[variable] -= weight;
+            model.tiebreak.push((variable, weight));
+        }
+    }
     let compare_power_staff = generator_count.is_some() && facility_counts.crew().is_none();
     // On equal output, compare normal work saved with the full shifts of the generators.
     // Keep this above the solver's default absolute MIP gap and well below production.
@@ -1783,25 +1807,36 @@ pub fn prefer_versatile_crew(
     let owned = crew.assumed_from.unwrap_or(crew.members.len());
     let skills: Vec<_> = crew.members[..owned].iter()
         .map(|worker| worker.abilities.values().filter(|&&level| level > 0).count()).collect();
-    if skills.iter().min() == skills.iter().max() { return; }
-    let mut order: Vec<_> = (0..owned).collect();
-    order.sort_by_key(|&member| std::cmp::Reverse(skills[member]));
+    let mut farming = vec![false; owned];
+    for (_, _, member, share) in &plan.crop_staffing {
+        if *member < owned && *share > 1e-9 { farming[*member] = true; }
+    }
     let all: HashMap<_, _> = items.iter().map(|item| (item.name.as_str(), item)).collect();
     let mut total = workload.clone();
     for &(member, share) in &plan.hauling_staffing { total[member] += share; }
-    for &to in &order {
-        if total[to] > 1e-9 || crew.members[to].count == 0 { continue; }
-        for &from in order.iter().rev() {
-            if skills[from] >= skills[to] { break; }
-            if total[from] <= 1e-6 || total[from] > crew.members[to].count as f64 + 1e-6 { continue; }
-            let Some(candidate) = reassign_crew_pool(plan, &all, counts, from, to) else { continue; };
-            let Ok((_, checked)) = check_plan_with_workload(&candidate, items, currency, counts, modules, level_up) else { continue; };
-            total[from] = 0.0;
-            total[to] = checked[to] + candidate.hauling_staffing.iter().filter(|(member, _)| *member == to)
-                .map(|(_, share)| share).sum::<f64>();
-            *workload = checked;
-            *plan = candidate;
-            break;
+    for crop_work in [true, false] {
+        let rank = |member: usize| {
+            if crop_work { (crew.members[member].level("Hauling") > 0, skills[member]) }
+            else { (false, usize::MAX - skills[member]) }
+        };
+        let mut order: Vec<_> = (0..owned).collect();
+        order.sort_by_key(|&member| rank(member));
+        for &to in &order {
+            if total[to] > 1e-9 || crew.members[to].count == 0 { continue; }
+            for &from in order.iter().rev() {
+                if rank(from) <= rank(to) { break; }
+                if farming[from] != crop_work || total[from] <= 1e-6 || total[from] > crew.members[to].count as f64 + 1e-6 { continue; }
+                let Some(candidate) = reassign_crew_pool(plan, &all, counts, from, to) else { continue; };
+                let Ok((_, checked)) = check_plan_with_workload(&candidate, items, currency, counts, modules, level_up) else { continue; };
+                total[from] = 0.0;
+                total[to] = checked[to] + candidate.hauling_staffing.iter().filter(|(member, _)| *member == to)
+                    .map(|(_, share)| share).sum::<f64>();
+                farming[from] = false;
+                farming[to] = crop_work;
+                *workload = checked;
+                *plan = candidate;
+                break;
+            }
         }
     }
 }
