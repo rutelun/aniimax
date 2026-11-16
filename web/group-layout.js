@@ -2,8 +2,8 @@
 import { alphabetScore, chainPurposes, productionDistance, productionGraph,
     productionLinkDistances, refineProductionPlacement } from './production-layout.js?v=zone-ranges';
 import { miningRows, productionRows, productionZones, rawTheme, rawZones, rawZoneSpread, zoneLinkDistance } from './production-zones.js?v=workshop-blocks';
-import { allocateHauling, haulingWorkload } from './hauling.js?v=reactive-dispatch';
-import { workerTravelDistances, workerTravelSeconds } from './worker-travel.js?v=travel-allowance';
+import { allocateHauling, haulingWorkload } from './hauling.js?v=base-travel';
+import { workerTravelDistances, workerTravelSeconds } from './worker-travel.js?v=base-travel';
 import { canMoveDistrictStorage, districtStorageIndices, improveDistrictStorage } from './district-storage.js?v=workshop-blocks';
 
 const load = new URL(import.meta.url).search;

@@ -1,7 +1,7 @@
 import catalog from './aniimo-catalog.json' with { type: 'json' };
 import { opposedPersonality } from './facility-config.js?v=leisure-families';
-import { workerTravelSeconds } from './worker-travel.js?v=travel-allowance';
-import { dispatchLocations, estimateJobSwitching, TASK_SWITCHING } from './task-switching.js?v=reactive-dispatch';
+import { workerTravelSeconds } from './worker-travel.js?v=base-travel';
+import { dispatchLocations, estimateJobSwitching, TASK_SWITCHING } from './task-switching.js?v=base-travel';
 
 const EPSILON = 1e-6;
 const roleKey = ({ ability, level, family }) => `${ability}|${level}|${family || ''}`;

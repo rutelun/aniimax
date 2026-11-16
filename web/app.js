@@ -12,9 +12,9 @@ import {
 import { allocateTurnFacilities, redistributeTurnFacilityRows } from './turn-jobs.js?v=auto-worker-travel';
 import { createShareUrl, readShareHash, urlWithoutShare } from './share-config.js?v=compact-roster';
 import { nearestStorage } from './layout.js?v=storage-power';
-import { workerTravelDistances, workerTravelSeconds } from './worker-travel.js?v=travel-allowance';
+import { workerTravelDistances, workerTravelSeconds } from './worker-travel.js?v=base-travel';
 import { assignFacilityStock, bufferedBatches, haulingWorkload, allocateHauling, haulingBatchTrips,
-    haulingTravelSeconds, haulingWorkSeconds, pickupStockLimit } from './hauling.js?v=protect-growers';
+    haulingTravelSeconds, haulingWorkSeconds, pickupStockLimit } from './hauling.js?v=base-travel';
 import { personalityInput, replacementCandidates, compareRecommendations, usefulUpgrade, keepBetterComparison, workerUsage } from './opportunity-comparison.js?v=effective-upgrades';
 import { comparisonConcurrency, startComparisonQueue } from './comparison-queue.js?v=parallel-comparisons';
 import { prepareOpportunities } from './opportunity-effects.js?v=auto-e-mode';
@@ -22,8 +22,8 @@ import aniimoCatalog from './aniimo-catalog.json' with { type: 'json' };
 import { aniimoPortrait, attachRosterPicker, rosterCatalogId, rosterFormName } from './roster-picker.js?v=game-heads';
 import { placeRosterCopy, ROSTER_ROW_SIZE, rosterSlotsFor, swapRosterSlots } from './roster-slots.js';
 import { scheduleRosterCopies } from './roster-work.js?v=individual-shifts';
-import { buildDispatch, rosterJobSwitching, TASK_SWITCHING } from './task-switching.js?v=reactive-dispatch';
-import { placeBestJobs, recommendBestTeam } from './best-team.js?v=protect-growers';
+import { buildDispatch, rosterJobSwitching, TASK_SWITCHING } from './task-switching.js?v=base-travel';
+import { placeBestJobs, recommendBestTeam } from './best-team.js?v=base-travel';
 import facilityIcons from './facility-icons.json' with { type: 'json' };
 import { abilityGlyph, gameAbilityIcon } from './ability-icons.js?v=game-heads';
 
@@ -4914,7 +4914,7 @@ function renderAniimoSummary(plan) {
     const setup = selectedSetupTab();
     const custom = setup === 'custom';
     const workloadNote = document.getElementById('aniimo-workload-note');
-    const travelNote = setup !== 'minimum' ? ' Estimated walking and delivery times are tripled.' : '';
+    const travelNote = ' Travel uses base movement speed without workload multipliers.';
     const dispatchNote = setup !== 'minimum'
         ? translate(' Assignments are estimates. An available Aniimo can start walking to another eligible job when it appears.') : '';
     workloadNote.textContent = plan.hauling_busy != null ? HAULING_ESTIMATE_HINT + travelNote + dispatchNote : '';

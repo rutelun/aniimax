@@ -49,7 +49,7 @@ test('walking consumes shift time before delivery and can force an additional wo
         { facility: 'Farmland', crop: 'wheat', x: distance, y: 0, w: 2, h: 2, weight: 1 },
     ] }] });
     const near = recommendBestTeam(placeBestJobs(jobs, layout(8)), .2);
-    const far = recommendBestTeam(placeBestJobs(jobs, layout(80)), .2);
+    const far = recommendBestTeam(placeBestJobs(jobs, layout(240)), .2);
     assert.equal(near.shifts.length, 1);
     assert.ok(near.shifts[0].tasks.get('Walking between jobs') > 0);
     assert.equal(near.shifts[0].tasks.get('Hauling to Storage Units'), .2);
@@ -75,8 +75,8 @@ test('Best includes diversions to other eligible work without requiring Hauling'
         { ability: 'Fire', level: 3, label: 'Cooking', busy: .25, point: [0, 0], visitsPerShare: .08 },
     ], 0, [{ ability: 'Fire', level: 3, point: [8, 0], rate: .01 }]);
     assert.equal(shifts.length, 1);
-    assert.ok(Math.abs(shifts[0].tasks.get(TASK_SWITCHING) - .12) < 1e-9);
-    assert.ok(Math.abs(shifts[0].busy - .37) < 1e-9);
+    assert.ok(Math.abs(shifts[0].tasks.get(TASK_SWITCHING) - .04) < 1e-9);
+    assert.ok(Math.abs(shifts[0].busy - .29) < 1e-9);
 });
 
 test('Best keeps frequent crop jobs separate from workshops, even at the same location', () => {

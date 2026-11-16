@@ -92,7 +92,7 @@ test('processors of the same type can regroup across storage blocks and separate
 test('distance can increase when the same production and income still fit the team', () => {
     const stores = [{ x: 0, y: 0, w: 2, h: 2 }];
     const map = x => ({ storages: stores, pieces: [piece('Blazing Stove', 'bread', x, 0, { batchWeight: 3.6 })] });
-    const staffing = { limit: 1, members: [{ count: 1, abilities: { Hauling: 1 } }], busy: [.992],
+    const staffing = { limit: 1, members: [{ count: 1, abilities: { Hauling: 1 } }], busy: [.998],
         steps: [{ facility: 'Blazing Stove', item_name: 'bread', status: 'producing', cycle_time: 1000, facility_count: 1 }] };
     assert.ok(layoutTravelCost(map(3)) > layoutTravelCost(map(2)) * 1.01);
     assert.equal(layoutKeepsIncome(map(2), staffing, recipes), true);
@@ -110,6 +110,6 @@ test('extra walking can use spare working time without lowering production', () 
     const staffing = { limit: 1, members: [{ count: 1, abilities: {} }], busy: [.98], steps: [],
         movement: { defaultDistance: 4, byMember: {}, visits: { 0: 72 } } };
     assert.equal(layoutKeepsIncome(map(5), staffing, recipes), true);
-    assert.equal(layoutKeepsIncome(map(6), staffing, recipes), false);
+    assert.equal(layoutKeepsIncome(map(9), staffing, recipes), false);
     assert.equal(layoutKeepsIncome(map(20), staffing, recipes), false);
 });

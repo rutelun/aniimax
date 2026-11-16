@@ -1,8 +1,8 @@
 // Distances and model times are in homeland tiles and seconds.
 export const ANIIMO_WALK_SPEED = 4;
 
-// Allow for detours when Homeland assigns a task farther away than the plan expects.
-export const workerTravelSeconds = distance => 3 * distance / ANIIMO_WALK_SPEED;
+// Actual routes and reactive dispatch account for detours separately.
+export const workerTravelSeconds = distance => distance / ANIIMO_WALK_SPEED;
 
 export function workerHubs(members) {
     const hubs = new Map();

@@ -1,4 +1,4 @@
-import { workerTravelSeconds } from './worker-travel.js?v=travel-allowance';
+import { workerTravelSeconds } from './worker-travel.js?v=base-travel';
 
 export const TASK_SWITCHING = 'Switching between available jobs';
 const pointOf = site => [site.x + site.w / 2, site.y + site.h / 2];

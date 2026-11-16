@@ -50,7 +50,7 @@ test('a delivery shortage uses one full-map correction and accepts the checked c
     p.context.plan={assumed_aniimo:[],coin_items:[]};
     assert.equal(p.run('assignLayoutHauling({},plan)'),true);
     assert.equal(p.run('Object.keys(haulingSeconds).length'),0);
-    assert.ok(Math.abs(p.run('haulingDefaultSeconds') - 6 * Math.hypot(100,60)) < 1e-9);
+    assert.ok(Math.abs(p.run('haulingDefaultSeconds') - .5 * Math.hypot(100,60)) < 1e-9);
     p.context.plan={assumed_aniimo:[],coin_items:[],hauling_staffing:[[0,1]]};
     assert.equal(p.run('assignLayoutHauling({},plan)'),false);
     assert.deepEqual(p.context.plan.delivery_assignments,[[0,1]]);

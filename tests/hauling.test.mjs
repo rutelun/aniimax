@@ -14,15 +14,15 @@ test('delivery goes through storage to the next frequency-weighted pickup', () =
         {facility:'Well',item_name:'near',status:'producing',facility_count:1,cycle_time:120},
     ];
     const work = haulingWorkload(layout, steps);
-    assert.equal(work.seconds['Mine|far'], 13);
-    assert.equal(work.seconds['Well|near'], 9);
-    assert.ok(Math.abs(work.busy - 400/3600) < 1e-12);
+    assert.equal(work.seconds['Mine|far'], 3.25);
+    assert.equal(work.seconds['Well|near'], 2.25);
+    assert.ok(Math.abs(work.busy - 100/3600) < 1e-12);
     assert.ok(Math.abs(work.trips - 40/3600) < 1e-12);
     const withTravel = haulingWorkload(layout, steps, 0, [], null, true);
-    assert.equal(withTravel.seconds['Mine|far'], 39);
-    assert.equal(withTravel.seconds['Well|near'], 27);
-    assert.ok(Math.abs(withTravel.busy - 1200/3600) < 1e-12);
-    assert.equal(haulingWorkSeconds(40, true), 2 * haulingTravelSeconds(40, true));
+    assert.equal(withTravel.seconds['Mine|far'], 3.25);
+    assert.equal(withTravel.seconds['Well|near'], 2.25);
+    assert.ok(Math.abs(withTravel.busy - 100/3600) < 1e-12);
+    assert.equal(haulingWorkSeconds(40, true), haulingTravelSeconds(40, true));
 });
 
 test('an available delivery can interrupt field work even without a planned delivery assignment', () => {
@@ -41,7 +41,7 @@ test('an available delivery can interrupt field work even without a planned deli
     const switching = rosterJobSwitching(buildDispatch(layout, [], hauling, new Set()), routes, members, [.5, .5, .5], []);
     assert.equal(switching.length, 1);
     assert.equal(switching[0][0], 0);
-    assert.ok(Math.abs(switching[0][1] - .045) < 1e-9);
+    assert.ok(Math.abs(switching[0][1] - .015) < 1e-9);
     const cargo = allocateHauling(members, [.515, .5, .5], .2, Infinity, [], [.015, 0, 0]);
     assert.deepEqual(cargo.assignments, [[2, .2]]);
 });
@@ -72,7 +72,7 @@ test('new jobs in another workshop use the distance from previous sites at dispa
         { ability: 'Artisanship', level: 3, point: [0, 0], rate: .2 },
     ];
     const switching = estimateJobSwitching(opportunities, workers);
-    assert.ok(Math.abs(switching[0] - .06) < 1e-9);
+    assert.ok(Math.abs(switching[0] - .02) < 1e-9);
     assert.deepEqual(switching.slice(1), [0, 0]);
 });
 
@@ -110,7 +110,7 @@ test('a full resident cannot also deliver; missing layouts do not make hauling f
     const work = haulingWorkload({pieces:[],storages:[]}, [
         {facility:'Well',item_name:'water',status:'producing',facility_count:1,cycle_time:10},
     ], haulingWorkSeconds(40));
-    assert.equal(work.busy, 4);
+    assert.equal(work.busy, 1);
 });
 
 test('a large harvest takes multiple trips according to the actual couriers carrying level', () => {
@@ -118,12 +118,12 @@ test('a large harvest takes multiple trips according to the actual couriers carr
         {x:7,y:-1,w:2,h:2,weight:180,facility:'Farmland',crop:'large',stockLimit:35},
     ]}]}, [{facility:'Farmland',item_name:'large',status:'producing',facility_count:1,cycle_time:40}], 0,
     [{name:'large',yieldAmount:200}]);
-    assert.equal(work.seconds['Farmland|large|1'],64);
-    assert.equal(work.seconds['Farmland|large|2'],48);
-    assert.equal(work.seconds['Farmland|large|3'],32);
-    assert.ok(allocateHauling([{count:1,abilities:{Hauling:1}}], [0], work, 1).unassigned > 0);
+    assert.equal(work.seconds['Farmland|large|1'],16);
+    assert.equal(work.seconds['Farmland|large|2'],12);
+    assert.equal(work.seconds['Farmland|large|3'],8);
+    assert.ok(allocateHauling([{count:1,abilities:{Hauling:1}}], [.7], work, 1).unassigned > 0);
     const stronger = allocateHauling([{count:1,abilities:{Hauling:3}}], [0], work, 1);
-    assert.deepEqual(stronger.assignments,[[0,.8]]);
+    assert.deepEqual(stronger.assignments,[[0,.2]]);
     assert.equal(stronger.unassigned,0);
 });
 
@@ -137,7 +137,7 @@ test('a building accumulates several batches before sending a delivery, includin
     const steps = [{ facility:'Farmland',item_name:'wheat',status:'producing',facility_count:1,cycle_time:60 }];
     const measured = haulingWorkload({ storages: [{ x:-1,y:-1,w:2,h:2 }], pieces: [{ members: [crop] }] }, steps, 0, recipes);
     const bounded = haulingWorkload({ storages: [], pieces: [] }, steps, haulingWorkSeconds(16), recipes, facilities);
-    assert.equal(measured.seconds['Farmland|wheat'], 16 / 6);
+    assert.equal(measured.seconds['Farmland|wheat'], 4 / 6);
     assert.equal(bounded.seconds['Farmland|wheat'], measured.seconds['Farmland|wheat']);
     assert.equal(haulingBatchTrips({ yieldAmount: 4, byproductAmount: 2 }, 3, 18), 1 / 3);
 });
@@ -164,4 +164,19 @@ test('a powered building keeps the stock limit of its exact tier', () => {
     assignFacilityStock([standard, powered], { Well: [{ level: 4, count: 1 }, { level: 1, count: 1 }] }, new Map());
     assert.equal(standard.stockLimit, 300);
     assert.equal(powered.stockLimit, 340);
+});
+
+test('delivery and walking use base speed without allowances or a duplicated return leg', async () => {
+    const { workerTravelSeconds } = await import('../web/worker-travel.js');
+    assert.equal(workerTravelSeconds(8), 2);
+    assert.equal(haulingTravelSeconds(8, true), 2);
+    assert.equal(haulingWorkSeconds(8, true), 2);
+    const layout = {storages:[{x:-1,y:-1,w:2,h:2}],pieces:[{members:[
+        {x:7,y:-1,w:2,h:2,weight:60,facility:'Well',crop:'water'},
+    ]}]};
+    const work = haulingWorkload(layout, [
+        {facility:'Well',item_name:'water',status:'producing',facility_count:1,cycle_time:60},
+    ], 0, [], null, true);
+    assert.equal(work.seconds['Well|water'], 4);
+    assert.equal(work.busy, 4 / 60);
 });

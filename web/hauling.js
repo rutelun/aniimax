@@ -1,5 +1,5 @@
 import { nearestStorage } from './layout.js?v=optional-worker-travel';
-import { ANIIMO_WALK_SPEED, workerTravelSeconds } from './worker-travel.js?v=travel-allowance';
+import { ANIIMO_WALK_SPEED, workerTravelSeconds } from './worker-travel.js?v=base-travel';
 import facilityStock from './facility-stock.json' with { type: 'json' };
 
 // Hauling capacity from Skippy, Fenrier, Glacy and Prismana Glacy's Homeland profiles.
@@ -7,9 +7,9 @@ export const HAULING_CAPACITY = Object.freeze({1:60, 2:80, 3:100, 4:120});
 const levels = [1, 2, 3, 4];
 const headcount = n => Math.max(0, Math.ceil(n - 1e-6));
 export const haulingTravelSeconds = (distance, accountForTravel = false) =>
-    2 * (accountForTravel ? workerTravelSeconds(distance) : distance / ANIIMO_WALK_SPEED);
+    accountForTravel ? workerTravelSeconds(distance) : distance / ANIIMO_WALK_SPEED;
 export const haulingWorkSeconds = (distance, accountForTravel = false) =>
-    2 * haulingTravelSeconds(distance, accountForTravel);
+    haulingTravelSeconds(distance, accountForTravel);
 const batchOutput = recipe => Math.max(1, recipe?.yieldAmount || 1) + Math.max(0, recipe?.byproductAmount || 0);
 export const facilityStockLimit = (facility, level = 1) =>
     facilityStock[facility]?.[Math.max(1, level) - 1] ?? facilityStock[facility]?.at(-1) ?? 0;
@@ -62,7 +62,7 @@ function fallbackTrips(step, recipe, level, facilities) {
 // Accumulate whole batches in the building's output buffer, then split the
 // pickup over carrying capacity. An oversized harvest still needs all its trips. After storage
 // comes the next pickup, weighted by its delivery frequency in the same storage pool.
-// Pickup thresholds are estimates. Fallback seconds already include the time allowance.
+// Pickup thresholds are estimates. Each leg uses base speed; fallback seconds cover the full route.
 export function haulingWorkload(layout, steps, fallbackSeconds = 0, recipes = [], facilities = null, accountForTravel = false) {
     const recipeOf = new Map(recipes.map(recipe => [recipe.name, recipe]));
     const seconds = {}, tripsPerBatch = {}, jobs = new Map(), tripSites = [];

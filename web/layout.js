@@ -16,7 +16,7 @@
 // and put back wherever is cheapest with the rest in place, until nothing moves. This is a
 // heuristic: it finds a good layout, not a proven best one.
 
-import { workerHubs, workerPlacementCost, workerLayoutCost, workerTravelDistances } from './worker-travel.js?v=auto-worker-travel';
+import { workerHubs, workerPlacementCost, workerLayoutCost, workerTravelDistances } from './worker-travel.js?v=base-travel';
 
 const STEP = 0.25;
 const EPSILON = 1e-6;
