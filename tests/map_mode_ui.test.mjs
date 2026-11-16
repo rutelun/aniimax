@@ -1,0 +1,18 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import vm from 'node:vm';
+const source=fs.readFileSync(new URL('../web/app.js',import.meta.url),'utf8');
+const optionsFunction=source.slice(source.indexOf('function layoutOptionsFor('),source.indexOf('\nfunction rememberLayout('));
+test('both visible map modes build a worker request and distinct cache keys without removed controls',()=>{
+    const context=vm.createContext({storageUnitLimit:()=>5,powerPoleLimit:()=>12,numberOrDefault:(v,d)=>v===''?d:Number(v),
+        document:{getElementById:id=>{assert.equal(id,'layout-storage-count');return {value:''};}},
+        selectedSetupTab:()=> 'minimum',layoutStyle:()=>context.style,
+        homelandPlots:()=>[{number:1,x:0,y:0,w:20,h:15}],style:'delivery'});
+    vm.runInContext(optionsFunction,context);
+    const delivery=context.layoutOptionsFor({},15);
+    context.style='groups';const grouped=context.layoutOptionsFor({},15);
+    assert.equal(delivery.storageCount,5);assert.equal(grouped.storageCount,5);
+    assert.equal(delivery.style,'delivery');assert.equal(grouped.style,'groups');
+    assert.notEqual(delivery.key,grouped.key);
+});

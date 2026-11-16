@@ -58,7 +58,7 @@ export function updatePowerConnections(layout) {
     return layout;
 }
 
-export function connectPower(layout, cells, maximum, repack = true, canRelocate = null, canPlacePole = null) {
+export function connectPower(layout, cells, maximum, repack = true, canRelocate = null, canPlacePole = null, preferCoverage = false) {
     const inside = createInsideTest(cells);
     const members = layout.pieces.flatMap(p => p.members);
     const generators = members.filter(m => m.generator);
@@ -112,6 +112,11 @@ export function connectPower(layout, cells, maximum, repack = true, canRelocate 
     const bucket = r => { const c = center(r); return [Math.floor(c.x / 4), Math.floor(c.y / 4)]; };
     while (connected.size && targets.some(t => !connected.has(t)) && poles.length < maximum) {
         const available = candidates.filter(r => !poles.some(p => overlap(r, p, EPS * 2)));
+        if (preferCoverage) {
+            const remaining = targets.filter(t => !connected.has(t));
+            const scored = new Map(available.map(r => [r, remaining.reduce((sum,t) => sum + (powerLinked(r,t) ? 1 : 0), 0)]));
+            available.sort((a,b) => scored.get(b)-scored.get(a));
+        }
         const buckets = new Map();
         for (const r of available) { const key = bucket(r).join(','); if (!buckets.has(key)) buckets.set(key, new Set()); buckets.get(key).add(r); }
         const parents = new Map();

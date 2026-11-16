@@ -135,7 +135,7 @@ function makeGroup(lot, style, gap, offset) {
 
 // Moving buildings preserves income when the existing production plan can still run.
 // Use the same workload and route checks as the app so a move cannot trigger a lower-output solve.
-function incomeWalking(layout, staffing, recipes) {
+export function incomeWalking(layout, staffing, recipes) {
     if (!staffing) return [];
     const { movement, limit, minimumWorkers, members, busy, anchored, steps, haulingBound, haulingLevel, haulingSpare = 0, facilities, accountForTravel } = staffing;
     const walking = [], occupied = busy?.slice();

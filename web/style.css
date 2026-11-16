@@ -2648,6 +2648,9 @@ details.explain p {
 [data-theme="mining"] { --district-color: #b0a86c; }
 [data-theme="water"] { --district-color: #62b9d3; }
 [data-theme="aniimo"] { --district-color: #ab92d0; }
+[data-theme="growing"] { --district-color: #93b877; }
+[data-theme="extraction"] { --district-color: #8bb8bf; }
+[data-theme="processing"] { --district-color: #b5a7d4; }
 
 .layout-group-legend li {
     border: 1px solid color-mix(in srgb, var(--district-color) 55%, var(--border));
@@ -2700,6 +2703,9 @@ details.explain p {
     stroke-width: .12;
     stroke-dasharray: .5 .22;
 }
+
+.layout-idle-boundary { fill: none; stroke: var(--text-muted); stroke-width: .1; stroke-dasharray: .4 .3; }
+.layout-idle-area text { fill: var(--text-muted); }
 
 .layout-district-structured .layout-district-boundary {
     stroke-width: .2;

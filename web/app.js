@@ -3,6 +3,7 @@
 import { currentLocale, sourceAttribute, translate } from './i18n.js?v=recommendations';
 import './math-translation.js?v=results-columns';
 import { autoMaximizeSeasonPoints } from './season-planning.js?v=optional-season-points';
+import { normalizeMapStyle } from './map-style.js?v=production-groups';
 
 import {
     FACILITIES, FACILITY_CATEGORIES, FACILITY_CATEGORY_BY_NAME, FACILITY_FOOTPRINTS, HOMELAND_PLOTS, HOMELAND_PLOT_SIZE,
@@ -468,7 +469,7 @@ function getPersistedFieldIds() {
         'ecological-module-level', 'kitchen-module-level',
         'resource-detector-level', 'crafting-module-level',
         'rate-unit', 'season-on', 'season-event', 'layout-sim-on', 'layout-recipes', 'layout-workers', 'layout-storage-count',
-        'layout-style', 'layout-group-gap', 'layout-separate-sales', 'layout-icons',
+        'layout-style', 'layout-icons',
         'aniimo-best', 'aniimo-minimum', 'aniimo-custom'
     ];
 }
@@ -653,6 +654,8 @@ function loadInputsFromStorage(data) {
             el.checked = !!data[id];
         } else if (id === 'level-up-target' && !customBuildings) {
             return;
+        } else if (id === 'layout-style') {
+            el.value = normalizeMapStyle(data[id]);
         } else if (el.tagName !== 'SELECT' || [...el.options].some(option => option.value === String(data[id]))) {
             el.value = data[id];
         }
@@ -1440,7 +1443,7 @@ function layoutHomeLevel(input = lastPlanInput) {
 
 function layoutStyle() {
     const value = document.getElementById('layout-style').value;
-    return ['courtyards', 'avenues', 'districts'].includes(value) ? value : 'delivery';
+    return normalizeMapStyle(value);
 }
 
 function groupPurposeName(purpose) {
@@ -1449,7 +1452,7 @@ function groupPurposeName(purpose) {
 
 const rangeLabel = range => range ? range[0] === range[1] ? range[0] : range.join('–') : '';
 const resourceZoneName = theme => ({ fields: 'Crop fields', woodland: 'Tree groves', mining: 'Mining area',
-    water: 'Water wells', aniimo: 'Aniimo Materials' })[theme];
+    water: 'Water wells', aniimo: 'Primary and Leisure production', growing: 'Fields and trees', extraction: 'Mines and wells', processing: 'Workshops' })[theme];
 const resourceZoneTheme = group => group.range ? '' : group.themes?.[0] ?? '';
 const districtLabel = (group, index) => !group?.storageIndices ? `SU${index + 1}`
     : group.storageIndices.length ? group.storageIndices.map(i => `SU${i + 1}`).join(' + ')
@@ -1457,8 +1460,7 @@ const districtLabel = (group, index) => !group?.storageIndices ? `SU${index + 1}
 
 function updateLayoutStyleControls() {
     const grouped = layoutStyle() !== 'delivery';
-    document.getElementById('layout-group-spacing').hidden = !grouped;
-    document.getElementById('layout-purpose-option').hidden = !grouped;
+    document.getElementById('layout-group-hint').hidden = !grouped;
 }
 
 function attachLayoutHandlers() {
@@ -1486,7 +1488,7 @@ function attachLayoutHandlers() {
         setLayoutView(svg, [(left + right - width) / 2, (top + bottom - height) / 2, width, height]);
         svg.scrollIntoView({ block: 'nearest' });
     });
-    ['layout-style', 'layout-group-gap', 'layout-separate-sales'].forEach(id => document.getElementById(id).addEventListener('change', () => {
+    ['layout-style'].forEach(id => document.getElementById(id).addEventListener('change', () => {
         updateLayoutStyleControls();
         if (!lastPlan?.success) return;
         stopRanking();
@@ -1690,11 +1692,8 @@ function layoutOptionsFor(plan, homeLevel, setup = selectedSetupTab()) {
     const storageCount = Math.min(limit, Math.max(0, Math.floor(numberOrDefault(
         document.getElementById('layout-storage-count').value, limit))));
     const style = layoutStyle();
-    const groupGap = Math.min(3, Math.max(1, numberOrDefault(document.getElementById('layout-group-gap').value, 2)));
-    const separateSales = style !== 'delivery' && document.getElementById('layout-separate-sales').checked;
-    const saleProducts = separateSales ? (plan.income_streams || [])
-        .filter(stream => stream.item_name && stream.rate_per_second > 1e-9 && stream.sell_value > 0)
-        .map(stream => [stream.facility, stream.item_name]) : null;
+    const groupGap = 0;
+    const saleProducts = null;
     const recipes = style === 'delivery' ? [] : [...new Set((plan.coin_items || [])
         .filter(step => step.status === 'producing' && step.item_name).map(step => step.item_name))]
         .map(item => ({ item, ...recipeTerms(item) }));
@@ -1725,7 +1724,7 @@ function layoutOptionsFor(plan, homeLevel, setup = selectedSetupTab()) {
         };
     }
     return {
-        key: `${homeLevel}:${storageCount}:${style}:${groupGap}:${separateSales}`,
+        key: `${homeLevel}:${storageCount}:${style}`,
         storageCount, poleLimit: powerPoleLimit(homeLevel), style, groupGap, saleProducts, recipes, staffing,
         cells: homelandPlots().filter(p => p.number <= homeLevel).map(({ x, y, w, h }) => ({ x, y, w, h })),
     };
@@ -1798,7 +1797,7 @@ function renderHomelandLayout(plan) {
             powerSummary,
             layout.power.disconnected ? translate('Power connection not found for {n} buildings.').replace('{n}', layout.power.disconnected) : '',
             missingGenerators ? translate('The plan needs {n} more generators than can be placed at this RV level.').replace('{n}', missingGenerators) : '',
-            layout.groups ? translate('{n} zones with {gap}-tile gaps.').replace('{n}', layout.groups.length).replace('{gap}', layout.groupGap) : '',
+            layout.groups ? translate('{n} production groups.').replace('{n}', layout.groups.length) : '',
             noRoom.length ? `No room found in RV ${homeLevel}'s plots for: ${noRoom.join(', ')}.` : '',
             unplaced.length ? `Not placed, size unknown: ${unplaced.join(', ')}.` : '',
         ].filter(Boolean).join(' ');
@@ -1824,7 +1823,7 @@ function renderHomelandLayout(plan) {
         document.getElementById('layout-summary').textContent = `${summary}${notes ? ` ${notes}` : ''}`;
         const legend = document.getElementById('layout-group-legend');
         legend.innerHTML = (layout.groups || []).map((group, i) => {
-            const parts = [group.range ? 'Workshops' : null,
+            const parts = [group.range && !group.themes?.includes('processing') ? 'Workshops' : null,
                 !group.themes?.length && !group.range || ['sales', 'rv'].includes(group.purpose) ? groupPurposeName(group.purpose) : null,
                 ...(group.themes ?? []).map(resourceZoneName)].filter(Boolean);
             return `<li data-purpose="${group.purpose}" data-theme="${resourceZoneTheme(group)}"><strong>${escapeText(districtLabel(group, i))}${group.range ? ` · ${rangeLabel(group.range)}` : ''}</strong>
@@ -2115,6 +2114,10 @@ function homelandSvg(layout, homeLevel, plan) {
         ${group.workshop ? rectangle(group.workshop, 'layout-workshop-zone') : ''}
         ${districts ? rectangle(group.feature, 'layout-district-frontage') : ''}
         </g>`).join('');
+    const idle = layout.idleArea?.bounds;
+    const idleShape = idle ? `<g class="layout-idle-area" pointer-events="none">
+        ${rectangle(idle, 'layout-idle-boundary')}
+        <text x="${idle.x + .3}" y="${idle.y - .3}" font-size=".65">${escapeText(translate('Unused buildings'))}</text></g>` : '';
     return `<svg class="layout-svg" viewBox="${view}" data-base="${view}" role="group" aria-label="Homeland layout">
         <defs><pattern id="layout-locked" width="1" height="1" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
             <line x1="0" y1="0" x2="0" y2="1" class="layout-hatch" /></pattern>
@@ -2123,7 +2126,7 @@ function homelandSvg(layout, homeLevel, plan) {
             </pattern></defs>
         <g class="env-grid">${lines.join('')}</g>
         <g class="layout-plots">${plotShapes}</g>
-        <g class="layout-districts" pointer-events="none">${groupShapes}</g>
+        <g class="layout-districts" pointer-events="none">${groupShapes}${idleShape}</g>
         <g class="layout-coverage">${coverageShapes}</g>
         <g class="layout-power-zones" pointer-events="none">${powerZones}</g>
         <g class="layout-power-links" pointer-events="none">${powerLines}</g>

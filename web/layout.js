@@ -1066,9 +1066,9 @@ function improveStorageLayout(layout, pieces, cells, storage, maximum, fast, fix
     };
 }
 
-export function improveFixedStorage(layout, cells, minGain = .01) {
+export function improveFixedStorage(layout, cells, minGain = .01, maximum = layout.storages.length) {
     if (!layout.storages.length || layout.unplaced.length || layout.power.disconnected) return layout;
-    return improveStorageLayout(layout, null, cells, layout.storages[0], layout.storages.length, true, true, true, minGain);
+    return improveStorageLayout(layout, null, cells, layout.storages[0], maximum, true, true, true, minGain);
 }
 
 // Puts `plots` on `slots` (the plan's own arrangement, one slot per plot, each slot sized for the

@@ -1186,5 +1186,12 @@
   "No improvement found": "未發現改善",
   "No eligible changes found.": "沒有符合條件的變更。",
   "Buildings & modules": "建築與模組",
-  "Check buildings and modules": "檢查建築與模組"
+  "Check buildings and modules": "檢查建築與模組",
+  "Production groups": "生產群組",
+  "{n} production groups.": "{n} 個生產群組。",
+  "Primary and Leisure production": "初級與休閒生產",
+  "Fields and trees": "農田與林地",
+  "Mines and wells": "礦場與水井",
+  "Unused buildings": "閒置建築",
+  "Compact production groups with optimized deliveries. Workshops follow alphabetical order; gaps are available for the power grid.": "緊密排列的生產群組，並最佳化運送路線。加工建築依英文字母排序；間隙可用於電網。"
 }

@@ -3,6 +3,8 @@
 // it's sent. Loaded with the page's own load tag (see `WORKER_URL` in app.js), passed on to
 // layout.js so a cached older copy is never used with newer page code.
 import { FACILITY_CATEGORY_BY_NAME } from './facility-config.js?v=leisure-families';
+import { normalizeMapStyle } from './map-style.js';
+import { parkIdleBuildings } from './idle-layout.js';
 
 const ready = import('./layout.js' + new URL(import.meta.url).search);
 const powerReady = import('./power-layout.js' + new URL(import.meta.url).search);
@@ -22,11 +24,13 @@ self.onmessage = async (event) => {
     const { pieces, cells } = event.data;
     const storageCount = event.data.storageCount ?? 1;
     const poleLimit = event.data.poleLimit ?? 0;
-    const { style, groupGap, saleProducts, recipes, staffing } = event.data;
-    const grouped = ['courtyards', 'avenues', 'districts'].includes(style);
+    const { recipes, staffing } = event.data;
+    const style = normalizeMapStyle(event.data.style);
+    const grouped = style === 'groups';
+    const deliver = layout => self.postMessage(parkIdleBuildings(layout,cells));
     if (grouped && storageCount > 0) {
-        const { groupHomelandLayout } = await import('./group-layout.js' + new URL(import.meta.url).search);
-        const arranged = await groupHomelandLayout(pieces, cells, { style, gap: groupGap, storageCount, poleLimit, saleProducts, recipes, staffing, fast: true });
+        const { productionGroupLayout } = await import('./production-groups.js' + new URL(import.meta.url).search);
+        const arranged = await productionGroupLayout(pieces, cells, { storageCount, poleLimit, recipes, staffing });
         if (arranged) {
             self.postMessage(arranged);
             return;
@@ -50,7 +54,7 @@ self.onmessage = async (event) => {
                     if(layoutKeepsIncome(candidate,staffing,recipes||[])) {
                         const needsRanges=recipes?.some(recipe=>recipe.takes.length)||(recipes?.length>0&&pieces.some(piece=>
                             piece.members?.some(member=>FACILITY_CATEGORY_BY_NAME.get(member.facility)==='Materials Processing')));
-                        self.postMessage(grouped?{...candidate,groupFallback:needsRanges?'ranges':'space'}:candidate);
+                        deliver(grouped?{...candidate,groupFallback:needsRanges?'ranges':'space'}:candidate);
                         return;
                     }
                 }
@@ -171,5 +175,5 @@ self.onmessage = async (event) => {
     const needsRanges = recipes?.some(recipe => recipe.takes.length) || (recipes?.length > 0 && pieces.some(piece =>
         piece.members?.some(member => FACILITY_CATEGORY_BY_NAME.get(member.facility) === 'Materials Processing')));
     const fallback = storageCount === 0 ? 'storage' : needsRanges ? 'ranges' : 'space';
-    self.postMessage(grouped ? { ...best, groupFallback: fallback } : best);
+    deliver(grouped ? { ...best, groupFallback: fallback } : best);
 };

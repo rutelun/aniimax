@@ -16,7 +16,7 @@ await import('../web/layout-worker.js');
 const rows=[];
 for(const path of paths){
     const input=JSON.parse(fs.readFileSync(path,'utf8'));
-    for(const style of allStyles?['delivery','courtyards','avenues','districts']:['delivery']){
+    for(const style of allStyles?['delivery','groups']:['delivery']){
         result=null;
         const start=performance.now();
         await self.onmessage({data:structuredClone({...input,style})});

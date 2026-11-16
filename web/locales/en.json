@@ -1167,5 +1167,12 @@
   "No improvement found",
   "No eligible changes found.",
   "Buildings & modules",
-  "Check buildings and modules"
+  "Check buildings and modules",
+  "Production groups",
+  "{n} production groups.",
+  "Primary and Leisure production",
+  "Fields and trees",
+  "Mines and wells",
+  "Unused buildings",
+  "Compact production groups with optimized deliveries. Workshops follow alphabetical order; gaps are available for the power grid."
 ]
