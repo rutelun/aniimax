@@ -6,6 +6,14 @@ import { FACILITY_CATEGORY_BY_NAME } from './facility-config.js?v=leisure-famili
 
 const ready = import('./layout.js' + new URL(import.meta.url).search);
 const powerReady = import('./power-layout.js' + new URL(import.meta.url).search);
+let refinementReady;
+function loadRefinement() {
+    return refinementReady ??= import('./pkg/aniimax.js' + new URL(import.meta.url).search).then(async pkg => {
+        if(typeof pkg.refine_layout !== 'function')return null;
+        await pkg.default({module_or_path:fetch(new URL('./pkg/aniimax_bg.wasm',import.meta.url),{cache:'no-cache'})});
+        return pkg.refine_layout;
+    });
+}
 
 self.onmessage = async (event) => {
     const { centralDeliverySeed, createInsideTest, improveFixedStorage, layOutHomeland, layoutDeliveryCost, layoutTravelCost,
@@ -27,6 +35,30 @@ self.onmessage = async (event) => {
     const storage = { w: 2, h: 2 };
     // A failed grouped layout explicitly falls back to Shortest delivery.
     const accountForWorkers = !grouped && style !== 'delivery';
+    if(!accountForWorkers&&storageCount>0&&cells.length) {
+        try {
+            const [refineJSON,{fastLayoutSeed,refineFastLayout},{layoutKeepsIncome}]=await Promise.all([
+                loadRefinement(),import('./fast-layout.js'+new URL(import.meta.url).search),
+                import('./group-layout.js'+new URL(import.meta.url).search),
+            ]);
+            if(refineJSON) {
+                const seed=fastLayoutSeed({pieces,cells,storageCount,poleLimit});
+                if(!seed.unplaced.length&&!seed.power.disconnected) {
+                    const candidate=refineFastLayout(seed,cells,refineJSON);
+                    if(layoutKeepsIncome(candidate,staffing,recipes||[])) {
+                        const needsRanges=recipes?.some(recipe=>recipe.takes.length)||(recipes?.length>0&&pieces.some(piece=>
+                            piece.members?.some(member=>FACILITY_CATEGORY_BY_NAME.get(member.facility)==='Materials Processing')));
+                        self.postMessage(grouped?{...candidate,groupFallback:needsRanges?'ranges':'space'}:candidate);
+                        return;
+                    }
+                }
+            }
+        }catch(error) {
+            // Older cached WASM or unsupported inputs retain the previous full
+            // search; failed refinement must never leave the map unusable.
+            console.warn('Fast layout refinement unavailable; using fallback search.',error);
+        }
+    }
     const cost = accountForWorkers ? layoutTravelCost : layoutDeliveryCost;
     const options = { fast: true, accountForWorkers };
     const place = () => layOutHomeland(pieces, cells, storage, storageCount, options);

@@ -1,6 +1,8 @@
 // Power coverage is square, centered on the generator/pole. A real 1/4 tile overlap
 // connects a building. Only generators and poles relay power; consumers are endpoints. The ranges,
 // footprints and conservative overlap follow Aniimo Camp's public Home planner data.
+import { createInsideTest } from './layout.js';
+
 const EPS = 1e-6;
 const center = r => ({ x: r.x + r.w / 2, y: r.y + r.h / 2 });
 const powerRadius = r => r.generator ? 5.5 : r.pole ? 3.5 : 0;
@@ -57,6 +59,7 @@ export function updatePowerConnections(layout) {
 }
 
 export function connectPower(layout, cells, maximum, repack = true, canRelocate = null, canPlacePole = null) {
+    const inside = createInsideTest(cells);
     const members = layout.pieces.flatMap(p => p.members);
     const generators = members.filter(m => m.generator);
     const consumers = members.filter(m => m.electric_level != null);
@@ -70,13 +73,14 @@ export function connectPower(layout, cells, maximum, repack = true, canRelocate 
         let best = null;
         for (const cell of destinations.length ? cells : []) {
             for (let y = cell.y; y < cell.y + cell.h; y += 0.5) for (let x = cell.x; x < cell.x + cell.w; x += 0.5) {
+                const cx = x + generator.w / 2, cy = y + generator.h / 2;
+                const cost = destinations.length * (cx * cx + cy * cy) - 2 * (cx * sumX + cy * sumY);
+                // Once a legal position is known, more expensive checks cannot make
+                // a higher-cost position win. Preserve the original tie ordering.
+                if (best && cost >= best.cost) continue;
                 const r = { x, y, w: generator.w, h: generator.h };
                 if (canRelocate && !canRelocate(generator, r)) continue;
-                const area = cells.reduce((sum, c) => sum + Math.max(0, Math.min(x + r.w, c.x + c.w) - Math.max(x, c.x))
-                    * Math.max(0, Math.min(y + r.h, c.y + c.h) - Math.max(y, c.y)), 0);
-                if (area < r.w * r.h - EPS || obstacles.some(o => overlap(r, o, EPS * 2))) continue;
-                const cx = x + r.w / 2, cy = y + r.h / 2;
-                const cost = destinations.length * (cx * cx + cy * cy) - 2 * (cx * sumX + cy * sumY);
+                if (!inside(r) || obstacles.some(o => overlap(r, o, EPS * 2))) continue;
                 if (!best || cost < best.cost) best = { x, y, cost };
             }
         }
@@ -100,9 +104,7 @@ export function connectPower(layout, cells, maximum, repack = true, canRelocate 
         seen.add(key);
         const r = { x, y, w: 1.5, h: 1.5, pole: true, facility: 'Crackle Power Pole' };
         if (canPlacePole && !canPlacePole(r)) continue;
-        const area = cells.reduce((sum, cell) => sum + Math.max(0, Math.min(x + r.w, cell.x + cell.w) - Math.max(x, cell.x))
-            * Math.max(0, Math.min(y + r.h, cell.y + cell.h) - Math.max(y, cell.y)), 0);
-        if (area < r.w * r.h - EPS || blocked.some(b => overlap(r, b, EPS * 2))) continue;
+        if (!inside(r) || blocked.some(b => overlap(r, b, EPS * 2))) continue;
         candidates.push(r);
     }
     // BFS finds a route with the fewest extra poles to one of the remaining targets.
@@ -166,6 +168,7 @@ export function connectPower(layout, cells, maximum, repack = true, canRelocate 
 // Reuse the same feasible placement search to repair a disconnected grid or to
 // compare a compact alternative for an already connected grid.
 export function repackPower(layout, cells, maximum, { canRelocate = null, canPlacePole = null, attempts = 8, accept = null } = {}) {
+    const inside = createInsideTest(cells);
     const electricMembers = layout.pieces.flatMap(p => p.members).filter(m => m.generator || m.electric_level != null);
     if (!layout.power.generators || !layout.power.consumers) return layout;
     const mx = electricMembers.reduce((sum, m) => sum + center(m).x, 0) / electricMembers.length;
@@ -178,9 +181,8 @@ export function repackPower(layout, cells, maximum, { canRelocate = null, canPla
         if (!positions.has(key)) {
             const sites = [];
             for (const cell of cells) for (let y = cell.y; y < cell.y + cell.h; y += .5) for (let x = cell.x; x < cell.x + cell.w; x += .5) {
-                const covered = cells.reduce((sum, c) => sum + Math.max(0, Math.min(x + w, c.x + c.w) - Math.max(x, c.x))
-                    * Math.max(0, Math.min(y + h, c.y + c.h) - Math.max(y, c.y)), 0);
-                if (covered >= w * h - EPS) sites.push({ x, y, w, h });
+                const site = { x, y, w, h };
+                if (inside(site)) sites.push(site);
             }
             positions.set(key, sites);
         }

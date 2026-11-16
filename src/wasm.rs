@@ -7,6 +7,12 @@ use std::{cell::RefCell, rc::Rc};
 use wasm_bindgen::prelude::*;
 
 use crate::models::{FacilityCounts, ModuleLevels, ProductionEfficiency, ProductionItem};
+
+/// Refine a complete feasible map without blocking the page's main thread.
+#[wasm_bindgen]
+pub fn refine_layout(input: &str) -> Result<String, JsValue> {
+    crate::fast_layout::refine_json(input).map_err(|error| JsValue::from_str(&error))
+}
 use crate::optimizer::{
     calculate_efficiencies, calculate_energy_efficiencies, find_best_production_path,
     find_parallel_production_path, find_production_plan_with_progress, find_self_sufficient_path,

@@ -71,6 +71,7 @@ pub mod data;
 pub mod locale;
 pub mod display;
 pub mod exact;
+pub mod fast_layout;
 pub mod models;
 pub mod optimizer;
 pub mod power;
