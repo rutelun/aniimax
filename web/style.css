@@ -3384,7 +3384,7 @@ html { scroll-padding-top: 0.8rem; }
 .planner-priorities .priority-list { max-width: none; }
 .planner-priorities .priority-list:empty { display: none; }
 .planner-priorities .priority-name { min-width: 0; overflow-wrap: anywhere; }
-.planner-priority-add { margin-top: 0.6rem; }
+.planner-priority-add { margin-top: 0.6rem; display: flex; align-items: center; gap: 0.85rem; flex-wrap: wrap; }
 .planner-priority-add select {
     min-height: 2.75rem;
     max-width: 100%;
@@ -3395,7 +3395,7 @@ html { scroll-padding-top: 0.8rem; }
     border-radius: var(--radius);
     font: inherit;
 }
-.planner-priorities .planner-checkbox { margin-top: 0.35rem; }
+.planner-priorities .planner-checkbox { margin: 0; }
 .planner-editor {
     container-type: inline-size;
     border-inline-start: 1px solid var(--border);
@@ -3457,11 +3457,12 @@ html { scroll-padding-top: 0.8rem; }
 .planner-building-settings #advanced-config .modules-grid {
     grid-template-columns: repeat(auto-fit, minmax(min(100%, 10rem), 1fr));
 }
-.planner-rv-settings { margin-top: 0.9rem; }
+.planner-rv-settings { margin-top: 0.9rem; display: flex; gap: 1rem; flex-wrap: wrap; align-items: end; }
 .planner-rv { margin: 0; max-width: 14rem; }
-.planner-upgrade-stock { margin-top: 0.5rem; max-width: 34rem; }
-.planner-upgrade-stock #level-up-target-row { max-width: 14rem; }
-.planner-upgrade-stock .stock-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 9rem), 1fr)); }
+.planner-rv-settings #level-up-target-row { max-width: 14rem; margin: 0; }
+.quest-income-fields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: .65rem; }
+.quest-income-fields .input-field { min-width: 0; margin: 0; }
+.quest-income-fields select, .quest-income-fields input { width: 100%; min-width: 0; }
 @container (max-width: 35rem) {
     .planner-editor-panel .roster-editor-layout {
         grid-template-columns: minmax(0, 1fr);

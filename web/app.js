@@ -6,6 +6,7 @@ import { autoMaximizeSeasonPoints } from './season-planning.js?v=optional-season
 import { normalizeMapStyle } from './map-style.js?v=production-groups';
 import { productionGroupOutline } from './group-outline.js?v=compact-groups';
 import { powerJobDetails } from './power-islands.js?v=independent-grids';
+import { questIncome } from './quest-income.js';
 
 import {
     FACILITIES, FACILITY_CATEGORIES, FACILITY_CATEGORY_BY_NAME, FACILITY_FOOTPRINTS, HOMELAND_PLOTS, HOMELAND_PLOT_SIZE,
@@ -539,7 +540,7 @@ function initFacilityTiers(data) {
 }
 
 function currentConfig() {
-    const data = { facilityTiers, customBuildings, levelUpStock, skippedRecipes: [...skippedRecipes], unlockedSpecial: [...unlockedSpecial], priorities: priorityOrder, aniimoLevels, roster, rosterSlots, seasonBudgets, seasonCropMinimums };
+    const data = { facilityTiers, customBuildings, questIncomePerDay:questIncome(questIncomePerDay), skippedRecipes: [...skippedRecipes], unlockedSpecial: [...unlockedSpecial], priorities: priorityOrder, aniimoLevels, roster, rosterSlots, seasonBudgets, seasonCropMinimums };
     getPersistedFieldIds().forEach(id => {
         const el = document.getElementById(id);
         if (!el) return;
@@ -596,7 +597,7 @@ async function shareCurrentConfig() {
 function loadInputsFromStorage(data) {
     if (!data) return;
     customBuildings = Boolean(data.customBuildings);
-    if (data.levelUpStock && typeof data.levelUpStock === 'object') levelUpStock = { ...data.levelUpStock };
+    questIncomePerDay = questIncome(data.questIncomePerDay);
     if (Array.isArray(data.skippedRecipes)) skippedRecipes = new Set(data.skippedRecipes.filter(n => typeof n === 'string'));
     if (Array.isArray(data.unlockedSpecial)) unlockedSpecial = new Set(data.unlockedSpecial.filter(n => typeof n === 'string'));
     if (data.seasonBudgets && typeof data.seasonBudgets === 'object') {
@@ -3782,7 +3783,7 @@ function attachSkipHandlers() {
 // "Priorities" makes as much of each ticked priority as the ones above it allow.
 
 // What the player has toward a level-up, by item name ('coins' for coins).
-let levelUpStock = {};
+let questIncomePerDay = {};
 
 // The highest ability level an Aniimo reaches, and the abilities that stop short of it; mirrors
 // `MAX_ANIIMO_LEVEL` and `ABILITY_DEFAULTS` in models.rs.
@@ -4055,13 +4056,11 @@ function levelUpUnavailable() {
     return null;
 }
 
-function stockNames(cost) {
-    return [...new Set(['wood_block', 'mineral_sand', 'coins', ...cost.items.map(([item]) => item)])];
-}
-
-function stockAmount(name) {
-    const amount = Number(levelUpStock[name]);
-    return Number.isFinite(amount) && amount > 0 ? amount : 0;
+function renderQuestIncome(updateInput=true) {
+    const income=questIncome(questIncomePerDay),names=Object.keys(income);
+    if(updateInput)document.getElementById('quest-amount').value=income[document.getElementById('quest-resource').value]??0;
+    document.getElementById('quest-income-summary').textContent=names.length?translate('{n} resources / day').replace('{n}',names.length):translate('Off');
+    document.getElementById('quest-income-detail').textContent=names.map(name=>`${translate(ITEM_NAMES[name])}: ${formatNumber(income[name])}`).join(' · ');
 }
 
 function populateLevelUpTargets() {
@@ -4073,7 +4072,6 @@ function populateLevelUpTargets() {
 function renderStrategy() {
     renderSeason();
     renderElectricity();
-    const unavailable = levelUpUnavailable();
     document.getElementById('crop-variety-config').hidden = !wantsCropVariety();
     renderPriorities();
     renderRecipeCount();
@@ -4081,22 +4079,7 @@ function renderStrategy() {
     // Simple mode always plans the next RV level, so only Advanced picks one.
     document.getElementById('level-up-target-row').style.display = isSimpleMode() ? 'none' : '';
 
-    const stockDetails = document.getElementById('level-up-stock');
-    const stockGrid = document.getElementById('level-up-stock-grid');
-    const stockNote = document.getElementById('level-up-stock-note');
-    stockDetails.hidden = Boolean(unavailable) && isSimpleMode();
-    if (unavailable) {
-        stockNote.textContent = unavailable;
-        stockGrid.replaceChildren();
-        return;
-    }
-    const cost = levelUpCost();
-    stockNote.textContent = translate('Include quest rewards. Wood Blocks and Mineral Sand still need processing when required for the RV upgrade.');
-    stockGrid.innerHTML = stockNames(cost).map(name => `
-        <div class="input-field">
-            <label for="stock-${name}">${ITEM_NAMES[name] || prettyItem(name)}</label>
-            <input type="number" id="stock-${name}" data-stock="${name}" min="0" value="${stockAmount(name)}">
-        </div>`).join('');
+    renderQuestIncome();
 }
 
 function attachStrategyHandlers() {
@@ -4105,15 +4088,15 @@ function attachStrategyHandlers() {
         if (lastPlanInput) clearPlanResults();
         renderStrategy();
     });
-    const grid = document.getElementById('level-up-stock-grid');
-    grid.addEventListener('input', (e) => {
-        const name = e.target.dataset.stock;
-        if (!name) return;
-        levelUpStock[name] = Math.max(0, floatOrDefault(e.target.value, 0));
+    document.getElementById('quest-resource').addEventListener('change',()=>renderQuestIncome());
+    const amount=document.getElementById('quest-amount');
+    amount.addEventListener('input', (e) => {
+        questIncomePerDay[document.getElementById('quest-resource').value]=e.target.value;
+        renderQuestIncome(false);
         if (lastPlanInput) clearPlanResults();
         saveInputsToStorage();
     });
-    grid.addEventListener('keypress', (e) => {
+    amount.addEventListener('keypress', (e) => {
         if (e.key === 'Enter' && e.target.matches('input')) runFindPlan();
     });
 }
@@ -4124,7 +4107,7 @@ function levelUpInput() {
     const cost = levelUpCost();
     return {
         cost: [['coins', cost.coins], ...cost.items],
-        stock: stockNames(cost).filter(name => stockAmount(name) > 0).map(name => [name, stockAmount(name)]),
+        stock: [],
     };
 }
 
@@ -4332,6 +4315,7 @@ function getPlanInputValues() {
         priorities: activePriorities(),
         prioritize_byproducts: false,
         level_up_preview: levelUpInput(),
+        quest_income_per_day: questIncome(questIncomePerDay),
         crop_variety: wantsCropVariety(),
         exclude: excludedRecipes(),
         season: activeSeasonId(),
@@ -5735,7 +5719,8 @@ async function runFindPlan() {
         planContext = {
             target: levelUpTarget(),
             unavailable: levelUpUnavailable(),
-            ready: !!(rvTarget && rvTarget.cost.every(([name, need]) => stockAmount(name) >= need)),
+            ready: !!(rvTarget && rvTarget.cost.every(([name, need]) =>
+                (rvTarget.stock.find(([item]) => item === name)?.[1] ?? 0) >= need)),
             aniipod: wantsAniipods() ? bestAniipod() : null,
             hasPolisher: (input.facilities['Dance Pad Polisher'] || []).some(t => t.count > 0),
             // Only what the player skipped; locked special recipes are the default, not news.
@@ -6234,7 +6219,7 @@ async function initApp() {
     // once at startup wouldn't reach a tier added later).
     document.querySelectorAll('input').forEach(input => {
         if (input.id === 'target-amount' || input.id === 'current-amount') return;
-        if (input.closest('#facilities-grid, #level-up-stock-grid, #roster-config') || input.id === 'skip-input') return;
+        if (input.closest('#facilities-grid, #planner-edit-quests, #roster-config') || input.id === 'skip-input') return;
         input.addEventListener('keypress', (e) => {
             if (e.key === 'Enter') {
                 runFindPlan();

@@ -1282,6 +1282,8 @@ pub struct FacilityCounts {
     crew: Option<Crew>,
     /// The minimum number of active plots assigned to each seasonal crop.
     season_crop_minimums: std::collections::BTreeMap<String, u32>,
+    /// Recurring quest resources, in items per second (not warehouse stock).
+    quest_income: std::collections::BTreeMap<String, f64>,
     power: Option<crate::power::PowerPlan>,
     /// Per-harvest work, independent of whether electricity or a team limit is enabled.
     grower_steps: Option<GrowerSteps>,
@@ -1318,6 +1320,7 @@ impl Default for FacilityCounts {
             default_tier: (1, 1),
             crew: None,
             season_crop_minimums: Default::default(),
+            quest_income: Default::default(),
             power: None,
             grower_steps: None,
             movement_seconds: 0.0,
@@ -1341,6 +1344,14 @@ fn facility_stock_limit(facility: &str, level: u32) -> u32 {
 }
 
 impl FacilityCounts {
+    pub fn set_quest_income_per_day(&mut self, income: &std::collections::BTreeMap<String, f64>) {
+        self.quest_income = income.iter()
+            .filter(|(name, amount)| matches!(name.as_str(), "wood_block" | "mineral_sand") && amount.is_finite() && **amount > 0.0)
+            .map(|(name, amount)| (name.clone(), amount.min(1_000_000_000.0) / 86400.0)).collect();
+    }
+
+    pub fn quest_income(&self) -> &std::collections::BTreeMap<String, f64> { &self.quest_income }
+
     pub fn from_fixed_homeland(layout: FixedHomeland) -> Self {
         let mut counts = Self::only(&[]);
         for site in &layout.groups {

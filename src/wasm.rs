@@ -759,6 +759,9 @@ pub struct JsPlanInput {
     /// Report this RV target against a finished plan, without adding it to the solver's goals.
     #[serde(default)]
     pub level_up_preview: Option<crate::exact::LevelUp>,
+    /// Recurring raw resources from quests, in items per day, independent of RV stock.
+    #[serde(default)]
+    pub quest_income_per_day: std::collections::BTreeMap<String, f64>,
     /// Recipes the plan may not use, for comparing against a plan someone suggests. Not on the page.
     #[serde(default)]
     pub exclude: Vec<String>,
@@ -1819,7 +1822,10 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
     }
     let proof = (exact.proven_optimal, exact.upper_bound);
     let report_at = |target, seconds| {
-        let net = crate::exact::net_rates(&exact, reporting_items);
+        let mut net = crate::exact::net_rates(&exact, reporting_items);
+        for (name, rate) in prepared.facility_counts.quest_income() {
+            *net.entry(name.clone()).or_default() += rate;
+        }
         level_up_report(exact.rate_per_second, &net, reporting_items, target, seconds)
     };
     let report = level_up.and_then(|target| {
@@ -2039,7 +2045,8 @@ impl PreparedInput {
         let input: JsPlanInput = serde_json::from_str(input_json).map_err(|e| {
             serde_json::to_string(&empty_production_plan(false, Some(format!("Invalid input: {}", e)))).unwrap_or_default()
         })?;
-        let facility_counts = input.facility_counts();
+        let mut facility_counts = input.facility_counts();
+        facility_counts.set_quest_income_per_day(&input.quest_income_per_day);
         let module_levels = ModuleLevels {
             ecological_module: input.modules.ecological_module,
             kitchen_module: input.modules.kitchen_module,

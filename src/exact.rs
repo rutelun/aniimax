@@ -813,11 +813,15 @@ fn build_model<'a>(
         level_up.cost.iter().filter_map(|(name, need)| {
             let remaining = (need - LevelUp::amount(&level_up.stock, name)).max(0.0);
             (name != currency && remaining > 0.0)
-                .then(|| (balance.get(name.as_str()).cloned().unwrap_or_default(), remaining))
+                .then(|| (balance.get(name.as_str()).cloned().unwrap_or_default(), remaining,
+                    facility_counts.quest_income().get(name).copied().unwrap_or(0.0)))
         })
     }).collect();
-    for terms in balance.into_values() {
-        model.constrain(terms, ComparisonOp::Ge, 0.0);
+    for name in facility_counts.quest_income().keys() {
+        balance.entry(name.as_str()).or_default();
+    }
+    for (name, terms) in balance {
+        model.constrain(terms, ComparisonOp::Ge, -facility_counts.quest_income().get(name).copied().unwrap_or(0.0));
     }
 
     // Owned units per facility, by level: a recipe needing level L can only use units at L or
@@ -1180,9 +1184,9 @@ fn build_model<'a>(
     if let Some((_, minimum)) = material_stock {
         // Append after all existing variables: the currency solution remains a usable prefix.
         let pace = model.add(0.0, (minimum.unwrap_or(0.0) * (1.0 - 1e-4), MAX_PACE), false, VarKind::MaterialPace);
-        for (mut terms, remaining) in material_requirements {
+        for (mut terms, remaining, income) in material_requirements {
             terms.push((pace, -remaining / PACE_UNIT));
-            model.constrain(terms, ComparisonOp::Ge, 0.0);
+            model.constrain(terms, ComparisonOp::Ge, -income);
         }
         if minimum.is_none() {
             model.objective.fill(0.0);
@@ -2201,6 +2205,9 @@ pub fn check_plan_with_workload(
         if earned + per_second(currency) < -TOLERANCE * earned.abs().max(1.0) {
             return Err(format!("earns {earned}/s, too little for a level-up every {} s", PACE_UNIT / pace));
         }
+    }
+    for (name, rate) in facility_counts.quest_income() {
+        *made.entry(name.as_str()).or_default() += rate;
     }
     for (item, left) in &made {
         if *left < -TOLERANCE {

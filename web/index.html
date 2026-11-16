@@ -49,12 +49,31 @@
                         <div class="planner-priority-add">
                             <label class="visually-hidden" for="add-priority">Add priority</label>
                             <select id="add-priority"></select>
+                            <label class="planner-checkbox"><input type="checkbox" id="crop-variety"><span>Crop and Tree Variety</span></label>
                         </div>
-                        <label class="planner-checkbox"><input type="checkbox" id="crop-variety"><span>Crop and Tree Variety</span></label>
                         <p id="crop-variety-config" class="hint small" hidden>Grow as many different resources as possible at each owned Farmland and Woodland level, then apply your priorities. An active season gets space for its crops first.</p>
                     </section>
                     <aside class="planner-editor" aria-label="Plan settings">
                         <div class="planner-editor-options">
+                            <div class="planner-editor-item">
+                                <button type="button" data-planner-editor="quests" aria-expanded="false" aria-controls="planner-edit-quests">
+                                    <strong>Quest resources</strong><span id="quest-income-summary"></span>
+                                </button>
+                                <div id="planner-edit-quests" class="planner-editor-panel" hidden>
+                                    <p class="hint small">Average daily rewards. Processing uses your buildings and Aniimo.</p>
+                                    <div class="quest-income-fields">
+                                        <div class="input-field">
+                                            <label for="quest-resource">Resource</label>
+                                            <select id="quest-resource"><option value="wood_block">Wood Blocks</option><option value="mineral_sand">Mineral Sand</option></select>
+                                        </div>
+                                        <div class="input-field">
+                                            <label for="quest-amount">Amount per day</label>
+                                            <input id="quest-amount" type="number" min="0" max="1000000000" value="0" step="1" inputmode="numeric">
+                                        </div>
+                                    </div>
+                                    <p class="hint small" id="quest-income-detail"></p>
+                                </div>
+                            </div>
                             <div class="planner-editor-item">
                                 <button type="button" data-planner-editor="team" aria-expanded="false" aria-controls="planner-edit-team">
                                     <strong>Team</strong><span id="planner-team-summary"></span>
@@ -205,15 +224,10 @@
                         <label for="home-level">RV level</label>
                         <select id="home-level"></select>
                     </div>
-                    <details class="explain planner-upgrade-stock" id="level-up-stock">
-                        <summary>Resources in stock</summary>
-                        <div class="input-field" id="level-up-target-row">
-                            <label for="level-up-target">Level up to RV</label>
-                            <select id="level-up-target"></select>
-                        </div>
-                        <p class="hint small" id="level-up-stock-note"></p>
-                        <div class="stock-grid" id="level-up-stock-grid"></div>
-                    </details>
+                    <div class="input-field" id="level-up-target-row">
+                        <label for="level-up-target">Level up to RV</label>
+                        <select id="level-up-target"></select>
+                    </div>
                 </div>
 
                 <div class="planner-submit">
@@ -575,7 +589,7 @@
             <div class="modal-body">
                 <h3>1. Tell It What You've Built</h3>
                 <p>Set your RV level. The plan assumes you have all buildings and upgrades available at that level. To enter your own inventory, open Recipes &amp; stock and edit the building counts and levels.</p>
-                <p>Use Recipes &amp; stock to enable or skip recipes. Enter your Wood Blocks, Mineral Sand and RV upgrade stock under Resources in stock beside the RV level selector. Minimum level-up time includes the processing needed for your raw resources.</p>
+                <p>Use Recipes &amp; stock to enable or skip recipes. Enter average daily Wood Blocks and Mineral Sand rewards under Quest resources. Their processing still uses your buildings and Aniimo.</p>
 
                 <h3>2. Rank Your Priorities</h3>
                 <p>The plan optimizes each priority in order. By default it minimizes the time to the next RV, then maximizes Home Coins. Add, remove or reorder priorities to suit your goals.</p>
