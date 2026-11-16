@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { assignFacilityStock, bufferedBatches, haulingBatchTrips, haulingTravelSeconds, haulingWorkSeconds,
     haulingWorkload, allocateHauling } from '../web/hauling.js';
-import { rosterCropSwitching } from '../web/task-switching.js';
+import { buildDispatch, estimateJobSwitching, rosterJobSwitching } from '../web/task-switching.js';
 
 test('delivery goes through storage to the next frequency-weighted pickup', () => {
     const layout = { storages: [{x:-1,y:-1,w:2,h:2}], pieces: [{members:[
@@ -31,14 +31,36 @@ test('an available delivery can interrupt field work even without a planned deli
         { count: 1, abilities: { Grass: 3 } },
         { count: 1, abilities: { Water: 3, Hauling: 3 } },
     ];
-    const routes = [0, 1].map(member => ({ member, facility: 'Farmland', item: 'wheat', crop_visits: .05 }));
+    const routes = [0, 1].map(member => ({ member, facility: 'Farmland', item: 'wheat', job_rate: .05 }));
     const layout = { storages: [{ x: 0, y: 0, w: 2, h: 2 }], pieces: [{ members: [
-        { facility: 'Farmland', crop: 'wheat', x: 8, y: 0, w: 2, h: 2 },
+        { facility: 'Farmland', crop: 'wheat', x: 8, y: 0, w: 2, h: 2, batchWeight: 180 },
     ] }] };
-    assert.deepEqual(rosterCropSwitching(layout, routes, members, [.5, .5, .5], [], 0), []);
-    assert.deepEqual(rosterCropSwitching(layout, routes, members, [.5, .5, .5], [], .01), [[0, .015]]);
+    const withoutDelivery = buildDispatch(layout, [], { trips: 0 }, new Set());
+    assert.deepEqual(rosterJobSwitching(withoutDelivery, routes, members, [.5, .5, .5], []), []);
+    const hauling = { trips: .01, tripSites: [{ point: [13, 1], returnFrom: [1, 1], rate: .01 }] };
+    const switching = rosterJobSwitching(buildDispatch(layout, [], hauling, new Set()), routes, members, [.5, .5, .5], []);
+    assert.equal(switching.length, 1);
+    assert.equal(switching[0][0], 0);
+    assert.ok(Math.abs(switching[0][1] - .045) < 1e-9);
     const cargo = allocateHauling(members, [.515, .5, .5], .2, Infinity, [], [.015, 0, 0]);
     assert.deepEqual(cargo.assignments, [[2, .2]]);
+});
+
+test('new jobs in another workshop use the distance from previous sites at dispatch', () => {
+    const workers = [
+        { abilities: { Artisanship: 3 }, free: .5, spare: .5, homes: [
+            { point: [0, 0], rate: .05 }, { point: [8, 0], rate: .05 },
+        ] },
+        { abilities: { Artisanship: 3 }, free: .5, spare: .5 },
+        { abilities: { Artisanship: 1 }, free: 1, spare: 1 },
+    ];
+    const opportunities = [
+        { ability: 'Artisanship', level: 3, point: [4, 0], rate: .02 },
+        { ability: 'Artisanship', level: 3, point: [0, 0], rate: .2 },
+    ];
+    const switching = estimateJobSwitching(opportunities, workers);
+    assert.ok(Math.abs(switching[0] - .06) < 1e-9);
+    assert.deepEqual(switching.slice(1), [0, 0]);
 });
 
 test('couriers share existing work hours without assigning delivery to another ability', () => {

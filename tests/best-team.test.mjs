@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { placeBestJobs, recommendBestTeam } from '../web/best-team.js';
+import { TASK_SWITCHING } from '../web/task-switching.js';
 
 test('a catalog match shares a shift across different roles and delivery', () => {
     const { shifts, haulingSpare } = recommendBestTeam([
@@ -61,10 +62,19 @@ test('Best gives equal farming work to a specialist if another shift can handle 
         { ability: 'Grass', level: 2, label: 'Sowing', growing: true, visitsPerShare: .01, cropDistance: 8, busy: .3,
             point: [0, 0] },
         { ability: 'Earth', level: 3, label: 'Mine', busy: .6, visitsPerShare: .15, point: [80, 80] },
-    ], .2, .005);
+    ], .2);
     const farmer = shifts.find(shift => shift.tasks.has('Sowing'));
     const courier = shifts.find(shift => shift.tasks.has('Hauling to Storage Units'));
     assert.ok(farmer && courier && farmer !== courier);
     assert.equal(farmer.abilities.Hauling, undefined);
     assert.equal(farmer.busy, .3);
+});
+
+test('Best includes diversions to other eligible work without requiring Hauling', () => {
+    const { shifts } = recommendBestTeam([
+        { ability: 'Fire', level: 3, label: 'Cooking', busy: .25, point: [0, 0], visitsPerShare: .08 },
+    ], 0, [{ ability: 'Fire', level: 3, point: [8, 0], rate: .01 }]);
+    assert.equal(shifts.length, 1);
+    assert.ok(Math.abs(shifts[0].tasks.get(TASK_SWITCHING) - .12) < 1e-9);
+    assert.ok(Math.abs(shifts[0].busy - .37) < 1e-9);
 });

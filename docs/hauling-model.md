@@ -29,9 +29,10 @@ The workload model applies a 2× time allowance to both legs and a further 2× m
 to delivery workload. My Aniimo triples the walking-time estimates for workplace changes
 and deliveries. Farmland and Woodland jobs use their base action times, including both waterings.
 Best and My Aniimo prefer equally effective crop specialists when a worker's other abilities
-can pull them away from planting. If a crop worker can pick up deliveries, the team estimate
-also budgets an additional trip leg based on pickup frequency, available couriers and the distance
-from their crop sites to storage. The game may give tasks to any eligible Aniimo that is free.
+can pull them away from planting. The team estimate distributes requests for flexible field,
+woodland, workshop and delivery jobs over eligible workers with time available. A diversion
+starts at a worker's previous work site once the task appears. The allowance includes the
+outbound walk and the return, including a return from storage after a pickup.
 
 Building stock limits by tier are shared by the browser and the Rust optimizer in
 `web/facility-stock.json`. They come from the `facilities[].lv[].lim` fields of the

@@ -1322,7 +1322,7 @@ pub struct JsRosterRoute {
     station: Option<String>,
     jobs: Vec<(String, f64)>,
     visits: f64,
-    crop_visits: f64,
+    job_rate: f64,
     walking: f64,
     local_plots: f64,
 }
@@ -1843,7 +1843,7 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
                 station: (!route.mobile).then(|| crate::exact::work_station(item)),
                 jobs,
                 visits,
-                crop_visits: if route.crop.is_some() { job_rate } else { 0.0 },
+                job_rate,
                 walking: visits * prepared.facility_counts.member_movement_seconds(route.member),
                 local_plots: if !route.mobile && route.crop.is_some() { route.rate * item.production_time } else { 0.0 },
             });

@@ -65,7 +65,7 @@ function fallbackTrips(step, recipe, level, facilities) {
 // Pickup thresholds are estimates. Fallback seconds already include the time allowance.
 export function haulingWorkload(layout, steps, fallbackSeconds = 0, recipes = [], facilities = null, accountForTravel = false) {
     const recipeOf = new Map(recipes.map(recipe => [recipe.name, recipe]));
-    const seconds = {}, tripsPerBatch = {}, jobs = new Map();
+    const seconds = {}, tripsPerBatch = {}, jobs = new Map(), tripSites = [];
     for (const level of levels) {
         const routes = new Map(), pickups = [], pools = new Map();
         for (const member of layout.pieces.flatMap(piece => piece.members)) {
@@ -82,6 +82,11 @@ export function haulingWorkload(layout, steps, fallbackSeconds = 0, recipes = []
                 pool.trips += trips;
                 pool.pickupSeconds += trips * loaded;
                 pickups.push({key:`${member.facility}|${item}`, storage, loaded, trips, batches});
+                if (level === 3) tripSites.push({
+                    point: [member.x + member.w / 2, member.y + member.h / 2],
+                    returnFrom: [storage.x + storage.w / 2, storage.y + storage.h / 2],
+                    rate: trips / 3600,
+                });
             }
             pools.set(storage, pool);
         }
@@ -113,7 +118,7 @@ export function haulingWorkload(layout, steps, fallbackSeconds = 0, recipes = []
     const busyByLevel = Object.fromEntries(levels.map(level => [level,
         [...jobs.values()].reduce((sum, job) => sum + job.rate * job.seconds[level], 0)]));
     const trips = [...jobs.values()].reduce((sum, job) => sum + job.rate * job.trips, 0);
-    return { seconds, busy: busyByLevel[3], busyByLevel, trips, jobs: [...jobs.values()] };
+    return { seconds, busy: busyByLevel[3], busyByLevel, trips, tripSites, jobs: [...jobs.values()] };
 }
 
 // Use couriers' spare hours, then idle copies and neutral Lv.3 reserves. A headcount shortage

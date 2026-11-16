@@ -2,7 +2,7 @@
 import { alphabetScore, chainPurposes, productionDistance, productionGraph,
     productionLinkDistances, refineProductionPlacement } from './production-layout.js?v=zone-ranges';
 import { miningRows, productionRows, productionZones, rawTheme, rawZones, rawZoneSpread, zoneLinkDistance } from './production-zones.js?v=workshop-blocks';
-import { allocateHauling, haulingWorkload } from './hauling.js?v=opportunistic-jobs';
+import { allocateHauling, haulingWorkload } from './hauling.js?v=reactive-dispatch';
 import { workerTravelDistances, workerTravelSeconds } from './worker-travel.js?v=travel-allowance';
 import { canMoveDistrictStorage, districtStorageIndices, improveDistrictStorage } from './district-storage.js?v=workshop-blocks';
 

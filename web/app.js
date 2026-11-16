@@ -14,15 +14,15 @@ import { createShareUrl, readShareHash, urlWithoutShare } from './share-config.j
 import { nearestStorage } from './layout.js?v=storage-power';
 import { workerTravelDistances, workerTravelSeconds } from './worker-travel.js?v=travel-allowance';
 import { assignFacilityStock, bufferedBatches, haulingWorkload, allocateHauling, haulingBatchTrips,
-    haulingTravelSeconds, haulingWorkSeconds, pickupStockLimit } from './hauling.js?v=opportunistic-jobs';
+    haulingTravelSeconds, haulingWorkSeconds, pickupStockLimit } from './hauling.js?v=reactive-dispatch';
 import { changeOneMember, personalityInput, reserveLevelFourInputs, comparePlans, usefulUpgrade, keepBetterComparison } from './opportunity-comparison.js?v=shared-work-time';
 import { comparisonConcurrency, startComparisonQueue } from './comparison-queue.js?v=parallel-comparisons';
 import { prepareOpportunities, startedProcessing, increasedProcessing } from './opportunity-effects.js?v=auto-e-mode';
 import { aniimoPortrait, attachRosterPicker, rosterCatalogId, rosterFormName } from './roster-picker.js?v=game-heads';
 import { placeRosterCopy, ROSTER_ROW_SIZE, rosterSlotsFor, swapRosterSlots } from './roster-slots.js';
 import { scheduleRosterCopies } from './roster-work.js?v=individual-shifts';
-import { rosterCropSwitching, TASK_SWITCHING } from './task-switching.js?v=opportunistic-jobs';
-import { placeBestJobs, recommendBestTeam } from './best-team.js?v=opportunistic-jobs';
+import { buildDispatch, rosterJobSwitching, TASK_SWITCHING } from './task-switching.js?v=reactive-dispatch';
+import { placeBestJobs, recommendBestTeam } from './best-team.js?v=reactive-dispatch';
 import facilityIcons from './facility-icons.json' with { type: 'json' };
 import { abilityGlyph, gameAbilityIcon } from './ability-icons.js?v=game-heads';
 
@@ -2546,16 +2546,17 @@ function assignLayoutHauling(layout, plan) {
     const bound = haulingRouteBound(accountForTravel);
     const work = haulingWorkload(layout, plan.coin_items || [], bound, recipeIndex, lastPlanInput?.facilities, accountForTravel);
     plan.hauling_estimates = work.seconds;
-    plan.hauling_trips = work.trips;
     plan.hauling_busy = work.busyByLevel[setup === 'minimum' ? 1 : 3];
-    if (setup === 'best') bestTeamLayouts.set(plan, layout);
+    if (setup === 'best') bestTeamLayouts.set(plan, { layout, hauling: work });
     if (setup !== 'custom') return false;
     if (!haulingBaseByPlan.has(plan)) haulingBaseByPlan.set(plan, [...(plan.assumed_aniimo || [])]);
     plan.assumed_aniimo = [...haulingBaseByPlan.get(plan)];
     const { members, busy, anchored } = rosterWorkload(plan);
     const switching = [];
-    plan.crop_switching = work.trips ? rosterCropSwitching(layout, plan.roster_routes, members, busy, anchored, work.trips) : [];
-    for (const [member, share] of plan.crop_switching) {
+    plan.job_switching = plan.roster_routes?.length
+        ? rosterJobSwitching(buildDispatch(layout, recipeIndex, work, RESIDENT_FACILITIES), plan.roster_routes, members, busy, anchored)
+        : [];
+    for (const [member, share] of plan.job_switching) {
         switching[member] = share;
         busy[member] += share;
     }
@@ -2565,7 +2566,7 @@ function assignLayoutHauling(layout, plan) {
             // The final model used a whole-homeland route bound. Its independently checked
             // assignment remains feasible when the fast greedy allocator misses a packing.
             plan.delivery_assignments = plan.hauling_staffing;
-            plan.crop_switching = [];
+            plan.job_switching = [];
             return false;
         }
         // Only a real shortage triggers a solve. A full-map route bound covers every recipe
@@ -2896,7 +2897,7 @@ async function fillRosterFrom(setup) {
             recipeIndex, sourceInput.facilities, accountForTravel);
         const haulingBusy = hauling.busyByLevel[haulingLevel];
         if (setup === 'best') {
-            const { shifts } = bestPlanTeam(plan, haulingBusy, layout, hauling.trips);
+            const { shifts } = bestPlanTeam(plan, haulingBusy, layout, hauling);
             if (!shifts.length) {
                 status.textContent = 'No working team to copy from this plan.';
                 return;
@@ -3276,7 +3277,7 @@ function rosterCopyShifts(plan, members, assigned, walking) {
     for (const [member, share] of plan.delivery_assignments || plan.hauling_staffing || []) {
         addMobile(member, translate('Hauling to Storage Units'), share);
     }
-    for (const [member, share] of plan.crop_switching || []) addMobile(member, translate(TASK_SWITCHING), share);
+    for (const [member, share] of plan.job_switching || []) addMobile(member, translate(TASK_SWITCHING), share);
     return members.map((_, member) => scheduleRosterCopies(assigned[member], fixed[member], posts[member], routes[member]));
 }
 
@@ -3286,7 +3287,7 @@ function renderRosterSummary(plan) {
         if (!members[member] || share <= 0) return;
         busy[member] += share;
     });
-    for (const [member, share] of plan.crop_switching || []) busy[member] += share;
+    for (const [member, share] of plan.job_switching || []) busy[member] += share;
     const have = roster.reduce((sum, a) => sum + a.count, 0);
     const assigned = busy.map((load, member) => Math.max(anchored[member], Math.ceil(load - 1e-6)));
     const working = assigned.slice(0, roster.length).reduce((sum, n) => sum + n, 0);
@@ -4697,7 +4698,8 @@ function environmentTeamJobs(plan) {
 const bestTeamCache = new WeakMap();
 const bestTeamLayouts = new WeakMap();
 
-function bestPlanTeam(plan, haulingBusy = plan.hauling_busy || 0, layout = bestTeamLayouts.get(plan) ?? null, haulTrips = plan.hauling_trips || 0) {
+function bestPlanTeam(plan, haulingBusy = plan.hauling_busy || 0,
+    layout = bestTeamLayouts.get(plan)?.layout ?? null, hauling = bestTeamLayouts.get(plan)?.hauling) {
     let cached = bestTeamCache.get(plan);
     if (!cached) {
         const jobs = environmentTeamJobs(plan);
@@ -4727,11 +4729,12 @@ function bestPlanTeam(plan, haulingBusy = plan.hauling_busy || 0, layout = bestT
         bestTeamCache.set(plan, cached);
     }
     if (!layout && !haulingBusy) return cached.baseline ??= recommendBestTeam(cached.jobs);
-    if (cached.layout !== layout || cached.haulingBusy !== haulingBusy || cached.haulTrips !== haulTrips) {
+    if (cached.layout !== layout || cached.haulingBusy !== haulingBusy || cached.hauling !== hauling) {
         cached.layout = layout;
         cached.haulingBusy = haulingBusy;
-        cached.haulTrips = haulTrips;
-        cached.result = recommendBestTeam(placeBestJobs(cached.jobs, layout), haulingBusy, haulTrips);
+        cached.hauling = hauling;
+        const dispatch = layout && buildDispatch(layout, recipeIndex, hauling, RESIDENT_FACILITIES);
+        cached.result = recommendBestTeam(placeBestJobs(cached.jobs, layout, dispatch?.locations), haulingBusy, dispatch?.opportunities);
     }
     return cached.result;
 }
@@ -4876,7 +4879,8 @@ function renderAniimoSummary(plan) {
     const custom = setup === 'custom';
     const workloadNote = document.getElementById('aniimo-workload-note');
     const travelNote = setup !== 'minimum' ? ' Estimated walking and delivery times are tripled.' : '';
-    const dispatchNote = setup !== 'minimum' ? translate(' Assignments are estimates. An available Aniimo may take another eligible task.') : '';
+    const dispatchNote = setup !== 'minimum'
+        ? translate(' Assignments are estimates. An available Aniimo can start walking to another eligible job when it appears.') : '';
     workloadNote.textContent = plan.hauling_busy != null ? HAULING_ESTIMATE_HINT + travelNote + dispatchNote : '';
     workloadNote.hidden = plan.hauling_busy == null;
     if (custom) {
