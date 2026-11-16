@@ -4056,7 +4056,7 @@ function levelUpUnavailable() {
 }
 
 function stockNames(cost) {
-    return ['coins', ...cost.items.map(([item]) => item)];
+    return [...new Set(['wood_block', 'mineral_sand', 'coins', ...cost.items.map(([item]) => item)])];
 }
 
 function stockAmount(name) {
@@ -4091,7 +4091,7 @@ function renderStrategy() {
         return;
     }
     const cost = levelUpCost();
-    stockNote.textContent = 'What you already have';
+    stockNote.textContent = translate('Include quest rewards. Wood Blocks and Mineral Sand still need processing when required for the RV upgrade.');
     stockGrid.innerHTML = stockNames(cost).map(name => `
         <div class="input-field">
             <label for="stock-${name}">${ITEM_NAMES[name] || prettyItem(name)}</label>

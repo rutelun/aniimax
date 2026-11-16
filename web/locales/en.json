@@ -1174,6 +1174,8 @@
   "Fields and trees",
   "Mines and wells",
   "Unused buildings",
+  "Resources in stock",
+  "Include quest rewards. Wood Blocks and Mineral Sand still need processing when required for the RV upgrade.",
   "Grid {n} ({generators}): {percent}% · {draw} / {output} W",
   "Compact production groups with optimized deliveries. Workshops follow alphabetical order; gaps are available for the power grid."
 ]

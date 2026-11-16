@@ -1174,6 +1174,8 @@
   "Fields and trees": "Грядки и леса",
   "Mines and wells": "Шахты и колодцы",
   "Unused buildings": "Простаивающие здания",
+  "Resources in stock": "Ресурсы в запасе",
+  "Include quest rewards. Wood Blocks and Mineral Sand still need processing when required for the RV upgrade.": "Учитывайте и награды за задания. Wood Blocks и Mineral Sand ещё нужно переработать, если для улучшения дома требуются готовые материалы.",
   "Grid {n} ({generators}): {percent}% · {draw} / {output} W": "Сеть {n} ({generators}): {percent}% · {draw} / {output} Вт",
   "Compact production groups with optimized deliveries. Workshops follow alphabetical order; gaps are available for the power grid.": "Компактные производственные группы с оптимизацией доставки. Переработка — по алфавиту; зазоры можно использовать для энергосети."
 }
