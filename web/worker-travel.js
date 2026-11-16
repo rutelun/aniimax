@@ -64,3 +64,36 @@ export function layoutWalkingAdjustments(members, plan) {
         return [[member, measured - (previous.get(member) || 0)]];
     });
 }
+
+// Reuse coordinates only when the alternative's production fits those physical sites.
+// Rates and worker identities belong to the alternative, never to the baseline.
+export function projectLayoutWork(layout, plan) {
+    const result={...layout,pieces:layout.pieces.map(piece=>({...piece,members:piece.members.map(m=>({
+        ...m,workers:[],jobs:m.jobs?.map(job=>({...job,rate:0})),batchWeight:0,weight:0,
+    }))}))};
+    const members=result.pieces.flatMap(piece=>piece.members);
+    const matching=(facility,item)=>members.filter(m=>m.facility===facility &&
+        (m.jobs ? m.jobs.some(job=>job.item===item) : m.crop===item));
+    for(const step of plan.coin_items || []) {
+        if(step.status!=='producing')continue;
+        const sites=matching(step.facility,step.item_name);
+        if(!sites.length || step.facility_count>sites.length+1e-6 || !(step.cycle_time>0))return null;
+        if(sites.some(m=>(m.electric_level??null)!==(step.electric_level??null)))return null;
+        const rate=(step.busy_units??step.facility_count)/step.cycle_time/sites.length;
+        for(const m of sites) {
+            m.batchWeight+=rate*3600;
+            m.weight+=rate*3600;
+            if(m.jobs) {const job=m.jobs.find(j=>j.item===step.item_name);job.rate+=rate;job.crew=step.crew;}
+            else m.crew=step.crew;
+        }
+    }
+    for(const [item,facility,worker,visits] of plan.mobile_work || []) {
+        const sites=matching(facility,item);
+        if(!sites.length)return null;
+        for(const m of sites) {
+            const previous=m.workers.find(([member])=>member===worker);
+            if(previous)previous[1]+=visits/sites.length;else m.workers.push([worker,visits/sites.length]);
+        }
+    }
+    return result;
+}

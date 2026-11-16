@@ -142,7 +142,7 @@ export function usefulUpgrade(input, change, recipes) {
 }
 
 export function workerUsage(plan, input) {
-    if (!input.roster) return null;
+    if (!input.roster || plan.comparison_workload_valid === false) return null;
     const busy = new Map();
     const anchored = new Map(plan.workplace_anchors || []);
     const add = (member, share) => {
@@ -294,7 +294,7 @@ export function compareRecommendations(before, after, input, alternative) {
     const group = order.findIndex(row => row && row.direction !== 0);
     const main = protectedLoss || order[group];
     const gain = main?.direction > 0;
-    return { ...report, income, decisive: main, direction: main?.direction || 0,
+    return { ...report, workloadUnavailable: after.comparison_workload_valid === false, income, decisive: main, direction: main?.direction || 0,
         score: gain ? (4 - group) * 1e6 + Math.abs(main.after - main.before) : 0, start, finish,
         inconclusiveLoss: report.approximate && main?.direction < 0 };
 }

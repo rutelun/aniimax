@@ -39,3 +39,15 @@ test('measured walking replaces the conservative allowance and a lone workplace 
     assert.equal(corrections.get(1), -.01);
     assert.deepEqual(layoutWalkingAdjustments([], plan), []);
 });
+
+test('alternative layout work follows its new worker and rates, without changing the original map', async () => {
+    const { projectLayoutWork } = await import('../web/worker-travel.js');
+    const layout={pieces:[{members:[{...site(0),facility:'Well',crop:'water',weight:4,batchWeight:4}]}]};
+    const plan={coin_items:[{status:'producing',facility:'Well',item_name:'water',facility_count:1,busy_units:1,cycle_time:60}],
+        mobile_work:[['water','Well',2,60]]};
+    const projected=projectLayoutWork(layout,plan);
+    assert.deepEqual(projected.pieces[0].members[0].workers,[[2,60]]);
+    assert.equal(projected.pieces[0].members[0].batchWeight,60);
+    assert.deepEqual(layout.pieces[0].members[0].workers,[[0,10]]);
+    assert.equal(projectLayoutWork(layout,{...plan,coin_items:[{...plan.coin_items[0],facility_count:2}]}),null);
+});

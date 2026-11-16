@@ -20,11 +20,11 @@ test('summed-area containment matches area intersections across borders, holes a
     }
 });
 
-test('non-grid and overlapping cells retain the original geometry check',()=>{
+test('non-grid land uses geometric coverage and overlapping cells do not inflate it',()=>{
     for(const cells of [[],[{x:.1,y:.1,w:2.2,h:3.3}],[{x:0,y:0,w:2,h:2},{x:0,y:0,w:2,h:2}]]){
         const inside=createInsideTest(cells);
         for(const r of [{x:0,y:0,w:4,h:2},{x:.15,y:.25,w:.3,h:.5},{x:1,y:1,w:1,h:1},{x:20,y:20,w:0,h:1}])
-            assert.equal(inside(r),original(cells,r));
+            assert.equal(inside(r),r.w>0 && r.h>0 && original([...new Map(cells.map(c=>[JSON.stringify(c),c])).values()],r));
     }
     assert.equal(createInsideTest(null)({x:-1e6,y:1e6,w:3,h:4}),true);
     const huge=[{x:1e16,y:0,w:20,h:20}],tiny={x:1e16,y:0,w:.25,h:.25};

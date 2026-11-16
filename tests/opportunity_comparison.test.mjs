@@ -267,11 +267,11 @@ test('opportunity workloads are recalculated once for both rendered and fresh pl
     const source = await readFile(new URL('../web/app.js', import.meta.url), 'utf8');
     const body = source.slice(source.indexOf('function opportunityWorkload('), source.indexOf('function opportunityIndividualLoads('));
     const { haulingWorkload, allocateHauling } = await import('../web/hauling.js');
-    const { layoutWalkingAdjustments } = await import('../web/worker-travel.js');
+    const { layoutWalkingAdjustments, projectLayoutWork } = await import('../web/worker-travel.js');
     const { buildDispatch, rosterJobSwitching } = await import('../web/task-switching.js');
     const project = new Function('workerUsage', 'haulingWorkload', 'allocateHauling', 'buildDispatch',
-        'rosterJobSwitching', 'recipeIndex', 'RESIDENT_FACILITIES', 'layoutWalkingAdjustments', body + ';return opportunityWorkload;')(
-        workerUsage, haulingWorkload, allocateHauling, buildDispatch, rosterJobSwitching, [], new Set(), layoutWalkingAdjustments);
+        'rosterJobSwitching', 'recipeIndex', 'RESIDENT_FACILITIES', 'layoutWalkingAdjustments', 'projectLayoutWork', body + ';return opportunityWorkload;')(
+        workerUsage, haulingWorkload, allocateHauling, buildDispatch, rosterJobSwitching, [], new Set(), layoutWalkingAdjustments, projectLayoutWork);
     const input = {roster:{members:[{count:1,abilities:{Hauling:3}}]},facilities:{}};
     const layout = {storages:[{x:-1,y:-1,w:2,h:2}],pieces:[{members:[
         {x:7,y:-1,w:2,h:2,weight:60,facility:'Well',crop:'water'},
@@ -284,4 +284,12 @@ test('opportunity workloads are recalculated once for both rendered and fresh pl
     assert.deepEqual(twice.delivery_assignments, once.delivery_assignments);
     assert.equal(workerUsage(twice,input).working,workerUsage(once,input).working);
     assert.equal(workerUsage(twice,input).hours,workerUsage(once,input).hours);
+});
+
+test('worker savings are not claimed when an alternative needs an unverified layout', () => {
+    const original={...plan(),roster_workload:[2]};
+    const alternative={...plan(),roster_workload:[1],comparison_workload_valid:false};
+    const report=compareRecommendations(original,alternative,input(),input());
+    assert.equal(report.direction,0);
+    assert.ok(!report.rows.some(row=>row.id==='working_aniimo'));
 });

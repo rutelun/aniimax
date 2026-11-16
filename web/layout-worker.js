@@ -9,7 +9,7 @@ const powerReady = import('./power-layout.js' + new URL(import.meta.url).search)
 
 self.onmessage = async (event) => {
     const { centralDeliverySeed, createInsideTest, improveFixedStorage, layOutHomeland, layoutDeliveryCost, layoutTravelCost,
-        refineDistrictClimate, refineDistrictDeliveries, refineStorageNeighborhood, seededStorageLayouts } = await ready;
+        refineDistrictClimate, refineDistrictDeliveries, refineStorageNeighborhood, refineSuppliedLayout, seededStorageLayouts } = await ready;
     const { connectPower, repackPower, updatePowerConnections } = await powerReady;
     const { pieces, cells } = event.data;
     const storageCount = event.data.storageCount ?? 1;
@@ -25,7 +25,8 @@ self.onmessage = async (event) => {
         }
     }
     const storage = { w: 2, h: 2 };
-    const accountForWorkers = style !== 'delivery';
+    // A failed grouped layout explicitly falls back to Shortest delivery.
+    const accountForWorkers = !grouped && style !== 'delivery';
     const cost = accountForWorkers ? layoutTravelCost : layoutDeliveryCost;
     const options = { fast: true, accountForWorkers };
     const place = () => layOutHomeland(pieces, cells, storage, storageCount, options);
@@ -94,6 +95,32 @@ self.onmessage = async (event) => {
                 if (!complete(trial) || cost(trial) >= cost(best) - 1e-9) break;
                 best = trial;
             }
+        }
+        if (!accountForWorkers && cells.length) {
+            const x=Math.min(...cells.map(c=>c.x)),y=Math.min(...cells.map(c=>c.y));
+            const w=Math.max(...cells.map(c=>c.x+c.w))-x,h=Math.max(...cells.map(c=>c.y+c.h))-y;
+            const inside=createInsideTest(cells);
+            let trial=refineSuppliedLayout(best,pieces,cells,{
+                costOf:cost,accountForWorkers:false,fast:true,clusterTries:3,exchangeBudget:0,storageTrials:0,
+            });
+            // Joint local repacks can escape a single-building minimum. Pin everything
+            // outside one storage neighborhood; evaluate every store on equal terms.
+            for (const store of trial.storages) {
+                const fixedPieces=new Set(trial.pieces.flatMap((piece,i)=>
+                    piece.members.some(r=>r.generator) || !piece.members.some(r=>
+                        Math.hypot(r.x+r.w/2-store.x-store.w/2,r.y+r.h/2-store.y-store.h/2)<11) ? [i] : []));
+                trial=refineSuppliedLayout(trial,pieces,cells,{
+                    costOf:cost,accountForWorkers:false,fast:true,clusterTries:3,
+                    exchangeBudget:16,storageTrials:0,fixedPieces,
+                });
+            }
+            trial=refineStorageNeighborhood(trial,pieces,cells,5,{cost,quarterGrid:true});
+            trial=refineDistrictDeliveries(trial,[{bounds:{x,y,w,h},reserved:[]}],{
+                costOf:cost,includeMines:true,passes:4,quarterGrid:true,
+                canPlace:(_,__,rs)=>rs.every(inside),
+            });
+            trial=updatePowerConnections(trial);
+            if(complete(trial)&&cost(trial)<cost(best)-1e-9)best=trial;
         }
         const poles = best.power.poles.length;
         if (poles >= 5) {

@@ -72,7 +72,7 @@ test('the fast RV 15 search matches the reference route cost with all facilities
     assert.equal(result.unplaced.length, 0);
     assert.equal(result.power.disconnected, 0);
     assert.equal(result.storages.length, input.storageCount);
-    assert.ok(layoutDeliveryCost(result) <= 716.077584);
+    assert.ok(layoutDeliveryCost(result) <= 700.841778);
     const rectangles = [...result.storages, ...result.power.poles, ...result.pieces.flatMap(piece => piece.members)];
     const inside = createInsideTest(input.cells);
     assert.ok(rectangles.every((rect, i) => inside(rect) && rectangles.slice(i + 1).every(other => !overlap(rect, other))));
@@ -269,4 +269,52 @@ test('district delivery polish moves distant wells toward final storage and resp
     const closer = refineDistrictDeliveries(layout, groups);
     assert.ok(cost(closer) <= cost(layout) * .2);
     assert.equal(overlap(closer.pieces[0].members[0], layout.storages[0]), false);
+});
+
+test('overlapping open cells cannot count the same land twice to cover a hole', () => {
+    const inside = createInsideTest([{x:0,y:0,w:1,h:2},{x:0,y:0,w:1,h:2}]);
+    assert.equal(inside({x:0,y:0,w:2,h:2}), false);
+    assert.equal(inside({x:0,y:0,w:1,h:2}), true);
+});
+
+test('delivery refinement reaches the exhaustive quarter-grid optimum for a narrow bay', () => {
+    const cells = [{x:0,y:0,w:2,h:2},{x:4.25,y:0,w:1,h:1}];
+    const layout = {storages:[{x:0,y:0,w:2,h:2}], pieces:[{members:[
+        {x:4.75,y:0,w:.5,h:.5,weight:10,facility:'Producer'},
+    ]}]};
+    const inside = createInsideTest(cells);
+    let optimum = Infinity;
+    for (let x=0;x<=5.25;x+=.25) for(let y=0;y<=2;y+=.25) {
+        const r={...layout.pieces[0].members[0],x,y};
+        if(inside(r)&&!overlap(r,layout.storages[0]))
+            optimum=Math.min(optimum,layoutDeliveryCost({...layout,pieces:[{members:[r]}]}));
+    }
+    const result=refineDistrictDeliveries(layout,[{bounds:{x:0,y:0,w:5.25,h:2},reserved:[]}],{
+        costOf:layoutDeliveryCost,quarterGrid:true,canPlace:(_,__,rs)=>rs.every(inside),
+    });
+    assert.ok(Math.abs(layoutDeliveryCost(result)-optimum)<1e-9);
+});
+
+test('small complete layout matches exhaustive global search on the quarter grid', () => {
+    const cells=[{x:0,y:0,w:4,h:3}];
+    const positions=(w,h)=>{
+        const result=[];
+        for(let x=0;x+w<=4;x+=.25)for(let y=0;y+h<=3;y+=.25)result.push({x,y,w,h});
+        return result;
+    };
+    const sites=positions(1,1);
+    let optimum=Infinity,checked=0;
+    for(const storage of positions(2,2)) {
+        const available=sites.filter(site=>!overlap(site,storage));
+        for(const a of available)for(const b of available)if(!overlap(a,b)) {
+            checked++;
+            const d=r=>Math.hypot(r.x+.5-storage.x-1,r.y+.5-storage.y-1);
+            optimum=Math.min(optimum,10*d(a)+d(b));
+        }
+    }
+    const input=[10,1].map(weight=>({members:[{x:0,y:0,w:1,h:1,weight}]}));
+    const result=layOutHomeland(input,cells,{w:2,h:2},1,{fast:true,accountForWorkers:false});
+    assert.equal(checked,28210);
+    assert.equal(result.unplaced.length,0);
+    assert.ok(Math.abs(layoutDeliveryCost(result)-optimum)<1e-9);
 });

@@ -132,3 +132,12 @@ test('oversized workshop uses adjacent letter ranges without letting trees enter
         .every(member => zones.some(zone => createInsideTest([zone.workshop])(member))));
     assert.ok(zones.every(zone => !overlaps(zone.workshop, layout.pieces.at(-1).members[0])));
 });
+
+test('grouped layouts never return a plan rejected by the worker capacity check', async () => {
+    const layout = await groupHomelandLayout([
+        {members:[{x:0,y:0,w:2,h:2,weight:10,facility:'Widget',crop:'widget'}]},
+    ], cells, {style:'courtyards',gap:2,storageCount:1,poleLimit:0,fast:true,
+        staffing:{limit:0,minimumWorkers:0,haulingLevel:3,haulingBound:10,
+            steps:[{facility:'Widget',item_name:'widget',status:'producing',facility_count:1,cycle_time:10}]}});
+    assert.equal(layout,null);
+});

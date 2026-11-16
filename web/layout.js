@@ -16,7 +16,7 @@
 // and put back wherever is cheapest with the rest in place, until nothing moves. This is a
 // heuristic: it finds a good layout, not a proven best one.
 
-import { workerHubs, workerPlacementCost, workerLayoutCost, workerTravelDistances } from './worker-travel.js?v=measured-walking';
+import { workerHubs, workerPlacementCost, workerLayoutCost, workerTravelDistances } from './worker-travel.js?v=logic-audit';
 
 const STEP = 0.25;
 const EPSILON = 1e-6;
@@ -41,7 +41,25 @@ function matchesClimate(rect, squares, zone) {
 // open plot on every placement. Non-grid or overlapping input retains the area check.
 export function createInsideTest(cells) {
     if (!cells) return () => true;
-    const fallback = r => cells.reduce((sum,c)=>sum+overlapArea(r,c),0)>=r.w*r.h-EPSILON;
+    const fallback = r => {
+        if (!(r.w > 0 && r.h > 0)) return false;
+        const clipped = cells.map(c => ({x:Math.max(r.x,c.x),y:Math.max(r.y,c.y),
+            right:Math.min(r.x+r.w,c.x+c.w),bottom:Math.min(r.y+r.h,c.y+c.h)}))
+            .filter(c=>c.right>c.x && c.bottom>c.y);
+        const xs = [...new Set(clipped.flatMap(c=>[c.x,c.right]))].sort((a,b)=>a-b);
+        let area = 0;
+        for(let i=1;i<xs.length;i++) {
+            const intervals=clipped.filter(c=>c.x<xs[i]&&c.right>xs[i-1])
+                .sort((a,b)=>a.y-b.y);
+            let end=-Infinity, height=0;
+            for(const c of intervals) {
+                height+=Math.max(0,c.bottom-Math.max(end,c.y));
+                end=Math.max(end,c.bottom);
+            }
+            area+=(xs[i]-xs[i-1])*height;
+        }
+        return area>=r.w*r.h-EPSILON;
+    };
     if (!cells.length || !cells.every(c=>[c.x,c.y,c.w,c.h,c.x+c.w,c.y+c.h].every(v=>Number.isSafeInteger(v/STEP))&&c.w>0&&c.h>0)
         || cells.some((c,i)=>cells.slice(i+1).some(other=>overlapArea(c,other)>0))) return fallback;
     const left=Math.min(...cells.map(c=>c.x))/STEP,top=Math.min(...cells.map(c=>c.y))/STEP;
@@ -646,18 +664,21 @@ function suppliedPlacementOptions(layout) {
     };
 }
 
-export function refineSuppliedLayout(layout, pieces, cells, {storageTrials = 4} = {}) {
+export function refineSuppliedLayout(layout, pieces, cells, {
+    storageTrials = 4, accountForWorkers = true, costOf = layoutCost, fast = false,
+    exchangeBudget = 24, clusterTries, fixedPieces,
+} = {}) {
     if (layout.unplaced.length || layout.power?.disconnected) return layout;
     const refined = layOut(pieces, {
-        storages: layout.storages, cells, passes: 2, exchangeBudget: 24, initialLayout: layout,
+        storages: layout.storages, cells, passes: 2, exchangeBudget, initialLayout: layout, fast, accountForWorkers, clusterTries,
         ...suppliedPlacementOptions(layout),
-        fixedPieces: new Set(layout.pieces.flatMap((p, i) => p.members.some(m => m.generator) ? [i] : [])),
+        fixedPieces: fixedPieces ?? new Set(layout.pieces.flatMap((p, i) => p.members.some(m => m.generator) ? [i] : [])),
     });
     refined.storageAt = layout.storageAt;
     refined.tried += layout.tried;
-    const best = refined.unplaced.length || layoutCost(refined) >= layoutCost(layout) - 1e-9 ? layout : refined;
+    const best = refined.unplaced.length || costOf(refined) >= costOf(layout) - 1e-9 ? layout : refined;
     best.power = layout.power;
-    return refineStorageNeighborhood(best,pieces,cells,storageTrials);
+    return refineStorageNeighborhood(best,pieces,cells,storageTrials,{cost:costOf,accountForWorkers});
 }
 
 // Move a storage together with up to four buildings occupying its proposed position.
@@ -665,7 +686,7 @@ export function refineSuppliedLayout(layout, pieces, cells, {storageTrials = 4} 
 // fixed, and every accepted candidate retains all units and improves the complete cost.
 export function refineStorageNeighborhood(layout, pieces, cells, trials = 4, {
     storageCells = cells, canMoveStorage = () => true, canPlace = () => true,
-    accept = () => true, cost = layoutCost,
+    accept = () => true, cost = layoutCost, accountForWorkers = cost !== layoutDeliveryCost, quarterGrid = false,
 } = {}) {
     if (!trials || !layout.storages.length || layout.unplaced.length || layout.power?.disconnected) return layout;
     const fixed = i => pieces[i].cluster || layout.pieces[i].members.length !== 1
@@ -703,10 +724,12 @@ export function refineStorageNeighborhood(layout, pieces, cells, trials = 4, {
         };
         for(let x=Math.round(storage.x)-6;x<=Math.round(storage.x)+6;x++)
             for(let y=Math.round(storage.y)-6;y<=Math.round(storage.y)+6;y++)add(x,y);
+        // Local quarter-grid sites escape gaps missed by integer-only storage moves.
+        if (quarterGrid) for(let dx=-2;dx<=2;dx+=STEP)for(let dy=-2;dy<=2;dy+=STEP)add(storage.x+dx,storage.y+dy);
         for(const member of members.filter(m=>m.weight>0))add(Math.round(member.x+(member.w-storage.w)/2),Math.round(member.y+(member.h-storage.h)/2));
         choices.sort((a,b)=>a.estimate-b.estimate);
         // Give separate storage neighborhoods a chance before checking small variants.
-        choices.slice(0,2).forEach((proposal,rank)=>proposals.push({...proposal,rank}));
+        choices.slice(0,quarterGrid ? 4 : 2).forEach((proposal,rank)=>proposals.push({...proposal,rank}));
     });
     proposals.sort((a,b)=>a.rank-b.rank||a.estimate-b.estimate);
     let best=layout;
@@ -721,7 +744,7 @@ export function refineStorageNeighborhood(layout, pieces, cells, trials = 4, {
         const initialLayout={...best,pieces:best.pieces.map((p,i)=>blockers.includes(i)?{...p,members:[]}:p)};
         const stores=best.storages.map((s,i)=>i===index?candidate:s);
         const supply = suppliedPlacementOptions(best);
-        const result=layOut(pieces,{storages:stores,cells,initialLayout,passes:1,exchangeBudget:6,
+        const result=layOut(pieces,{storages:stores,cells,initialLayout,passes:1,exchangeBudget:6,accountForWorkers,
             ...supply,canPlace:(i,metadata,rectangles)=>canPlace(i,metadata,rectangles)
                 && supply.canPlace(i,metadata,rectangles),
             fixedPieces:new Set(pieces.flatMap((_,i)=>movable.has(i)?[]:[i]))});
@@ -757,7 +780,7 @@ export function refineDistrictClimate(layout, pieces, cells, {
 // exchange footprints only if they retain exactly their required coverage.
 export function refineDistrictDeliveries(layout, groups, {
     canPlace = () => true, accept = () => true, passes = 2, swapsOnly = false,
-    costOf = layoutTravelCost, includeMines = false, targetLimit = Infinity,
+    costOf = layoutTravelCost, includeMines = false, targetLimit = Infinity, quarterGrid = false,
 } = {}) {
     if (!layout.storages.length) return layout;
     const result = { ...layout, pieces: layout.pieces.map(piece => ({
@@ -848,11 +871,18 @@ export function refineDistrictDeliveries(layout, groups, {
         for (const entry of targets.slice(0, targetLimit)) {
             const rect = entry.rect, original = distance(rect), candidates = [];
             if (!swapsOnly) {
+                // Finish on the game's quarter grid without quadrupling the full-map scan.
+                if (quarterGrid) for(let dx=-.5;dx<=.5;dx+=STEP)for(let dy=-.5;dy<=.5;dy+=STEP) {
+                    const spot={...rect,x:rect.x+dx,y:rect.y+dy},away=distance(spot);
+                    if(away<original-EPSILON&&valid(entry,spot))
+                        candidates.push({spot,saving:(original-away)*rect.weight});
+                }
+                let globalChoices = 0;
                 for (const { spot, distance: away } of sitesFor(entry)) {
                     if (away >= original - EPSILON) break;
                     if (!valid(entry, spot)) continue;
                     candidates.push({ spot, saving: (original - away) * rect.weight });
-                    if (candidates.length === 4) break;
+                    if (++globalChoices === 4) break;
                 }
             }
             for (const other of local[entry.district]) {

@@ -3,7 +3,7 @@ import { alphabetScore, chainPurposes, productionDistance, productionGraph,
     productionLinkDistances, refineProductionPlacement } from './production-layout.js?v=zone-ranges';
 import { miningRows, productionRows, productionZones, rawTheme, rawZones, rawZoneSpread, zoneLinkDistance } from './production-zones.js?v=workshop-blocks';
 import { allocateHauling, haulingWorkload } from './hauling.js?v=base-travel';
-import { workerTravelDistances, workerTravelSeconds } from './worker-travel.js?v=measured-walking';
+import { workerTravelDistances, workerTravelSeconds } from './worker-travel.js?v=logic-audit';
 import { canMoveDistrictStorage, districtStorageIndices, improveDistrictStorage } from './district-storage.js?v=workshop-blocks';
 
 const load = new URL(import.meta.url).search;
@@ -414,5 +414,5 @@ async function tryGroupedLayout(pieces, cells, { style, gap, storageCount, poleL
         if (staffing?.movement) improved.incomeWalking = incomeWalking(improved, staffing, recipes);
         return updatePowerConnections(improved);
     }
-    return updatePowerConnections(candidates[0].arranged);
+    return null;
 }

@@ -11,11 +11,11 @@ import {
 } from './facility-config.js?v=leisure-families';
 import { allocateTurnFacilities, redistributeTurnFacilityRows } from './turn-jobs.js?v=auto-worker-travel';
 import { createShareUrl, readShareHash, urlWithoutShare } from './share-config.js?v=compact-roster';
-import { nearestStorage } from './layout.js?v=storage-power';
-import { layoutWalkingAdjustments, workerTravelDistances, workerTravelSeconds } from './worker-travel.js?v=measured-walking';
+import { nearestStorage } from './layout.js?v=logic-audit';
+import { projectLayoutWork, layoutWalkingAdjustments, workerTravelDistances, workerTravelSeconds } from './worker-travel.js?v=logic-audit';
 import { assignFacilityStock, bufferedBatches, haulingWorkload, allocateHauling, haulingBatchTrips,
     haulingTravelSeconds, haulingWorkSeconds, pickupStockLimit } from './hauling.js?v=base-travel';
-import { personalityInput, replacementCandidates, compareRecommendations, usefulUpgrade, keepBetterComparison, workerUsage } from './opportunity-comparison.js?v=measured-walking';
+import { personalityInput, replacementCandidates, compareRecommendations, usefulUpgrade, keepBetterComparison, workerUsage } from './opportunity-comparison.js?v=logic-audit';
 import { comparisonConcurrency, startComparisonQueue } from './comparison-queue.js?v=parallel-comparisons';
 import { prepareOpportunities } from './opportunity-effects.js?v=auto-e-mode';
 import aniimoCatalog from './aniimo-catalog.json' with { type: 'json' };
@@ -1013,7 +1013,7 @@ function rankImprovementsFor(setup, requested = null, detailed = false) {
             if (chosen === result && result.plan?.success) {
                 const projected = opportunityWorkload(result.plan, candidate.input, current.layout);
                 const report = compareRecommendations(current.measured, opportunityIndividualLoads(projected, candidate.input), current.input, candidate.input);
-                if (candidate.changedMember != null && !report.finish?.assignments.get(candidate.changedMember)) {
+                if (candidate.changedMember != null && report.finish && !report.finish.assignments.get(candidate.changedMember)) {
                     report.direction = 0;
                 }
                 current.reports[index] = report;
@@ -1041,6 +1041,8 @@ function comparisonPhase(step) {
 
 function opportunityWorkload(plan, input, layout) {
     if (!input.roster || !layout) return plan;
+    layout = projectLayoutWork(layout, plan);
+    if (!layout) return { ...plan, comparison_workload_valid: false };
     const members = [...input.roster.members];
     const reserves = [...(plan.assumed_aniimo || [])];
     for (const [index, ability, level, count, family] of reserves) {
@@ -1070,7 +1072,7 @@ function opportunityWorkload(plan, input, layout) {
 }
 
 function opportunityIndividualLoads(plan, input) {
-    if (!input.roster) return plan;
+    if (!input.roster || plan.comparison_workload_valid === false) return plan;
     const { assignments } = workerUsage(plan, input);
     const members = [...input.roster.members];
     for (const [index, ability, level, count, family] of plan.assumed_aniimo || []) {
@@ -1129,6 +1131,7 @@ function comparisonTable(comparison) {
     return `<p class="hint small">${translate(comparison.approximate
         ? 'Estimated comparison: at least one search did not prove its optimum.'
         : 'Both plans were checked by the optimizer.')}</p>
+        ${comparison.workloadUnavailable ? '<p class="hint small">Worker savings need a new layout for this alternative.</p>' : ''}
         <div class="table-wrapper"><table class="comparison-table"><thead><tr>
         <th>${translate('Metric')}</th><th>${translate('Current plan')}</th><th>${translate('With change')}</th><th>${translate('Change')}</th>
         </tr></thead><tbody>${comparison.rows.map(row=>{
