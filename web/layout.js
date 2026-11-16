@@ -526,10 +526,7 @@ export function layOut(pieces, options = {}) {
 // whichever walks least with everything placed. Returns what `layOut` does, moved into the
 // homeland's own frame, plus the first storage center for older callers.
 // Additional storage locations are chosen up to `storageCount`.
-export function layOutHomeland(pieces, cells, storage = { w: 2, h: 2 }, storageCount = 1, { fast = false, accountForWorkers = true } = {}) {
-    if (!cells.length) {
-        return { storage: null, storages: [], storageAt: null, pieces: pieces.map(p => ({ ...p, members: [], cost: 0 })), unplaced: pieces.map((_, i) => i), tried: 0 };
-    }
+function homelandCenter(cells) {
     const area = cells.reduce((sum, c) => sum + c.w * c.h, 0);
     const mid = {
         x: cells.reduce((sum, c) => sum + (c.x + c.w / 2) * c.w * c.h, 0) / area,
@@ -538,6 +535,25 @@ export function layOutHomeland(pieces, cells, storage = { w: 2, h: 2 }, storageC
     const byMid = cells
         .map(c => ({ x: c.x + c.w / 2, y: c.y + c.h / 2 }))
         .sort((a, b) => Math.hypot(a.x - mid.x, a.y - mid.y) - Math.hypot(b.x - mid.x, b.y - mid.y));
+    return { mid, byMid };
+}
+
+export function centralDeliverySeed(pieces, cells, storage, storageCount, options) {
+    if (cells.length < 5 || storageCount < 3) return null;
+    const { byMid } = homelandCenter(cells);
+    const inside = createInsideTest(cells);
+    const seed = byMid.map(({ x, y }) => ({ ...storage, x: Math.round(x) - storage.w / 2, y: Math.round(y) - storage.h / 2 }))
+        .find(inside);
+    if (!seed) return null;
+    const centered = layOut(pieces, { ...options, storages: [seed], cells, passes: 0 });
+    return seededStorageLayouts(centered, pieces, cells, storage, storageCount, { ...options, startWithBusiest: true }).next().value ?? null;
+}
+
+export function layOutHomeland(pieces, cells, storage = { w: 2, h: 2 }, storageCount = 1, { fast = false, accountForWorkers = true } = {}) {
+    if (!cells.length) {
+        return { storage: null, storages: [], storageAt: null, pieces: pieces.map(p => ({ ...p, members: [], cost: 0 })), unplaced: pieces.map((_, i) => i), tried: 0 };
+    }
+    const { mid, byMid } = homelandCenter(cells);
     const candidates = [mid, ...byMid.slice(0, 4)]
         .map(p => ({ x: Math.round(p.x), y: Math.round(p.y) }))
         .filter((p, i, all) => all.findIndex(q => q.x === p.x && q.y === p.y) === i);
@@ -761,6 +777,20 @@ export function refineDistrictDeliveries(layout, groups, {
             && (piece.cluster ? j >= piece.buildings.length : piece.members.length === 1),
     })));
     const local = groups.map((_, i) => entries.filter(entry => entry.district === i));
+    const occupied = new Map();
+    const occupiedKeys = rect => cellsOf(rect, (x, y) => `${x},${y}`);
+    const occupy = entry => {
+        entry.keys = occupiedKeys(entry.rect);
+        for (const key of entry.keys) {
+            if (!occupied.has(key)) occupied.set(key, new Set());
+            occupied.get(key).add(entry);
+        }
+    };
+    for (const entry of entries) occupy(entry);
+    const reindex = entry => {
+        for (const key of entry.keys) occupied.get(key).delete(entry);
+        occupy(entry);
+    };
     const supplied = suppliedPlacementOptions(result);
     const valid = (entry, rect, swap) => {
         const { i, district, climate } = entry;
@@ -769,8 +799,11 @@ export function refineDistrictDeliveries(layout, groups, {
         if (climate && !matchesClimate(rect, climates[i], entry.rect.zone)) return false;
         if ((climate || entry.rect.sensitive) && climates.some((squares, j) => (!climate || j !== i)
             && squares.some(square => overlaps(square, rect)))) return false;
-        return !fixed.some(r => overlaps(r, rect)) && !local[district].some(other =>
-            other !== entry && other !== swap && overlaps(other.rect, rect));
+        if (fixed.some(r => overlaps(r, rect))) return false;
+        for (const key of occupiedKeys(rect)) for (const other of occupied.get(key) || []) {
+            if (other !== entry && other !== swap && overlaps(other.rect, rect)) return false;
+        }
+        return true;
     };
     const sites = new Map();
     const sitesFor = entry => {
@@ -791,12 +824,17 @@ export function refineDistrictDeliveries(layout, groups, {
     const tryMove = (entry, next, swap = null) => {
         const old = { x: entry.rect.x, y: entry.rect.y };
         const back = swap && { x: swap.rect.x, y: swap.rect.y };
-        if (!valid(entry, next, swap) || (swap && !valid(swap, { ...swap.rect, ...old }, entry))) return false;
+        const before = costOf === layoutDeliveryCost
+            ? entry.rect.weight * distance(entry.rect) + (swap ? (swap.rect.weight || 0) * distance(swap.rect) : 0) : 0;
         Object.assign(entry.rect, { x: next.x, y: next.y });
         if (swap) Object.assign(swap.rect, old);
-        const nextCost = costOf(result);
+        const nextCost = costOf === layoutDeliveryCost
+            ? cost - before + entry.rect.weight * distance(entry.rect) + (swap ? (swap.rect.weight || 0) * distance(swap.rect) : 0)
+            : costOf(result);
         if (nextCost < cost - EPSILON && accept(result)) {
             cost = nextCost;
+            reindex(entry);
+            if (swap) reindex(swap);
             return true;
         }
         Object.assign(entry.rect, old);
@@ -852,7 +890,9 @@ function storageSites(cells, storage) {
 
 // Use the placed factories as demand points, but reserve all storage sites before
 // placing facilities again. A busy building can move away from a new store's footprint.
-export function* seededStorageLayouts(layout, pieces, cells, storage, maximum, { fast = false, accountForWorkers = true } = {}) {
+export function* seededStorageLayouts(layout, pieces, cells, storage, maximum, {
+    fast = false, accountForWorkers = true, startWithBusiest,
+} = {}) {
     const demand = layout.pieces.flatMap(piece => piece.members)
         .filter(member => member.weight > 0)
         .map(member => ({ x: member.x + member.w / 2, y: member.y + member.h / 2, weight: member.weight }));
@@ -864,7 +904,7 @@ export function* seededStorageLayouts(layout, pieces, cells, storage, maximum, {
     const key = stores => stores.map(site => `${site.x},${site.y}`).sort().join(';');
     const tried = new Set([key(layout.storages)]);
     // Start one set near all pickups, and one next to the busiest pickup.
-    for (const prioritizeBusiest of [false, true]) {
+    for (const prioritizeBusiest of startWithBusiest == null ? [false, true] : [startWithBusiest]) {
         const stores = [];
         const nearest = demand.map(() => Infinity);
         while (stores.length < maximum) {
