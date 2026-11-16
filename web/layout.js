@@ -324,7 +324,7 @@ export function layOut(pieces, options = {}) {
         for (const shape of shapes[i]) {
             let fits = 0;
             for (const [ox, oy] of clusterOffsets) {
-                if (fits >= (fast ? 1 : CLUSTER_TRIES)) break;
+                if (fits >= (options.clusterTries ?? (fast ? 1 : CLUSTER_TRIES))) break;
                 const pack = !fast && fits < CLUSTER_PACKS && shape.plots.length <= CLUSTER_PACK_MOST;
                 const spot = tryCluster(i, shape, Math.round(ox - shape.cx), Math.round(oy - shape.cy), pack, clear, distanceToStorage);
                 if (!spot) continue;
@@ -718,10 +718,13 @@ export function refineStorageNeighborhood(layout, pieces, cells, trials = 4, {
 
 // Repack the climate blocks against the final storage positions, preserving
 // their coupled coverage and leaving all the other buildings in place.
-export function refineDistrictClimate(layout, pieces, cells, { canPlace, accept }) {
+export function refineDistrictClimate(layout, pieces, cells, {
+    canPlace = () => true, accept = () => true, fast = false,
+    accountForWorkers = true, costOf = layoutTravelCost, clusterTries,
+} = {}) {
     if (!pieces.some(piece => piece.cluster) || !layout.storages.length) return layout;
     const supplied = suppliedPlacementOptions(layout);
-    const repacked = layOut(pieces, { cells, storages: layout.storages, initialLayout: layout, passes: 1,
+    const repacked = layOut(pieces, { cells, storages: layout.storages, initialLayout: layout, passes: 1, fast, accountForWorkers, clusterTries,
         ...supplied,
         fixedPieces: new Set(pieces.flatMap((piece, i) => piece.cluster ? [] : [i])),
         clusterFits: (i, rects) => {
@@ -730,7 +733,7 @@ export function refineDistrictClimate(layout, pieces, cells, { canPlace, accept 
         },
     });
     const candidate = { ...layout, ...repacked, tried: (layout.tried || 0) + repacked.tried };
-    return !candidate.unplaced.length && layoutTravelCost(candidate) < layoutTravelCost(layout) - EPSILON
+    return !candidate.unplaced.length && costOf(candidate) < costOf(layout) - EPSILON
         && accept(candidate) ? candidate : layout;
 }
 
@@ -888,7 +891,8 @@ export function* seededStorageLayouts(layout, pieces, cells, storage, maximum, {
 
 // Add useful storage locations, then alternate relocating storage and laying facilities out.
 // Each accepted step keeps every placed piece and reduces weighted hauling distance.
-function improveStorageLayout(layout, pieces, cells, storage, maximum, fast, fixed = false, accountForWorkers = true) {
+function improveStorageLayout(layout, pieces, cells, storage, maximum, fast, fixed = false, accountForWorkers = true,
+    minStoreGain = fixed ? .01 : 0) {
     const candidates = storageSites(cells, storage);
     const membersOf = current => current.pieces.flatMap(piece => piece.members);
     const costOf = (members, stores) => members.reduce((sum, member) => {
@@ -932,7 +936,7 @@ function improveStorageLayout(layout, pieces, cells, storage, maximum, fast, fix
         for (let index = 0; index < stores.length; index++) {
             const others = stores.filter((_, i) => i !== index);
             const spot = findSpot(members, others);
-            if (spot && spot.cost < costOf(members, stores) * (fixed ? .99 : 1) - EPSILON) {
+            if (spot && spot.cost < costOf(members, stores) * (1 - minStoreGain) - EPSILON) {
                 stores[index] = spot.storage;
                 changed = true;
             }
@@ -956,9 +960,9 @@ function improveStorageLayout(layout, pieces, cells, storage, maximum, fast, fix
     };
 }
 
-export function improveFixedStorage(layout, cells) {
+export function improveFixedStorage(layout, cells, minGain = .01) {
     if (!layout.storages.length || layout.unplaced.length || layout.power.disconnected) return layout;
-    return improveStorageLayout(layout, null, cells, layout.storages[0], layout.storages.length, true, true);
+    return improveStorageLayout(layout, null, cells, layout.storages[0], layout.storages.length, true, true, true, minGain);
 }
 
 // Puts `plots` on `slots` (the plan's own arrangement, one slot per plot, each slot sized for the

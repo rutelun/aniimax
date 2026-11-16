@@ -8,7 +8,7 @@ const ready = import('./layout.js' + new URL(import.meta.url).search);
 const powerReady = import('./power-layout.js' + new URL(import.meta.url).search);
 
 self.onmessage = async (event) => {
-    const { createInsideTest, improveFixedStorage, layOutHomeland, layoutDeliveryCost, layoutTravelCost, refineDistrictDeliveries, seededStorageLayouts } = await ready;
+    const { createInsideTest, improveFixedStorage, layOutHomeland, layoutDeliveryCost, layoutTravelCost, refineDistrictClimate, refineDistrictDeliveries, seededStorageLayouts } = await ready;
     const { connectPower, repackPower, updatePowerConnections } = await powerReady;
     const { pieces, cells } = event.data;
     const storageCount = event.data.storageCount ?? 1;
@@ -55,13 +55,14 @@ self.onmessage = async (event) => {
         }
     }
     if (complete(best)) {
-        best = improveFixedStorage(best, cells);
+        const moveStorage = layout => improveFixedStorage(layout, cells, accountForWorkers ? .01 : 0);
+        best = moveStorage(best);
         const poles = best.power.poles.length;
         if (poles >= 5) {
             const maximumCost = cost(best) * (accountForWorkers ? 1.02 : 1);
             best = repackPower(best, cells, poleLimit, { attempts: 2, accept: candidate => {
                 if (poles - candidate.power.poles.length < 3) return false;
-                const relocated = improveFixedStorage(candidate, cells);
+                const relocated = moveStorage(candidate);
                 if (cost(relocated) > maximumCost) return false;
                 Object.assign(candidate, relocated);
                 return true;
@@ -72,11 +73,20 @@ self.onmessage = async (event) => {
             const x = Math.min(...cells.map(c => c.x)), y = Math.min(...cells.map(c => c.y));
             const w = Math.max(...cells.map(c => c.x + c.w)) - x, h = Math.max(...cells.map(c => c.y + c.h)) - y;
             const inside = createInsideTest(cells);
+            if (!accountForWorkers) {
+                // Wiring and storage placement can make a whole climate group better off elsewhere.
+                const shifted = refineDistrictClimate(best, pieces, cells, { ...options, costOf: cost, clusterTries: 3 });
+                if (shifted !== best) {
+                    const supplied = updatePowerConnections(shifted);
+                    if (complete(supplied)) best = moveStorage(supplied);
+                }
+            }
             const optimized = updatePowerConnections(refineDistrictDeliveries(best, [{ bounds: { x, y, w, h }, reserved: [] }], {
-                swapsOnly: accountForWorkers, passes: 1, costOf: cost, includeMines: !accountForWorkers, targetLimit: 24,
+                swapsOnly: accountForWorkers, passes: accountForWorkers ? 1 : 2, costOf: cost,
+                includeMines: !accountForWorkers, targetLimit: accountForWorkers ? 24 : Infinity,
                 canPlace: (_, __, rectangles) => rectangles.every(inside),
             }));
-            if (complete(optimized) && cost(optimized) < cost(best) - 1e-9) best = improveFixedStorage(optimized, cells);
+            if (complete(optimized) && cost(optimized) < cost(best) - 1e-9) best = moveStorage(optimized);
         }
     }
     const needsRanges = recipes?.some(recipe => recipe.takes.length) || (recipes?.length > 0 && pieces.some(piece =>

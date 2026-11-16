@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { improveFixedStorage, layOut, layOutHomeland, nearestStorage, layoutCost, refineDistrictDeliveries,
+import { improveFixedStorage, layOut, layOutHomeland, nearestStorage, layoutCost, refineDistrictClimate, refineDistrictDeliveries,
     refineStorageNeighborhood, seededStorageLayouts, layoutDeliveryCost, createInsideTest } from '../web/layout.js';
 import { storageUnitLimit } from '../web/facility-config.js';
 
@@ -36,6 +36,26 @@ test('shortest delivery can move an active powered mine into free supplied space
     assert.ok(layoutDeliveryCost(refined) < layoutDeliveryCost(layout));
     assert.ok(inside(relocated) && !overlap(relocated,layout.storages[0]));
     assert.equal(relocated.electric_level,2);
+});
+
+test('shortest delivery repositions the climate source and the trees it covers together', () => {
+    const open = [{ x: 0, y: 0, w: 24, h: 24 }];
+    const store = { x: 0, y: 0, w: 2, h: 2 };
+    const source = { x: 0, y: 0, w: 2, h: 2, facility: 'Cooling Unit' };
+    const trees = [12,8].map(weight => ({ w: 2, h: 2, zone: 0, weight, facility: 'Woodland' }));
+    const cluster = { cluster: true, buildings: [source], plots: trees, planned: [{ x: 2, y: 0 }, { x: 0, y: 2 }] };
+    const workshop = { members: [{ x: 0, y: 0, w: 2, h: 2, weight: 0 }] };
+    const existing = { storages: [store], pieces: [{ ...cluster, members: [
+        { ...source, x: 10, y: 15 }, { ...trees[0], x: 12, y: 15 }, { ...trees[1], x: 10, y: 17 },
+    ] }, { members: [{ ...workshop.members[0], x: 12, y: 12 }] }], unplaced: [] };
+    const refined = refineDistrictClimate(existing, [cluster, workshop], open,
+        { fast: true, accountForWorkers: false, clusterTries: 3, costOf: layoutDeliveryCost });
+    assert.ok(layoutDeliveryCost(refined) < layoutDeliveryCost(existing) / 2);
+    const [cooler, ...moved] = refined.pieces[0].members;
+    assert.ok(cooler.y < 15);
+    const coverage = { x: cooler.x + cooler.w / 2 - 4.5, y: cooler.y + cooler.h / 2 - 4.5, w: 9, h: 9 };
+    assert.ok(moved.every(tree => overlap(tree, coverage) && !overlap(tree, store)));
+    assert.deepEqual(refined.pieces[1].members, existing.pieces[1].members);
 });
 
 test('moving a storage after wiring shortens routes without moving facilities or covering poles', () => {
