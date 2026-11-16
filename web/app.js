@@ -1234,7 +1234,7 @@ function renderImprovements(rebuild = true) {
     }
     const elementKey = `${tab}:rest`;
     holder.innerHTML = ranked.map(row).join('') + (rest.length
-        ? `<details class="opportunity-rest" data-opportunity-open="${elementKey}"${ranked.length === 0 || open.has(elementKey) ? ' open' : ''}>
+        ? `<details class="opportunity-rest" data-opportunity-open="${elementKey}"${open.has(elementKey) ? ' open' : ''}>
             <summary>${translate('Other candidates')} (${rest.length})</summary>${rest.map(row).join('')}</details>` : '');
 }
 
