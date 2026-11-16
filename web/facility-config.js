@@ -14,40 +14,40 @@
 // many of the facility you can place at RV level i + 1; an RV level past the end of the list keeps
 // the last count. Simple mode uses both (see `simpleSetup`). Counts are confirmed in game up to RV
 // level 19 for the facilities listed below. Past the last confirmed RV entry, each facility keeps
-// its last count. Farmland, Woodland and Mine continue to follow the game's established pattern.
+// its last count. RV 21–22 caps and unlocks are cross-checked in docs/rv21-22-sources.md.
 //
 // Facilities marked "Not yet verified in game" in their tooltip haven't had their numbers
 // confirmed in game yet.
 export const FACILITIES = [
     {
         name: 'Farmland', slug: 'farmland', defaultCount: 1, category: 'Materials',
-        unlocks: { 1: 1, 2: 2, 3: 5, 4: 7, 5: 9, 6: 12, 7: 16 },
-        counts: [4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32, 34, 36, 38, 40, 40],
-        tooltip: "Lv.1: Wheat&#10;Lv.2: Potato, Quick Wheat&#10;Lv.3: Rice, Soybean&#10;Lv.4: Rose, Cotton, Quick Potato&#10;Lv.5: Strawberry, Lavender, Sugarcane&#10;Lv.6: Ginseng, Grape, Premium Wheat, Quick Rice&#10;Lv.7: Cranberry, Agave, Quick Strawberry"
+        unlocks: { 1: 1, 2: 2, 3: 5, 4: 7, 5: 9, 6: 12, 7: 16, 8: 21 },
+        counts: [4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32, 34, 36, 38, 40, 40, 40, 42],
+        tooltip: "Lv.1: Wheat&#10;Lv.2: Potato, Quick Wheat&#10;Lv.3: Rice, Soybean&#10;Lv.4: Rose, Cotton, Quick Potato&#10;Lv.5: Strawberry, Lavender, Sugarcane&#10;Lv.6: Ginseng, Grape, Premium Wheat, Quick Rice&#10;Lv.7: Cranberry, Agave, Quick Strawberry&#10;Lv.8: Sorghum, Premium Potato, Quick Agave"
     },
     {
         name: 'Woodland', slug: 'woodland', defaultCount: 1, category: 'Materials',
         unlocks: { 1: 2, 2: 4, 3: 7, 4: 11, 5: 14, 6: 18 },
-        counts: [0, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 20],
+        counts: [0, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 20, 20, 21],
         tooltip: "Lv.1: Willow Wood&#10;Lv.2: Bamboo, Lemon&#10;Lv.3: Cherry Blossom, Apple, Maple Syrup, Quick Bamboo&#10;Lv.4: Palm Bark, Chestnut, Walnut, Quick Lemon&#10;Lv.5: Natural Rubber, Coconut, Quick Maple Syrup&#10;Lv.6: Cocoa, Orange Flower, Quick Coconut&#10;Also yields Wood Blocks."
     },
     {
         name: 'Mine', slug: 'mine', defaultCount: 1, category: 'Materials', hasWorker: true, ability: 'Earth', personality: 'Playful',
-        unlocks: { 1: 3, 2: 6, 3: 9, 4: 12, 5: 15, 6: 18 },
-        counts: [0, 0, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10],
-        tooltip: "Lv.1: Rock&#10;Lv.2: Clay&#10;Lv.3: Shell&#10;Lv.4: Copper Ore&#10;Lv.5: Quartz Ore&#10;Lv.6: Gem&#10;Also yields Mineral Sand."
+        unlocks: { 1: 3, 2: 6, 3: 9, 4: 12, 5: 15, 6: 18, 7: 21 },
+        counts: [0, 0, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 10, 10],
+        tooltip: "Lv.1: Rock&#10;Lv.2: Clay&#10;Lv.3: Shell&#10;Lv.4: Copper Ore&#10;Lv.5: Quartz Ore&#10;Lv.6: Gem&#10;Also yields Mineral Sand.&#10;Lv.7: Silver Ore"
     },
     {
         name: 'Well', slug: 'well', defaultCount: 0, category: 'Materials', hasWorker: true, ability: 'Water', personality: 'Faithful',
-        unlocks: { 1: 4, 2: 8, 3: 11, 4: 13, 5: 17 },
+        unlocks: { 1: 4, 2: 8, 3: 11, 4: 13, 5: 17, 6: 21 },
         counts: [0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 4],
-        tooltip: "Lv.1: Well Water, Quick Well Water&#10;Lv.2: Fresh Water&#10;Lv.3: Quick Fresh Water&#10;Lv.4: Deep Rock Spring Water, Quick Deep Rock Spring Water&#10;Lv.5: Natural Mineral Spring Water, Quick Natural Mineral Spring Water"
+        tooltip: "Lv.1: Well Water, Quick Well Water&#10;Lv.2: Fresh Water&#10;Lv.3: Quick Fresh Water&#10;Lv.4: Deep Rock Spring Water, Quick Deep Rock Spring Water&#10;Lv.5: Natural Mineral Spring Water, Quick Natural Mineral Spring Water&#10;Lv.6: Snowmelt Cold Spring, Quick Snowmelt Cold Spring"
     },
     {
         name: 'Tidewhisper Sandcastle', slug: 'tidewhisper-sandcastle', defaultCount: 0, category: 'Aniimo Materials', hasWorker: true, ability: 'Leisure', personality: 'Judicious',
-        unlocks: { 1: 5, 2: 8, 3: 13 },
+        unlocks: { 1: 5, 2: 8, 3: 13, 4: 20, 5: 22 },
         counts: [0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2],
-        tooltip: "Lv.1: Sea Salt&#10;Lv.2: Quick Sea Salt&#10;Lv.3: Pearl (needs Warm)"
+        tooltip: "Lv.1: Sea Salt&#10;Lv.2: Quick Sea Salt&#10;Lv.3: Pearl (needs Warm)&#10;Lv.4: Quick Pearl&#10;Lv.5: Sweet Cone"
     },
     {
         name: 'Dewy House', slug: 'dewy-house', defaultCount: 0, category: 'Aniimo Materials', hasWorker: true, ability: 'Leisure', personality: 'Instinctive',
@@ -62,10 +62,10 @@ export const FACILITIES = [
         tooltip: "Lv.1: Wool&#10;Lv.2: Quick Wool&#10;Lv.3: Petals"
     },
     {
-        name: 'Starfall Hammock', slug: 'starfall-hammock', defaultCount: 0, category: 'Aniimo Materials', hasLevels: false, hasWorker: true, ability: 'Leisure', personality: 'Faithful',
-        unlocks: { 1: 12 },
+        name: 'Starfall Hammock', slug: 'starfall-hammock', defaultCount: 0, category: 'Aniimo Materials', hasWorker: true, ability: 'Leisure', personality: 'Faithful',
+        unlocks: { 1: 12, 2: 21 },
         counts: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 2],
-        tooltip: "Star (needs Cool)&#10;Not yet verified in game."
+        tooltip: "Star (needs Cool)&#10;Not yet verified in game.&#10;Lv.2: Gold-Speck Cap"
     },
     {
         name: 'Floral Windmill', slug: 'floral-windmill', defaultCount: 0, category: 'Aniimo Materials', hasLevels: false, hasWorker: true, ability: 'Leisure', personality: 'Nimble',
@@ -93,15 +93,15 @@ export const FACILITIES = [
     },
     {
         name: 'Carousel Mill', slug: 'carousel-mill', defaultCount: 1, category: 'Materials Processing', hasWorker: true, ability: 'Wind', personality: 'Tenacious',
-        unlocks: { 1: 2, 2: 5, 3: 9, 4: 13, 5: 16, 6: 18 },
+        unlocks: { 1: 2, 2: 5, 3: 9, 4: 13, 5: 16, 6: 18, 7: 21 },
         counts: [0, 1, 1, 1, 1, 1, 1, 1, 2],
-        tooltip: "Lv.1: Wheatmeal&#10;Lv.2: Tofu, Milled Rice&#10;Lv.3: Lavender Powder&#10;Lv.4: Rice Drink, Ginseng Powder&#10;Lv.5: Refined Flour, Coconut Oil&#10;Lv.6: Cocoa Powder, Coconut Milk"
+        tooltip: "Lv.1: Wheatmeal&#10;Lv.2: Tofu, Milled Rice&#10;Lv.3: Lavender Powder&#10;Lv.4: Rice Drink, Ginseng Powder&#10;Lv.5: Refined Flour, Coconut Oil&#10;Lv.6: Cocoa Powder, Coconut Milk&#10;Lv.7: Sorghum Flour, Gold Dust, Bright Silver Powder"
     },
     {
         name: 'Crafting Table', slug: 'crafting-table', defaultCount: 1, category: 'Materials Processing', hasWorker: true, ability: 'Artisanship', personality: 'Judicious',
-        unlocks: { 1: 3, 2: 5, 3: 7, 4: 9, 5: 12, 6: 15, 7: 18, 8: 20 },
+        unlocks: { 1: 3, 2: 5, 3: 7, 4: 9, 5: 12, 6: 15, 7: 18, 8: 20, 9: 22 },
         counts: [0, 0, 1, 1, 1, 1, 1, 1, 1, 2],
-        tooltip: "Lv.1: Wood Sculpture&#10;Lv.2: Bamboo Ware, River-Washed Stones, Premium River-Washed Stones&#10;Lv.3: Rose Freshener, Pottery, Premium Rose Freshener&#10;Lv.4: Bouquet, Shell Ornament, Lavender Sachet&#10;Lv.5: Wind Chime, Star Wish Lantern, Dream Catcher, Advanced Wind Chime&#10;Lv.6: Rubber Duck, Pearl Necklace, Woven Toy, Porcelain&#10;Lv.7: Dye, Gemstone Dust, Flowers in a Bottle, Advanced Gemstone Dust&#10;Lv.8: Doll"
+        tooltip: "Lv.1: Wood Sculpture&#10;Lv.2: Bamboo Ware, River-Washed Stones, Premium River-Washed Stones&#10;Lv.3: Rose Freshener, Pottery, Premium Rose Freshener&#10;Lv.4: Bouquet, Shell Ornament, Lavender Sachet&#10;Lv.5: Wind Chime, Star Wish Lantern, Dream Catcher, Advanced Wind Chime&#10;Lv.6: Rubber Duck, Pearl Necklace, Woven Toy, Porcelain&#10;Lv.7: Dye, Gemstone Dust, Flowers in a Bottle, Advanced Gemstone Dust&#10;Lv.8: Doll&#10;Lv.9: Quicksilver Springstone, Glitter Powder, Orange Flower Scented Mat, Premium Quicksilver Springstone"
     },
     {
         name: 'Claw Game Cooker', slug: 'claw-game-cooker', defaultCount: 1, category: 'Materials Processing', hasWorker: true, ability: 'Fire', personality: 'Practical',
@@ -111,45 +111,45 @@ export const FACILITIES = [
     },
     {
         name: 'Jukebox Dryer', slug: 'jukebox-dryer', defaultCount: 1, category: 'Materials Processing', hasWorker: true, ability: 'Dark', personality: 'Nimble',
-        unlocks: { 1: 4, 2: 5, 3: 7, 4: 10, 5: 12, 6: 14, 7: 18 },
+        unlocks: { 1: 4, 2: 5, 3: 7, 4: 10, 5: 12, 6: 14, 7: 18, 8: 21 },
         counts: [0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 2],
-        tooltip: "Lv.1: Potato Chips&#10;Lv.2: Dried Lemon Slices&#10;Lv.3: Dried Cherry Blossom, Dried Bean Curd&#10;Lv.4: Dried Apple Slices, Dried Strawberries&#10;Lv.5: Nuts, Dried Ginseng&#10;Lv.6: Dried Grapes, Shredded Coconut&#10;Lv.7: Dried Cranberries, Dried Flowers"
+        tooltip: "Lv.1: Potato Chips&#10;Lv.2: Dried Lemon Slices&#10;Lv.3: Dried Cherry Blossom, Dried Bean Curd&#10;Lv.4: Dried Apple Slices, Dried Strawberries&#10;Lv.5: Nuts, Dried Ginseng&#10;Lv.6: Dried Grapes, Shredded Coconut&#10;Lv.7: Dried Cranberries, Dried Flowers&#10;Lv.8: Dried Orange Flower, Agave Fiber"
     },
     {
         name: 'Simmering Pot', slug: 'simmering-pot', defaultCount: 0, category: 'Materials Processing', hasWorker: true, ability: 'Fire', personality: 'Tenacious',
-        unlocks: { 1: 5, 2: 7, 3: 9, 4: 12, 5: 15, 6: 18 },
+        unlocks: { 1: 5, 2: 7, 3: 9, 4: 12, 5: 15, 6: 18, 7: 21 },
         counts: [0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 2],
-        tooltip: "Lv.1: Plain Rice Porridge&#10;Lv.2: Rose Concentrate&#10;Lv.3: Rock Candy, Strawberry Jam, Maple Candy Apple Jam&#10;Lv.4: Chestnut Puree, Grape Jam, Ginseng Porridge&#10;Lv.5: Maple Sugar Chunk, Malt Sugar&#10;Lv.6: Cocoa Spread, Cranberry Jam, Agave Syrup"
+        tooltip: "Lv.1: Plain Rice Porridge&#10;Lv.2: Rose Concentrate&#10;Lv.3: Rock Candy, Strawberry Jam, Maple Candy Apple Jam&#10;Lv.4: Chestnut Puree, Grape Jam, Ginseng Porridge&#10;Lv.5: Maple Sugar Chunk, Malt Sugar&#10;Lv.6: Cocoa Spread, Cranberry Jam, Agave Syrup&#10;Lv.7: Potato Starch, Sorghum Porridge, Orange Flower Syrup"
     },
     {
         name: 'Phonolfactory Table', slug: 'phonolfactory-table', defaultCount: 0, category: 'Materials Processing', hasWorker: true, ability: 'Perfumery', personality: 'Instinctive',
-        unlocks: { 1: 6, 2: 7, 3: 10, 4: 14, 5: 17, 6: 19 },
+        unlocks: { 1: 6, 2: 7, 3: 10, 4: 14, 5: 17, 6: 19, 7: 22 },
         counts: [0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 2],
-        tooltip: "Lv.1: Bamboo Joss Stick&#10;Lv.2: Rose Incense, Cherry Incense&#10;Lv.3: Lavender Incense, Lemon Incense, Advanced Lemon Incense&#10;Lv.4: Herbal Ginseng Aroma&#10;Lv.5: Soap, Premium Soap&#10;Lv.6: Orange Flower Incense, Mixed Perfume, Lotion, Premium Mixed Perfume"
+        tooltip: "Lv.1: Bamboo Joss Stick&#10;Lv.2: Rose Incense, Cherry Incense&#10;Lv.3: Lavender Incense, Lemon Incense, Advanced Lemon Incense&#10;Lv.4: Herbal Ginseng Aroma&#10;Lv.5: Soap, Premium Soap&#10;Lv.6: Orange Flower Incense, Mixed Perfume, Lotion, Premium Mixed Perfume&#10;Lv.7: Coconut Milk Lotion, Orange Flower Skin Balm, Gold Dust Sachet"
     },
     {
         name: 'Bouncy Brew Keg', slug: 'bouncy-brew-keg', defaultCount: 0, category: 'Materials Processing', hasWorker: true, ability: 'Water', personality: 'Energetic',
-        unlocks: { 1: 6, 2: 9, 3: 13, 4: 17, 5: 19 },
+        unlocks: { 1: 6, 2: 9, 3: 13, 4: 17, 5: 19, 6: 22 },
         counts: [0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2],
-        tooltip: "Lv.1: Wheat Tea, Toasted Rice Green Tea&#10;Lv.2: Potato Kvass, Strawberry Juice, Apple Juice, Sugarcane Juice&#10;Lv.3: Grape Juice, Ginseng Water, Grape Lemon Drink, Walnut Milk&#10;Lv.4: Cranberry Juice, Coconut Cooler&#10;Lv.5: Agave Drink, Hot Cocoa, Coconut Cocoa, Orange Flower Dew"
+        tooltip: "Lv.1: Wheat Tea, Toasted Rice Green Tea&#10;Lv.2: Potato Kvass, Strawberry Juice, Apple Juice, Sugarcane Juice&#10;Lv.3: Grape Juice, Ginseng Water, Grape Lemon Drink, Walnut Milk&#10;Lv.4: Cranberry Juice, Coconut Cooler&#10;Lv.5: Agave Drink, Hot Cocoa, Coconut Cocoa, Orange Flower Dew&#10;Lv.6: Red Sorghum Rice Drink, Cocoa Sweet Cone, Sugar Core Sweet Cone"
     },
     {
         name: 'Blazing Stove', slug: 'blazing-stove', defaultCount: 0, category: 'Materials Processing', hasWorker: true, ability: 'Fire', personality: 'Nimble',
-        unlocks: { 1: 8, 2: 10, 3: 13, 4: 16, 5: 18 },
+        unlocks: { 1: 8, 2: 10, 3: 13, 4: 16, 5: 18, 6: 22 },
         counts: [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 2],
-        tooltip: "Lv.1: Soy Sauce Fried Rice, Creamy Potato Soup, Cherry Blossom Rice Ball, Premium Potato Soup&#10;Lv.2: Tanghulu, Soy Sauce Tofu, Sugar-Roasted Chestnuts&#10;Lv.3: Steamed Vermicelli Roll, Ginseng Chestnut Cake, Walnut Cake&#10;Lv.4: Jello, Strawberry Candy, Rich Grape Compote, Premium Jello&#10;Lv.5: Strawberry Cream Puff, Cranberry Chocolate"
+        tooltip: "Lv.1: Soy Sauce Fried Rice, Creamy Potato Soup, Cherry Blossom Rice Ball, Premium Potato Soup&#10;Lv.2: Tanghulu, Soy Sauce Tofu, Sugar-Roasted Chestnuts&#10;Lv.3: Steamed Vermicelli Roll, Ginseng Chestnut Cake, Walnut Cake&#10;Lv.4: Jello, Strawberry Candy, Rich Grape Compote, Premium Jello&#10;Lv.5: Strawberry Cream Puff, Cranberry Chocolate&#10;Lv.6: Shredded Coconut Cake, Cranberry Soft Cake, Orange Flower Rice Drink"
     },
     {
         name: 'Pickling Jar', slug: 'pickling-jar', defaultCount: 0, category: 'Materials Processing', hasWorker: true, ability: 'Dark', personality: 'Playful',
-        unlocks: { 1: 8, 2: 10, 3: 13, 4: 16, 5: 19 },
+        unlocks: { 1: 8, 2: 10, 3: 13, 4: 16, 5: 19, 6: 21 },
         counts: [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 2],
-        tooltip: "Lv.1: Soy Sauce, Salted Cherry Blossom&#10;Lv.2: Sweet Rice Drink, Cider Vinegar, Premium Sweet Rice Wine&#10;Lv.3: Rice Vinegar, Salted Lemon, Premium Salted Lemon&#10;Lv.4: Candied Strawberries&#10;Lv.5: Candied Orange Flower"
+        tooltip: "Lv.1: Soy Sauce, Salted Cherry Blossom&#10;Lv.2: Sweet Rice Drink, Cider Vinegar, Premium Sweet Rice Wine&#10;Lv.3: Rice Vinegar, Salted Lemon, Premium Salted Lemon&#10;Lv.4: Candied Strawberries&#10;Lv.5: Candied Orange Flower&#10;Lv.6: Sorghum Fermented Mash"
     },
     {
         name: 'Joy Wheel Loom', slug: 'joy-wheel-loom', defaultCount: 0, category: 'Materials Processing', hasWorker: true, ability: 'Wind', personality: 'Faithful',
-        unlocks: { 1: 7, 2: 10, 3: 15, 4: 19 },
+        unlocks: { 1: 7, 2: 10, 3: 15, 4: 19, 5: 21 },
         counts: [0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 2],
-        tooltip: "Lv.1: Cotton Thread&#10;Lv.2: Woolen Yarn, Cotton Fabric&#10;Lv.3: Palm Rope, Wool Fabric&#10;Lv.4: Dyed Cotton Fabric"
+        tooltip: "Lv.1: Cotton Thread&#10;Lv.2: Woolen Yarn, Cotton Fabric&#10;Lv.3: Palm Rope, Wool Fabric&#10;Lv.4: Dyed Cotton Fabric&#10;Lv.5: Sisal Plush Mat"
     },
     {
         name: 'Dance Pad Polisher', slug: 'dance-pad-polisher', defaultCount: 0, category: 'Materials Processing', hasWorker: true, ability: 'Lightning',
@@ -190,6 +190,7 @@ export const SPECIAL_RECIPES = [
     { name: 'strawberry_candy', facility: 'Blazing Stove' },
     { name: 'flowers_in_a_bottle', facility: 'Crafting Table' },
     { name: 'lotion', facility: 'Phonolfactory Table' },
+    { name: 'orange_flower_rice_drink', facility: 'Blazing Stove' },
 ];
 
 // The limited-time Homeland seasons, newest first; the page runs one at a time, picked in the
@@ -290,6 +291,8 @@ export const LEVEL_UP_COSTS = {
     18: { coins: 11600000, items: [['laminated_beams', 800], ['refined_ore', 520]] },
     19: { coins: 17100000, items: [['densified_timber_component', 400], ['microcrystalline_ore_plate', 220]] },
     20: { coins: 20800000, items: [['densified_timber_component', 490], ['microcrystalline_ore_plate', 270]] },
+    21: { coins: 34300000, items: [['densified_timber_component', 830], ['microcrystalline_ore_plate', 460]] },
+    22: { coins: 52600000, items: [['densified_timber_component', 1190], ['microcrystalline_ore_plate', 1320]] },
 };
 
 // The Woodworking Bench and Chimney Kiln chains, lowest tier first: what a player might have in
@@ -387,6 +390,8 @@ export const LEISURE_FAMILIES = [
     { id: '1001', name: 'Celestis / Stellarys', product: 'Star' },
     { id: '1017', name: 'Susuta / Popota / Piopiota / Panpanta', product: 'Sea Salt' },
     { id: '1019', name: 'Shelly / Sheldon / Sherro', product: 'Pearl' },
+    { id: '1063', name: 'Coinwisp / Pouchwisp', product: 'Gold-Speck Cap' },
+    { id: '1059', name: 'Sugarfish / Sugarslime / Sugartini', product: 'Sweet Cone' },
     { id: '1023', name: 'Flutternym / Gracewing / Somniwing', product: 'Scales' },
 ];
 
@@ -396,14 +401,14 @@ export const LEISURE_FAMILIES = [
 export const FACILITY_CATEGORY_BY_NAME = new Map(FACILITIES.map(f => [f.name, f.category]));
 
 // Highest RV (Homeland) level in the game.
-export const MAX_HOME_LEVEL = 20;
+export const MAX_HOME_LEVEL = 22;
 
 // Highest level of each upgrade module at each RV level (index = RV level - 1).
 export const MODULE_MAX_LEVELS = {
-    ecological_module: [0, 0, 1, 1, 1, 1, 2, 3, 3, 3, 4, 5, 5, 6, 6, 6, 7, 8, 8, 8],
-    kitchen_module: [0, 1, 1, 2, 2, 2, 2, 3, 3, 4, 4, 4, 5, 5, 5, 6, 6, 6, 7, 7],
-    resource_detector: [0, 0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 4, 5, 5, 6, 6, 7, 7, 8, 8],
-    crafting_module: [0, 0, 0, 0, 1, 1, 2, 2, 2, 3, 3, 4, 4, 4, 4, 4, 5, 6, 7, 7],
+    ecological_module: [0, 0, 1, 1, 1, 1, 2, 3, 3, 3, 4, 5, 5, 6, 6, 6, 7, 8, 8, 8, 9, 9],
+    kitchen_module: [0, 1, 1, 2, 2, 2, 2, 3, 3, 4, 4, 4, 5, 5, 5, 6, 6, 6, 7, 7, 7, 7],
+    resource_detector: [0, 0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 4, 5, 5, 6, 6, 7, 7, 8, 9, 9, 10],
+    crafting_module: [0, 0, 0, 0, 1, 1, 2, 2, 2, 3, 3, 4, 4, 4, 4, 4, 5, 6, 7, 7, 7, 8],
 };
 
 // The value for RV level `homeLevel` in a per-RV list, keeping the last value past its end.
@@ -413,11 +418,11 @@ function atHomeLevel(list, homeLevel) {
 
 // How many Aniimo can live on the homeland at each RV level (index = RV level - 1; `null` where
 // unknown).
-export const ANIIMO_MAX = [null, 8, 11, 14, 17, 20, 22, 24, 26, 28, 30, 32, 34, 36, 38, 40, 42, 43, 44, 45];
+export const ANIIMO_MAX = [null, 8, 11, 14, 17, 20, 22, 24, 26, 28, 30, 32, 34, 36, 38, 40, 42, 43, 44, 45, 46, 47];
 
-// RV 1–20 placement caps, from Aniimo Camp's published level table.
+// RV 1–22 placement caps; RV 21–22 retain eight Storage Units.
 // https://aniimocamp.com/assets/entries/pages_index.Duqq9yLj.js
-export const STORAGE_UNIT_MAX = [0, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5, 5, 6, 6, 6, 7, 8];
+export const STORAGE_UNIT_MAX = [0, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5, 5, 6, 6, 6, 7, 8, 8, 8];
 
 export function storageUnitLimit(homeLevel) {
     return STORAGE_UNIT_MAX[Math.max(0, Math.min(STORAGE_UNIT_MAX.length - 1, homeLevel - 1))];

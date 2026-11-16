@@ -12,3 +12,6 @@ orange_flower_incense, orange_flower;aromathyst, 8;8, 3640, coins, 162, 6,
 mixed_perfume, dried_flowers;natural_mineral_spring_water, 1;6, 4850, coins, 162, 6,
 lotion, orange_flower;coconut_oil, 8;2, 7030, coins, 162, 6,
 premium_mixed_perfume, dried_flowers;natural_mineral_spring_water, 1;6, 5520, coins, 162, 6, crafting_module:7
+coconut_milk_lotion, coconut_milk;aromathyst, 1;8, 7030, coins, 243, 7,
+orange_flower_skin_balm, dried_orange_flower;aromathyst;snowmelt_cold_spring, 1;8;6, 8130, coins, 243, 7,
+gold_dust_sachet, dried_flowers;gold_dust, 1;1, 6920, coins, 162, 7,

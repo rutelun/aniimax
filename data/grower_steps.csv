@@ -114,3 +114,12 @@ magic_pumpkin, Farmland, Reaping, Dark, 1, 3
 memory_lanternfruit, Farmland, Reclaiming, Earth, 1, 5
 memory_lanternfruit, Farmland, Sowing, Grass, 1, 3
 memory_lanternfruit, Farmland, Reaping, Dark, 1, 3
+sorghum, Farmland, Reclaiming, Earth, 1, 5
+sorghum, Farmland, Sowing, Grass, 1, 3
+sorghum, Farmland, Reaping, Dark, 1, 3
+premium_potato, Farmland, Reclaiming, Earth, 1, 5
+premium_potato, Farmland, Sowing, Grass, 1, 3
+premium_potato, Farmland, Reaping, Dark, 1, 3
+quick_agave, Farmland, Reclaiming, Earth, 1, 5
+quick_agave, Farmland, Sowing, Grass, 1, 3
+quick_agave, Farmland, Collecting, Grass, 1, 3

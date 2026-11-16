@@ -15,3 +15,6 @@ rich_grape_compote, grape_juice;dried_grapes, 1;1, 5050, coins, 243, 4,
 premium_jello, petals;maple_sugar_chunk;deep_rock_spring_water, 6;1;6, 5520, coins, 243, 4, kitchen_module:6
 strawberry_cream_puff, refined_flour;strawberry;coconut_oil, 1;16;1, 5650, coins, 243, 5,
 cranberry_chocolate, cocoa_spread;dried_cranberries, 1;1, 13480, coins, 405, 5,
+shredded_coconut_cake, potato_starch;shredded_coconut, 1;1, 10480, coins, 243, 6,
+cranberry_soft_cake, potato_starch;dried_cranberries, 1;1, 11060, coins, 243, 6,
+orange_flower_rice_drink, sorghum_fermented_mash;dried_orange_flower, 1;1, 13170, coins, 243, 6,

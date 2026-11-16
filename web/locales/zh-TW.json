@@ -1201,5 +1201,7 @@
   "Resources in stock": "現有資源",
   "Include quest rewards. Wood Blocks and Mineral Sand still need processing when required for the RV upgrade.": "也可填入任務獎勵。若房車升級需要加工材料，木塊與礦砂仍須加工。",
   "Grid {n} ({generators}): {percent}% · {draw} / {output} W": "電網 {n}（{generators}）：{percent}% · {draw} / {output} W",
-  "Compact production groups with optimized deliveries. Workshops follow alphabetical order; gaps are available for the power grid.": "緊密排列的生產群組，並最佳化運送路線。加工建築依英文字母排序；間隙可用於電網。"
+  "Compact production groups with optimized deliveries. Workshops follow alphabetical order; gaps are available for the power grid.": "緊密排列的生產群組，並最佳化運送路線。加工建築依英文字母排序；間隙可用於電網。",
+  "Wood Blocks / day": "木塊 / 天",
+  "Mineral Sand / day": "礦砂 / 天"
 }

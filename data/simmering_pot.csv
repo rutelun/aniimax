@@ -12,3 +12,6 @@ malt_sugar, premium_wheat;milled_rice;deep_rock_spring_water, 15;2;6, 3440, coin
 cocoa_spread, cocoa_powder;malt_sugar, 1;1, 8350, coins, 324, 6,
 cranberry_jam, cranberry;malt_sugar, 7;1, 7350, coins, 324, 6,
 agave_syrup, agave;fresh_water, 6;9, 3080, coins, 162, 6,
+potato_starch, premium_potato;snowmelt_cold_spring, 6;6, 6280, coins, 162, 7,
+sorghum_porridge, sorghum;snowmelt_cold_spring, 10;6, 6440, coins, 162, 7,
+orange_flower_syrup, orange_flower;agave_syrup, 8;1, 7400, coins, 243, 7,

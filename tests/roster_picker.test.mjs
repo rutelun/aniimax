@@ -1,6 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { aniimoPortrait, rosterCatalogId, rosterFormName, searchRosterCatalog } from '../web/roster-picker.js';
+import { aniimoPortrait, rosterCatalogId, rosterCatalogFamily, rosterFormName, searchRosterCatalog } from '../web/roster-picker.js';
+
+test('legacy saved workers recover new Leisure families by catalog ID or name', () => {
+    assert.equal(rosterCatalogFamily('pouchwisp-prismana', 'Nickname'), '1063');
+    assert.equal(rosterCatalogFamily(undefined, 'Sugartini (Prismana Form)'), '1059');
+    assert.equal(rosterCatalogFamily(undefined, 'Unknown'), null);
+});
 
 test('the picker distinguishes the base form and prefills alternate form skills', () => {
     const matches = searchRosterCatalog('stellarys');

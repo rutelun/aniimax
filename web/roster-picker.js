@@ -18,6 +18,10 @@ export function rosterCatalogId(id, name = '') {
     return byId.get(id)?.id ?? byName.get(normalized(name))?.id;
 }
 
+export function rosterCatalogFamily(id, name = '') {
+    return byId.get(rosterCatalogId(id, name))?.family ?? null;
+}
+
 export function aniimoPortrait(id) {
     return Object.hasOwn(portraits, id) ? portraits[id] : '';
 }

@@ -17,3 +17,6 @@ quick_rice, 12, 10, 2400, 79, , 6, ecological_module:5,
 cranberry, 97, 210, 2400, 7, , 7, , Freeze
 agave, 97, 240, 2400, 6, , 7, , Scorching
 quick_strawberry, 32, 61, 2400, 26, , 7, ecological_module:7, Cool
+sorghum, 165, 248, 2400, 10, , 8, , Adequate
+premium_potato, 1, 386, 2400, 6, , 8, ,
+quick_agave, 97, 240, 2400, 10, , 8, ecological_module:9, Scorching

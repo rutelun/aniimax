@@ -56,22 +56,21 @@
                     <aside class="planner-editor" aria-label="Plan settings">
                         <div class="planner-editor-options">
                             <div class="planner-editor-item">
-                                <button type="button" data-planner-editor="quests" aria-expanded="false" aria-controls="planner-edit-quests">
+                                <button type="button" data-planner-editor="quests" aria-expanded="true" aria-controls="planner-edit-quests">
                                     <strong>Quest resources</strong><span id="quest-income-summary"></span>
                                 </button>
-                                <div id="planner-edit-quests" class="planner-editor-panel" hidden>
+                                <div id="planner-edit-quests" class="planner-editor-panel">
                                     <p class="hint small">Average daily rewards. Processing uses your buildings and Aniimo.</p>
                                     <div class="quest-income-fields">
                                         <div class="input-field">
-                                            <label for="quest-resource">Resource</label>
-                                            <select id="quest-resource"><option value="wood_block">Wood Blocks</option><option value="mineral_sand">Mineral Sand</option></select>
+                                            <label for="quest-wood_block">Wood Blocks / day</label>
+                                            <input id="quest-wood_block" type="number" min="0" max="1000000000" value="0" step="1" inputmode="numeric">
                                         </div>
                                         <div class="input-field">
-                                            <label for="quest-amount">Amount per day</label>
-                                            <input id="quest-amount" type="number" min="0" max="1000000000" value="0" step="1" inputmode="numeric">
+                                            <label for="quest-mineral_sand">Mineral Sand / day</label>
+                                            <input id="quest-mineral_sand" type="number" min="0" max="1000000000" value="0" step="1" inputmode="numeric">
                                         </div>
                                     </div>
-                                    <p class="hint small" id="quest-income-detail"></p>
                                 </div>
                             </div>
                             <div class="planner-editor-item">
@@ -179,7 +178,7 @@
 
                                                 <div class="modules-grid">
                                                     <div class="module-card">
-                                                        <h4>Ecological Module <span class="info-icon" data-tooltip="Lv.1: Quick Wheat&#10;Lv.2: Quick Bamboo&#10;Lv.3: Quick Potato&#10;Lv.4: Quick Lemon&#10;Lv.5: Quick Rice&#10;Lv.6: Quick Maple Syrup&#10;Lv.7: Quick Strawberry&#10;Lv.8: Quick Coconut">?</span></h4>
+                                                        <h4>Ecological Module <span class="info-icon" data-tooltip="Lv.1: Quick Wheat&#10;Lv.2: Quick Bamboo&#10;Lv.3: Quick Potato&#10;Lv.4: Quick Lemon&#10;Lv.5: Quick Rice&#10;Lv.6: Quick Maple Syrup&#10;Lv.7: Quick Strawberry&#10;Lv.8: Quick Coconut&#10;Lv.9: Quick Agave">?</span></h4>
                                                         <div class="input-field">
                                                             <label for="ecological-module-level">Level</label>
                                                             <input type="number" id="ecological-module-level" value="0" min="0" max="10">
@@ -195,7 +194,7 @@
                                                     </div>
 
                                                     <div class="module-card">
-                                                        <h4>Resource Detector <span class="info-icon" data-tooltip="Lv.1: Quick Well Water&#10;Lv.2: Quick Sea Salt&#10;Lv.3: Quick Aromathyst&#10;Lv.4: Quick Fresh Water&#10;Lv.5: Quick Wool&#10;Lv.6: Quick Deep Rock Spring Water&#10;Lv.7: Quick Natural Mineral Spring Water&#10;Lv.8: Quick Scales">?</span></h4>
+                                                        <h4>Resource Detector <span class="info-icon" data-tooltip="Lv.1: Quick Well Water&#10;Lv.2: Quick Sea Salt&#10;Lv.3: Quick Aromathyst&#10;Lv.4: Quick Fresh Water&#10;Lv.5: Quick Wool&#10;Lv.6: Quick Deep Rock Spring Water&#10;Lv.7: Quick Natural Mineral Spring Water&#10;Lv.8: Quick Scales&#10;Lv.9: Quick Pearl&#10;Lv.10: Quick Snowmelt Cold Spring">?</span></h4>
                                                         <div class="input-field">
                                                             <label for="resource-detector-level">Level</label>
                                                             <input type="number" id="resource-detector-level" value="0" min="0" max="10">
@@ -203,7 +202,7 @@
                                                     </div>
 
                                                     <div class="module-card">
-                                                        <h4>Crafting Module <span class="info-icon" data-tooltip="Lv.1: Premium River-Washed Stones&#10;Lv.2: Premium Rose Freshener&#10;Lv.3: Advanced Lemon Incense&#10;Lv.4: Advanced Wind Chime&#10;Lv.5: Premium Soap&#10;Lv.6: Advanced Gemstone Dust&#10;Lv.7: Premium Mixed Perfume">?</span></h4>
+                                                        <h4>Crafting Module <span class="info-icon" data-tooltip="Lv.1: Premium River-Washed Stones&#10;Lv.2: Premium Rose Freshener&#10;Lv.3: Advanced Lemon Incense&#10;Lv.4: Advanced Wind Chime&#10;Lv.5: Premium Soap&#10;Lv.6: Advanced Gemstone Dust&#10;Lv.7: Premium Mixed Perfume&#10;Lv.8: Premium Quicksilver Springstone">?</span></h4>
                                                         <div class="input-field">
                                                             <label for="crafting-module-level">Level</label>
                                                             <input type="number" id="crafting-module-level" value="0" min="0" max="10">

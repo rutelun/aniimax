@@ -23,7 +23,7 @@ import { personalityInput, replacementCandidates, compareRecommendations, useful
 import { comparisonConcurrency, startComparisonQueue } from './comparison-queue.js?v=parallel-comparisons';
 import { prepareOpportunities } from './opportunity-effects.js?v=auto-e-mode';
 import aniimoCatalog from './aniimo-catalog.json' with { type: 'json' };
-import { aniimoPortrait, attachRosterPicker, rosterCatalogId, rosterFormName } from './roster-picker.js?v=game-heads';
+import { aniimoPortrait, attachRosterPicker, rosterCatalogId, rosterCatalogFamily, rosterFormName } from './roster-picker.js?v=rv22-families';
 import { placeRosterCopy, ROSTER_ROW_SIZE, rosterSlotsFor, swapRosterSlots } from './roster-slots.js';
 import { scheduleRosterCopies } from './roster-work.js?v=measured-walking';
 import { buildDispatch, rosterJobSwitching, TASK_SWITCHING } from './task-switching.js?v=base-travel';
@@ -638,7 +638,8 @@ function loadInputsFromStorage(data) {
                 name: typeof a.name === 'string' ? a.name : '',
                 catalogId: rosterCatalogId(a.catalogId, typeof a.name === 'string' ? a.name : ''),
                 count: Number.isSafeInteger(Number(a.count)) ? Math.max(1, Number(a.count)) : 1,
-                family: LEISURE_FAMILIES.some(f => f.id === a.family) ? a.family : null,
+                family: LEISURE_FAMILIES.some(f => f.id === a.family) ? a.family
+                    : rosterCatalogFamily(a.catalogId, a.name || ''),
                 abilities: Object.fromEntries(Object.entries(a.abilities)
                     .filter(([ability, level]) => ABILITY_BY_NAME.has(ability) && Number.isInteger(Number(level)) && level >= 1 && level <= 4)
                     .map(([ability, level]) => [ability, Number(level)])),
@@ -4058,9 +4059,8 @@ function levelUpUnavailable() {
 
 function renderQuestIncome(updateInput=true) {
     const income=questIncome(questIncomePerDay),names=Object.keys(income);
-    if(updateInput)document.getElementById('quest-amount').value=income[document.getElementById('quest-resource').value]??0;
+    if(updateInput)for(const name of ['wood_block','mineral_sand'])document.getElementById(`quest-${name}`).value=income[name]??0;
     document.getElementById('quest-income-summary').textContent=names.length?translate('{n} resources / day').replace('{n}',names.length):translate('Off');
-    document.getElementById('quest-income-detail').textContent=names.map(name=>`${translate(ITEM_NAMES[name])}: ${formatNumber(income[name])}`).join(' · ');
 }
 
 function populateLevelUpTargets() {
@@ -4088,10 +4088,10 @@ function attachStrategyHandlers() {
         if (lastPlanInput) clearPlanResults();
         renderStrategy();
     });
-    document.getElementById('quest-resource').addEventListener('change',()=>renderQuestIncome());
-    const amount=document.getElementById('quest-amount');
+    for(const name of ['wood_block','mineral_sand']){
+    const amount=document.getElementById(`quest-${name}`);
     amount.addEventListener('input', (e) => {
-        questIncomePerDay[document.getElementById('quest-resource').value]=e.target.value;
+        questIncomePerDay[name]=e.target.value;
         renderQuestIncome(false);
         if (lastPlanInput) clearPlanResults();
         saveInputsToStorage();
@@ -4099,6 +4099,7 @@ function attachStrategyHandlers() {
     amount.addEventListener('keypress', (e) => {
         if (e.key === 'Enter' && e.target.matches('input')) runFindPlan();
     });
+    }
 }
 
 // The RV target used by the level-up priority and the results preview.
