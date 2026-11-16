@@ -1,5 +1,5 @@
 import { nearestStorage } from './layout.js?v=optional-worker-travel';
-import { ANIIMO_WALK_SPEED, workerTravelSeconds } from './worker-travel.js?v=base-travel';
+import { ANIIMO_WALK_SPEED, workerTravelSeconds } from './worker-travel.js?v=measured-walking';
 import facilityStock from './facility-stock.json' with { type: 'json' };
 
 // Hauling capacity from Skippy, Fenrier, Glacy and Prismana Glacy's Homeland profiles.

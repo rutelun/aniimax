@@ -262,3 +262,26 @@ test('preparing suggestions does not launch searches, and a check stays in its c
     assert.deepEqual(workers.slice(2).flatMap(w=>w.message.candidates.map(c=>c.change)),[0]);
     api.stop();
 });
+
+test('opportunity workloads are recalculated once for both rendered and fresh plans', async () => {
+    const source = await readFile(new URL('../web/app.js', import.meta.url), 'utf8');
+    const body = source.slice(source.indexOf('function opportunityWorkload('), source.indexOf('function opportunityIndividualLoads('));
+    const { haulingWorkload, allocateHauling } = await import('../web/hauling.js');
+    const { layoutWalkingAdjustments } = await import('../web/worker-travel.js');
+    const { buildDispatch, rosterJobSwitching } = await import('../web/task-switching.js');
+    const project = new Function('workerUsage', 'haulingWorkload', 'allocateHauling', 'buildDispatch',
+        'rosterJobSwitching', 'recipeIndex', 'RESIDENT_FACILITIES', 'layoutWalkingAdjustments', body + ';return opportunityWorkload;')(
+        workerUsage, haulingWorkload, allocateHauling, buildDispatch, rosterJobSwitching, [], new Set(), layoutWalkingAdjustments);
+    const input = {roster:{members:[{count:1,abilities:{Hauling:3}}]},facilities:{}};
+    const layout = {storages:[{x:-1,y:-1,w:2,h:2}],pieces:[{members:[
+        {x:7,y:-1,w:2,h:2,weight:60,facility:'Well',crop:'water'},
+    ]}]};
+    const raw = {roster_workload:[.95],coin_items:[
+        {facility:'Well',item_name:'water',status:'producing',facility_count:1,cycle_time:60},
+    ]};
+    const once = project(raw, input, layout);
+    const twice = project(once, input, layout);
+    assert.deepEqual(twice.delivery_assignments, once.delivery_assignments);
+    assert.equal(workerUsage(twice,input).working,workerUsage(once,input).working);
+    assert.equal(workerUsage(twice,input).hours,workerUsage(once,input).hours);
+});

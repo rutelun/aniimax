@@ -36,3 +36,14 @@ test('splits a route only when its workload cannot fit within a single available
     assert.deepEqual(loads(shifts), [1, 0.2]);
     for (const shift of shifts) assert.equal(shift.tasks.get('Sowing'), shift.tasks.get('Walking'));
 });
+
+test('reactive switching is shared by each active copy’s spare time, not packed into one copy', () => {
+    const shifts = scheduleRosterCopies(3, [], [], [
+        {jobs:[['Field A',.8]]},
+        {jobs:[['Field B',.6]]},
+        {spread:true,jobs:[['Switching',.3]]},
+    ]);
+    assert.ok(Math.abs(shifts[0].tasks.get('Switching') - .1) < 1e-9);
+    assert.ok(Math.abs(shifts[1].tasks.get('Switching') - .2) < 1e-9);
+    assert.equal(shifts[2].busy, 0);
+});

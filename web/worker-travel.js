@@ -48,3 +48,19 @@ export function workerTravelDistances(members) {
 }
 
 export const workerTravelDistance = members => Math.max(0, ...workerTravelDistances(members).values());
+
+// Replace solver allowances only where the final map contains that worker's sites.
+// A negative correction releases hours; no layout means no claimed saving.
+export function layoutWalkingAdjustments(members, plan) {
+    const distances = workerTravelDistances(members);
+    const visits = new Map();
+    for (const [, , member, rate] of plan.mobile_work || []) {
+        visits.set(member, (visits.get(member) || 0) + rate);
+    }
+    const previous = new Map(plan.movement_staffing || []);
+    return [...distances].flatMap(([member, distance]) => {
+        if (!visits.has(member)) return [];
+        const measured = workerTravelSeconds(distance) * visits.get(member) / 3600;
+        return [[member, measured - (previous.get(member) || 0)]];
+    });
+}

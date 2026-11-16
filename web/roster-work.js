@@ -51,8 +51,16 @@ export function scheduleRosterCopies(count, fixed, posts, routes) {
             pack(jobs, crew);
         }
     }
-    for (const { station, jobs } of routes) {
-        if (!station) pack(jobs, shifts);
+    for (const { station, jobs, spread } of routes) {
+        if (station) continue;
+        if (spread) {
+            // Reactive diversions are estimates across active copies, proportional to
+            // their opportunity to pick up work. Do not wake an otherwise idle copy.
+            const active = shifts.filter(shift => shift.busy > EPSILON && free(shift) > EPSILON);
+            const spare = active.reduce((sum, shift) => sum + free(shift), 0);
+            const weights = active.map(shift => spare > 0 ? free(shift) / spare : 0);
+            active.forEach((shift, i) => add(shift, jobs, weights[i]));
+        } else pack(jobs, shifts);
     }
     return shifts;
 }

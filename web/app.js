@@ -12,16 +12,16 @@ import {
 import { allocateTurnFacilities, redistributeTurnFacilityRows } from './turn-jobs.js?v=auto-worker-travel';
 import { createShareUrl, readShareHash, urlWithoutShare } from './share-config.js?v=compact-roster';
 import { nearestStorage } from './layout.js?v=storage-power';
-import { workerTravelDistances, workerTravelSeconds } from './worker-travel.js?v=base-travel';
+import { layoutWalkingAdjustments, workerTravelDistances, workerTravelSeconds } from './worker-travel.js?v=measured-walking';
 import { assignFacilityStock, bufferedBatches, haulingWorkload, allocateHauling, haulingBatchTrips,
     haulingTravelSeconds, haulingWorkSeconds, pickupStockLimit } from './hauling.js?v=base-travel';
-import { personalityInput, replacementCandidates, compareRecommendations, usefulUpgrade, keepBetterComparison, workerUsage } from './opportunity-comparison.js?v=effective-upgrades';
+import { personalityInput, replacementCandidates, compareRecommendations, usefulUpgrade, keepBetterComparison, workerUsage } from './opportunity-comparison.js?v=measured-walking';
 import { comparisonConcurrency, startComparisonQueue } from './comparison-queue.js?v=parallel-comparisons';
 import { prepareOpportunities } from './opportunity-effects.js?v=auto-e-mode';
 import aniimoCatalog from './aniimo-catalog.json' with { type: 'json' };
 import { aniimoPortrait, attachRosterPicker, rosterCatalogId, rosterFormName } from './roster-picker.js?v=game-heads';
 import { placeRosterCopy, ROSTER_ROW_SIZE, rosterSlotsFor, swapRosterSlots } from './roster-slots.js';
-import { scheduleRosterCopies } from './roster-work.js?v=individual-shifts';
+import { scheduleRosterCopies } from './roster-work.js?v=measured-walking';
 import { buildDispatch, rosterJobSwitching, TASK_SWITCHING } from './task-switching.js?v=base-travel';
 import { placeBestJobs, recommendBestTeam } from './best-team.js?v=base-travel';
 import facilityIcons from './facility-icons.json' with { type: 'json' };
@@ -980,7 +980,7 @@ function rankImprovementsFor(setup, requested = null, detailed = false) {
         }
         const prepared = improvementCandidates(base, setup, plan);
         const layout = lastLayout?.plan === plan ? lastLayout.layout : null;
-        current = { setup, plan, input: base, candidates: prepared.candidates, layout, measured: opportunityIndividualLoads(plan, base),
+        current = { setup, plan, input: base, candidates: prepared.candidates, layout, measured: opportunityIndividualLoads(opportunityWorkload(plan, base, layout), base),
             results: [], reports: [], tab: 'Aniimo', running: false, paused: false, activeIndex: null, activeIndices: [], phase: '' };
         rankingsBySetup[setup] = current;
     }
@@ -1046,7 +1046,12 @@ function opportunityWorkload(plan, input, layout) {
     for (const [index, ability, level, count, family] of reserves) {
         members[index] = { count, abilities: { [ability]: level }, assumed: true, family };
     }
-    const usage = workerUsage({ ...plan, hauling_staffing: [] }, input);
+    // Rebuild layout-dependent work equally for rendered and fresh solver plans.
+    const production = { ...plan,
+        layout_walking: layoutWalkingAdjustments(layout.pieces.flatMap(piece => piece.members), plan),
+        hauling_staffing: [], delivery_assignments: [], dedicated_delivery: [],
+        job_switching: [], comparison_workloads: undefined };
+    const usage = workerUsage(production, input);
     const busy = members.map((_, index) => usage.busy.get(index) || 0);
     const anchored = members.map((_, index) => usage.assignments.get(index) || 0);
     const work = haulingWorkload(layout, plan.coin_items || [], input.roster.hauling_default_seconds, recipeIndex, input.facilities, true);
@@ -1060,7 +1065,7 @@ function opportunityWorkload(plan, input, layout) {
         reserves.push([members.length, 'Hauling', 3, allocation.reserveCount, null]);
         allocation.assignments.push([members.length, allocation.reserveBusy]);
     }
-    return { ...plan, assumed_aniimo: reserves, delivery_assignments: allocation.assignments,
+    return { ...production, assumed_aniimo: reserves, delivery_assignments: allocation.assignments,
         dedicated_delivery: allocation.dedicated, job_switching: jobs };
 }
 
@@ -1827,10 +1832,11 @@ function renderHomelandLayout(plan) {
         lastLayout = { layout, homeLevel, plan };
         drawLayout(lastLayout);
         setStep('layout', 'done');
-        plan.layout_walking = layout.incomeWalking ?? [];
+        if (refineWorkerMovement(layout, plan)) return;
+        plan.layout_walking = layoutWalkingAdjustments(layout.pieces.flatMap(piece => piece.members), plan);
         if (assignLayoutHauling(layout, plan)) return;
         renderAniimoSummary(plan);
-        if (!refineWorkerMovement(layout, plan)) rankImprovementsFor(selectedAniimoSetup());
+        rankImprovementsFor(selectedAniimoSetup());
     };
     const cached = layoutsByPlan.get(plan)?.get(layoutKey);
     if (cached) {
@@ -3286,7 +3292,10 @@ function rosterCopyShifts(plan, members, assigned, walking) {
             ]);
             if (route.visits > 0) {
                 const extra = (extraWalking.get(route.member) || 0) * route.visits / visits[route.member];
-                jobs.push([walkingLabel, route.walking + extra]);
+                const duration = Math.max(0, route.walking + extra);
+                if (duration > 1e-6) jobs.push([
+                    `${walkingLabel} → ${translate(route.facility)} (${item})`, duration,
+                ]);
             }
             routes[route.member].push({ station: route.station, jobs, localPlots: route.local_plots });
         }
@@ -3301,7 +3310,9 @@ function rosterCopyShifts(plan, members, assigned, walking) {
     for (const [member, share] of plan.delivery_assignments || plan.hauling_staffing || []) {
         addMobile(member, translate('Hauling to Storage Units'), share);
     }
-    for (const [member, share] of plan.job_switching || []) addMobile(member, translate(TASK_SWITCHING), share);
+    for (const [member, share] of plan.job_switching || []) routes[member]?.push({
+        spread: true, jobs: [[translate(TASK_SWITCHING), share]],
+    });
     const dedicated = new Map(plan.dedicated_delivery || []);
     return members.map((_, member) => {
         const shifts = scheduleRosterCopies(assigned[member], fixed[member], posts[member], routes[member]);

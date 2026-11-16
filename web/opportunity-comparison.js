@@ -167,7 +167,9 @@ export function workerUsage(plan, input) {
         for (const [, , member, share] of plan.crop_assignments || []) add(member, share);
         for (const [member, travel] of plan.movement_staffing || []) add(member, travel);
     }
-    for (const [member, share] of plan.layout_walking || []) add(member, share);
+    for (const [member, share] of plan.layout_walking || []) {
+        if (Number.isFinite(share)) busy.set(member, Math.max(0, (busy.get(member) || 0) + share));
+    }
     for (const [member, share] of plan.job_switching || []) add(member, share);
     for (const [member, share] of plan.delivery_assignments || plan.hauling_staffing || []) add(member, share);
     const heads = (member, load) => Math.max(anchored.get(member) ?? 0, Math.ceil(load - 1e-6));

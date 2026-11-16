@@ -28,3 +28,14 @@ test('worker-aware placement keeps physical constraints and travel metadata', ()
     assert.ok(layout.pieces.flatMap(p => p.members).every(m => m.workers.length === 1));
     assert.ok(workerTravelDistance(layout.pieces.flatMap(p => p.members)) > 0);
 });
+
+test('measured walking replaces the conservative allowance and a lone workplace needs no travel', async () => {
+    const { layoutWalkingAdjustments } = await import('../web/worker-travel.js');
+    const members = [site(0), site(8), site(50, 1)];
+    const plan = {mobile_work:[['rice','Farmland',0,360],['pods','Maker',1,60]],
+        movement_staffing:[[0,.9],[1,.01]]};
+    const corrections = new Map(layoutWalkingAdjustments(members, plan));
+    assert.ok(Math.abs(corrections.get(0) - (-.7)) < 1e-9);
+    assert.equal(corrections.get(1), -.01);
+    assert.deepEqual(layoutWalkingAdjustments([], plan), []);
+});
