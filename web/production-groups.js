@@ -1,5 +1,5 @@
-// Compact semantic blocks. Infrastructure may fill holes, but production never
-// migrates into another category while the delivery objective is refined.
+// Compact semantic blocks. Infrastructure, Aniipod Maker and Dance Pad Polisher
+// may fill gaps in any category; other producers retain their semantic group.
 import { FACILITY_CATEGORY_BY_NAME } from './facility-config.js?v=leisure-families';
 import { layOut, layOutHomeland, layoutDeliveryCost, createInsideTest, improveFixedStorage, refineDistrictDeliveries } from './layout.js';
 import { connectPower, updatePowerConnections, powerLinked } from './power-layout.js';
@@ -11,9 +11,11 @@ const overlaps=(a,b)=>a.x<b.x+b.w-1e-6&&b.x<a.x+a.w-1e-6&&a.y<b.y+b.h-1e-6&&b.y<
 const bounds=rs=>{const x=Math.min(...rs.map(r=>r.x)),y=Math.min(...rs.map(r=>r.y));return {x,y,w:Math.max(...rs.map(r=>r.x+r.w))-x,h:Math.max(...rs.map(r=>r.y+r.h))-y};};
 const english=new Intl.Collator('en');
 const sourceMembers=p=>p.cluster?[...p.buildings,...p.plots.map((r,j)=>({...r,...p.planned[j]}))]:p.members;
+const flexibleFacility=name=>name==='Aniipod Maker'||name==='Dance Pad Polisher';
 function themeOf(p){
     const rs=sourceMembers(p),names=new Set(rs.map(r=>r.facility));
     if(rs.some(r=>r.generator))return 'infrastructure';
+    if(!p.cluster&&rs.length===1&&flexibleFacility(rs[0].facility))return 'flexible';
     if(names.has('Farmland')&&names.has('Woodland'))return 'growing';
     if(names.has('Farmland'))return 'fields';
     if(names.has('Woodland'))return 'woodland';
@@ -30,7 +32,7 @@ export function buildProductionBlocks(pieces,{width=16,targetSize=24,wiringGap=1
         const climate=p.cluster?p.buildings.map(r=>({x:r.x+r.w/2-4.5,y:r.y+r.h/2-4.5,w:9,h:9})):[];
         const box=bounds([...rs,...climate]);
         const item={i,count:rs.length,box,members:rs.map(r=>({...r,x:r.x-box.x,y:r.y-box.y})),name:rs[0].facility||''};
-        const key=theme==='infrastructure'?`${theme}:${i}`:theme;
+        const key=['infrastructure','flexible'].includes(theme)?`${theme}:${i}`:theme;
         if(!categories.has(key))categories.set(key,{theme,items:[]});
         categories.get(key).items.push(item);
     });
@@ -40,15 +42,15 @@ export function buildProductionBlocks(pieces,{width=16,targetSize=24,wiringGap=1
         const total=items.reduce((s,i)=>s+i.count,0);
         // Climate assemblies are indivisible; small tails merge back into the
         // previous part. Processing remains a continuous alphabetical sequence.
-        const parts=Math.max(1,Math.min(Math.floor(total/8),Math.ceil(total/Math.max(8,targetSize))));
+        const parts=Math.max(1,Math.min(Math.floor(total/6),Math.ceil(total/Math.max(6,targetSize))));
         const chunks=[];let chunk=[],count=0,remaining=total;
         for(const item of items){
-            if(chunk.length&&count>=Math.ceil(remaining/(parts-chunks.length))&&chunks.length<parts-1&&remaining-count>=8){
+            if(chunk.length&&count>=Math.ceil(remaining/(parts-chunks.length))&&chunks.length<parts-1&&remaining-count>=6){
                 chunks.push(chunk);remaining-=count;chunk=[];count=0;
             }
             chunk.push(item);count+=item.count;
         }
-        if(count<8&&chunks.length)chunks.at(-1).push(...chunk);else if(chunk.length)chunks.push(chunk);
+        if(count<6&&chunks.length)chunks.at(-1).push(...chunk);else if(chunk.length)chunks.push(chunk);
         for(const entries of chunks){
             const powered=entries.some(e=>e.members.some(r=>r.electric_level!=null));
             const maxWidth=Math.max(width,...entries.map(e=>e.box.w));
@@ -73,10 +75,11 @@ function expand(pieces,blocks,macro){
     blocks.forEach((block,i)=>{
         const at=macro.pieces[i].members[0];if(!at)return;
         const group=out.groups.length;
-        if(block.theme!=='infrastructure')out.groups.push({bounds:{x:at.x,y:at.y,w:block.w,h:block.h},
+        const free=['infrastructure','flexible'].includes(block.theme);
+        if(!free)out.groups.push({bounds:{x:at.x,y:at.y,w:block.w,h:block.h},
             reserved:[],purpose:'support',themes:[block.theme],range:block.range,indices:block.indices,storageIndices:[]});
         for(const r of block.members)out.pieces[r.sourcePiece].members[r.sourceMember]={...r,x:r.x+at.x,y:r.y+at.y,
-            productionGroup:block.theme==='infrastructure'?-1:group};
+            productionGroup:free?-1:group};
     });
     out.unplaced=out.pieces.flatMap((p,i)=>p.members.length?[]:[i]);
     return out;
@@ -86,7 +89,7 @@ function alphabetical(layout){
     const groups=layout.groups.filter(g=>g.themes.includes('processing')).sort((a,b)=>(b.bounds.y+b.bounds.h)-(a.bounds.y+a.bounds.h)||a.bounds.x-b.bounds.x);
     let previous='';
     for(const group of groups){
-        const rs=group.indices.flatMap(i=>layout.pieces[i].members).sort((a,b)=>(b.y+b.h)-(a.y+a.h)||a.x-b.x);
+        const rs=group.indices.flatMap(i=>layout.pieces[i].members).filter(r=>!flexibleFacility(r.facility)).sort((a,b)=>(b.y+b.h)-(a.y+a.h)||a.x-b.x);
         for(const r of rs){if(english.compare(previous,r.facility)>0)return false;previous=r.facility;}
     }
     return true;
@@ -165,6 +168,51 @@ function spreadGenerators(layout,cells){
     }
 }
 
+// These two producers have no semantic district: search the whole buildable
+// area, retaining power and worker capacity checks for every accepted move.
+export function refineFlexibleProduction(input,cells,{accept=()=>true}={}){
+    const layout=structuredClone(input),inside=createInsideTest(cells);
+    for(const piece of layout.pieces){
+        if(piece.cluster||piece.members.length!==1||!flexibleFacility(piece.members[0].facility))continue;
+        const r=piece.members[0];
+        if(!(r.weight>0))continue;
+        const old={x:r.x,y:r.y},blocked=[...layout.pieces.flatMap(p=>p.members).filter(b=>b!==r),...layout.storages,...(layout.power?.poles||[])];
+        const distance=spot=>Math.min(...layout.storages.map(s=>Math.hypot(spot.x+spot.w/2-s.x-s.w/2,spot.y+spot.h/2-s.y-s.h/2)));
+        const previous=distance(r),sites=[];
+        for(const cell of cells)for(let x=cell.x;x<cell.x+cell.w;x+=.5)for(let y=cell.y;y<cell.y+cell.h;y+=.5){
+            const spot={...r,x,y},cost=distance(spot);
+            if(cost>=previous-1e-8||!inside(spot)||blocked.some(b=>overlaps(b,spot)))continue;
+            sites.push({x,y,cost});
+        }
+        sites.sort((a,b)=>a.cost-b.cost);
+        for(const spot of sites){
+            r.x=spot.x;r.y=spot.y;
+            if(!updatePowerConnections(layout).power.disconnected&&climateSafe(layout)&&accept(layout))break;
+            Object.assign(r,old);
+        }
+        updatePowerConnections(layout);
+    }
+    return layout;
+}
+
+function attachFlexibleGroups(layout){
+    for(const [i,piece] of layout.pieces.entries()){
+        if(piece.cluster||piece.members.length!==1||!flexibleFacility(piece.members[0].facility))continue;
+        const r=piece.members[0];
+        let nearest=-1,distance=Infinity;
+        layout.groups.forEach((g,j)=>{
+            const b=g.bounds;
+            const gap=Math.hypot(Math.max(b.x-r.x-r.w,r.x-b.x-b.w,0),Math.max(b.y-r.y-r.h,r.y-b.y-b.h,0));
+            if(gap<distance){nearest=j;distance=gap;}
+        });
+        if(nearest<0){nearest=layout.groups.length;layout.groups.push({bounds:{x:r.x,y:r.y,w:r.w,h:r.h},reserved:[],purpose:'support',themes:['aniimo'],range:null,indices:[],storageIndices:[]});}
+        const group=layout.groups[nearest];
+        group.indices.push(i);
+        group.bounds=bounds([group.bounds,r]);
+        r.productionGroup=nearest;
+    }
+}
+
 export async function productionGroupLayout(pieces,cells,{storageCount=1,poleLimit=0,recipes=[],staffing=null,onCandidate=null}={}){
     if(!pieces.length||!cells.length)return null;
     const keeps=layout=>layoutKeepsIncome(layout,staffing,recipes);
@@ -207,6 +255,7 @@ export async function productionGroupLayout(pieces,cells,{storageCount=1,poleLim
         updatePowerConnections(refined);
         if(!refined.power.disconnected&&layoutDeliveryCost(refined)<=layoutDeliveryCost(layout)+1e-8)layout=refined;
         layout=refineProductionGroups(layout,cells,{accept:keeps});
+        layout=refineFlexibleProduction(layout,cells,{accept:keeps});
         layout.groupSearch={seedCost,cost:layoutDeliveryCost(layout)};
         if(staffing?.movement)layout.incomeWalking=incomeWalking(layout,staffing,recipes);
         layout.groups.forEach(g=>{g.storageIndices=layout.storages.flatMap((s,i)=>contains(g.bounds,s)?[i]:[]);});
@@ -223,6 +272,8 @@ export async function productionGroupLayout(pieces,cells,{storageCount=1,poleLim
         if(keeps(stored))best=stored;
         if(layoutDeliveryCost(best)>=before-1e-8)break;
     }
+    best=refineFlexibleProduction(best,cells,{accept:keeps});
+    attachFlexibleGroups(best);
     best.groupSearch.cost=layoutDeliveryCost(best);
     if(staffing?.movement)best.incomeWalking=incomeWalking(best,staffing,recipes);
     best.groups.forEach(g=>{g.storageIndices=best.storages.flatMap((s,i)=>contains(g.bounds,s)?[i]:[]);});

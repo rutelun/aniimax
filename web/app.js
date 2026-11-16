@@ -3240,7 +3240,24 @@ function attachRosterHandlers() {
     });
     const workDialog = document.getElementById('aniimo-work-dialog');
     workDialog.querySelector('button').addEventListener('click', () => workDialog.close());
-    document.getElementById('aniimo-body').addEventListener('click', event => {
+    document.addEventListener('click', event => {
+        const worker = event.target.closest('[data-production-worker]');
+        if (worker) {
+            event.preventDefault();
+            const tiles = productionWorkerTiles(worker);
+            if (!tiles.length) return;
+            hideTip();
+            workDialog.querySelector('h3').textContent = worker.dataset.tip;
+            const details = workDialog.querySelector('.roster-work-details');
+            details.replaceChildren();
+            for (const tile of tiles) {
+                const copy = document.createElement('div');
+                details.append(copy);
+                renderAssignmentDetails(copy, tile);
+            }
+            workDialog.showModal();
+            return;
+        }
         const tile = event.target.closest('[data-roster-work]');
         if (!tile) return;
         hideTip();
@@ -3401,7 +3418,7 @@ function renderRosterSummary(plan) {
             ? translate('Copy {copy} of {total} · {assigned} assigned').replace('{copy}', copy + 1)
                 .replace('{total}', count).replace('{assigned}', assigned[i])
             : '';
-        return assignmentTile(member, label, work.tasks, work.summary, work.active, context);
+        return assignmentTile(member, label, work.tasks, work.summary, work.active, context, i);
     };
     const additional = members.flatMap((member, i) => member.assumed && assigned[i] > 0 ? Array(assigned[i]).fill(i) : []);
     const summary = document.getElementById('roster-summary');
@@ -3421,13 +3438,13 @@ function renderRosterSummary(plan) {
     document.getElementById('aniimo-count').hidden = true;
 }
 
-function assignmentTile(member, label, detail, status, active = true, context = '') {
+function assignmentTile(member, label, detail, status, active = true, context = '', memberIndex = null) {
     const tasks = Array.isArray(detail) ? detail : detail.split('\n').filter(Boolean).map(line => [line, '']);
     const tip = tipAttrs(label, {
         detail: tasks.map(([job, share]) => share ? `${job} · ${share}` : job).join('\n'),
         stats: status, work: context,
     });
-    return `<button type="button" class="roster-tile${active ? ' is-assigned' : ' is-idle'}" data-roster-work
+    return `<button type="button" class="roster-tile${active ? ' is-assigned' : ' is-idle'}" data-roster-work ${memberIndex == null ? '' : `data-work-member="${memberIndex}"`}
         data-roster-tasks="${escapeText(JSON.stringify(tasks))}" ${tip} aria-haspopup="dialog">
         ${portraitTile(member, label)}<small>${escapeText(status)}</small></button>`;
 }
@@ -4060,7 +4077,12 @@ function levelUpUnavailable() {
 function renderQuestIncome(updateInput=true) {
     const income=questIncome(questIncomePerDay),names=Object.keys(income);
     if(updateInput)for(const name of ['wood_block','mineral_sand'])document.getElementById(`quest-${name}`).value=income[name]??0;
-    document.getElementById('quest-income-summary').textContent=names.length?translate('{n} resources / day').replace('{n}',names.length):translate('Off');
+    const summary=income.wood_block&&income.mineral_sand
+        ?translate('{wood} wood and {sand} sand/day')
+        :income.wood_block?translate('{wood} wood/day'):translate('{sand} sand/day');
+    document.getElementById('quest-income-summary').textContent=names.length
+        ?summary.replace('{wood}',income.wood_block??0).replace('{sand}',income.mineral_sand??0)
+        :translate('Off');
 }
 
 function populateLevelUpTargets() {
@@ -4598,7 +4620,9 @@ function productionWorkers(step, recipe, plan) {
         const fallback = abilityGlyph(ability);
         return {
             name: escapeText(name),
-            badge: `<span class="production-portrait${form?.includes('prismana') ? ' prismana' : ''}" title="${escapeText(name)}">
+            badge: `<span class="production-portrait${form?.includes('prismana') ? ' prismana' : ''}" ${tipAttrs(name)}
+                data-production-worker="${id}" data-worker-job="${escapeText(`${translate(step.facility)} (${prettyItem(step.item_name)})`)}"
+                data-worker-item="${escapeText(prettyItem(step.item_name))}" tabindex="0" role="button" aria-haspopup="dialog">
                 <span class="production-portrait-art">
                     <span aria-hidden="true">${fallback ? `<svg viewBox="0 0 24 24">${fallback}</svg>` : '◇'}</span>
                     ${portrait ? `<img class="${portrait.includes('/UI_PetHead_') ? 'game-head' : ''}" src="${escapeText(portrait)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">` : ''}
@@ -6252,6 +6276,13 @@ function tipAttrs(title, { detail = '', stats = '', work = '', color = '' } = {}
     return `data-tip="${escapeText(title)}"${attr('data-tip-detail', detail)}${attr('data-tip-stats', stats)}${attr('data-tip-work', work)}${attr('data-tip-color', color)} aria-label="${escapeText(label)}"`;
 }
 
+function productionWorkerTiles(worker) {
+    return [...document.querySelectorAll('#roster-summary [data-work-member]')].filter(tile =>
+        tile.dataset.workMember === worker.dataset.productionWorker
+        && JSON.parse(tile.dataset.rosterTasks || '[]').some(([job]) =>
+            job === worker.dataset.workerJob || job.endsWith(` · ${worker.dataset.workerItem}`)));
+}
+
 function showTip(el) {
     // A title set since the last hover replaces the one kept aside.
     if (el.hasAttribute('title')) {
@@ -6277,7 +6308,11 @@ function showTip(el) {
             swatch.style.background = el.dataset.tipColor;
             title.prepend(swatch);
         }
-        if (el.dataset.rosterTasks != null) {
+        if (el.dataset.productionWorker != null) {
+            for (const tile of productionWorkerTiles(el)) {
+                renderAssignmentDetails(line('roster-work-details', ''), tile, 5);
+            }
+        } else if (el.dataset.rosterTasks != null) {
             renderAssignmentDetails(line('roster-work-details', ''), el, 5);
         } else {
             if (el.dataset.tipDetail) line('tip-detail', el.dataset.tipDetail);
@@ -6331,5 +6366,11 @@ document.addEventListener('focusin', (e) => {
     if (tipTarget) placeTip(box.left + box.width / 2, box.top, box.bottom);
 });
 document.addEventListener('focusout', hideTip);
-document.addEventListener('keydown', event => { if (event.key === 'Escape') hideTip(); });
+document.addEventListener('keydown', event => {
+    if (event.key === 'Escape') hideTip();
+    if ((event.key === 'Enter' || event.key === ' ') && event.target.matches('[data-production-worker]')) {
+        event.preventDefault();
+        event.target.click();
+    }
+});
 window.addEventListener('scroll', hideTip, { passive: true, capture: true });

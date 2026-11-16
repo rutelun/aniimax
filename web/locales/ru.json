@@ -1184,5 +1184,8 @@
   "Grid {n} ({generators}): {percent}% · {draw} / {output} W": "Сеть {n} ({generators}): {percent}% · {draw} / {output} Вт",
   "Compact production groups with optimized deliveries. Workshops follow alphabetical order; gaps are available for the power grid.": "Компактные производственные группы с оптимизацией доставки. Переработка — по алфавиту; зазоры можно использовать для энергосети.",
   "Wood Blocks / day": "Древесина / день",
-  "Mineral Sand / day": "Минеральный песок / день"
+  "Mineral Sand / day": "Минеральный песок / день",
+  "{wood} wood and {sand} sand/day": "{wood} дерева и {sand} песка/день",
+  "{wood} wood/day": "{wood} дерева/день",
+  "{sand} sand/day": "{sand} песка/день"
 }

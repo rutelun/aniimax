@@ -1,9 +1,34 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildProductionBlocks, productionGroupLayout, normalizeMapStyle, refineProductionGroups, refineGroupedMembers } from '../web/production-groups.js';
+import { buildProductionBlocks, productionGroupLayout, normalizeMapStyle, refineProductionGroups, refineGroupedMembers, refineFlexibleProduction } from '../web/production-groups.js';
 import { createInsideTest, layoutDeliveryCost } from '../web/layout.js';
 
 const piece = (facility, weight = 1) => ({members:[{x:0,y:0,w:2,h:2,facility,weight}]});
+test('Aniipod and Dance Pad are free producers and may join a non-processing group', async()=>{
+    const input=['Aniipod Maker','Dance Pad Polisher','Mine'].map(n=>piece(n));
+    const blocks=buildProductionBlocks(input);
+    assert.equal(blocks.filter(b=>b.theme==='flexible').length,2);
+    assert.ok(!blocks.some(b=>b.theme==='processing'));
+    const out=await productionGroupLayout(input,[{x:0,y:0,w:20,h:20}],{storageCount:1,poleLimit:0});
+    assert.ok(out);
+    assert.equal(out.unplaced.length,0);
+    for(const i of [0,1]){
+        const g=out.groups[out.pieces[i].members[0].productionGroup];
+        assert.ok(g.indices.includes(i));
+        assert.ok(g.themes.includes('extraction'));
+    }
+});
+test('free producers cross old district boundaries without bypassing worker constraints',()=>{
+    const input={pieces:[piece('Aniipod Maker')],storages:[{x:0,y:0,w:2,h:2}],power:{poles:[],disconnected:0},groups:[]};
+    Object.assign(input.pieces[0].members[0],{x:12,y:12,productionGroup:-1});
+    const cells=[{x:0,y:0,w:20,h:20}];
+    const out=refineFlexibleProduction(input,cells);
+    assert.ok(layoutDeliveryCost(out)<layoutDeliveryCost(input));
+    const rejected=refineFlexibleProduction(input,cells,{accept:()=>false});
+    assert.equal(rejected.pieces[0].members[0].x,12);
+    assert.equal(rejected.pieces[0].members[0].y,12);
+    assert.equal(input.pieces[0].members[0].x,12);
+});
 test('legacy map styles migrate to exactly two modes', () => {
     for(const style of ['courtyards','avenues','districts','groups']) assert.equal(normalizeMapStyle(style),'groups');
     for(const style of ['delivery',null,'unknown']) assert.equal(normalizeMapStyle(style),'delivery');
@@ -16,9 +41,9 @@ test('compact blocks separate categories and keep alphabetical production rows',
     assert.deepEqual(production.members.map(m=>m.facility),['Chimney Kiln','Woodworking Bench']);
     assert.ok(blocks.every(b=>b.reserved.length===0));
 });
-test('splits contain eight or more objects, small categories remain whole', () => {
+test('splits contain six or more objects, small categories remain whole', () => {
     const blocks=buildProductionBlocks(Array.from({length:18},()=>piece('Mine')),{width:10,targetSize:8});
-    assert.deepEqual(blocks.map(b=>b.members.length),[9,9]);
+    assert.deepEqual(blocks.map(b=>b.members.length),[6,6,6]);
     assert.equal(buildProductionBlocks(Array.from({length:5},()=>piece('Well')),{targetSize:8}).length,1);
 });
 test('climate links remain rigid and mixed field/woodland climates share one block', () => {
@@ -73,11 +98,11 @@ test('idle processors stay in the alphabetical production group',async()=>{
     assert.equal(out.idleArea,undefined);
 });
 test('processing A–Z starts at the bottom left, with bottom-aligned rows of different heights',()=>{
-    const input=['Woodworking Bench','Crafting Table','Chimney Kiln','Blazing Stove','Aniipod Maker'].map(n=>piece(n));
+    const input=['Woodworking Bench','Crafting Table','Chimney Kiln','Blazing Stove','Bouncy Brew Keg'].map(n=>piece(n));
     input[4].members[0].h=4;
     const b=buildProductionBlocks(input,{width:4})[0];
     const ordered=[...b.members].sort((a,b)=>(b.y+b.h)-(a.y+a.h)||a.x-b.x);
-    assert.deepEqual(ordered.map(r=>r.facility),['Aniipod Maker','Blazing Stove','Chimney Kiln','Crafting Table','Woodworking Bench']);
+    assert.deepEqual(ordered.map(r=>r.facility),['Blazing Stove','Bouncy Brew Keg','Chimney Kiln','Crafting Table','Woodworking Bench']);
     assert.equal(ordered[0].y+ordered[0].h,ordered[1].y+ordered[1].h);
 });
 test('groups can interlock one building deep while their real footprints remain separate',()=>{

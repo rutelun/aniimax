@@ -1184,5 +1184,8 @@
   "Grid {n} ({generators}): {percent}% · {draw} / {output} W",
   "Compact production groups with optimized deliveries. Workshops follow alphabetical order; gaps are available for the power grid.",
   "Wood Blocks / day",
-  "Mineral Sand / day"
+  "Mineral Sand / day",
+  "{wood} wood and {sand} sand/day",
+  "{wood} wood/day",
+  "{sand} sand/day"
 ]
