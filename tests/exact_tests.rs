@@ -1583,6 +1583,48 @@ fn delivery_work_is_assigned_to_hauling_aniimo_only() {
 }
 
 #[test]
+fn climate_staffing_frees_the_higher_level_courier_without_losing_output() {
+    use aniimax::exact::{check_plan_with_workload, free_better_couriers};
+    use aniimax::models::{FixedHomeland, FixedSiteGroup};
+
+    let mut crop = walking_item("lamp_courier_crop", "Farmland", 10.0, "coins");
+    crop.workload = None;
+    crop.environment = Some("Adequate".into());
+    let items = [crop];
+    let mut counts = FacilityCounts::from_fixed_homeland(FixedHomeland {
+        groups: vec![FixedSiteGroup {
+            facility: "Farmland".into(), level: 1, count: 1,
+            temperature: None, lit: true, powered: false,
+        }],
+        climate: [("Sunlamp".into(), 1)].into(),
+        generators: 0,
+        generator_level: None,
+    });
+    counts.set_crew(crew_of(&[(1, &[("Light", 3), ("Hauling", 4)]), (1, &[("Light", 3), ("Hauling", 3)])]));
+    counts.set_hauling(0.0, [
+        ("Farmland|lamp_courier_crop".into(), 8.0),
+        ("Farmland|lamp_courier_crop|3".into(), 8.0),
+        ("Farmland|lamp_courier_crop|4".into(), 4.0),
+    ].into());
+    let modules = ModuleLevels::default();
+    let mut plan = solve_exact(&items, "coins", &counts, &modules, Goal::Earn { floors: &[] }, None, None).unwrap();
+    plan.staffing = vec![("Sunlamp".into(), 0, 1.0)];
+    let rate = plan.recipe_rates["lamp_courier_crop"];
+    assert!(rate > 0.0);
+    plan.hauling_routes = vec![("lamp_courier_crop".into(), 1, rate)];
+    plan.hauling_staffing = vec![(1, 8.0 * rate)];
+    let (_, mut load) = check_plan_with_workload(&plan, &items, "coins", &counts, &modules, None).unwrap();
+
+    free_better_couriers(&mut plan, &mut load, &items, "coins", &counts, &modules, None);
+
+    assert_eq!(plan.staffing, vec![("Sunlamp".into(), 1, 1.0)]);
+    assert_eq!(plan.hauling_routes, vec![("lamp_courier_crop".into(), 0, rate)]);
+    assert_eq!(plan.hauling_staffing, vec![(0, 4.0 * rate)]);
+    assert_eq!(plan.recipe_rates["lamp_courier_crop"], rate);
+    assert_eq!(load, [0.0, 1.0]);
+}
+
+#[test]
 fn hauling_level_changes_delivery_capacity_under_a_shared_headcount_limit() {
     use aniimax::models::{crew_variants, AniimoRequirements, GrowerSteps};
     let recipe = walking_item("courier_levels", "Mine", 10.0, "coins");

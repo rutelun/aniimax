@@ -1841,6 +1841,82 @@ pub fn prefer_versatile_crew(
     }
 }
 
+/// Free a better courier from a dedicated climate post when a less capable courier can
+/// cover the same shift. Recipe rates, workplace assignments and power stay the same.
+pub fn free_better_couriers(
+    plan: &mut ExactPlan,
+    workload: &mut Vec<f64>,
+    items: &[ProductionItem],
+    currency: &str,
+    counts: &FacilityCounts,
+    modules: &ModuleLevels,
+    level_up: Option<&LevelUp>,
+) {
+    let Some(crew) = counts.crew() else { return };
+    let owned = crew.assumed_from.unwrap_or(crew.members.len());
+    let tier = |member: usize| crew.members[member].level("Hauling").min(4);
+    let mut replacements: Vec<_> = (0..owned).collect();
+    replacements.sort_by_key(|&member| tier(member));
+    let items_by_name: HashMap<_, _> = items.iter().map(|item| (item.name.as_str(), item)).collect();
+    let delivery_time = |plan: &ExactPlan, member| plan.hauling_staffing.iter()
+        .filter(|&&(id, _)| id == member).map(|&(_, hours)| hours).sum::<f64>();
+    let headcount = |load: f64| (load - 1e-6).ceil().max(0.0);
+
+    // Each accepted move lowers the sum of Hauling tiers tied up at climate posts.
+    // Try at most one move per initial owned climate post.
+    let mut posts: Vec<_> = plan.staffing.iter().filter(|(building, member, _)| {
+        *member < owned && tier(*member) > 0 && crew.environment.contains_key(building)
+    }).cloned().collect();
+    posts.sort_by_key(|&(_, member, _)| std::cmp::Reverse(tier(member)));
+    for (building, courier, count) in posts {
+        let ability = &crew.environment[&building];
+        for _ in 0..count.round() as usize {
+            for &replacement in replacements.iter().take_while(|&&id| tier(id) < tier(courier)) {
+                if !crew.can_work(replacement, ability, 1)
+                    || workload[replacement] + 1.0 > crew.members[replacement].count as f64 + 1e-6
+                { continue; }
+
+                let mut candidate = plan.clone();
+                let Some((_, _, shifts)) = candidate.staffing.iter_mut().find(|(name, id, shifts)| {
+                    *name == building && *id == courier && *shifts > 0.5
+                }) else { break; };
+                *shifts -= 1.0;
+                candidate.staffing.retain(|(_, _, shifts)| *shifts > 0.5);
+                if let Some((_, _, shifts)) = candidate.staffing.iter_mut().find(|(name, id, _)| {
+                    *name == building && *id == replacement
+                }) {
+                    *shifts += 1.0;
+                } else {
+                    candidate.staffing.push((building.clone(), replacement, 1.0));
+                }
+
+                let old_courier_delivery = delivery_time(plan, courier);
+                let old_replacement_delivery = delivery_time(plan, replacement);
+                let mut transferred = 0.0;
+                for (name, member, rate) in &mut candidate.hauling_routes {
+                    if *member != replacement { continue; }
+                    transferred += *rate * counts.hauling_seconds_for(items_by_name[name.as_str()], tier(courier));
+                    *member = courier;
+                }
+                let new_courier_delivery = old_courier_delivery + transferred;
+                if new_courier_delivery > old_courier_delivery + old_replacement_delivery + 1e-6 { continue; }
+                let before = headcount(workload[courier] + old_courier_delivery)
+                    + headcount(workload[replacement] + old_replacement_delivery);
+                let after = headcount(workload[courier] - 1.0 + new_courier_delivery)
+                    + headcount(workload[replacement] + 1.0);
+                if after > before { continue; }
+                candidate.hauling_staffing.retain(|&(id, _)| id != replacement && id != courier);
+                if new_courier_delivery > 0.0 { candidate.hauling_staffing.push((courier, new_courier_delivery)); }
+                let Ok((_, checked)) = check_plan_with_workload(&candidate, items, currency, counts, modules, level_up)
+                else { continue; };
+                *plan = candidate;
+                *workload = checked;
+                break;
+            }
+        }
+    }
+}
+
 fn reassign_crew_pool(
     plan: &ExactPlan,
     all: &HashMap<&str, &ProductionItem>,
