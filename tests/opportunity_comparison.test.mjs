@@ -42,6 +42,25 @@ test('recommendations rank income, workers, then individual load and protect cur
     assert.equal(loss.direction,-1);
 });
 
+test('climate staffing and equal-watt generator swaps do not reach the solver', () => {
+    const original = { roster: { members: [
+        { count: 2, abilities: { Fire: 2 } }, { count: 1, abilities: { Lightning: 3 } },
+        { count: 1, abilities: { Earth: 3 } },
+    ], environment: { 'Heat Furnace': 'Fire' } } };
+    const baseline = { staffing: [['Heat Furnace', 0, 1], ['Crackle Generator', 1, 1]],
+        coin_items: [{ facility: 'Mine', item_name: 'ore', status: 'producing', crew: 2, busy_units: .5 }],
+        generator_watts_by_lightning: [600, 800, 800, 800] };
+    const recipes = [{ facility: 'Mine', name: 'ore', aniimo: ['Earth',3] }, { facility: 'Stove', name: 'soup', aniimo: ['Fire',2] }];
+    const catalog = [{ id: 'infergon', abilities: { Fire: 4, Earth: 4 } },
+        { id: 'fenmane', abilities: { Lightning: 4, Earth: 4 } }];
+    const check = plan => new Set(replacementCandidates(original, plan, recipes, catalog, []).map(row => row.index));
+    assert.deepEqual(check(baseline), new Set([2]), 'higher skill and extra abilities do not improve a full fixed post');
+    assert.deepEqual(check({ ...baseline, generator_watts_by_lightning: [600, 800, 1285, 1500] }), new Set([1,2]),
+        'Lightning only matters when it increases actual power');
+    assert.deepEqual(check({ ...baseline, coin_items: [...baseline.coin_items,
+        { facility: 'Stove', item_name: 'soup', status: 'producing', crew: 0, busy_units: .5 }] }), new Set([0,2]));
+});
+
 test('comparison totals use checked shifts and add the actual courier work once', () => {
     const checked = { roster_workload: [1.9, .2], coin_items: [{ status: 'producing', crew: 0, busy_units: .1 }],
         staffing: [['Cooling Unit', 0, 1]], hauling_staffing: [[0, .01]],

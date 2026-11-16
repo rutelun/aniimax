@@ -1,7 +1,7 @@
 // Fast comparisons use the same model and checker as planning. Only their search budget is
 // smaller. A continuous upper bound can certify an earlier goal without another integer search;
 // the completed plan must still meet that goal and pass the native independent check.
-import {comparePlans} from './opportunity-comparison.js?v=recommendations';
+import {comparePlans} from './opportunity-comparison.js?v=effective-upgrades';
 
 function integerColumns(problem) {
     const section = problem.lp.match(/\nGeneral\n([\s\S]*?)\nEnd/);

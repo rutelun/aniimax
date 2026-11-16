@@ -15,7 +15,7 @@ import { nearestStorage } from './layout.js?v=storage-power';
 import { workerTravelDistances, workerTravelSeconds } from './worker-travel.js?v=travel-allowance';
 import { assignFacilityStock, bufferedBatches, haulingWorkload, allocateHauling, haulingBatchTrips,
     haulingTravelSeconds, haulingWorkSeconds, pickupStockLimit } from './hauling.js?v=protect-growers';
-import { personalityInput, replacementCandidates, compareRecommendations, usefulUpgrade, keepBetterComparison, workerUsage } from './opportunity-comparison.js?v=recommendations';
+import { personalityInput, replacementCandidates, compareRecommendations, usefulUpgrade, keepBetterComparison, workerUsage } from './opportunity-comparison.js?v=effective-upgrades';
 import { comparisonConcurrency, startComparisonQueue } from './comparison-queue.js?v=parallel-comparisons';
 import { prepareOpportunities } from './opportunity-effects.js?v=auto-e-mode';
 import aniimoCatalog from './aniimo-catalog.json' with { type: 'json' };

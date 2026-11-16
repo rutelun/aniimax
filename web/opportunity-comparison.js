@@ -27,8 +27,8 @@ export function replacementCandidates(input, plan, recipes, catalog, pairs, limi
     const byRecipe = new Map(recipes.map(recipe => [`${recipe.facility}|${recipe.name}`, recipe]));
     const roles = Array.from({ length: activeMembers.length }, () => []);
     const usage = workerUsage(plan, input);
-    const add = (member, ability, level, load, trait, family, facility) => {
-        if (roles[member] && ability && load > 0) roles[member].push({ ability, level, load, trait, family, facility });
+    const add = (member, ability, level, load, trait, family, facility, post = null) => {
+        if (roles[member] && ability && load > 0) roles[member].push({ ability, level, load, trait, family, facility, post });
     };
     for (const step of plan.coin_items || []) {
         if (step.status !== 'producing' || step.crew == null || step.electric_level != null) continue;
@@ -42,16 +42,21 @@ export function replacementCandidates(input, plan, recipes, catalog, pairs, limi
     for (const [facility, member, load] of plan.staffing || []) {
         const power = facility === 'Crackle Generator';
         const ability = power ? 'Lightning' : input.roster.environment?.[facility];
-        add(member, ability, power ? activeMembers[member]?.abilities.Lightning : 1, load, null, null, facility);
+        add(member, ability, 1, load, null, null, facility, power ? 'generator' : 'climate');
     }
     for (const [member, load] of [...(plan.delivery_assignments || plan.hauling_staffing || []), ...(plan.dedicated_delivery || [])]) {
         add(member, 'Hauling', 1, load);
     }
     const candidates = [];
-    const flexible = new Set(roles.flat().map(role => role.ability));
+    const flexible = new Set(roles.flat().filter(role => !role.post).map(role => role.ability));
+    const watts = level => plan.generator_watts_by_lightning?.[level - 1];
     for (const [index, member] of activeMembers.entries()) {
         const work = roles[index];
         if (!work.length || !(member?.count > 0)) continue;
+        const hasFlexibleWork = work.some(role => !role.post);
+        const runsGenerator = work.some(role => role.post === 'generator');
+        const currentWatts = watts(member.abilities.Lightning);
+        if (!hasFlexibleWork && (!runsGenerator || !(watts(4) > currentWatts))) continue;
         const traits = new Map();
         for (const role of work) if (role.trait) traits.set(role.trait, (traits.get(role.trait) || 0) + role.load);
         const desired = pairs.map(pair => [...pair.names].sort((a,b) => (traits.get(b) || 0) - (traits.get(a) || 0))[0])
@@ -60,6 +65,8 @@ export function replacementCandidates(input, plan, recipes, catalog, pairs, limi
         const improvement = entry => work.reduce((sum, role) => {
             const level = entry.abilities[role.ability];
             const levels = level - (member.abilities[role.ability] || 0);
+            if (role.post === 'climate') return sum;
+            if (role.post === 'generator') return sum + (currentWatts > 0 ? role.load * ((watts(level) ?? currentWatts) / currentWatts - 1) : 0);
             const trait = role.trait ? Number(desired.includes(role.trait)) - Number(oldTraits.includes(role.trait)) : 0;
             return sum + role.load * (.2 * levels + .15 * trait);
         }, 0);
@@ -67,13 +74,17 @@ export function replacementCandidates(input, plan, recipes, catalog, pairs, limi
         const options = [];
         for (const entry of catalog) {
             if (!work.every(({ ability, level, family }) => entry.abilities[ability] >= level && (!family || entry.family === family))) continue;
+            if (runsGenerator) {
+                const next = entry.abilities.Lightning;
+                if (currentWatts == null ? next < member.abilities.Lightning : watts(next) < currentWatts) continue;
+            }
             if (Object.keys(entry.abilities).length === Object.keys(member.abilities).length
                 && Object.entries(entry.abilities).every(([ability, level]) => member.abilities[ability] === level)
                 && (entry.family || null) === (member.family || null)) continue;
             const profile = JSON.stringify([Object.entries(entry.abilities).sort(), entry.family || null, desired]);
             if (unique.has(profile)) continue;
             unique.add(profile);
-            const extra = Object.keys(entry.abilities).filter(a => flexible.has(a) && entry.abilities[a] > (member.abilities[a] || 0)).length;
+            const extra = hasFlexibleWork ? Object.keys(entry.abilities).filter(a => flexible.has(a) && entry.abilities[a] > (member.abilities[a] || 0)).length : 0;
             const score = improvement(entry) + .04 * extra;
             if (score > 0) options.push({ entry, score });
         }
