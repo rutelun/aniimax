@@ -14,7 +14,7 @@ import { createShareUrl, readShareHash, urlWithoutShare } from './share-config.j
 import { nearestStorage } from './layout.js?v=storage-power';
 import { workerTravelDistances, workerTravelSeconds } from './worker-travel.js?v=travel-allowance';
 import { assignFacilityStock, bufferedBatches, haulingWorkload, allocateHauling, haulingBatchTrips,
-    haulingTravelSeconds, haulingWorkSeconds, pickupStockLimit } from './hauling.js?v=reactive-dispatch';
+    haulingTravelSeconds, haulingWorkSeconds, pickupStockLimit } from './hauling.js?v=protect-growers';
 import { changeOneMember, personalityInput, reserveLevelFourInputs, comparePlans, usefulUpgrade, keepBetterComparison } from './opportunity-comparison.js?v=shared-work-time';
 import { comparisonConcurrency, startComparisonQueue } from './comparison-queue.js?v=parallel-comparisons';
 import { prepareOpportunities, startedProcessing, increasedProcessing } from './opportunity-effects.js?v=auto-e-mode';
@@ -22,7 +22,7 @@ import { aniimoPortrait, attachRosterPicker, rosterCatalogId, rosterFormName } f
 import { placeRosterCopy, ROSTER_ROW_SIZE, rosterSlotsFor, swapRosterSlots } from './roster-slots.js';
 import { scheduleRosterCopies } from './roster-work.js?v=individual-shifts';
 import { buildDispatch, rosterJobSwitching, TASK_SWITCHING } from './task-switching.js?v=reactive-dispatch';
-import { placeBestJobs, recommendBestTeam } from './best-team.js?v=reactive-dispatch';
+import { placeBestJobs, recommendBestTeam } from './best-team.js?v=protect-growers';
 import facilityIcons from './facility-icons.json' with { type: 'json' };
 import { abilityGlyph, gameAbilityIcon } from './ability-icons.js?v=game-heads';
 
@@ -2551,6 +2551,7 @@ function assignLayoutHauling(layout, plan) {
     if (setup !== 'custom') return false;
     if (!haulingBaseByPlan.has(plan)) haulingBaseByPlan.set(plan, [...(plan.assumed_aniimo || [])]);
     plan.assumed_aniimo = [...haulingBaseByPlan.get(plan)];
+    plan.dedicated_delivery = [];
     const { members, busy, anchored } = rosterWorkload(plan);
     const switching = [];
     plan.job_switching = plan.roster_routes?.length
@@ -2560,7 +2561,9 @@ function assignLayoutHauling(layout, plan) {
         switching[member] = share;
         busy[member] += share;
     }
-    const allocation = allocateHauling(members, busy, work, Infinity, anchored, switching);
+    const growers = new Set((plan.crop_assignments || []).filter(([, , , share]) => share > 1e-9)
+        .map(([, , member]) => member));
+    const allocation = allocateHauling(members, busy, work, Infinity, anchored, switching, growers);
     if (allocation.unassigned > 1e-6) {
         if (haulingDefaultSeconds >= bound && plan.hauling_staffing?.length) {
             // The final model used a whole-homeland route bound. Its independently checked
@@ -2582,6 +2585,7 @@ function assignLayoutHauling(layout, plan) {
         return true;
     }
     plan.delivery_assignments = allocation.assignments;
+    plan.dedicated_delivery = allocation.dedicated;
     if (allocation.reserveCount) {
         const member = members.length;
         plan.assumed_aniimo.push([member, 'Hauling', 3, allocation.reserveCount, null]);
@@ -3278,7 +3282,14 @@ function rosterCopyShifts(plan, members, assigned, walking) {
         addMobile(member, translate('Hauling to Storage Units'), share);
     }
     for (const [member, share] of plan.job_switching || []) addMobile(member, translate(TASK_SWITCHING), share);
-    return members.map((_, member) => scheduleRosterCopies(assigned[member], fixed[member], posts[member], routes[member]));
+    const dedicated = new Map(plan.dedicated_delivery || []);
+    return members.map((_, member) => {
+        const shifts = scheduleRosterCopies(assigned[member], fixed[member], posts[member], routes[member]);
+        const hours = dedicated.get(member) || 0;
+        if (hours > 1e-6) shifts.push(...scheduleRosterCopies(Math.ceil(hours - 1e-6), [], [],
+            [{ jobs: [[translate('Hauling to Storage Units'), hours]] }]));
+        return shifts;
+    });
 }
 
 function renderRosterSummary(plan) {
@@ -3289,7 +3300,12 @@ function renderRosterSummary(plan) {
     });
     for (const [member, share] of plan.job_switching || []) busy[member] += share;
     const have = roster.reduce((sum, a) => sum + a.count, 0);
-    const assigned = busy.map((load, member) => Math.max(anchored[member], Math.ceil(load - 1e-6)));
+    const regular = busy.map((load, member) => Math.max(anchored[member], Math.ceil(load - 1e-6)));
+    const assigned = [...regular];
+    for (const [member, share] of plan.dedicated_delivery || []) {
+        busy[member] += share;
+        assigned[member] += Math.ceil(share - 1e-6);
+    }
     const working = assigned.slice(0, roster.length).reduce((sum, n) => sum + n, 0);
     const reserves = assigned.slice(roster.length).reduce((sum, n) => sum + n, 0);
     const workload = share => {
@@ -3298,7 +3314,7 @@ function renderRosterSummary(plan) {
         if (percent < 100 - 1e-5 && percent > 99.99) return '99.99%';
         return `${formatNumber(percent)}%`;
     };
-    const shifts = rosterCopyShifts(plan, members, assigned, walking);
+    const shifts = rosterCopyShifts(plan, members, regular, walking);
     const unassigned = { active: false, summary: translate('Unassigned'), tasks: [], lines: [] };
     const copyWork = (i, copy) => {
         const shift = shifts[i][copy];
@@ -4774,8 +4790,8 @@ function renderBestTeam(plan, routeStatus = translate('Calculating…')) {
             const shift = shifts[index];
             const member = bestRosterMember(shift);
             const label = member.name || translate('Assumed Aniimo');
-            const tasks = routeLabels.map(label => [
-                translate(label), routesReady ? percent(shift.tasks.get(label) || 0) : routeStatus,
+            const tasks = routeLabels.filter(label => !routesReady || shift.tasks.has(label)).map(label => [
+                translate(label), routesReady ? percent(shift.tasks.get(label)) : routeStatus,
             ]);
             if (shift.tasks.has(TASK_SWITCHING)) tasks.push([translate(TASK_SWITCHING), percent(shift.tasks.get(TASK_SWITCHING))]);
             for (const [job, share] of [...shift.tasks].sort((a, b) => b[1] - a[1])) {

@@ -42,8 +42,11 @@ export function recommendBestTeam(jobs, haulingBusy = 0, dispatch = []) {
     const available = [];
     const haul = { ability: 'Hauling', level: 3, label: 'Hauling to Storage Units' };
     const matches = job => catalogIndex.get(roleKey(job)) ?? noMatches;
-    const outsideCrops = new Set(jobs.filter(job => !job.growing && !job.fixed).map(job => job.ability));
-    if (haulingBusy > EPSILON) outsideCrops.add('Hauling');
+    const outsideCrops = new Map();
+    for (const job of jobs.filter(job => !job.growing && !job.fixed && job.busy > EPSILON)) {
+        outsideCrops.set(job.ability, Math.min(job.level, outsideCrops.get(job.ability) ?? Infinity));
+    }
+    if (haulingBusy > EPSILON) outsideCrops.set('Hauling', 1);
     const candidateFor = shift => {
         let best;
         let lowest = Infinity;
@@ -51,8 +54,8 @@ export function recommendBestTeam(jobs, haulingBusy = 0, dispatch = []) {
             const skills = Object.keys(entry.abilities);
             let excess = 0;
             for (const role of shift.roles.values()) excess += entry.abilities[role.ability] - role.level;
-            const distractions = shift.cropVisits ? skills.filter(skill => outsideCrops.has(skill)).length : 0;
-            const value = excess * 100 + distractions * 10 - skills.length;
+            const distractions = shift.growing ? skills.filter(skill => entry.abilities[skill] >= outsideCrops.get(skill)).length : 0;
+            const value = distractions * 1000 + excess * 100 - skills.length;
             if (value < lowest) {
                 best = entry;
                 lowest = value;
@@ -79,7 +82,6 @@ export function recommendBestTeam(jobs, haulingBusy = 0, dispatch = []) {
         if (!shift.roles.has(key)) shift.roles.set(key, job);
         shift.tasks.set(job.label, (shift.tasks.get(job.label) || 0) + share);
         const rate = share * (job.visitsPerShare || 0);
-        if (job.growing) shift.cropVisits += rate;
         if (job.point && rate > 0) shift.homes.push({ point: job.point, rate });
         if (walking > 0) {
             const label = 'Walking between jobs';
@@ -99,12 +101,12 @@ export function recommendBestTeam(jobs, haulingBusy = 0, dispatch = []) {
             let partialWalking = 0;
             for (const shift of reuse ? available : []) {
                 if (share === 1 || 1 - shift.busy <= EPSILON) continue;
+                if (shift.growing !== Boolean(job.growing)) continue;
                 const common = compatible(shift, job, candidates);
                 if (common == null || (common.size === 0 && !shift.roles.has(roleKey(job)))) continue;
                 const walking = walkingPerShare(shift, job);
                 const capacity = (1 - shift.busy) / (1 + walking);
                 if (capacity < share - EPSILON) {
-                    if (walking > EPSILON && Boolean(job.growing) !== Boolean(shift.cropVisits)) continue;
                     if (capacity > Math.max(EPSILON, partialCapacity)) {
                         partial = shift;
                         partialCandidates = common;
@@ -127,7 +129,7 @@ export function recommendBestTeam(jobs, haulingBusy = 0, dispatch = []) {
             }
             if (!best) {
                 best = { busy: 0, candidates, roles: new Map(), tasks: new Map(), personalities: new Set(),
-                    cropVisits: 0, homes: [] };
+                    growing: Boolean(job.growing), homes: [] };
                 shifts.push(best);
                 if (share < 1 - EPSILON) available.push(best);
             } else {
@@ -146,8 +148,7 @@ export function recommendBestTeam(jobs, haulingBusy = 0, dispatch = []) {
     let haulingSpare = 0;
     const courierForms = matches(haul);
     const couriers = available.map(shift => ({ shift, eligible: compatible(shift, haul, courierForms) }))
-        .filter(({ shift, eligible }) => eligible?.size && shift.busy < 1 - EPSILON)
-        .sort((a, b) => Number(a.shift.cropVisits > 0) - Number(b.shift.cropVisits > 0));
+        .filter(({ shift, eligible }) => !shift.growing && eligible?.size && shift.busy < 1 - EPSILON);
     if (dispatch.length) {
         let remaining = haulingBusy;
         for (const { shift, eligible } of couriers) {
@@ -155,6 +156,7 @@ export function recommendBestTeam(jobs, haulingBusy = 0, dispatch = []) {
             shift.candidates = eligible;
             remaining -= 1 - shift.busy;
         }
+        const additionalCouriers = Math.max(0, Math.ceil(remaining - EPSILON));
         const workers = available.map(shift => {
             const entry = candidateFor(shift);
             const abilities = entry?.abilities ?? Object.fromEntries([...shift.roles.values()].map(role => [role.ability, role.level]));
@@ -162,7 +164,8 @@ export function recommendBestTeam(jobs, haulingBusy = 0, dispatch = []) {
             const family = entry?.family ?? [...shift.roles.values()].find(role => role.family)?.family;
             return { abilities, family, free: spare, spare, homes: shift.homes };
         });
-        estimateJobSwitching(dispatch, workers).forEach((extra, i) => {
+        if (additionalCouriers) workers.push({ abilities: { Hauling: haul.level }, free: additionalCouriers - remaining, spare: 0 });
+        estimateJobSwitching(dispatch, workers).slice(0, available.length).forEach((extra, i) => {
             if (extra <= EPSILON) return;
             available[i].busy += extra;
             available[i].tasks.set(TASK_SWITCHING, extra);
@@ -183,7 +186,7 @@ export function recommendBestTeam(jobs, haulingBusy = 0, dispatch = []) {
     return {
         haulingSpare,
         shifts: shifts.map(pool => {
-            const { candidates, roles, cropVisits, homes, ...shift } = pool;
+            const { candidates, roles, growing, homes, ...shift } = pool;
             const requirements = [...roles.values()];
             const entry = candidateFor(pool);
             const abilities = entry?.abilities ?? Object.fromEntries(requirements.map(role => [role.ability, role.level]));

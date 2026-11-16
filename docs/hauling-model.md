@@ -50,8 +50,10 @@ each trip. A missing stock limit or a building switching recipes uses one batch 
 The route bound uses the busiest compatible building tier. The animation shows accumulation
 and omits the game's individual dispatch queues.
 
-Hauling shares the assigned courier's available hours with production, crop jobs, generator
-staffing and optional worker travel. The fast allocation uses free hours first. If a specified
+Hauling shares the assigned courier's available hours with production, staffing and worker
+travel. My Aniimo uses a non-grower first, then an unused copy or a reserve courier to keep
+active growers available for Farmland and Woodland. Best packs crop and non-crop work onto
+separate shifts and favors growers eligible for fewer active non-crop jobs. If a specified
 headcount limit does not fit, linear route variables let the optimizer reassign jobs or lower
 production, including differences between couriers' Hauling levels. Rechecks independently
 validate delivery coverage and each member's capacity. Geometry refinement is bounded.

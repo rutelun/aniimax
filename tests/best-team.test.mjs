@@ -78,3 +78,15 @@ test('Best includes diversions to other eligible work without requiring Hauling'
     assert.ok(Math.abs(shifts[0].tasks.get(TASK_SWITCHING) - .12) < 1e-9);
     assert.ok(Math.abs(shifts[0].busy - .37) < 1e-9);
 });
+
+test('Best keeps frequent crop jobs separate from workshops, even at the same location', () => {
+    const point = [0, 0];
+    const { shifts } = recommendBestTeam([
+        { ability: 'Earth', level: 3, label: 'Mine', busy: .4, point },
+        { ability: 'Grass', level: 2, label: 'Sowing', busy: .25, point, growing: true },
+    ], .2);
+    assert.equal(shifts.length, 2);
+    const grower = shifts.find(shift => shift.tasks.has('Sowing'));
+    assert.deepEqual([...grower.tasks], [['Sowing', .25]]);
+    assert.equal(grower.abilities.Hauling, undefined);
+});

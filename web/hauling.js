@@ -123,7 +123,7 @@ export function haulingWorkload(layout, steps, fallbackSeconds = 0, recipes = []
 
 // Use couriers' spare hours, then idle copies and neutral Lv.3 reserves. A headcount shortage
 // goes to the optimizer, which can redistribute both production and delivery by recipe.
-export function allocateHauling(members, busy, required, limit = Infinity, anchored = [], switching = []) {
+export function allocateHauling(members, busy, required, limit = Infinity, anchored = [], switching = [], growers = new Set()) {
     const active = busy.map((load, member) => Math.max(anchored[member] ?? 0, headcount(load)));
     let slots = Math.max(0, limit - active.reduce((sum, n) => sum + n, 0));
     const jobs = typeof required === 'number' ? [{rate:required, seconds:{1:1,2:1,3:1,4:1}}] : required.jobs;
@@ -132,31 +132,43 @@ export function allocateHauling(members, busy, required, limit = Infinity, ancho
         .filter(courier => courier.level > 0).sort((a,b) => b.level - a.level
             || Number(switching[a.index] > 0) - Number(switching[b.index] > 0) || b.versatility - a.versatility);
     const assigned = new Map();
+    const dedicated = new Map();
+    const regularCouriers = couriers.filter(({ index }) => !growers.has(index));
+    const growerCouriers = couriers.filter(({ index }) => growers.has(index));
     let reserveBusy = 0, unassigned = 0;
     for (const job of [...jobs].sort((a,b) => b.seconds[1] / (b.seconds[3] || 1) - a.seconds[1] / (a.seconds[3] || 1))) {
         let remaining = job.rate;
-        for (const existingOnly of [true, false]) {
-            for (const {member,index,level} of couriers) {
-                const used = assigned.get(index) || 0;
-                const before = busy[index] + used;
+        const assignCouriers = (eligible, existingOnly, separateCopies = false) => {
+            const hoursByMember = separateCopies ? dedicated : assigned;
+            for (const {member,index,level} of eligible) {
+                if (remaining <= 0) return;
+                const used = hoursByMember.get(index) || 0;
+                const before = (separateCopies ? active[index] : busy[index]) + used;
                 const alreadyWorking = Math.max(active[index], headcount(before));
-                const capacity = existingOnly ? active[index] : Math.min(member.count, alreadyWorking + slots);
+                const maximum = member.count - (separateCopies ? 0 : headcount(dedicated.get(index) || 0));
+                const capacity = Math.min(maximum, existingOnly ? active[index] : alreadyWorking + slots);
                 const cost = job.seconds[level];
-                if (cost <= 0) { remaining = 0; break; }
+                if (cost <= 0) { remaining = 0; return; }
                 const batches = Math.min(remaining, Math.max(0, capacity - before) / cost);
                 const hours = batches * cost;
-                if (hours > 1e-12) assigned.set(index, used + hours);
+                if (hours > 1e-12) hoursByMember.set(index, used + hours);
                 slots -= Math.max(0, headcount(before + hours) - alreadyWorking);
                 remaining -= batches;
             }
-        }
+        };
+        assignCouriers(regularCouriers, true);
+        assignCouriers(regularCouriers, false);
+        assignCouriers(growerCouriers, false, true);
         const hours = Math.min(remaining * job.seconds[3], Math.max(0, headcount(reserveBusy) + slots - reserveBusy));
         if (hours > 0) {
             slots -= headcount(reserveBusy + hours) - headcount(reserveBusy);
             reserveBusy += hours;
             remaining -= hours / job.seconds[3];
         }
+        // A separate courier is worth an extra slot if it keeps a grower near the crops.
+        // A tight headcount may still need that grower's help to sustain the same output.
+        assignCouriers(growerCouriers, true);
         unassigned += Math.max(0, remaining * job.seconds[3]);
     }
-    return { assignments:[...assigned], reserveBusy, reserveCount:headcount(reserveBusy), unassigned };
+    return { assignments:[...assigned], dedicated:[...dedicated], reserveBusy, reserveCount:headcount(reserveBusy), unassigned };
 }

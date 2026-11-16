@@ -46,6 +46,19 @@ test('an available delivery can interrupt field work even without a planned deli
     assert.deepEqual(cargo.assignments, [[2, .2]]);
 });
 
+test('a spare courier protects the grower, with the grower as fallback at the headcount limit', () => {
+    const members = [{ count: 1, abilities: { Grass: 3, Hauling: 4 } },
+        { count: 1, abilities: { Hauling: 3 } }];
+    const growers = new Set([0]);
+    assert.deepEqual(allocateHauling(members, [.2, 0], .3, Infinity, [], [], growers).assignments, [[1, .3]]);
+    assert.equal(allocateHauling(members.slice(0, 1), [.2], .3, Infinity, [], [], growers).reserveCount, 1);
+    assert.deepEqual(allocateHauling(members, [.2, 0], .3, 1, [], [], growers).assignments, [[0, .3]]);
+    const copies = allocateHauling([{ ...members[0], count: 2 }], [.2], .3, 2, [], [], growers);
+    assert.deepEqual(copies.dedicated, [[0, .3]]);
+    assert.deepEqual(copies.assignments, []);
+    assert.equal(copies.reserveCount, 0);
+});
+
 test('new jobs in another workshop use the distance from previous sites at dispatch', () => {
     const workers = [
         { abilities: { Artisanship: 3 }, free: .5, spare: .5, homes: [

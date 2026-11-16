@@ -1791,9 +1791,8 @@ pub fn consolidate_reserve_workplaces(
     Some(candidate)
 }
 
-/// Replace an assigned roster pool with an idle, more versatile owned pool when it can
-/// perform the same work. The whole workload moves together and the checked production
-/// plan, sales and recipe cycle times are preserved.
+/// Give crop work to an idle, focused grower where possible, and prefer more versatile
+/// workers for other shifts. Preserve the checked production, sales and recipe times.
 pub fn prefer_versatile_crew(
     plan: &mut ExactPlan,
     workload: &mut Vec<f64>,
@@ -1812,12 +1811,28 @@ pub fn prefer_versatile_crew(
         if *member < owned && *share > 1e-9 { farming[*member] = true; }
     }
     let all: HashMap<_, _> = items.iter().map(|item| (item.name.as_str(), item)).collect();
+    let external_recipes: std::collections::HashSet<_> = plan.recipe_rates.iter()
+        .filter(|&(_, rate)| *rate > 1e-9)
+        .map(|(name, _)| all[name.as_str()])
+        .filter(|item| item.crew.is_some() && !crew.residents.contains(&item.facility)
+            && item.facility != "Farmland" && item.facility != "Woodland")
+        .map(|item| (&item.facility, crate::models::base_item_name(&item.name)))
+        .collect();
+    let mut distractions = vec![std::collections::HashSet::new(); owned];
+    for item in items {
+        let Some(member) = item.crew.filter(|&member| member < owned) else { continue; };
+        let recipe = (&item.facility, crate::models::base_item_name(&item.name));
+        if external_recipes.contains(&recipe) { distractions[member].insert(recipe); }
+    }
     let mut total = workload.clone();
     for &(member, share) in &plan.hauling_staffing { total[member] += share; }
     for crop_work in [true, false] {
         let rank = |member: usize| {
-            if crop_work { (crew.members[member].level("Hauling") > 0, skills[member]) }
-            else { (false, usize::MAX - skills[member]) }
+            if crop_work {
+                (distractions[member].len() + usize::from(crew.members[member].level("Hauling") > 0), skills[member])
+            } else {
+                (0, usize::MAX - skills[member])
+            }
         };
         let mut order: Vec<_> = (0..owned).collect();
         order.sort_by_key(|&member| rank(member));
@@ -1825,12 +1840,18 @@ pub fn prefer_versatile_crew(
             if total[to] > 1e-9 || crew.members[to].count == 0 { continue; }
             for &from in order.iter().rev() {
                 if rank(from) <= rank(to) { break; }
-                if farming[from] != crop_work || total[from] <= 1e-6 || total[from] > crew.members[to].count as f64 + 1e-6 { continue; }
-                let Some(candidate) = reassign_crew_pool(plan, &all, counts, from, to) else { continue; };
+                if farming[from] != crop_work || total[from] <= 1e-6 { continue; }
+                let candidate = if crop_work {
+                    reassign_crop_work(plan, &all, counts, from, to)
+                } else if total[from] <= crew.members[to].count as f64 + 1e-6 {
+                    reassign_crew_pool(plan, &all, counts, from, to)
+                } else { None };
+                let Some(candidate) = candidate else { continue; };
                 let Ok((_, checked)) = check_plan_with_workload(&candidate, items, currency, counts, modules, level_up) else { continue; };
-                total[from] = 0.0;
-                total[to] = checked[to] + candidate.hauling_staffing.iter().filter(|(member, _)| *member == to)
-                    .map(|(_, share)| share).sum::<f64>();
+                for index in [from, to] {
+                    total[index] = checked[index] + candidate.hauling_staffing.iter().filter(|(member, _)| *member == index)
+                        .map(|(_, share)| share).sum::<f64>();
+                }
                 farming[from] = false;
                 farming[to] = crop_work;
                 *workload = checked;
@@ -1839,6 +1860,51 @@ pub fn prefer_versatile_crew(
             }
         }
     }
+}
+
+// Move crop work on its own so a focused grower can take it over even when the previous
+// grower has a separate workshop or delivery job that still needs its abilities.
+fn reassign_crop_work(
+    plan: &ExactPlan,
+    all: &HashMap<&str, &ProductionItem>,
+    counts: &FacilityCounts,
+    from: usize,
+    to: usize,
+) -> Option<ExactPlan> {
+    let crew = counts.crew()?;
+    let mut candidate = plan.clone();
+    for (ability, level, member, share) in &mut candidate.crop_staffing {
+        if *member != from { continue; }
+        let old = crew.members[from].level(ability);
+        let new = crew.members[to].level(ability);
+        if !crew.can_work(to, ability, *level) || new < old { return None; }
+        let speed = |value| crate::models::Worker::new(value, false).speed(*level, true);
+        *share *= speed(old) / speed(new);
+        *member = to;
+    }
+    let mut stations = std::collections::HashSet::new();
+    let mut moving = 0.0;
+    for route in &mut candidate.work_routes {
+        if route.member != from || route.crop.is_none() { continue; }
+        let recipe = all[route.recipe.as_str()];
+        if route.mobile {
+            let (_, visits) = work_spec(recipe, route.crop.as_ref(), from, counts)?;
+            moving += route.rate * counts.member_movement_seconds(from) * f64::from(visits);
+        } else {
+            stations.insert(work_station(recipe));
+        }
+        route.member = to;
+    }
+    if moving > 0.0 {
+        if counts.member_movement_seconds(from) != counts.member_movement_seconds(to) { return None; }
+        let (_, travel) = candidate.movement_staffing.iter_mut().find(|(member, _)| *member == from)?;
+        *travel = (*travel - moving).max(0.0);
+        candidate.movement_staffing.push((to, moving));
+    }
+    for (station, member, _) in &mut candidate.work_posts {
+        if *member == from && stations.contains(station) { *member = to; }
+    }
+    Some(candidate)
 }
 
 /// Free a better courier from a dedicated climate post when a less capable courier can
@@ -1950,14 +2016,6 @@ fn reassign_crew_pool(
     let mobile = plan.work_routes.iter().any(|route| route.member == from && route.mobile);
     if mobile && counts.member_movement_seconds(to) != counts.member_movement_seconds(from) { return None; }
     let mut candidate = plan.clone();
-    for (ability, level, id, share) in &mut candidate.crop_staffing {
-        if *id != from { continue; }
-        if !crew.can_work(to, ability, *level) { return None; }
-        let speed = |worker: &crate::models::RosterAniimo| crate::models::Worker::new(worker.level(ability), false).speed(*level, true);
-        if speed(new) < speed(old) || (counts.movement_seconds() > 0.0 && speed(new) != speed(old)) { return None; }
-        *share *= speed(old) / speed(new);
-        *id = to;
-    }
     let mut delivery = 0.0;
     for (name, id, batches) in &mut candidate.hauling_routes {
         if let Some(&replacement) = names.get(name.as_str()) { *name = replacement.to_owned(); }
