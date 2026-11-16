@@ -8,7 +8,7 @@ const ready = import('./layout.js' + new URL(import.meta.url).search);
 const powerReady = import('./power-layout.js' + new URL(import.meta.url).search);
 
 self.onmessage = async (event) => {
-    const { improveFixedStorage, layOutHomeland, layoutTravelCost, refineDistrictDeliveries, seededStorageLayouts } = await ready;
+    const { createInsideTest, improveFixedStorage, layOutHomeland, layoutDeliveryCost, layoutTravelCost, refineDistrictDeliveries, seededStorageLayouts } = await ready;
     const { connectPower, repackPower, updatePowerConnections } = await powerReady;
     const { pieces, cells } = event.data;
     const storageCount = event.data.storageCount ?? 1;
@@ -24,11 +24,14 @@ self.onmessage = async (event) => {
         }
     }
     const storage = { w: 2, h: 2 };
-    const layout = layOutHomeland(pieces, cells, storage, storageCount, { fast: true });
+    const accountForWorkers = style !== 'delivery';
+    const cost = accountForWorkers ? layoutTravelCost : layoutDeliveryCost;
+    const options = { fast: true, accountForWorkers };
+    const layout = layOutHomeland(pieces, cells, storage, storageCount, options);
     let best = connectPower(layout, cells, poleLimit);
     const complete = current => !current.unplaced.length && !current.power.disconnected;
     if (!complete(best)) {
-        for (const trial of seededStorageLayouts(best, pieces, cells, storage, storageCount, { fast: true })) {
+        for (const trial of seededStorageLayouts(best, pieces, cells, storage, storageCount, options)) {
             const supplied = connectPower(trial, cells, poleLimit);
             if (complete(supplied)) {
                 best = supplied;
@@ -40,26 +43,40 @@ self.onmessage = async (event) => {
             }
         }
     }
+    if (!accountForWorkers && complete(best) && storageCount > 1) {
+        // A complete first placement can still be far from useful storage locations
+        // after the power routing moves consumers. Try one cheaper storage seed.
+        const currentCost = cost(best);
+        for (const trial of seededStorageLayouts(best, pieces, cells, storage, storageCount, options)) {
+            if (cost(trial) >= currentCost * .97) continue;
+            const supplied = connectPower(trial, cells, poleLimit);
+            if (complete(supplied) && cost(supplied) < currentCost - 1e-9) best = supplied;
+            break;
+        }
+    }
     if (complete(best)) {
         best = improveFixedStorage(best, cells);
-        if (cells.length && best.storages.length) {
-            const x = Math.min(...cells.map(c => c.x)), y = Math.min(...cells.map(c => c.y));
-            const w = Math.max(...cells.map(c => c.x + c.w)) - x, h = Math.max(...cells.map(c => c.y + c.h)) - y;
-            const swapped = updatePowerConnections(refineDistrictDeliveries(best, [{ bounds: { x, y, w, h }, reserved: [] }],
-                { swapsOnly: true, passes: 1 }));
-            if (complete(swapped)) best = swapped;
-        }
         const poles = best.power.poles.length;
         if (poles >= 5) {
-            const maximumCost = layoutTravelCost(best) * 1.02;
+            const maximumCost = cost(best) * (accountForWorkers ? 1.02 : 1);
             best = repackPower(best, cells, poleLimit, { attempts: 2, accept: candidate => {
                 if (poles - candidate.power.poles.length < 3) return false;
                 const relocated = improveFixedStorage(candidate, cells);
-                if (layoutTravelCost(relocated) > maximumCost) return false;
+                if (cost(relocated) > maximumCost) return false;
                 Object.assign(candidate, relocated);
                 return true;
             },
             });
+        }
+        if (cells.length && best.storages.length) {
+            const x = Math.min(...cells.map(c => c.x)), y = Math.min(...cells.map(c => c.y));
+            const w = Math.max(...cells.map(c => c.x + c.w)) - x, h = Math.max(...cells.map(c => c.y + c.h)) - y;
+            const inside = createInsideTest(cells);
+            const optimized = updatePowerConnections(refineDistrictDeliveries(best, [{ bounds: { x, y, w, h }, reserved: [] }], {
+                swapsOnly: accountForWorkers, passes: 1, costOf: cost, includeMines: !accountForWorkers, targetLimit: 24,
+                canPlace: (_, __, rectangles) => rectangles.every(inside),
+            }));
+            if (complete(optimized) && cost(optimized) < cost(best) - 1e-9) best = improveFixedStorage(optimized, cells);
         }
     }
     const needsRanges = recipes?.some(recipe => recipe.takes.length) || (recipes?.length > 0 && pieces.some(piece =>

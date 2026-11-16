@@ -171,7 +171,8 @@ export function layOut(pieces, options = {}) {
     const collisionSeen=new Uint32Array(pieces.length+2);
     let collisionStamp=0;
     let activeWorkerHubs = new Map();
-    const hasWorkerRoutes = pieces.some(p => membersOf(p).some(m => m.workers?.length));
+    const accountForWorkers = options.accountForWorkers ?? true;
+    const hasWorkerRoutes = accountForWorkers && pieces.some(p => membersOf(p).some(m => m.workers?.length));
     const squares = new Map();
     const sensitive = new Map();
     const occupy = (key, spot) => {
@@ -424,7 +425,7 @@ export function layOut(pieces, options = {}) {
     const completeCost = () => {
         const members = [...placed].flatMap(([i, spot]) => spot.rects.map((r, j) => ({ ...membersOf(pieces[i])[j], ...r })));
         return members.reduce((sum, m) => sum + ((m.weight || 0) + EPSILON)
-            * distanceToStorage(m.x + m.w / 2, m.y + m.h / 2), 0) + workerLayoutCost(members);
+            * distanceToStorage(m.x + m.w / 2, m.y + m.h / 2), 0) + (accountForWorkers ? workerLayoutCost(members) : 0);
     };
     let exchangeBudget = options.exchangeBudget ?? 0;
     if (exchangeBudget > 0) {
@@ -525,7 +526,7 @@ export function layOut(pieces, options = {}) {
 // whichever walks least with everything placed. Returns what `layOut` does, moved into the
 // homeland's own frame, plus the first storage center for older callers.
 // Additional storage locations are chosen up to `storageCount`.
-export function layOutHomeland(pieces, cells, storage = { w: 2, h: 2 }, storageCount = 1, { fast = false } = {}) {
+export function layOutHomeland(pieces, cells, storage = { w: 2, h: 2 }, storageCount = 1, { fast = false, accountForWorkers = true } = {}) {
     if (!cells.length) {
         return { storage: null, storages: [], storageAt: null, pieces: pieces.map(p => ({ ...p, members: [], cost: 0 })), unplaced: pieces.map((_, i) => i), tried: 0 };
     }
@@ -546,10 +547,10 @@ export function layOutHomeland(pieces, cells, storage = { w: 2, h: 2 }, storageC
         const storageRect = { x: at.x - storage.w / 2, y: at.y - storage.h / 2, w: storage.w, h: storage.h };
         if (cells.reduce((sum, c) => sum + overlapArea(storageRect, c), 0) < storage.w * storage.h - EPSILON) continue;
         const relative = cells.map(c => ({ x: c.x - at.x, y: c.y - at.y, w: c.w, h: c.h }));
-        const out = layOut(pieces, { storage, cells: relative, fast, ...(fast ? { passes: 0 } : {}),
+        const out = layOut(pieces, { storage, cells: relative, fast, accountForWorkers, ...(fast ? { passes: 0 } : {}),
             ...(storageCount === 0 ? { storages: [] } : {}) });
         tried += out.tried;
-        const cost = layoutCost(out);
+        const cost = accountForWorkers ? layoutCost(out) : layoutDeliveryCost(out);
         const better = !best || out.unplaced.length < best.out.unplaced.length
             || (out.unplaced.length === best.out.unplaced.length && cost < best.cost - EPSILON);
         if (better) best = { out, cost, at };
@@ -568,7 +569,7 @@ export function layOutHomeland(pieces, cells, storage = { w: 2, h: 2 }, storageC
         storages: out.storages.map(move),
         pieces: out.pieces.map(p => ({ ...p, members: p.members.map(move) })),
     };
-    if (storageCount > 1) layout = improveStorageLayout(layout, pieces, cells, storage, storageCount, fast);
+    if (storageCount > 1) layout = improveStorageLayout(layout, pieces, cells, storage, storageCount, fast, false, accountForWorkers);
     return layout;
 }
 
@@ -598,19 +599,22 @@ export function layoutCost(layout) {
 
 // Compare complete alternatives using their estimated delivery and workplace routes.
 // Loaded and next-pickup legs have the same total distance within each storage pool.
-export function layoutTravelCost(layout) {
-    const members = layout.pieces.flatMap(piece => piece.members);
-    const deliveries = members.reduce((sum, member) => {
+export function layoutDeliveryCost(layout) {
+    return layout.pieces.flatMap(piece => piece.members).reduce((sum, member) => {
         const store = nearestStorage(member, layout.storages);
         if (!store) return sum;
-        return sum + 2 * (member.weight || 0) * Math.hypot(
+        return sum + (member.weight || 0) * Math.hypot(
             member.x + member.w / 2 - store.x - store.w / 2,
             member.y + member.h / 2 - store.y - store.h / 2);
     }, 0);
+}
+
+export function layoutTravelCost(layout) {
+    const members = layout.pieces.flatMap(piece => piece.members);
     const hubs = workerHubs(members);
     let walking = 0;
     for (const [worker, distance] of workerTravelDistances(members)) walking += distance * (hubs.get(worker)?.visits ?? 0);
-    return deliveries + walking;
+    return 2 * layoutDeliveryCost(layout) + walking;
 }
 
 // Power routing may move consumers after the hauling layout, freeing better positions.
@@ -734,6 +738,7 @@ export function refineDistrictClimate(layout, pieces, cells, { canPlace, accept 
 // exchange footprints only if they retain exactly their required coverage.
 export function refineDistrictDeliveries(layout, groups, {
     canPlace = () => true, accept = () => true, passes = 2, swapsOnly = false,
+    costOf = layoutTravelCost, includeMines = false, targetLimit = Infinity,
 } = {}) {
     if (!layout.storages.length) return layout;
     const result = { ...layout, pieces: layout.pieces.map(piece => ({
@@ -749,7 +754,7 @@ export function refineDistrictDeliveries(layout, groups, {
     const fixed = [...result.storages, ...(result.power?.poles ?? [])];
     const entries = result.pieces.flatMap((piece, i) => piece.members.map((rect, j) => ({
         i, rect, district: districtOf(rect), climate: !!piece.cluster && j >= piece.buildings.length,
-        movable: !rect.generator && rect.facility !== 'Mine'
+        movable: !rect.generator && (includeMines || rect.facility !== 'Mine')
             && (piece.cluster ? j >= piece.buildings.length : piece.members.length === 1),
     })));
     const local = groups.map((_, i) => entries.filter(entry => entry.district === i));
@@ -779,14 +784,14 @@ export function refineDistrictDeliveries(layout, groups, {
         }
         return sites.get(key);
     };
-    let cost = layoutTravelCost(result);
+    let cost = costOf(result);
     const tryMove = (entry, next, swap = null) => {
         const old = { x: entry.rect.x, y: entry.rect.y };
         const back = swap && { x: swap.rect.x, y: swap.rect.y };
         if (!valid(entry, next, swap) || (swap && !valid(swap, { ...swap.rect, ...old }, entry))) return false;
         Object.assign(entry.rect, { x: next.x, y: next.y });
         if (swap) Object.assign(swap.rect, old);
-        const nextCost = layoutTravelCost(result);
+        const nextCost = costOf(result);
         if (nextCost < cost - EPSILON && accept(result)) {
             cost = nextCost;
             return true;
@@ -799,7 +804,7 @@ export function refineDistrictDeliveries(layout, groups, {
     for (let pass = 0; pass < passes; pass++) {
         let changed = false;
         targets.sort((a, b) => b.rect.weight * distance(b.rect) - a.rect.weight * distance(a.rect));
-        for (const entry of targets) {
+        for (const entry of targets.slice(0, targetLimit)) {
             const rect = entry.rect, original = distance(rect), candidates = [];
             if (!swapsOnly) {
                 for (const { spot, distance: away } of sitesFor(entry)) {
@@ -844,7 +849,7 @@ function storageSites(cells, storage) {
 
 // Use the placed factories as demand points, but reserve all storage sites before
 // placing facilities again. A busy building can move away from a new store's footprint.
-export function* seededStorageLayouts(layout, pieces, cells, storage, maximum, { fast = false } = {}) {
+export function* seededStorageLayouts(layout, pieces, cells, storage, maximum, { fast = false, accountForWorkers = true } = {}) {
     const demand = layout.pieces.flatMap(piece => piece.members)
         .filter(member => member.weight > 0)
         .map(member => ({ x: member.x + member.w / 2, y: member.y + member.h / 2, weight: member.weight }));
@@ -874,7 +879,7 @@ export function* seededStorageLayouts(layout, pieces, cells, storage, maximum, {
         const signature = key(stores);
         if (stores.length < 2 || tried.has(signature)) continue;
         tried.add(signature);
-        const trial = layOut(pieces, { storage, storages: stores, cells, fast, passes: fast ? 0 : 2 });
+        const trial = layOut(pieces, { storage, storages: stores, cells, fast, accountForWorkers, passes: fast ? 0 : 2 });
         if (trial.unplaced.length) continue;
         trial.storageAt = { x: stores[0].x + storage.w / 2, y: stores[0].y + storage.h / 2 };
         yield trial;
@@ -883,7 +888,7 @@ export function* seededStorageLayouts(layout, pieces, cells, storage, maximum, {
 
 // Add useful storage locations, then alternate relocating storage and laying facilities out.
 // Each accepted step keeps every placed piece and reduces weighted hauling distance.
-function improveStorageLayout(layout, pieces, cells, storage, maximum, fast, fixed = false) {
+function improveStorageLayout(layout, pieces, cells, storage, maximum, fast, fixed = false, accountForWorkers = true) {
     const candidates = storageSites(cells, storage);
     const membersOf = current => current.pieces.flatMap(piece => piece.members);
     const costOf = (members, stores) => members.reduce((sum, member) => {
@@ -892,9 +897,10 @@ function improveStorageLayout(layout, pieces, cells, storage, maximum, fast, fix
             member.x + member.w / 2 - closest.x - closest.w / 2,
             member.y + member.h / 2 - closest.y - closest.h / 2) : 0);
     }, 0);
+    const score = accountForWorkers ? layoutCost : layoutDeliveryCost;
     const better = (candidate, current) => candidate.unplaced.length < current.unplaced.length
         || (candidate.unplaced.length === current.unplaced.length
-            && layoutCost(candidate) < layoutCost(current) - 1e-9);
+            && score(candidate) < score(current) - 1e-9);
     const findSpot = (members, others) => {
         const occupied = [...members, ...others, ...(fixed ? layout.power.poles : [])];
         const destinations = members.filter(member => member.weight > 0).map(member => {
@@ -939,7 +945,7 @@ function improveStorageLayout(layout, pieces, cells, storage, maximum, fast, fix
             layout = updated;
             break;
         }
-        const repacked = layOut(pieces, { storage, storages: stores, cells, fast, passes: fast ? 1 : 3, initialLayout: updated });
+        const repacked = layOut(pieces, { storage, storages: stores, cells, fast, accountForWorkers, passes: fast ? 1 : 3, initialLayout: updated });
         repacked.storageAt = updated.storageAt;
         repacked.tried += layout.tried;
         layout = better(repacked, updated) ? repacked : updated;

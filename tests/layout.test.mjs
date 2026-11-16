@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { improveFixedStorage, layOut, layOutHomeland, nearestStorage, layoutCost, refineDistrictDeliveries,
-    refineStorageNeighborhood, seededStorageLayouts } from '../web/layout.js';
+    refineStorageNeighborhood, seededStorageLayouts, layoutDeliveryCost, createInsideTest } from '../web/layout.js';
 import { storageUnitLimit } from '../web/facility-config.js';
 
 const cells = [{ x: 0, y: 0, w: 20, h: 15 }, { x: 20, y: 0, w: 20, h: 15 }];
@@ -19,6 +19,23 @@ const cost = layout => layout.pieces.flatMap(p => p.members).reduce((sum, member
 test('storage placement follows the RV rank table', () => {
     assert.deepEqual(Array.from({ length: 20 }, (_, index) => storageUnitLimit(index + 1)),
         [0, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5, 5, 6, 6, 6, 7, 8]);
+});
+
+test('shortest delivery can move an active powered mine into free supplied space', () => {
+    const open = [{ x: 0, y: 0, w: 4, h: 12 }, { x: 4, y: 8, w: 10, h: 4 }];
+    const bounds = { x: 0, y: 0, w: 14, h: 12 };
+    const mine = { x: 10, y: 8, w: 3, h: 3, facility: 'Mine', weight: 10, electric_level: 2 };
+    const layout = { storages: [{ x: 0, y: 0, w: 2, h: 2 }], pieces: [{ members: [mine] }],
+        power: { poles: [], coverage: [{ ...bounds, connected: true }] } };
+    const inside = createInsideTest(open);
+    const refined = refineDistrictDeliveries(layout, [{ bounds, reserved: [] }], {
+        passes: 1, includeMines: true, costOf: layoutDeliveryCost,
+        canPlace: (_, __, rectangles) => rectangles.every(inside),
+    });
+    const relocated = refined.pieces[0].members[0];
+    assert.ok(layoutDeliveryCost(refined) < layoutDeliveryCost(layout));
+    assert.ok(inside(relocated) && !overlap(relocated,layout.storages[0]));
+    assert.equal(relocated.electric_level,2);
 });
 
 test('moving a storage after wiring shortens routes without moving facilities or covering poles', () => {
