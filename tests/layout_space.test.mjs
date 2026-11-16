@@ -51,3 +51,13 @@ test('single-building probes produce exactly the reference arrangement with work
         canPlace:(i,metadata,rectangles)=>i%4!==1||rectangles[0].y>=-5};
     assert.deepEqual(layOut(pieces,options),layOut(pieces,{...options,singleBuildingFastPath:false}));
 });
+
+test('monotone packing skips only previously blocked probes across repeated footprints',()=>{
+ for(const count of [10,40,100])for(const passes of [0,2]){
+  const pieces=Array.from({length:count},(_,i)=>({members:[{x:0,y:0,w:i%3?2:2.5,h:i%2?2:3,weight:i%7,sensitive:i%4===0}]}));
+  const options={cells:[{x:-20,y:-10,w:40,h:40}],storages:[{x:0,y:0,w:2,h:2}],fast:true,passes,accountForWorkers:false};
+  const actual=layOut(pieces,options),reference=layOut(pieces,{...options,monotonePacking:false});
+  assert.deepEqual({...actual,tried:0},{...reference,tried:0});
+  assert.ok(actual.tried<=reference.tried);
+ }
+});

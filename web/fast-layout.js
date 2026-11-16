@@ -27,13 +27,20 @@ export function encodeRefinement(layout,cells,options={}) {
     const producer_count=rectangles.length;
     for(const r of layout.storages)rectangles.push({x:r.x,y:r.y,w:r.w,h:r.h});
     for(const r of layout.power?.poles||[])rectangles.push({x:r.x,y:r.y,w:r.w,h:r.h,pole:true});
-    // A fixed temperature freezes layouts whose delivery cost is concentrated
-    // in a few high-throughput producers. Use the weight-weighted median so
-    // numerous near-idle buildings cannot hide that concentration.
-    const weights=rectangles.map(r=>r.weight||0).filter(w=>w>0).sort((a,b)=>a-b);
-    const half=weights.reduce((sum,w)=>sum+w,0)/2;
+    // Scale exploration by the delivery cost that can still be improved.
+    // A busy producer already touching storage must not overheat the search
+    // for the many low-throughput buildings which remain far away.
+    const weights=rectangles.slice(0,producer_count).filter(r=>r.weight>0).map(r=>{
+        let distance=Infinity,floor=Infinity;
+        for(const s of layout.storages){
+            distance=Math.min(distance,Math.hypot(r.x+r.w/2-s.x-s.w/2,r.y+r.h/2-s.y-s.h/2));
+            floor=Math.min(floor,(r.w+s.w)/2,(r.h+s.h)/2);
+        }
+        return {weight:r.weight,mass:Number.isFinite(distance)?r.weight*Math.max(0,distance-floor):0};
+    }).sort((a,b)=>a.weight-b.weight);
+    const half=weights.reduce((sum,w)=>sum+w.mass,0)/2;
     let cumulative=0;
-    const median=weights.find(w=>(cumulative+=w)>=half)||0;
+    const median=half>0?(weights.find(w=>(cumulative+=w.mass)>=half)?.weight||0):0;
     const temperature=Math.max(1,median/3);
     return {rectangles,climates,producer_count,store_count:layout.storages.length,cells,
         iterations:5000000,seed:1,temperature,penalty:30,mobile_relays:true,...options};
@@ -47,4 +54,21 @@ export function refineFastLayout(layout,cells,refineJSON,options={}) {
     result.poses.forEach(([x,y,w,h],i)=>Object.assign(all[i],{x,y,w,h}));
     updatePowerConnections(out);
     return out.power.disconnected||layoutDeliveryCost(out)>layoutDeliveryCost(layout)+1e-8?layout:out;
+}
+
+// Follow the broad search with a small exchange neighborhood and deterministic
+// polishing. Every stage retains the previous feasible result unless it wins.
+export function polishFastLayout(layout,seed,cells,refineJSON) {
+    if(layout.unplaced?.length||layout.power?.disconnected||!layout.storages.length)return layout;
+    const exchanged=refineFastLayout(layout,cells,refineJSON,{iterations:0,exchange_trials:6});
+    // Keep the original workload scale: a successful first pass must not
+    // abruptly change the cooling schedule for the remaining neighborhoods.
+    const temperature=encodeRefinement(seed,cells).temperature;
+    let best=exchanged;
+    for(const [iterations,scale,exchange_trials] of [[1500000,.4,0],[1000000,.2,6],[500000,.1,6]]) {
+        best=refineFastLayout(best,cells,refineJSON,{
+            iterations,temperature:temperature*scale,exchange_trials,unequal_swaps:true,polish_passes:4,
+        });
+    }
+    return best;
 }

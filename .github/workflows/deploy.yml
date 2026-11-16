@@ -49,6 +49,14 @@ jobs:
       - name: Build WASM
         run: wasm-pack build --target web --out-dir web/pkg
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Check planner and built WASM
+        run: node --test tests/*.test.mjs
+
       - name: Setup Pages
         uses: actions/configure-pages@v4
 

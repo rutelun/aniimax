@@ -18,6 +18,9 @@ impl Pose {
         self.y + self.h / 2.0
     }
     fn area(self, b: Self) -> f64 {
+        if !self.hits(b) {
+            return 0.0;
+        }
         (self.x + self.w)
             .min(b.x + b.w)
             .sub(self.x.max(b.x))
@@ -104,6 +107,12 @@ struct Input {
     penalty: f64,
     #[serde(default = "true_default")]
     mobile_relays: bool,
+    #[serde(default)]
+    unequal_swaps: bool,
+    #[serde(default)]
+    polish_passes: u32,
+    #[serde(default)]
+    exchange_trials: u32,
 }
 #[derive(Serialize)]
 struct Output {
@@ -454,8 +463,9 @@ impl Search {
                     || self.radius[i] > 0.0
                     || self.source_owner[i].is_some()
                     || self.source_owner[other].is_some()
-                    || self.poses[i].w != self.poses[other].w
-                    || self.poses[i].h != self.poses[other].h
+                    || (!self.input.unequal_swaps
+                        && (self.poses[i].w != self.poses[other].w
+                            || self.poses[i].h != self.poses[other].h))
                 {
                     continue;
                 }
@@ -476,6 +486,12 @@ impl Search {
                 self.poses[i].y = p.y;
                 self.poses[j].x = old.x;
                 self.poses[j].y = old.y;
+                if self.input.unequal_swaps {
+                    self.poses[i].x = 0.25 * snap(4.0 * (p.cx() - old.w / 2.0));
+                    self.poses[i].y = 0.25 * snap(4.0 * (p.cy() - old.h / 2.0));
+                    self.poses[j].x = 0.25 * snap(4.0 * (old.cx() - p.w / 2.0));
+                    self.poses[j].y = 0.25 * snap(4.0 * (old.cy() - p.h / 2.0));
+                }
             } else {
                 let ordinary = j.is_none()
                     && self.source_owner[i].is_none()
@@ -522,17 +538,24 @@ impl Search {
             {
                 // Most proposals fail coverage or land constraints. Defer the
                 // collision and distance work until those cheap checks pass.
-                let proposed = self.poses[i];
-                let proposed_other = j.map(|k| self.poses[k]);
-                self.poses[i] = old;
-                if let Some(j) = j {
-                    self.poses[j] = other.unwrap();
-                }
-                let old_overlap = grid.changed_area(&self.poses, i, j);
-                self.poses[i] = proposed;
-                if let Some(j) = j {
-                    self.poses[j] = proposed_other.unwrap();
-                }
+                // Quarter-grid overlap areas are exact multiples of 1/16.
+                // A feasible current state has no old collisions to rescan.
+                let old_overlap = if overlaps == 0.0 {
+                    0.0
+                } else {
+                    let proposed = self.poses[i];
+                    let proposed_other = j.map(|k| self.poses[k]);
+                    self.poses[i] = old;
+                    if let Some(j) = j {
+                        self.poses[j] = other.unwrap();
+                    }
+                    let area = grid.changed_area(&self.poses, i, j);
+                    self.poses[i] = proposed;
+                    if let Some(j) = j {
+                        self.poses[j] = proposed_other.unwrap();
+                    }
+                    area
+                };
                 let old_cost = if store_move {
                     current
                 } else {
@@ -598,7 +621,360 @@ impl Search {
             }
         }
         self.poses = best_poses;
+        self.exchange();
+        self.polish();
         self.output(initial, self.total_cost(), iterations)
+    }
+    fn exchange(&mut self) {
+        let mut budget = self.input.exchange_trials;
+        if budget == 0 {
+            return;
+        }
+        let mut grid = Occupancy::new(&self.input.cells, self.poses.len());
+        for (i, &r) in self.poses.iter().enumerate() {
+            grid.index(i, r, true);
+        }
+        let mut order: Vec<_> = self
+            .movable
+            .iter()
+            .copied()
+            .filter(|&i| {
+                i < self.input.producer_count
+                    && self.source_owner[i].is_none()
+                    && self.radius[i] == 0.0
+                    && self.input.rectangles[i].weight > 0.0
+            })
+            .collect();
+        order.sort_by(|&a, &b| self.cost(b).total_cmp(&self.cost(a)));
+        let movable: Vec<_> = (0..self.poses.len())
+            .map(|i| {
+                i < self.input.producer_count
+                    && self.input.rectangles[i].movable
+                    && self.source_owner[i].is_none()
+                    && self.radius[i] == 0.0
+            })
+            .collect();
+        for i in order {
+            if budget == 0 {
+                break;
+            }
+            let old = self.poses[i];
+            let current = self.cost(i);
+            let mut proposals = vec![];
+            for s in self.input.producer_count..self.input.producer_count + self.input.store_count {
+                let store = self.poses[s];
+                for side in 0..4 {
+                    for offset in -24..=24 {
+                        let tangent = offset as f64 / 4.0;
+                        let mut r = if side < 2 {
+                            Pose {
+                                x: if side == 0 {
+                                    store.x - old.w
+                                } else {
+                                    store.x + store.w
+                                },
+                                y: store.cy() - old.h / 2.0 + tangent,
+                                ..old
+                            }
+                        } else {
+                            Pose {
+                                x: store.cx() - old.w / 2.0 + tangent,
+                                y: if side == 2 {
+                                    store.y - old.h
+                                } else {
+                                    store.y + store.h
+                                },
+                                ..old
+                            }
+                        };
+                        r.x = (r.x * 4.0 + 0.5).floor() / 4.0;
+                        r.y = (r.y * 4.0 + 0.5).floor() / 4.0;
+                        self.poses[i] = r;
+                        let cost = self.cost(i);
+                        if cost >= current - 1e-8 || !self.valid_position(i) {
+                            continue;
+                        }
+                        let blockers: Vec<_> = self
+                            .poses
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(k, &p)| (k != i && r.hits(p)).then_some(k))
+                            .collect();
+                        if blockers.len() <= 4
+                            && !blockers.is_empty()
+                            && blockers.iter().all(|&k| movable[k])
+                        {
+                            proposals.push((cost, r, blockers));
+                        }
+                    }
+                }
+            }
+            self.poses[i] = old;
+            proposals.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.2.len().cmp(&b.2.len())));
+            let mut seen: Vec<Vec<usize>> = vec![];
+            let mut trials = 0;
+            for (cost, r, mut blockers) in proposals {
+                if budget == 0 || trials >= 3 {
+                    break;
+                }
+                if seen.contains(&blockers) {
+                    continue;
+                }
+                seen.push(blockers.clone());
+                trials += 1;
+                budget -= 1;
+                let allowance =
+                    current - cost + blockers.iter().map(|&k| self.cost(k)).sum::<f64>();
+                blockers.sort_by(|&a, &b| {
+                    self.input.rectangles[b]
+                        .weight
+                        .total_cmp(&self.input.rectangles[a].weight)
+                });
+                let saved: Vec<_> = blockers.iter().map(|&k| self.poses[k]).collect();
+                grid.index(i, old, false);
+                for (&k, &p) in blockers.iter().zip(&saved) {
+                    grid.index(k, p, false);
+                }
+                self.poses[i] = r;
+                grid.index(i, r, true);
+                let mut spent = 0.0;
+                let mut placed = 0;
+                for (&j, &shape) in blockers.iter().zip(&saved) {
+                    let mut best_cost = allowance - spent;
+                    let mut best = None;
+                    for y in self.land.top
+                        ..=self.land.top + self.land.height as i32 - (shape.h * 4.0) as i32
+                    {
+                        for x in self.land.left
+                            ..=self.land.left + self.land.width as i32 - (shape.w * 4.0) as i32
+                        {
+                            self.poses[j] = Pose {
+                                x: x as f64 / 4.0,
+                                y: y as f64 / 4.0,
+                                ..shape
+                            };
+                            let cost = self.cost(j);
+                            if cost < best_cost - 1e-8
+                                && self.valid_position(j)
+                                && grid.nearby_area(&self.poses, j, usize::MAX) < 1e-8
+                            {
+                                best_cost = cost;
+                                best = Some(self.poses[j]);
+                                if cost == 0.0 {
+                                    break;
+                                }
+                            }
+                        }
+                        if best_cost == 0.0 {
+                            break;
+                        }
+                    }
+                    if let Some(p) = best {
+                        self.poses[j] = p;
+                        grid.index(j, p, true);
+                        spent += best_cost;
+                        placed += 1;
+                    } else {
+                        break;
+                    }
+                }
+                if placed == blockers.len() {
+                    break;
+                }
+                grid.index(i, r, false);
+                self.poses[i] = old;
+                grid.index(i, old, true);
+                for (n, (&k, &p)) in blockers.iter().zip(&saved).enumerate() {
+                    if n < placed {
+                        grid.index(k, self.poses[k], false);
+                    }
+                    self.poses[k] = p;
+                    grid.index(k, p, true);
+                }
+            }
+        }
+    }
+    fn polish(&mut self) {
+        if self.input.polish_passes == 0 {
+            return;
+        }
+        let mut grid = Occupancy::new(&self.input.cells, self.poses.len());
+        for (i, &r) in self.poses.iter().enumerate() {
+            grid.index(i, r, true);
+        }
+        let mut order: Vec<_> = self
+            .movable
+            .iter()
+            .copied()
+            .filter(|&i| {
+                i < self.input.producer_count
+                    && self.source_owner[i].is_none()
+                    && self.radius[i] == 0.0
+                    && self.input.rectangles[i].weight > 0.0
+            })
+            .collect();
+        order.sort_by(|&a, &b| self.cost(b).total_cmp(&self.cost(a)));
+        for _ in 0..self.input.polish_passes {
+            let mut changed = false;
+            for &i in &order {
+                let old = self.poses[i];
+                let mut best = old;
+                let mut best_cost = self.cost(i);
+                for orientation in 0..if old.w == old.h { 1 } else { 2 } {
+                    let (w, h) = if orientation == 0 {
+                        (old.w, old.h)
+                    } else {
+                        (old.h, old.w)
+                    };
+                    for s in self.input.producer_count
+                        ..self.input.producer_count + self.input.store_count
+                    {
+                        let store = self.poses[s];
+                        let radius = best_cost / self.input.rectangles[i].weight;
+                        let left = ((store.cx() - radius - w / 2.0) * 4.0)
+                            .ceil()
+                            .max(self.land.left as f64) as i32;
+                        let right = ((store.cx() + radius - w / 2.0) * 4.0)
+                            .floor()
+                            .min((self.land.left + self.land.width as i32) as f64 - w * 4.0)
+                            as i32;
+                        let top = ((store.cy() - radius - h / 2.0) * 4.0)
+                            .ceil()
+                            .max(self.land.top as f64) as i32;
+                        let bottom = ((store.cy() + radius - h / 2.0) * 4.0)
+                            .floor()
+                            .min((self.land.top + self.land.height as i32) as f64 - h * 4.0)
+                            as i32;
+                        for y in top..=bottom {
+                            for x in left..=right {
+                                self.poses[i] = Pose {
+                                    x: x as f64 / 4.0,
+                                    y: y as f64 / 4.0,
+                                    w,
+                                    h,
+                                };
+                                let cost = self.cost(i);
+                                if cost < best_cost - 1e-8
+                                    && self.valid_position(i)
+                                    && grid.nearby_area(&self.poses, i, usize::MAX) < 1e-8
+                                {
+                                    best = self.poses[i];
+                                    best_cost = cost;
+                                }
+                            }
+                        }
+                    }
+                }
+                self.poses[i] = best;
+                if best.x != old.x || best.y != old.y || best.w != old.w || best.h != old.h {
+                    grid.index(i, old, false);
+                    grid.index(i, best, true);
+                    changed = true;
+                }
+            }
+            for i in self.input.producer_count..self.input.producer_count + self.input.store_count {
+                let old = self.poses[i];
+                let mut best = old;
+                let mut best_cost = self.total_cost();
+                for dy in -4..=4 {
+                    for dx in -4..=4 {
+                        self.poses[i] = Pose {
+                            x: old.x + dx as f64 / 4.0,
+                            y: old.y + dy as f64 / 4.0,
+                            ..old
+                        };
+                        if !self.land.inside(self.poses[i])
+                            || grid.nearby_area(&self.poses, i, usize::MAX) > 1e-8
+                        {
+                            continue;
+                        }
+                        let cost = self.total_cost();
+                        if cost < best_cost - 1e-8 {
+                            best = self.poses[i];
+                            best_cost = cost;
+                        }
+                    }
+                }
+                self.poses[i] = best;
+                if best.x != old.x || best.y != old.y {
+                    grid.index(i, old, false);
+                    grid.index(i, best, true);
+                    changed = true;
+                }
+            }
+            // Unequal footprints can exchange several edge/center alignments.
+            // Keep both destinations feasible and compare their combined cost.
+            for a in 0..order.len() {
+                for b in a + 1..order.len() {
+                    let i = order[a];
+                    let j = order[b];
+                    let old = self.poses[i];
+                    let other = self.poses[j];
+                    if old.w == other.w
+                        && old.h == other.h
+                        && self.input.rectangles[i].weight == self.input.rectangles[j].weight
+                    {
+                        continue;
+                    }
+                    let mut best = (old, other);
+                    let mut best_cost = self.cost(i) + self.cost(j);
+                    let xs: &[f64] = if old.w == other.w {
+                        &[0.0]
+                    } else {
+                        &[0.0, 0.5, 1.0]
+                    };
+                    let ys: &[f64] = if old.h == other.h {
+                        &[0.0]
+                    } else {
+                        &[0.0, 0.5, 1.0]
+                    };
+                    for &ax in xs {
+                        for &ay in ys {
+                            for &bx in xs {
+                                for &by in ys {
+                                    let snap = |v: f64| (v * 4.0 + 0.5).floor() / 4.0;
+                                    self.poses[i] = Pose {
+                                        x: snap(other.x + (other.w - old.w) * ax),
+                                        y: snap(other.y + (other.h - old.h) * ay),
+                                        ..old
+                                    };
+                                    self.poses[j] = Pose {
+                                        x: snap(old.x + (old.w - other.w) * bx),
+                                        y: snap(old.y + (old.h - other.h) * by),
+                                        ..other
+                                    };
+                                    let cost = self.cost(i) + self.cost(j);
+                                    if cost < best_cost - 1e-8
+                                        && self.valid_position(i)
+                                        && self.valid_position(j)
+                                        && grid.changed_area(&self.poses, i, Some(j)) < 1e-8
+                                    {
+                                        best = (self.poses[i], self.poses[j]);
+                                        best_cost = cost;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    self.poses[i] = best.0;
+                    self.poses[j] = best.1;
+                    if best.0.x != old.x
+                        || best.0.y != old.y
+                        || best.1.x != other.x
+                        || best.1.y != other.y
+                    {
+                        grid.index(i, old, false);
+                        grid.index(j, other, false);
+                        grid.index(i, best.0, true);
+                        grid.index(j, best.1, true);
+                        changed = true;
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
     }
     fn output(&self, initial_cost: f64, cost: f64, iterations: usize) -> Output {
         Output {
@@ -614,6 +990,12 @@ impl Search {
 /// explicitly, so the caller can retain its already validated layout.
 pub fn refine_json(json: &str) -> Result<String, String> {
     let input: Input = serde_json::from_str(json).map_err(|e| e.to_string())?;
+    if input.polish_passes > 16 {
+        return Err("Too many polishing passes".into());
+    }
+    if input.exchange_trials > 128 {
+        return Err("Too many exchange trials".into());
+    }
     let n = input.rectangles.len();
     if n > 1024
         || input

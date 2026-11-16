@@ -37,14 +37,16 @@ self.onmessage = async (event) => {
     const accountForWorkers = !grouped && style !== 'delivery';
     if(!accountForWorkers&&storageCount>0&&cells.length) {
         try {
-            const [refineJSON,{fastLayoutSeed,refineFastLayout},{layoutKeepsIncome}]=await Promise.all([
+            const [refineJSON,{fastLayoutSeed,refineFastLayout,polishFastLayout},{layoutKeepsIncome}]=await Promise.all([
                 loadRefinement(),import('./fast-layout.js'+new URL(import.meta.url).search),
                 import('./group-layout.js'+new URL(import.meta.url).search),
             ]);
             if(refineJSON) {
                 const seed=fastLayoutSeed({pieces,cells,storageCount,poleLimit});
                 if(!seed.unplaced.length&&!seed.power.disconnected) {
-                    const candidate=refineFastLayout(seed,cells,refineJSON);
+                    const broad=refineFastLayout(seed,cells,refineJSON);
+                    const polished=polishFastLayout(broad,seed,cells,refineJSON);
+                    const candidate=layoutKeepsIncome(polished,staffing,recipes||[])?polished:broad;
                     if(layoutKeepsIncome(candidate,staffing,recipes||[])) {
                         const needsRanges=recipes?.some(recipe=>recipe.takes.length)||(recipes?.length>0&&pieces.some(piece=>
                             piece.members?.some(member=>FACILITY_CATEGORY_BY_NAME.get(member.facility)==='Materials Processing')));

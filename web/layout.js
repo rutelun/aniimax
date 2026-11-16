@@ -235,6 +235,10 @@ export function layOut(pieces, options = {}) {
     occupy('storage', { rects: storages });
     if (options.obstacles?.length) occupy('obstacles', { rects: options.obstacles });
 
+    // During initial packing occupancy only grows. Earlier failed locations for
+    // an identical footprint cannot become free until the relocation passes.
+    let initialPacking=true;
+    const firstAvailableOffset=new Map();
     const placeRigid = i => {
         const { distanceToStorage, offsets } = profileFor(i);
         let best = null;
@@ -245,13 +249,20 @@ export function layOut(pieces, options = {}) {
             // and only copy a winning position instead of allocating arrays per grid point.
             if(shape.members.length===1&&options.singleBuildingFastPath!==false){
                 const member=shape.members[0],rectangle={x:0,y:0,w:member.w,h:member.h},rectangles=[rectangle];
-                for(const [ox,oy,distance] of offsets){
+                const monotone=initialPacking&&fast&&!options.canPlace&&options.monotonePacking!==false;
+                const footprint=`${member.w}:${member.h}:${!!member.sensitive}`;
+                let offsetIndex=monotone?(firstAvailableOffset.get(footprint)||0):0;
+                for(;offsetIndex<offsets.length;offsetIndex++){
+                    const [ox,oy,distance]=offsets[offsetIndex];
                     if(firstFit!==null&&distance>firstFit+shape.spread+STEP+travelRadius)break;
                     const x=snap(ox-shape.cx),y=snap(oy-shape.cy);
                     rectangle.x=member.x+x;rectangle.y=member.y+y;tried++;
                     if(!free(rectangle,i)||member.sensitive&&inOtherSquare(rectangle,i))continue;
                     if(options.canPlace&&!options.canPlace(i,shape.members,rectangles))continue;
-                    if(firstFit===null)firstFit=distance;
+                    if(firstFit===null){
+                        firstFit=distance;
+                        if(monotone)firstAvailableOffset.set(footprint,offsetIndex);
+                    }
                     const centerX=rectangle.x+rectangle.w/2,centerY=rectangle.y+rectangle.h/2;
                     const away=distanceToStorage(centerX,centerY);
                     let walking=0;
@@ -265,6 +276,7 @@ export function layOut(pieces, options = {}) {
                         best={cost,x,y,shape,rects:[placed],sensitive:member.sensitive?[placed]:[]};
                     }
                 }
+                if(monotone&&firstFit===null)firstAvailableOffset.set(footprint,offsets.length);
                 continue;
             }
             for (const [ox, oy, distance] of offsets) {
@@ -416,6 +428,7 @@ export function layOut(pieces, options = {}) {
         occupy(i, spot);
     }
     // Lift each piece and put it back where it's cheapest now, until a pass moves nothing.
+    initialPacking=false;
     for (let pass = 0; pass < passes; pass++) {
         let moved = false;
         for (const i of order) {
@@ -801,7 +814,15 @@ export function refineDistrictDeliveries(layout, groups, {
     })));
     const local = groups.map((_, i) => entries.filter(entry => entry.district === i));
     const occupied = new Map();
-    const occupiedKeys = rect => cellsOf(rect, (x, y) => `${x},${y}`);
+    const gridLeft=Math.floor(Math.min(...groups.map(g=>g.bounds.x))/CELL)-2;
+    const gridTop=Math.floor(Math.min(...groups.map(g=>g.bounds.y))/CELL)-2;
+    const gridWidth=Math.ceil(Math.max(...groups.map(g=>g.bounds.x+g.bounds.w))/CELL)-gridLeft+3;
+    const gridHeight=Math.ceil(Math.max(...groups.map(g=>g.bounds.y+g.bounds.h))/CELL)-gridTop+3;
+    const gridKey=(x,y)=>x>=gridLeft&&y>=gridTop&&x<gridLeft+gridWidth&&y<gridTop+gridHeight
+        ? (x-gridLeft)*gridHeight+y-gridTop:`${x},${y}`;
+    const occupiedKeys = rect => cellsOf(rect, gridKey);
+    const collisionSeen=new Uint32Array(entries.length);let collisionStamp=0;
+    entries.forEach((entry,index)=>entry.collisionIndex=index);
     const occupy = entry => {
         entry.keys = occupiedKeys(entry.rect);
         for (const key of entry.keys) {
@@ -823,7 +844,11 @@ export function refineDistrictDeliveries(layout, groups, {
         if ((climate || entry.rect.sensitive) && climates.some((squares, j) => (!climate || j !== i)
             && squares.some(square => overlaps(square, rect)))) return false;
         if (fixed.some(r => overlaps(r, rect))) return false;
+        collisionStamp=(collisionStamp+1)>>>0;
+        if(!collisionStamp){collisionSeen.fill(0);collisionStamp=1;}
         for (const key of occupiedKeys(rect)) for (const other of occupied.get(key) || []) {
+            if(collisionSeen[other.collisionIndex]===collisionStamp)continue;
+            collisionSeen[other.collisionIndex]=collisionStamp;
             if (other !== entry && other !== swap && overlaps(other.rect, rect)) return false;
         }
         return true;
@@ -975,8 +1000,16 @@ function improveStorageLayout(layout, pieces, cells, storage, maximum, fast, fix
     const better = (candidate, current) => candidate.unplaced.length < current.unplaced.length
         || (candidate.unplaced.length === current.unplaced.length
             && score(candidate) < score(current) - 1e-9);
+    const freeStorageSites=new WeakMap();
     const findSpot = (members, others) => {
-        const occupied = [...members, ...others, ...(fixed ? layout.power.poles : [])];
+        // Facilities do not move while all storage alternatives are compared.
+        // Filter their occupied sites once per pass, preserving site/tie order.
+        let open=freeStorageSites.get(members);
+        if(!open){
+            const occupied=[...members,...(fixed?layout.power.poles:[])];
+            open=candidates.filter(candidate=>!occupied.some(rect=>overlaps(candidate,rect)));
+            freeStorageSites.set(members,open);
+        }
         const destinations = members.filter(member => member.weight > 0).map(member => {
             const x = member.x + member.w / 2, y = member.y + member.h / 2;
             const existing = nearestStorage(member, others);
@@ -984,11 +1017,14 @@ function improveStorageLayout(layout, pieces, cells, storage, maximum, fast, fix
             return { x, y, distance, weight: member.weight };
         });
         let best = null;
-        for (const candidate of candidates) {
-            if (occupied.some(rect => overlaps(candidate, rect))) continue;
+        for (const candidate of open) {
+            if (others.some(rect => overlaps(candidate, rect))) continue;
             const x = candidate.x + candidate.w / 2, y = candidate.y + candidate.h / 2;
-            const cost = destinations.reduce((sum, member) =>
-                sum + member.weight * Math.min(member.distance, Math.hypot(x - member.x, y - member.y)), 0);
+            let cost=0;
+            for(const member of destinations){
+                cost+=member.weight*Math.min(member.distance,Math.hypot(x-member.x,y-member.y));
+                if(best&&cost>=best.cost-EPSILON)break;
+            }
             if (!best || cost < best.cost - EPSILON) best = { storage: candidate, cost };
         }
         return best;
