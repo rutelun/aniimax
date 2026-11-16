@@ -15,6 +15,82 @@ export function personalityInput(input, index, personality, pairs) {
     return changeOneMember(input, index, { personalities: [...personalities, personality] });
 }
 
+// Only shortlist real forms suited to the jobs most recently assigned to a member.
+// The score selects what to check first; it is never displayed as a production gain.
+export function replacementCandidates(input, plan, recipes, catalog, pairs, limit = 10) {
+    if (!input.roster) return [];
+    const { members, personalities = {} } = input.roster;
+    const activeMembers = [...members];
+    for (const [index, ability, level, count, family] of plan.assumed_aniimo || []) {
+        activeMembers[index] = { count, abilities: { [ability]: level }, family, assumed: true };
+    }
+    const byRecipe = new Map(recipes.map(recipe => [`${recipe.facility}|${recipe.name}`, recipe]));
+    const roles = Array.from({ length: activeMembers.length }, () => []);
+    const usage = workerUsage(plan, input);
+    const add = (member, ability, level, load, trait, family, facility) => {
+        if (roles[member] && ability && load > 0) roles[member].push({ ability, level, load, trait, family, facility });
+    };
+    for (const step of plan.coin_items || []) {
+        if (step.status !== 'producing' || step.crew == null || step.electric_level != null) continue;
+        const recipe = byRecipe.get(`${step.facility}|${step.item_name}`);
+        if (!recipe?.aniimo) continue;
+        const [ability, level] = recipe.aniimo;
+        add(step.crew, ability, level, step.busy_units ?? step.facility_count,
+            personalities[step.facility], recipe.family, step.facility);
+    }
+    for (const [ability, level, member, load] of plan.crop_assignments || []) add(member, ability, level, load);
+    for (const [facility, member, load] of plan.staffing || []) {
+        const power = facility === 'Crackle Generator';
+        const ability = power ? 'Lightning' : input.roster.environment?.[facility];
+        add(member, ability, power ? activeMembers[member]?.abilities.Lightning : 1, load, null, null, facility);
+    }
+    for (const [member, load] of [...(plan.delivery_assignments || plan.hauling_staffing || []), ...(plan.dedicated_delivery || [])]) {
+        add(member, 'Hauling', 1, load);
+    }
+    const candidates = [];
+    const flexible = new Set(roles.flat().map(role => role.ability));
+    for (const [index, member] of activeMembers.entries()) {
+        const work = roles[index];
+        if (!work.length || !(member?.count > 0)) continue;
+        const traits = new Map();
+        for (const role of work) if (role.trait) traits.set(role.trait, (traits.get(role.trait) || 0) + role.load);
+        const desired = pairs.map(pair => [...pair.names].sort((a,b) => (traits.get(b) || 0) - (traits.get(a) || 0))[0])
+            .filter(trait => traits.has(trait));
+        const oldTraits = member.personalities || [];
+        const improvement = entry => work.reduce((sum, role) => {
+            const level = entry.abilities[role.ability];
+            const levels = level - (member.abilities[role.ability] || 0);
+            const trait = role.trait ? Number(desired.includes(role.trait)) - Number(oldTraits.includes(role.trait)) : 0;
+            return sum + role.load * (.2 * levels + .15 * trait);
+        }, 0);
+        const unique = new Set();
+        const options = [];
+        for (const entry of catalog) {
+            if (!work.every(({ ability, level, family }) => entry.abilities[ability] >= level && (!family || entry.family === family))) continue;
+            if (Object.keys(entry.abilities).length === Object.keys(member.abilities).length
+                && Object.entries(entry.abilities).every(([ability, level]) => member.abilities[ability] === level)
+                && (entry.family || null) === (member.family || null)) continue;
+            const profile = JSON.stringify([Object.entries(entry.abilities).sort(), entry.family || null, desired]);
+            if (unique.has(profile)) continue;
+            unique.add(profile);
+            const extra = Object.keys(entry.abilities).filter(a => flexible.has(a) && entry.abilities[a] > (member.abilities[a] || 0)).length;
+            const score = improvement(entry) + .04 * extra;
+            if (score > 0) options.push({ entry, score });
+        }
+        options.sort((a, b) => b.score - a.score);
+        for (const { entry, score } of options.slice(0, 2)) {
+            const replacement = { abilities: entry.abilities, family: entry.family || null, personalities: desired };
+            const alternative = member.assumed ? { ...input, roster: { ...input.roster,
+                members: [...members, { ...replacement, count: 1 }] } } : changeOneMember(input, index, replacement);
+            candidates.push({ index, entry, traits: desired, score: score + .02 * Math.min(1, usage?.busy.get(index) || 0),
+                changedMember: member.assumed || member.count > 1 ? members.length : index,
+                facilities: [...new Set(work.map(role => role.facility).filter(Boolean))],
+                input: alternative });
+        }
+    }
+    return candidates.sort((a, b) => b.score - a.score).slice(0, limit);
+}
+
 // Conservative reachability: remove only recipes blocked by a missing building, level,
 // module, season, unlock, or an ingredient with no available producer. Never prune a job
 // merely because it is idle in the current solution: an upgrade can make it worthwhile.
@@ -81,10 +157,21 @@ export function workerUsage(plan, input) {
         for (const [member, travel] of plan.movement_staffing || []) add(member, travel);
     }
     for (const [member, share] of plan.layout_walking || []) add(member, share);
+    for (const [member, share] of plan.job_switching || []) add(member, share);
     for (const [member, share] of plan.delivery_assignments || plan.hauling_staffing || []) add(member, share);
     const heads = (member, load) => Math.max(anchored.get(member) ?? 0, Math.ceil(load - 1e-6));
-    return { busy, working: [...busy].reduce((n, [member, load]) => n + heads(member, load), 0),
-        additional: [...busy].filter(([i]) => i >= input.roster.members.length).reduce((n, [member, load]) => n + heads(member, load), 0),
+    const dedicated = new Map(plan.dedicated_delivery || []);
+    const assignments = new Map([...new Set([...busy.keys(), ...dedicated.keys()])].map(member => {
+        const regular = heads(member, busy.get(member) || 0), delivery = Math.ceil((dedicated.get(member) || 0) - 1e-6);
+        return [member, regular + delivery];
+    }));
+    const peakOf = ([member, load]) => Math.min(1, Math.max(load / Math.max(1, heads(member, load)),
+        (dedicated.get(member) || 0) / Math.max(1, Math.ceil(dedicated.get(member) || 0))));
+    const loads = plan.comparison_workloads?.flat().filter(Number.isFinite);
+    const peak = loads ? Math.max(0, ...loads) : Math.max(0, ...[...busy].map(peakOf), ...[...dedicated].map(([member]) => peakOf([member, 0])));
+    for (const [member, load] of dedicated) add(member, load);
+    return { busy, assignments, loads: plan.comparison_workloads, peak, working: [...assignments.values()].reduce((n, count) => n + count, 0),
+        additional: [...assignments].filter(([i]) => i >= input.roster.members.length).reduce((n, [, count]) => n + count, 0),
         hours: [...busy.values()].reduce((n, b) => n + b * 24, 0) };
 }
 
@@ -176,4 +263,25 @@ export function keepBetterComparison(previous, next, input) {
         return { ...previous, retained: true };
     }
     return next;
+}
+
+export function compareRecommendations(before, after, input, alternative) {
+    const report = comparePlans(before, after, input, alternative);
+    const goals = new Set(['coins', 'crop_variety', ...(input.priorities || []).map(id => id === 'level_up' ? 'rv_time' : id)]);
+    if (input.level_up_strategy) goals.add('rv_time');
+    const protectedLoss = report.rows.find(row => goals.has(row.id) && row.direction < 0);
+    const income = report.rows.find(row => row.id === 'coins');
+    const count = report.rows.find(row => row.id === 'working_aniimo');
+    const work = report.rows.find(row => row.id === 'work_hours');
+    const start = workerUsage(before, input), finish = workerUsage(after, alternative);
+    const peak = start && finish ? { id: 'peak_workload', kind: 'percent', before: start.peak, after: finish.peak,
+        direction: direction(start.peak, finish.peak, true, 'work') } : null;
+    if (peak) report.rows.push(peak);
+    const order = [income, count, peak, work];
+    const group = order.findIndex(row => row && row.direction !== 0);
+    const main = protectedLoss || order[group];
+    const gain = main?.direction > 0;
+    return { ...report, income, decisive: main, direction: main?.direction || 0,
+        score: gain ? (4 - group) * 1e6 + Math.abs(main.after - main.before) : 0, start, finish,
+        inconclusiveLoss: report.approximate && main?.direction < 0 };
 }

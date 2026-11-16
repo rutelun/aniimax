@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Aniimax - Aniimo Production Optimizer</title>
-    <link rel="stylesheet" href="style.css?v=team-workload">
+    <link rel="stylesheet" href="style.css?v=recommendations">
     <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
 </head>
 <body>
@@ -322,10 +322,14 @@
 
                     <div class="card production-steps" id="improve-card" style="display: none;">
                         <h2>Opportunities</h2>
-                        <p class="hint small">Quick checks use a short search budget and may miss improvements. Use Detailed search for a promising or inconclusive alternative. Only checked, feasible plans are compared.</p>
-                        <p class="hint small">Uses the current travel and delivery estimates; a changed layout may give different results.</p>
+                        <div class="opportunity-tabs" role="group" aria-label="Opportunity type">
+                            <button type="button" data-opportunity-tab="Aniimo" aria-pressed="true" class="skip-add-btn"><span>Aniimo upgrades</span> <span class="opportunity-tab-gain"></span></button>
+                            <button type="button" data-opportunity-tab="Personalities" aria-pressed="false" class="skip-add-btn"><span>Personality changes</span> <span class="opportunity-tab-gain"></span></button>
+                            <button type="button" data-opportunity-tab="Recipes" aria-pressed="false" class="skip-add-btn"><span>Recipe unlocks</span> <span class="opportunity-tab-gain"></span></button>
+                            <button type="button" data-opportunity-tab="Buildings" aria-pressed="false" class="skip-add-btn" hidden><span>Buildings &amp; modules</span> <span class="opportunity-tab-gain"></span></button>
+                        </div>
                         <div class="opportunity-controls">
-                            <button type="button" class="skip-add-btn" id="improve-check-btn">Check all improvements</button>
+                            <button type="button" class="skip-add-btn" id="improve-check-btn">Check Aniimo upgrades</button>
                             <button type="button" class="skip-add-btn" id="improve-stop-btn" hidden>Stop checking</button>
                             <span class="hint small" id="improve-status" role="status" aria-live="polite"></span>
                         </div>
@@ -674,6 +678,6 @@
             </linearGradient>
         </defs>
     </svg>
-    <script type="module" src="app.js?v=protect-growers"></script>
+    <script type="module" src="app.js?v=recommendations"></script>
 </body>
 </html>

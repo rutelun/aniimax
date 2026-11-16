@@ -1,7 +1,8 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {changeOneMember,personalityInput,reserveLevelFourInputs,workerUsage,comparePlans,keepBetterComparison} from '../web/opportunity-comparison.js';
+import {changeOneMember,personalityInput,reserveLevelFourInputs,workerUsage,comparePlans,keepBetterComparison,
+    compareRecommendations,replacementCandidates} from '../web/opportunity-comparison.js';
 import {createComparisonSearch} from '../web/comparison-search.js';
 import {comparisonConcurrency,startComparisonQueue} from '../web/comparison-queue.js';
 
@@ -12,6 +13,34 @@ const plan = (coins=10,wood=2) => ({success:true,proven_optimal:true,rate_per_se
     priorities:[{target:'season_points',per_second:1},{target:'Wood Blocks',per_second:wood}],
     comparison_scores:{crop_variety:26,material_pace:.3,material_work:3},
     level_up_preview:{seconds:1_000,requirements:[{name:'standard_planks',per_second:.1}]},coin_items:[]});
+
+test('real replacements match the family and recommend the relevant personality for one copy', () => {
+    const original = { roster: { members: [{ count: 2, abilities: { Leisure: 3 }, family: 'required' }],
+        personalities: { 'Dewy House': 'Faithful' } } };
+    const baseline = { coin_items: [{ facility: 'Dewy House', item_name: 'gem', status: 'producing', crew: 0, facility_count: 1 }] };
+    const recipes = [{ facility: 'Dewy House', name: 'gem', aniimo: ['Leisure',3], family: 'required' }];
+    const catalog = [{ id: 'wrong', abilities: { Leisure: 4 }, family: 'elsewhere' },
+        { id: 'right', abilities: { Leisure: 4 }, family: 'required' },
+        { id: 'duplicate', abilities: { Leisure: 4 }, family: 'required' }];
+    const [candidate, duplicate] = replacementCandidates(original, baseline, recipes, catalog, [{ names: ['Faithful','Tenacious'] }]);
+    assert.equal(duplicate, undefined);
+    assert.equal(candidate.entry.id, 'right');
+    assert.deepEqual(candidate.traits, ['Faithful']);
+    assert.deepEqual(candidate.input.roster.members.map(member => member.count), [1,1]);
+    assert.equal(original.roster.members[0].count,2);
+});
+
+test('recommendations rank income, workers, then individual load and protect current priorities', () => {
+    const base = input();
+    const before = { ...plan(), roster_workload: [1.6], comparison_workloads: [[.9,.7]] };
+    const income = compareRecommendations(before, { ...before, rate_per_second: 11 }, base, base);
+    const fewer = compareRecommendations(before, { ...before, roster_workload: [.8], comparison_workloads: [[.8]] }, base, base);
+    const load = compareRecommendations(before, { ...before, roster_workload: [1.5], comparison_workloads: [[.8,.7]] }, base, base);
+    assert.deepEqual([income.decisive.id,fewer.decisive.id,load.decisive.id], ['coins','working_aniimo','peak_workload']);
+    assert.ok(income.score > fewer.score && fewer.score > load.score && load.score > 0);
+    const loss = compareRecommendations(before, { ...plan(11,1), roster_workload: [.8] }, base, base);
+    assert.equal(loss.direction,-1);
+});
 
 test('comparison totals use checked shifts and add the actual courier work once', () => {
     const checked = { roster_workload: [1.9, .2], coin_items: [{ status: 'producing', crew: 0, busy_units: .1 }],
@@ -171,7 +200,7 @@ test('detailed comparison retries without baseline floors when an integer-feasib
     assert.equal(reports.find(r=>r.index===0).plan.rate_per_second,12);
 });
 
-test('suggestions do not launch searches automatically, and cancelled comparisons ignore late replies', async () => {
+test('preparing suggestions does not launch searches, and a check stays in its category', async () => {
     const source=await readFile(new URL('../web/app.js',import.meta.url),'utf8');
     const stop=source.slice(source.indexOf('function stopRanking()'),source.indexOf('// How many of a facility'));
     const run=source.slice(source.indexOf('function rankImprovementsFor('),source.indexOf('function comparisonPhase('));
@@ -184,10 +213,11 @@ test('suggestions do not launch searches automatically, and cancelled comparison
     }
     const api=new Function('Worker','setTimeout','clearTimeout','baseline','base','keepBetterComparison','startComparisonQueue','comparisonConcurrency',`
         let rankRunId=0,rankWorkers=[],rankCleanups=[],ranking=null,rankingsBySetup={};
-        const mainSolve=null,setupSolve=null,layoutWorker=null,lastPlan=baseline,lastPlanInput=base;
+        const mainSolve=null,setupSolve=null,layoutWorker=null,lastLayout=null,lastPlan=baseline,lastPlanInput=base;
         const plansBySetup={roster:baseline},WORKER_URL='worker',SETUP_TIMEOUT=100;
         const aniimoInput=()=>({}),haulingRouteBound=()=>0,renderImprovements=()=>{};
-        const improvementCandidates=()=>({candidates:[0,1,2].map(i=>({input:{...base,change:i}})),omitted:[]});
+        const improvementCandidates=()=>({candidates:[0,1,2].map(i=>({kind:i===2?'Recipes':'Aniimo',input:{...base,change:i}}))});
+        const opportunityWorkload=plan=>plan,opportunityIndividualLoads=plan=>plan,compareRecommendations=()=>({});
         const comparisonPhase=step=>step;
         const navigator={hardwareConcurrency:4,deviceMemory:4};
         ${stop}\n${run}
@@ -209,7 +239,7 @@ test('suggestions do not launch searches automatically, and cancelled comparison
     workers[1].reply({index:0,plan:plan(12)});
     assert.equal(api.state().results[1].plan.rate_per_second,12);
     api.stop();
-    api.run('roster','all');
-    assert.deepEqual(workers.slice(2).flatMap(w=>w.message.candidates.map(c=>c.change)),[0,2]);
+    api.run('roster','Aniimo');
+    assert.deepEqual(workers.slice(2).flatMap(w=>w.message.candidates.map(c=>c.change)),[0]);
     api.stop();
 });

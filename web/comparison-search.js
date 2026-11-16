@@ -1,7 +1,7 @@
 // Fast comparisons use the same model and checker as planning. Only their search budget is
 // smaller. A continuous upper bound can certify an earlier goal without another integer search;
 // the completed plan must still meet that goal and pass the native independent check.
-import {comparePlans} from './opportunity-comparison.js?v=shared-work-time';
+import {comparePlans} from './opportunity-comparison.js?v=recommendations';
 
 function integerColumns(problem) {
     const section = problem.lp.match(/\nGeneral\n([\s\S]*?)\nEnd/);
@@ -83,6 +83,7 @@ export function createComparisonSearch(basePlan, solve, {
             }
         }
         if (seed?.length === problem.variables) seed = clipInactive(problem,seed);
+        if (problem.production_only && seed?.length === problem.variables && value(seed) <= 0) seed = undefined;
         const left = (deadline-now())/1000;
         if (left <= 0) throw new Error('Quick check reached its time budget. Use Detailed search for this alternative.');
         const result = await solve(problem, { ...requested, time_limit: Math.min(requested.time_limit ?? options.time_limit, left) }, message, seed);
