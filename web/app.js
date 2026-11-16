@@ -4,6 +4,7 @@ import { currentLocale, sourceAttribute, translate } from './i18n.js?v=recommend
 import './math-translation.js?v=results-columns';
 import { autoMaximizeSeasonPoints } from './season-planning.js?v=optional-season-points';
 import { normalizeMapStyle } from './map-style.js?v=production-groups';
+import { productionGroupOutline } from './group-outline.js?v=compact-groups';
 
 import {
     FACILITIES, FACILITY_CATEGORIES, FACILITY_CATEGORY_BY_NAME, FACILITY_FOOTPRINTS, HOMELAND_PLOTS, HOMELAND_PLOT_SIZE,
@@ -2108,12 +2109,14 @@ function homelandSvg(layout, homeLevel, plan) {
         <text x="${p.x + p.w / 2}" y="${p.y + p.h * (showIcons ? 0.82 : 0.5)}" font-size="${showIcons ? 0.48 : 0.7}" class="layout-number-label">${showIcons ? '' : '⚡'}${i + 1}</text></g>`).join('');
     const rectangle = (r, css) => `<rect class="${css}" x="${r.x}" y="${r.y}" width="${r.w}" height="${r.h}" />`;
     const districts = layout.groupStyle === 'districts';
-    const groupShapes = groups.map(group => `<g class="layout-district${districts ? ' layout-district-structured' : ''}" data-purpose="${group.purpose}" data-theme="${resourceZoneTheme(group)}">
-        ${rectangle(group.bounds, 'layout-district-boundary')}
+    const groupShapes = groups.map(group => {
+        const outline=layout.groupStyle==='groups'&&group.indices?productionGroupOutline(group,layout):null;
+        return `<g class="layout-district${districts ? ' layout-district-structured' : ''}" data-purpose="${group.purpose}" data-theme="${resourceZoneTheme(group)}">
+        ${outline?`<path class="layout-group-fill" d="${outline.fill}"/><path class="layout-group-edge" d="${outline.edge}"/>`:rectangle(group.bounds, 'layout-district-boundary')}
         ${group.reserved.map(r => rectangle(r, 'layout-decor')).join('')}
         ${group.workshop ? rectangle(group.workshop, 'layout-workshop-zone') : ''}
         ${districts ? rectangle(group.feature, 'layout-district-frontage') : ''}
-        </g>`).join('');
+        </g>`;}).join('');
     const idle = layout.idleArea?.bounds;
     const idleShape = idle ? `<g class="layout-idle-area" pointer-events="none">
         ${rectangle(idle, 'layout-idle-boundary')}

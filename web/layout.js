@@ -808,7 +808,7 @@ export function refineDistrictDeliveries(layout, groups, {
     const climates = result.pieces.map(piece => piece.cluster ? piece.members.slice(0, piece.buildings.length).map(climateBox) : []);
     const fixed = [...result.storages, ...(result.power?.poles ?? [])];
     const entries = result.pieces.flatMap((piece, i) => piece.members.map((rect, j) => ({
-        i, rect, district: districtOf(rect), climate: !!piece.cluster && j >= piece.buildings.length,
+        i, rect, district: result.groupStyle === 'groups' && Number.isInteger(rect.productionGroup) ? rect.productionGroup : districtOf(rect), climate: !!piece.cluster && j >= piece.buildings.length,
         movable: !rect.generator && (includeMines || rect.facility !== 'Mine')
             && (piece.cluster ? j >= piece.buildings.length : piece.members.length === 1),
     })));
@@ -838,7 +838,11 @@ export function refineDistrictDeliveries(layout, groups, {
     const supplied = suppliedPlacementOptions(result);
     const valid = (entry, rect, swap) => {
         const { i, district, climate } = entry;
-        if (districtOf(rect) !== district || groups[district].reserved.some(r => overlaps(r, rect))) return false;
+        const boundary=groups[district].bounds;
+        const inDistrict=result.groupStyle==='groups'
+            ? rect.x>=boundary.x-EPSILON&&rect.y>=boundary.y-EPSILON&&rect.x+rect.w<=boundary.x+boundary.w+EPSILON&&rect.y+rect.h<=boundary.y+boundary.h+EPSILON
+            : districtOf(rect)===district;
+        if (!inDistrict || groups[district].reserved.some(r => overlaps(r, rect))) return false;
         if (!canPlace(i, [entry.rect], [rect]) || !supplied.canPlace(i, [entry.rect], [rect])) return false;
         if (climate && !matchesClimate(rect, climates[i], entry.rect.zone)) return false;
         if ((climate || entry.rect.sensitive) && climates.some((squares, j) => (!climate || j !== i)
@@ -919,7 +923,12 @@ export function refineDistrictDeliveries(layout, groups, {
                     candidates.push({ spot: s, swap: other, saving });
             }
             candidates.sort((a, b) => b.saving - a.saving);
-            if (candidates.slice(0, 6).some(({ spot, swap }) => tryMove(entry, spot, swap))) changed = true;
+            // Rejected swaps must not crowd out a useful move into free space
+            // (for example when the other worker cannot move without losing income).
+            const shortlist = candidates.slice(0, 6);
+            for (const candidate of candidates.filter(c => !c.swap).slice(0, 4))
+                if (!shortlist.includes(candidate)) shortlist.push(candidate);
+            if (shortlist.some(({ spot, swap }) => tryMove(entry, spot, swap))) changed = true;
         }
         if (!changed) break;
     }

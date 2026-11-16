@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildProductionBlocks, productionGroupLayout, normalizeMapStyle, refineProductionGroups } from '../web/production-groups.js';
+import { buildProductionBlocks, productionGroupLayout, normalizeMapStyle, refineProductionGroups, refineGroupedMembers } from '../web/production-groups.js';
 import { createInsideTest, layoutDeliveryCost } from '../web/layout.js';
 
 const piece = (facility, weight = 1) => ({members:[{x:0,y:0,w:2,h:2,facility,weight}]});
@@ -71,4 +71,39 @@ test('idle processors stay in the alphabetical production group',async()=>{
     assert.ok(out);
     assert.equal(out.pieces[0].members[0].productionGroup,out.pieces[1].members[0].productionGroup);
     assert.equal(out.idleArea,undefined);
+});
+test('processing A–Z starts at the bottom left, with bottom-aligned rows of different heights',()=>{
+    const input=['Woodworking Bench','Crafting Table','Chimney Kiln','Blazing Stove','Aniipod Maker'].map(n=>piece(n));
+    input[4].members[0].h=4;
+    const b=buildProductionBlocks(input,{width:4})[0];
+    const ordered=[...b.members].sort((a,b)=>(b.y+b.h)-(a.y+a.h)||a.x-b.x);
+    assert.deepEqual(ordered.map(r=>r.facility),['Aniipod Maker','Blazing Stove','Chimney Kiln','Crafting Table','Woodworking Bench']);
+    assert.equal(ordered[0].y+ordered[0].h,ordered[1].y+ordered[1].h);
+});
+test('groups can interlock one building deep while their real footprints remain separate',()=>{
+    const layout={pieces:[{members:[{x:8,y:8,w:2,h:2,weight:4,facility:'Mine',productionGroup:0}]},
+        {members:[{x:4,y:12,w:2,h:2,weight:0,facility:'Well',productionGroup:1}]}],
+        storages:[{x:0,y:8,w:2,h:2}],unplaced:[],power:{poles:[],disconnected:0},
+        groups:[{bounds:{x:8,y:8,w:4,h:6},indices:[0],themes:['extraction'],reserved:[]},
+                {bounds:{x:4,y:8,w:4,h:6},indices:[1],themes:['aniimo'],reserved:[]}]};
+    const out=refineProductionGroups(layout,[{x:0,y:0,w:20,h:20}]);
+    assert.ok(out.groups[0].bounds.x<8,'envelopes can overlap');
+    assert.ok(out.pieces[0].members[0].x>=6,'penetration is at most one 2-tile building');
+    assert.ok(layoutDeliveryCost(out)<layoutDeliveryCost(layout));
+});
+test('a low-throughput well is refined even behind 49 higher-cost producers',()=>{
+    const mines=Array.from({length:49},(_,i)=>({members:[{x:15+i%7,y:15+Math.floor(i/7),w:1,h:1,weight:1000,facility:'Mine',productionGroup:0}]}));
+    const well={members:[{x:25,y:5,w:1,h:1,weight:1,facility:'Well',productionGroup:0}]};
+    const layout={groupStyle:'groups',pieces:[...mines,well],storages:[{x:1,y:1,w:2,h:2}],unplaced:[],power:{poles:[],disconnected:0},
+        groups:[{bounds:{x:0,y:0,w:30,h:30},indices:Array.from({length:50},(_,i)=>i),themes:['extraction'],reserved:[]}]};
+    const out=refineGroupedMembers(layout,[{x:0,y:0,w:30,h:30}],{accept:c=>mines.every((p,i)=>p.members[0].x===c.pieces[i].members[0].x&&p.members[0].y===c.pieces[i].members[0].y)});
+    assert.ok(out.pieces[49].members[0].x<25);
+    assert.ok(layoutDeliveryCost(out)<layoutDeliveryCost(layout));
+});
+
+test('narrow land retains a compact fallback when wider processing rows do not fit',async()=>{
+    const layout=await productionGroupLayout(Array.from({length:8},()=>piece('Crafting Table')),[{x:0,y:0,w:12,h:12}]);
+    assert.ok(layout);
+    assert.equal(layout.unplaced.length,0);
+    assert.equal(layout.pieces.flatMap(p=>p.members).length,8);
 });

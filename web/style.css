@@ -2706,6 +2706,8 @@ details.explain p {
 
 .layout-idle-boundary { fill: none; stroke: var(--text-muted); stroke-width: .1; stroke-dasharray: .4 .3; }
 .layout-idle-area text { fill: var(--text-muted); }
+.layout-group-fill { fill: var(--district-color); fill-opacity: .08; stroke: none; }
+.layout-group-edge { fill: none; stroke: var(--district-color); stroke-width: .12; stroke-dasharray: .5 .22; }
 
 .layout-district-structured .layout-district-boundary {
     stroke-width: .2;
