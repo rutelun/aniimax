@@ -2,6 +2,7 @@
 // connects a building. Only generators and poles relay power; consumers are endpoints. The ranges,
 // footprints and conservative overlap follow Aniimo Camp's public Home planner data.
 import { createInsideTest } from './layout.js';
+import { analyzePowerNetworks } from './power-islands.js';
 
 const EPS = 1e-6;
 const center = r => ({ x: r.x + r.w / 2, y: r.y + r.h / 2 });
@@ -42,6 +43,7 @@ function attachTargets(targets, connected, links) {
 
 // Refresh wiring after consumers move inside existing supply zones. Infrastructure stays put.
 export function updatePowerConnections(layout) {
+    if(layout.power?.islands)return analyzePowerNetworks(layout);
     const members = layout.pieces.flatMap(p => p.members);
     const generators = members.filter(m => m.generator);
     const consumers = members.filter(m => m.electric_level != null);
@@ -58,14 +60,14 @@ export function updatePowerConnections(layout) {
     return layout;
 }
 
-export function connectPower(layout, cells, maximum, repack = true, canRelocate = null, canPlacePole = null, preferCoverage = false) {
+export function connectPower(layout, cells, maximum, repack = true, canRelocate = null, canPlacePole = null, preferCoverage = false, islands = false) {
     const inside = createInsideTest(cells);
     const members = layout.pieces.flatMap(p => p.members);
     const generators = members.filter(m => m.generator);
     const consumers = members.filter(m => m.electric_level != null);
     // Generators do not haul anything. Relocate them into free space near their consumers
     // before routing, rather than leaving them at the edge chosen by the hauling layout.
-    for (const generator of generators) {
+    for (const generator of islands ? [] : generators) {
         const destinations = [...consumers, ...generators.filter(g => g !== generator)];
         const sumX = destinations.reduce((sum, m) => sum + m.x + m.w / 2, 0);
         const sumY = destinations.reduce((sum, m) => sum + m.y + m.h / 2, 0);
@@ -90,7 +92,7 @@ export function connectPower(layout, cells, maximum, repack = true, canRelocate 
     const targets = [...generators, ...consumers];
     const connected = new Set();
     const links = [];
-    if (generators.length) connected.add(generators[0]);
+    for(const generator of islands ? generators : generators.slice(0,1))connected.add(generator);
     const attach = () => attachTargets([...targets, ...poles], connected, links);
     attach();
     // Free half-tile locations for poles, never on facilities, storage or locked land.
@@ -164,6 +166,7 @@ export function connectPower(layout, cells, maximum, repack = true, canRelocate 
         disconnected: targets.filter(t => !connected.has(t)).length,
         coverage: [...generators, ...poles].map(r => ({ ...powerCoverage(r), connected: connected.has(r) })),
     };
+    if(islands)return analyzePowerNetworks(layout);
     if (repack && layout.power.disconnected && generators.length && consumers.length) {
         return repackPower(layout, cells, maximum, { canRelocate, canPlacePole });
     }

@@ -5,6 +5,7 @@
 import { FACILITY_CATEGORY_BY_NAME } from './facility-config.js?v=leisure-families';
 import { normalizeMapStyle } from './map-style.js';
 import { parkIdleBuildings } from './idle-layout.js';
+import { optimizePowerNetworks } from './power-islands.js';
 
 const ready = import('./layout.js' + new URL(import.meta.url).search);
 const powerReady = import('./power-layout.js' + new URL(import.meta.url).search);
@@ -27,12 +28,12 @@ self.onmessage = async (event) => {
     const { recipes, staffing } = event.data;
     const style = normalizeMapStyle(event.data.style);
     const grouped = style === 'groups';
-    const deliver = layout => self.postMessage(parkIdleBuildings(layout,cells));
+    const deliver = layout => self.postMessage(optimizePowerNetworks(parkIdleBuildings(layout,cells),cells,poleLimit));
     if (grouped && storageCount > 0) {
         const { productionGroupLayout } = await import('./production-groups.js' + new URL(import.meta.url).search);
         const arranged = await productionGroupLayout(pieces, cells, { storageCount, poleLimit, recipes, staffing });
         if (arranged) {
-            self.postMessage(arranged);
+            self.postMessage(optimizePowerNetworks(arranged,cells,poleLimit));
             return;
         }
     }

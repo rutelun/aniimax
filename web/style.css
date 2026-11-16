@@ -3684,6 +3684,7 @@ html { scroll-padding-top: 0.8rem; }
 .production-ability-icon { width: 1.25rem; height: 1.25rem; object-fit: contain; }
 .production-electric { gap: 0.18rem; color: var(--text); font-size: 0.72rem; white-space: nowrap; }
 .production-electric svg { width: 1rem; height: 1rem; color: #e6a427; }
+.production-grid-labels { display: grid; gap: 0.12rem; text-align: right; }
 .production-load { gap: 0.28rem; font-size: 0.74rem; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .production-load > strong { min-inline-size: 6.25ch; text-align: end; }
 .production-load-track { width: 2rem; height: 4px; border-radius: 4px; background: var(--border); overflow: hidden; }

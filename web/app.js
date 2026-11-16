@@ -5,6 +5,7 @@ import './math-translation.js?v=results-columns';
 import { autoMaximizeSeasonPoints } from './season-planning.js?v=optional-season-points';
 import { normalizeMapStyle } from './map-style.js?v=production-groups';
 import { productionGroupOutline } from './group-outline.js?v=compact-groups';
+import { powerJobDetails } from './power-islands.js?v=independent-grids';
 
 import {
     FACILITIES, FACILITY_CATEGORIES, FACILITY_CATEGORY_BY_NAME, FACILITY_FOOTPRINTS, HOMELAND_PLOTS, HOMELAND_PLOT_SIZE,
@@ -1383,7 +1384,8 @@ function homelandPieces(plan, input) {
     const generators = Math.min(plan.power_generators || 0, generatorLimit(layoutHomeLevel()));
     for (let i = 0; i < generators; i++) pieces.push({ members: [{ x: 0, y: 0, w: 2, h: 2,
         weight: 0, facility: 'Crackle Generator', generator: true, generatorTier: plan.power_generator_levels?.[i]?.[0],
-        lightningLevel: plan.power_generator_levels?.[i]?.[1] }] });
+        lightningLevel: plan.power_generator_levels?.[i]?.[1],
+        generatedWatts: plan.generator_watts_by_lightning?.[(plan.power_generator_levels?.[i]?.[1]??0)-1] }] });
     const physical = pieces.flatMap(p => p.cluster ? p.plots : p.members);
     for (const [item, facility, worker, visits, cropWork] of plan.mobile_work || []) {
         const targets = physical.filter(m => m.facility === facility && (m.jobs
@@ -1796,12 +1798,20 @@ function renderHomelandLayout(plan) {
             .replace('{max}', layout.power.maximum).replace('{w}', formatNumber(plan.power_used || 0)) : '';
         const notes = [
             powerSummary,
+            ...(layout.power.networks??[]).filter(n=>n.generators).map(powerNetworkLabel),
             layout.power.disconnected ? translate('Power connection not found for {n} buildings.').replace('{n}', layout.power.disconnected) : '',
             missingGenerators ? translate('The plan needs {n} more generators than can be placed at this RV level.').replace('{n}', missingGenerators) : '',
             layout.groups ? translate('{n} production groups.').replace('{n}', layout.groups.length) : '',
             noRoom.length ? `No room found in RV ${homeLevel}'s plots for: ${noRoom.join(', ')}.` : '',
             unplaced.length ? `Not placed, size unknown: ${unplaced.join(', ')}.` : '',
         ].filter(Boolean).join(' ');
+        if(layout.power.networks?.length){
+            const power=document.getElementById('power-used');
+            power.textContent=layout.power.networks.filter(n=>n.generators).map(powerNetworkLabel).join(' · ');
+        }else{
+            document.getElementById('power-used').textContent=plan.power_used==null?'':translate('E-mode load: {draw} W · Generation: {output} W · Supply: 120%')
+                .replace('{draw}',formatNumber(plan.power_used)).replace('{output}',formatNumber(plan.power_generated??0));
+        }
         const arrangementNotice = [
             layout.groupFallback === 'storage' ? translate('Grouped maps need at least one Storage Unit. Showing the delivery layout.') : '',
             layout.groupFallback === 'space' ? translate('The grouped map could not fit every facility and connect the grid. Showing the delivery layout.') : '',
@@ -1833,6 +1843,7 @@ function renderHomelandLayout(plan) {
         legend.hidden = !layout.groups;
         document.getElementById('layout-group-hint').hidden = !layout.groups;
         lastLayout = { layout, homeLevel, plan };
+        renderFacilityPlan(plan);
         drawLayout(lastLayout);
         setStep('layout', 'done');
         if (refineWorkerMovement(layout, plan)) return;
@@ -1907,7 +1918,7 @@ function layoutFacilityIcon(facility, { x, y, w, h }, labelSpace = 0) {
 let layoutShowsWhole = false;
 let lastLayout = null;
 
-function layoutWorkAtSites(plan, sites) {
+function layoutWorkAtSites(plan, sites, layout) {
     const dedicated = new Map();
     for (const [facility, crew, count] of plan.staffing || []) {
         const workers = dedicated.get(facility) ?? [];
@@ -1943,16 +1954,19 @@ function layoutWorkAtSites(plan, sites) {
             const matching = m.lightningLevel ? team.findIndex(id => (roster[id]?.abilities[ability] ?? assumed.get(id)?.level) === m.lightningLevel) : -1;
             const id = team.length ? team.splice(Math.max(0, matching), 1)[0] : undefined;
             const worker = iconFor(id, ability, m.lightningLevel ?? roster[id]?.abilities[ability] ?? assumed.get(id)?.level);
-            return [{ worker, text: `${worker.label} · 100%` }];
+            return [{ worker, text: `${worker.label} · 100%` },
+                ...(m.power_networks??[]).map(i=>({text:powerNetworkLabel(layout.power.networks[i])}))];
         }
         const jobs = m.jobs ?? (m.crop ? [{ item: m.crop, cycle: m.cycle, load: m.load, crew: m.crew, electric_level: m.electric_level }] : []);
         return jobs.flatMap(job => {
             const row = rows.get(JSON.stringify([m.facility, job.item, job.crew, job.electric_level]));
-            const load = job.rate != null ? job.rate * job.cycle : (job.load ?? ((row?.busy_units ?? row?.facility_count ?? 0) / (row?.facility_count || 1)));
-            const batch = job.cycle > 0 ? translate('{duration} per batch').replace('{duration}', cycleDuration(job.cycle)) : '';
+            const speedFactor=job.electric_level!=null&&m.power_percent>0?120/m.power_percent:1;
+            const load = speedFactor*(job.rate != null ? job.rate * job.cycle : (job.load ?? ((row?.busy_units ?? row?.facility_count ?? 0) / (row?.facility_count || 1))));
+            const batch = job.cycle > 0 ? translate('{duration} per batch').replace('{duration}', cycleDuration(job.cycle*speedFactor)) : '';
             const suffix = [percent(load), batch].filter(Boolean).join(' · ');
             const item = translate(prettyItem(job.item));
-            if (job.electric_level != null) return [{ text: `${item} · ${translate('E-mode')} · ${suffix}` }];
+            if (job.electric_level != null) return [{ text: `${item} · ${translate('E-mode')} · ${suffix}` },
+                ...(m.power_networks??[]).map(i=>({text:powerNetworkLabel(layout.power.networks[i])}))];
             const task = row?.aniimo ?? assumed.get(job.crew);
             if (task || job.crew != null) {
                 const worker = iconFor(job.crew, task?.ability, task?.level);
@@ -1975,6 +1989,13 @@ function layoutWorkAtSites(plan, sites) {
             return [{ text: `${item} · ${suffix}` }, ...(pool.length ? [{ text: translate('Shared field crew') }, ...pool] : [])];
         });
     });
+}
+
+function powerNetworkLabel(network){
+    return translate('Grid {n} ({generators}): {percent}% · {draw} / {output} W')
+        .replace('{n}',network.id+1).replace('{percent}',formatNumber(network.percent))
+        .replace('{generators}',network.generator_ids.map(id=>`G${id}`).join(' + '))
+        .replace('{draw}',formatNumber(network.rated)).replace('{output}',formatNumber(network.generated));
 }
 
 function layoutWorkerBadges(site, work, electric) {
@@ -2044,14 +2065,14 @@ function homelandSvg(layout, homeLevel, plan) {
     const showIcons = document.getElementById('layout-icons').checked;
     const showWorkers = document.getElementById('layout-workers').checked;
     const sites = layout.pieces.flatMap(p => p.members);
-    const workAtSites = layoutWorkAtSites(plan, sites);
+    const workAtSites = layoutWorkAtSites(plan, sites, layout);
     const shapes = sites.map((m, index) => {
         const color = layoutColor(m);
         const storage = nearestStorage(m, layout.storages);
         const away = storage ? Math.hypot(m.x + m.w / 2 - storage.x - storage.w / 2, m.y + m.h / 2 - storage.y - storage.h / 2) : 0;
         const electric = m.electric_level != null;
         const electricDetail = electric ? ` · ${translate('E-mode')} · ${translate(m.power_connected ? 'Connected to power' : 'No power connection')}` : '';
-        const tip = tipAttrs(m.facility, {
+        const tip = tipAttrs(m.power_generator_id?`${m.facility} · G${m.power_generator_id}`:m.facility, {
             detail: m.generatorTier ? translate('Building Lv.{level}').replace('{level}', m.generatorTier)
                 : m.jobs ? m.jobs.map(j => prettyItem(j.item)).join(', ') : m.crop ? prettyItem(m.crop) : m.building && m.mode ? m.mode : 'Idle',
             stats: [
@@ -2063,7 +2084,8 @@ function homelandSvg(layout, homeLevel, plan) {
         });
         const focus = workAtSites[index].length ? 'tabindex="0" role="group"' : '';
         const workers = electric || showWorkers ? layoutWorkerBadges(m, workAtSites[index], electric) : '';
-        const label = pieceLabel(m, showRecipes, showIcons);
+        const label = pieceLabel(m, showRecipes, showIcons)+(m.power_generator_id
+            ? `<text x="${m.x+m.w/2}" y="${m.y+m.h-.1}" font-size=".55" class="layout-number-label">G${m.power_generator_id}</text>`:'');
         // Busier pieces are filled more solidly; idle ones are an outline.
         const fill = m.weight > 0 ? 0.13 + 0.18 * Math.sqrt(m.weight / maxTrips) : 0.07;
         if (m.building) {
@@ -2178,7 +2200,8 @@ function layoutFlows(layout) {
             x1, y1, x2, y2, storage: layout.storages.indexOf(s), length: Math.hypot(x2 - x1, y2 - y1),
             ring, rx: m.x + m.w - ring - 0.12, ry: m.y + ring + 0.12,
             trips: m.weight, stockLimit: pickupStockLimit(m), facility: m.facility,
-            jobs: m.jobs || [{ item: m.crop, cycle: m.cycle, rate: (m.batchWeight ?? m.weight) / 3600 }],
+            jobs: (m.jobs || [{ item: m.crop, cycle: m.cycle, rate: (m.batchWeight ?? m.weight) / 3600 }])
+                .map(job=>({...job,cycle:job.cycle*(m.electric_level!=null&&m.power_percent>0?120/m.power_percent:1)})),
         };
     });
 }
@@ -4616,11 +4639,19 @@ function productionCard(step, plan) {
         alt="" width="23" height="23" loading="lazy">`).join('');
     const workers = producing ? productionWorkers(step, recipe, plan) : [];
     const electric = step.electric_level != null;
+    const poweredJobs=lastLayout?.plan===plan?powerJobDetails(lastLayout.layout,step):[];
+    const slowerNetworks=[...new Map(poweredJobs.flatMap(j=>j.networks).filter(n=>n.percent<120-1e-6).map(n=>[n.id,n])).values()];
+    const gridLabels=slowerNetworks.map(n=>`${n.generator_ids.map(id=>`G${id}`).join('+')} · ${formatNumber(n.percent)}%`);
+    const cycles=poweredJobs.map(j=>j.cycle).filter(c=>c>0);
+    const cycleText=cycles.length&&Math.max(...cycles)-Math.min(...cycles)>1e-6
+        ? `${cycleDuration(Math.min(...cycles))}–${cycleDuration(Math.max(...cycles))}`
+        : cycleDuration(cycles[0]??step.cycle_time);
     const load = producing && step.cycle_time > 0 && step.facility_count > 0
-        ? Math.max(0, Math.min(100, (step.busy_units ?? step.facility_count) / step.facility_count * 100)) : null;
+        ? Math.max(0, Math.min(100, (poweredJobs.length?poweredJobs.reduce((s,j)=>s+j.load,0)/poweredJobs.length
+            :(step.busy_units ?? step.facility_count)/step.facility_count)*100)) : null;
     const loadText = load == null ? '' : `${formatNumber(load)}%`;
     const crew = electric
-        ? `<span class="production-electric"><svg viewBox="0 0 24 24" aria-hidden="true">${abilityGlyph('Lightning')}</svg><span>E-mode</span></span>`
+        ? `<span class="production-electric"><svg viewBox="0 0 24 24" aria-hidden="true">${abilityGlyph('Lightning')}</svg><span class="production-grid-labels">${gridLabels.length?gridLabels.map(label=>`<span>${escapeText(label)}</span>`).join(''):'E-mode'}</span></span>`
         : workers.length
             ? `<span class="production-workers">${workers.slice(0, 2).map(worker => worker.badge).join('')}${workers.length > 2 ? `<span class="production-more">+${workers.length - 2}</span>` : ''}</span>`
             : icons ? `<span class="production-workers" title="${escapeText(requirementText)}">${icons}</span>` : '';
@@ -4645,7 +4676,8 @@ function productionCard(step, plan) {
             <div class="production-detail">
                 ${step.reason ? `<p>${escapeText(prettyReason(step.reason))}</p>` : ''}
                 ${loadText ? `<p><span>Building load</span> <strong>${loadText}</strong> <span>·</span>
-                    <span>${translate('{duration} per batch').replace('{duration}', cycleDuration(step.cycle_time))}</span></p>` : ''}
+                    <span>${translate('{duration} per batch').replace('{duration}', cycleText)}</span></p>` : ''}
+                ${slowerNetworks.map(n=>`<p>${escapeText(powerNetworkLabel(n))}</p>`).join('')}
                 ${requirementText ? `<p><span>${electric ? 'Minimum for normal mode' : 'Required abilities'}</span><strong>${escapeText(requirementText)}</strong></p>` : ''}
                 ${workers.length ? `<ul class="production-crew" aria-label="${escapeText(translate(step.crew != null ? 'Aniimo' : 'Shared field crew'))}">
                     ${workers.map(worker => `<li>${worker.badge}<span>${worker.name}</span></li>`).join('')}
