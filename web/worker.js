@@ -128,6 +128,7 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
     let incumbentKeys = null;
     let lastCurrencySolve = null;
     let provenCurrencyMaximum = null;
+    let provenCurrencyPace;
     let materialWorkNote = null;
     const options = comparison?.options || SOLVE_OPTIONS;
     const {productionObjective,productionCertificate,withProductionBounds} = await prioritySearch;
@@ -142,6 +143,13 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
             && (seed.length !== problem.variables || incumbentKeys.some((key,i)=>key!==problem.variable_keys[i]))) {
             const previous = new Map(incumbentKeys.map((key,i)=>[key,seed[i]]));
             seed = problem.variable_keys.map(key=>previous.get(key) ?? 0);
+        }
+        // HiGHS can accept a zero-output MIP start as optimal for a small new
+        // production objective, even when a cold solve finds a positive rate.
+        // An incumbent which makes none of the newly prioritized output isn't useful.
+        if (seed && problem.production_only
+            && problem.primary_objective.reduce((value, [i, coefficient]) => value + coefficient * (seed[i] ?? 0), 0) <= 0) {
+            seed = undefined;
         }
         const message = hasSeasonCropMinimums(input) && !stage.floors.length && !stage.pace
             ? 'The minimum event crop plots cannot be met. Check plot levels, growing conditions, and the seed budget.'
@@ -218,7 +226,10 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
         lastCurrencySolve = finalCurrency ? most : null;
         step(`priority:${target}`, 'done', most?.proven);
         if (!most) throw new Error(`no plan found for the most ${target}`);
-        if (target === (input.currency || 'coins') && most.proven && priority.production_only) provenCurrencyMaximum=most.objective;
+        if (target === (input.currency || 'coins') && most.proven && priority.production_only) {
+            provenCurrencyMaximum = most.objective;
+            provenCurrencyPace = stage.pace;
+        }
         if (alone) first({ measure: target, objective: most.objective, proven: most.proven });
         allProven &&= most.proven;
         if (target === 'level_up') {
@@ -262,11 +273,11 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
         // plan once, after material allocation, rather than rebuilding this intermediate one.
         solved = lastCurrencySolve;
     }
-    if (!solved && !comparison && provenCurrencyMaximum != null && !stage.pace && !input.level_up_strategy
+    if (!solved && !comparison && provenCurrencyMaximum != null && provenCurrencyPace === stage.pace && !input.level_up_strategy
         && maximizeBenchAndKiln && hasMaterialProcessors(input) && incumbent?.values && incumbentKeys?.length === incumbent.values.length
         && problem.variable_keys?.length === problem.variables
         && JSON.parse(exact_problem(payload,JSON.stringify({...stage,maximize_material_work:true}))).lp) {
-        // The currency already has a proved maximum as an earlier priority. The material
+        // The currency already has a proved maximum under the current RV pace. The material
         // stage below retains max(final currency, that priority), so another currency MIP
         // cannot raise its floor. Map the latest feasible priority plan directly into that
         // stage instead of spending another search merely to obtain an incumbent.
