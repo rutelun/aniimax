@@ -105,7 +105,7 @@ export function selectCropPeakTeam({members,counts,permanent=[],jobs,outside=[],
                     const occupied=Math.min(1,Math.max(0,(other.busy||0)-copy));
                     const remaining=phase<occupied ? (other.seconds||0)*(1-phase/occupied) : 0;
                     let point=other.point||[0,0];
-                    const origins=other.origins||[],total=origins.reduce((n,p)=>n+p.weight,0);
+                    const origins=(copy+(permanent[id]||0)>=(counts[id]||0) && other.peakOrigins?.length ? other.peakOrigins : other.origins)||[],total=origins.reduce((n,p)=>n+p.weight,0);
                     let position=phase*total;
                     for(const origin of origins){point=origin.point;position-=origin.weight;if(position<=0)break;}
                     workers.push({id,copy:copy+(permanent[id]||0),ready:remaining,point});
@@ -249,12 +249,16 @@ export function plannedCropPeakTeam({layout,recipes,pools,limit=Infinity}) {
                 const duration=work.get(name);
                 if(!(duration>0))throw new Error(`Missing crop workload: ${recipe.name}/${name}`);
                 const id=`${key}|${plot}|${name}`;
-                const eligibleMembers=pools.flatMap((p,i)=>(p.abilities[ability]||0)>=level && p.count>permanent[i]?[i]:[]);
+                const eligibleMembers=pools.flatMap((p,i)=>(p.abilities[ability]||0)>=level && (p.count>permanent[i] || (p.count===0 && !permanent[i]))?[i]:[]);
                 jobs.push({id,previous,key:`${key}|${ability}`,name,ability,level,point:site.point,order:plot,weight:site.rate,eligibleMembers,
                     seconds:members.map(m=>(m.abilities[ability]||0)>=level?duration/(1+.25*(level-1)+.5*(m.abilities[ability]-level)):Infinity)});
                 previous=id;
             }
         }
     }
+    pools.forEach((pool,i)=>{
+        outside[i].peakOrigins=jobs.filter(j=>(pool.abilities[j.ability]||0)>=j.level).map(j=>({point:j.point,weight:j.weight||1}));
+        if(!outside[i].origins.length)outside[i].origins=outside[i].peakOrigins;
+    });
     return selectCropPeakTeam({members,counts:pools.map(p=>p.count),permanent,outside,jobs,limit});
 }

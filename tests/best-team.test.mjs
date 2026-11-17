@@ -90,3 +90,12 @@ test('Best keeps frequent crop jobs separate from workshops, even at the same lo
     assert.deepEqual([...grower.tasks], [['Sowing', .25]]);
     assert.equal(grower.abilities.Hauling, undefined);
 });
+test('walking follows weighted transitions rather than a return to the first workplace',()=>{
+ const {shifts}=recommendBestTeam([{ability:'Grass',level:2,label:'A',busy:.1,point:[0,0],visitsPerShare:.1},{ability:'Grass',level:2,label:'B',busy:.1,point:[40,0],visitsPerShare:.1}]);
+ assert.equal(shifts.length,1);
+ assert.ok(Math.abs(shifts[0].tasks.get('Walking between jobs')-.1)<1e-8);
+});
+test('a flexible whole shift can fill existing spare capacity',()=>{
+ const {shifts}=recommendBestTeam([{ability:'Grass',level:2,label:'A',busy:.4},{ability:'Grass',level:2,label:'B',busy:1.2},{ability:'Grass',level:2,label:'C',busy:.4}]);
+ assert.equal(shifts.length,2);
+});

@@ -8,7 +8,8 @@ import { productionGroupOutline } from './group-outline.js?v=compact-groups';
 import { powerJobDetails } from './power-islands.js?v=independent-grids';
 import { questIncome } from './quest-income.js';
 import { splitProductionSites } from './physical-production.js';
-import { cropPeakInput, selectCropPeakTeam, plannedCropPeakTeam, criticalCropJob } from './crop-peaks.js?v=peak100';
+import { cropPeakInput, selectCropPeakTeam, criticalCropJob } from './crop-peaks.js?v=team-support';
+import { withCropSupport } from './crop-support.js?v=team-support';
 
 import {
     FACILITIES, FACILITY_CATEGORIES, FACILITY_CATEGORY_BY_NAME, FACILITY_FOOTPRINTS, HOMELAND_PLOTS, HOMELAND_PLOT_SIZE,
@@ -30,7 +31,7 @@ import { placeRosterCopy, ROSTER_ROW_SIZE, rosterSlotsFor, swapRosterSlots } fro
 import { scheduleRosterCopies } from './roster-work.js?v=measured-walking';
 import { buildDispatch, rosterJobSwitching, TASK_SWITCHING } from './task-switching.js?v=base-travel';
 import { buildReactiveDispatch, permanentWorkers, measuredDispatchWork, routeDispatchKey, attachDeliveryFlows } from './reactive-dispatch.js';
-import { placeBestJobs, recommendBestTeam } from './best-team.js?v=peak90';
+import { placeBestJobs, recommendBestTeam } from './best-team.js?v=team-support';
 import facilityIcons from './facility-icons.json' with { type: 'json' };
 import { abilityGlyph, gameAbilityIcon } from './ability-icons.js?v=game-heads';
 
@@ -3030,13 +3031,13 @@ async function fillRosterFrom(setup) {
             return;
         }
         const haulingLevel = setup === 'minimum' ? 1 : 3;
-        const layout = await sourceTeamLayout(plan, sourceInput, setup);
+        const layout = await sourceTeamLayout(plan, sourceInput, setup.split(':')[0]);
         if (runId !== planRunId || version !== rosterFillVersion) return;
         const accountForTravel = true;
         const hauling = haulingWorkload(layout, plan.coin_items || [], haulingRouteBound(accountForTravel),
             recipeIndex, sourceInput.facilities, accountForTravel);
         const haulingBusy = hauling.busyByLevel[haulingLevel];
-        if (setup === 'best') {
+        if (setup.startsWith('best:') || setup === 'best') {
             const { shifts } = bestPlanTeam(plan, haulingBusy, layout, hauling);
             if (!shifts.length) {
                 status.textContent = 'No working team to copy from this plan.';
@@ -3066,6 +3067,12 @@ async function fillRosterFrom(setup) {
         const cards = new Map();
         kept.forEach(g => {
             const personalities = PERSONALITY_PAIRS.map(pair => pair.names.find(name => g.personalities.has(name)) ?? null);
+            if(g.entry){
+                const member=bestRosterMember(g),key=JSON.stringify(member);
+                if(cards.has(key))cards.get(key).count+=g.count;
+                else cards.set(key,{...member,count:g.count});
+                return;
+            }
             const key = `${g.ability}|${g.level}|${personalities.join()}|${g.family || ''}`;
             if (cards.has(key)) cards.get(key).count += g.count;
             else cards.set(key, { ...newRosterAniimo({ [g.ability]: g.level }, personalities), count: g.count, family: g.family || null });
@@ -4937,10 +4944,11 @@ function bestPlanTeam(plan, haulingBusy = plan.hauling_busy || 0,
         cached.result = recommendBestTeam(placeBestJobs(cached.jobs, layout, dispatch?.locations), haulingBusy, dispatch?.opportunities);
         if (layout) {
             const pools = cached.result.shifts.map(shift => ({ ...shift, count: 1 }));
-            const peak = plannedCropPeakTeam({ layout, recipes: recipeIndex, pools, limit: ANIIMO_MAX[layoutHomeLevel()-1] });
+            const support = withCropSupport({ layout, recipes: recipeIndex, pools, limit: ANIIMO_MAX[layoutHomeLevel()-1] });
+            const peak = support.peak;
             cached.result.cropPeaks = peak;
             for (const { member, count } of peak.additions) for (let i=0;i<count;i++) {
-                const source = cached.result.shifts[member];
+                const source = support.pools[member];
                 cached.result.shifts.push({ ...source, busy: 0, tasks: new Map(), allocations: [], peakSupport: true });
             }
         }
@@ -4983,9 +4991,13 @@ function renderBestTeam(plan, routeStatus = translate('Calculating…')) {
             const shift = shifts[index];
             const member = bestRosterMember(shift);
             const label = member.name || translate('Assumed Aniimo');
-            const tasks = routeLabels.filter(label => !routesReady || shift.tasks.has(label)).map(label => [
+            const tasks = routeLabels.filter(label => !shift.peakSupport && (!routesReady || shift.tasks.has(label))).map(label => [
                 translate(label), routesReady ? percent(shift.tasks.get(label)) : routeStatus,
             ]);
+            if (shift.peakSupport) {
+                const jobs = [...new Set(recipeIndex.flatMap(r => (r.jobs || []).filter(([name,ability,level]) => criticalCropJob(name) && (shift.abilities[ability] || 0) >= level).map(([name]) => translate(name))))];
+                tasks.push([jobs.join(' / '), translate('Crop peak support')]);
+            }
             if (shift.tasks.has(TASK_SWITCHING)) tasks.push([translate(TASK_SWITCHING), percent(shift.tasks.get(TASK_SWITCHING))]);
             for (const [job, share] of [...shift.tasks].sort((a, b) => b[1] - a[1])) {
                 if (!routeLabels.includes(job) && job !== TASK_SWITCHING) tasks.push([translate(job), percent(share)]);
@@ -5094,9 +5106,18 @@ function aniimoTeam(plan) {
         const pools = team.kept.map(g => ({ count: g.count, abilities: { [g.ability]: g.level },
             allocations: g.environment ? [{fixed:true,busy:g.count}] : g.allocations }));
         const couriers = Math.max(0, Math.ceil((plan.hauling_busy || 0)-1e-6));
-        const peak = plannedCropPeakTeam({layout:placed.layout,recipes:recipeIndex,pools,limit:ANIIMO_MAX[layoutHomeLevel()-1]-couriers});
+        const support = withCropSupport({layout:placed.layout,recipes:recipeIndex,pools,limit:ANIIMO_MAX[layoutHomeLevel()-1]-couriers});
+        const peak = support.peak;
         team.cropPeaks = peak;
-        for (const {member,count} of peak.additions) { team.kept[member].count+=count;team.total+=count; }
+        for (const {member,count} of peak.additions) {
+            if(member<pools.length)team.kept[member].count+=count;
+            else {
+                const source=support.pools[member];
+                const [ability,level]=Object.entries(source.abilities)[0];
+                team.kept.push({...source,count,ability,level,busy:0,spare:count,label:rosterFormName(source.entry),where:new Map(),jobs:new Map([['Crop peak support',new Set(['Farmland','Woodland'])]])});
+            }
+            team.total+=count;
+        }
     }
     minimumTeamCache.set(plan, {layout:placedTeam?.layout, hauling:plan.hauling_busy, team});
     return team;
@@ -5136,8 +5157,9 @@ function renderAniimoSummary(plan) {
     const groups = kept
         .sort((a, b) => a.label.localeCompare(b.label))
         .map(g => ({
-            count: g.count, busy: g.busy, abilities: { [g.ability]: g.anyLevel ? '·' : g.level },
-            label: `${translate(g.ability)} ${translate(aniimoNeeds(g))}`, detail: translate(whereText(g)),
+            count: g.count, busy: g.busy, abilities: g.abilities || { [g.ability]: g.anyLevel ? '·' : g.level },
+            entry:g.entry,peakSupport:g.peakSupport,
+            label: g.entry ? rosterFormName(g.entry) : `${translate(g.ability)} ${translate(aniimoNeeds(g))}`, detail: translate(whereText(g)),
         }));
     const haulingLevel = 1;
     if (haulingCount) groups.push({
@@ -5168,7 +5190,7 @@ function renderAniimoSummary(plan) {
     collapsedSummary.textContent = '';
     // How many of each ability the plan needs, in the game's order, like its Abilities screen.
     const needed = new Map(ABILITIES.map(a => [a.name, 0]));
-    kept.forEach(g => needed.set(g.ability, (needed.get(g.ability) || 0) + g.count));
+    kept.forEach(g => Object.keys(g.abilities || { [g.ability]:g.level }).forEach(ability => needed.set(ability, (needed.get(ability) || 0) + g.count)));
     // Under each count, one circle per kind of Aniimo (with "×N" when several are the same): its
     // level inside (a dot for any level), a ring for the personality bonus, and what it's for in
     // the tooltip.
@@ -5186,7 +5208,8 @@ function renderAniimoSummary(plan) {
         const n = a.name === 'Hauling' ? needed.get(a.name) + haulingCount : needed.get(a.name);
         const zero = n === 0;
         const dots = kept
-            .filter(g => g.ability === a.name)
+            .filter(g => g.ability === a.name || g.abilities?.[a.name])
+            .map(g => g.abilities ? {...g,ability:a.name,level:g.abilities[a.name]} : g)
             .sort((x, y) => y.level - x.level || Number(y.bonus) - Number(x.bonus))
             .map(teamDots);
         if (a.name === 'Hauling' && haulingCount) {
@@ -5201,7 +5224,7 @@ function renderAniimoSummary(plan) {
     container.innerHTML = `${capNote}${cropPeakNote(cropPeaks, [], true)}<div class="roster-cards">${rosterBoard(tiles, i => {
         if (i == null) return emptyRosterCell();
         const member = groups[i];
-        return assignmentTile(member, member.label, member.detail, `${formatNumber(member.busy / member.count * 100)}%`);
+        return assignmentTile(member.entry ? {...member,catalogId:member.entry.id} : member, member.label, member.detail, member.peakSupport ? translate('Crop peak support') : `${formatNumber(member.busy / member.count * 100)}%`);
     })}</div>`;
 }
 

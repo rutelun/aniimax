@@ -69,14 +69,23 @@ export function recommendBestTeam(jobs, haulingBusy = 0, dispatch = []) {
         if (!shift.candidates.size || !candidates.size) return null;
         return new Set([...shift.candidates].filter(entry => candidates.has(entry)));
     };
-    const walkingPerShare = (shift, job) => {
-        if (!shift.point || !job.point || !job.visitsPerShare) return 0;
-        const distance = Math.hypot(shift.point[0] - job.point[0], shift.point[1] - job.point[1]);
-        return 2 * workerTravelSeconds(distance) * job.visitsPerShare;
+    const walkingFor = (shift, job, share) => {
+        if (!job.point || !job.visitsPerShare || !share) return 0;
+        let rate=0,travel=0;
+        for(const home of shift.homes){
+            rate+=home.rate;
+            travel+=home.rate*workerTravelSeconds(Math.hypot(home.point[0]-job.point[0],home.point[1]-job.point[1]));
+        }
+        if(!rate)return 0;
+        const added=share*job.visitsPerShare;
+        // Ordered origin/destination pairs, weighted by request frequency.
+        // No compulsory return to the first workplace after every job.
+        return Math.max(0,added*(2*travel-(shift.walking||0))/(rate+added));
     };
     const add = (shift, job, share, walking = 0) => {
         shift.point ||= job.point;
         shift.busy += share + walking;
+        shift.walking = (shift.walking || 0) + walking;
         shift.allocations.push({ ...job, busy: share + walking });
         if (job.personality) shift.personalities.add(job.personality);
         const key = roleKey(job);
@@ -100,13 +109,22 @@ export function recommendBestTeam(jobs, haulingBusy = 0, dispatch = []) {
             let partialCandidates;
             let partialCapacity = 0;
             let partialWalking = 0;
-            for (const shift of reuse ? available : []) {
-                if (share === 1 || 1 - shift.busy <= EPSILON) continue;
+            for (const shift of reuse && !job.fixed ? available : []) {
+                if (1 - shift.busy <= EPSILON) continue;
                 if (shift.growing !== Boolean(job.growing)) continue;
                 const common = compatible(shift, job, candidates);
                 if (common == null || (common.size === 0 && !shift.roles.has(roleKey(job)))) continue;
-                const walking = walkingPerShare(shift, job);
-                const capacity = (1 - shift.busy) / (1 + walking);
+                const spare = 1-shift.busy;
+                let capacity = Math.min(share,spare);
+                if(capacity+walkingFor(shift,job,capacity)>spare){
+                    let low=0,high=capacity;
+                    for(let i=0;i<24;i++){
+                        const mid=(low+high)/2;
+                        if(mid+walkingFor(shift,job,mid)<=spare)low=mid;else high=mid;
+                    }
+                    capacity=low;
+                }
+                const walking=capacity>0?walkingFor(shift,job,capacity)/capacity:0;
                 if (capacity < share - EPSILON) {
                     if (capacity > Math.max(EPSILON, partialCapacity)) {
                         partial = shift;
