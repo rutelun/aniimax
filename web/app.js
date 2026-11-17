@@ -8,6 +8,7 @@ import { productionGroupOutline } from './group-outline.js?v=compact-groups';
 import { powerJobDetails } from './power-islands.js?v=independent-grids';
 import { questIncome } from './quest-income.js';
 import { splitProductionSites } from './physical-production.js';
+import { cropPeakInput, selectCropPeakTeam } from './crop-peaks.js';
 
 import {
     FACILITIES, FACILITY_CATEGORIES, FACILITY_CATEGORY_BY_NAME, FACILITY_FOOTPRINTS, HOMELAND_PLOTS, HOMELAND_PLOT_SIZE,
@@ -2631,8 +2632,10 @@ function refineReactiveDispatch(layout, plan) {
     const { members, busy } = rosterWorkload(plan);
     const permanent = permanentWorkers(plan, members, RESIDENT_FACILITIES);
     const existing = Object.keys(reactiveDispatch).length > 0;
-    const policy = buildReactiveDispatch({layout, recipes:recipeIndex, members, busy, permanent,
-        routes:plan.roster_routes || [], previous:existing ? reactiveDispatch : null});
+    const context={layout, recipes:recipeIndex, members, busy, permanent, routes:plan.roster_routes || []};
+    const policy = buildReactiveDispatch({...context, previous:existing ? reactiveDispatch : null});
+    const delivery=measuredDispatchWork(plan,policy,recipeIndex).delivery;
+    plan.crop_peaks=selectCropPeakTeam(cropPeakInput({...context,delivery,limit:ANIIMO_MAX[layoutHomeLevel()-1]}));
     if (!existing && Object.keys(policy).length) {
         reactiveDispatch = policy;
         stopRanking();
@@ -3407,7 +3410,9 @@ function rosterCopyShifts(plan, members, assigned, walking) {
                     `${walkingLabel} → ${translate(route.facility)} (${item})`, duration,
                 ]);
             }
-            routes[route.member].push({ station: route.station, jobs, localPlots: route.local_plots });
+            const key=routeDispatchKey(route,recipeIndex);
+            routes[route.member].push({ station: route.station, jobs, localPlots: route.local_plots,
+                copyShares:plan.crop_peaks?.copyShares?.[`${key}|${route.member}`] });
         }
     } else {
         for (const [ability, , member, share] of plan.crop_assignments || []) {
@@ -3441,7 +3446,7 @@ function renderRosterSummary(plan) {
     });
     for (const [member, share] of plan.job_switching || []) busy[member] += share;
     const have = roster.reduce((sum, a) => sum + a.count, 0);
-    const regular = busy.map((load, member) => Math.min(members[member].count, Math.max(anchored[member], Math.ceil(load - 1e-6))));
+    const regular = busy.map((load, member) => Math.min(members[member].count, Math.max(anchored[member], Math.ceil(load - 1e-6),plan.crop_peaks?.counts?.[member]||0)));
     const assigned = [...regular];
     for (const [member, share] of plan.dedicated_delivery || []) {
         busy[member] += share;
@@ -3473,10 +3478,12 @@ function renderRosterSummary(plan) {
         const work = copyWork(i, copy);
         const label = member.assumed ? translate('Assumed Aniimo') : rosterTileLabel(member, i);
         const count = member.assumed ? assigned[i] : member.count;
-        const context = count > 1
+        let context = count > 1
             ? translate('Copy {copy} of {total} · {assigned} assigned').replace('{copy}', copy + 1)
                 .replace('{total}', count).replace('{assigned}', assigned[i])
             : '';
+        if(work.active&&copy>=(plan.crop_peaks?.baseCounts?.[i]??Infinity))
+            context += `${context?' · ':''}${translate('Crop peak support')}`;
         return assignmentTile(member, label, work.tasks, work.summary, work.active, context, i);
     };
     const additional = members.flatMap((member, i) => member.assumed && assigned[i] > 0 ? Array(assigned[i]).fill(i) : []);
