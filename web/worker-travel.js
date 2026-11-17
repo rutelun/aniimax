@@ -4,6 +4,17 @@ export const ANIIMO_WALK_SPEED = 4;
 // Actual routes and reactive dispatch account for detours separately.
 export const workerTravelSeconds = distance => distance / ANIIMO_WALK_SPEED;
 
+// Missing map observations are not zero-length routes. Preserve the previous
+// allowance (or its default) rather than serializing NaN as an invalid null.
+export function measuredMovementEstimates(previous, distances, members) {
+    const result = { ...previous };
+    for (const member of members) {
+        const distance = distances.get(member);
+        if (Number.isFinite(distance) && distance >= 0) result[member] = workerTravelSeconds(distance);
+    }
+    return result;
+}
+
 export function workerHubs(members) {
     const hubs = new Map();
     for (const m of members) for (const [worker, visits] of m.workers || []) {

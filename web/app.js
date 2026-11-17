@@ -18,7 +18,7 @@ import {
 import { allocateTurnFacilities, redistributeTurnFacilityRows } from './turn-jobs.js?v=auto-worker-travel';
 import { createShareUrl, readShareHash, urlWithoutShare } from './share-config.js?v=compact-roster';
 import { nearestStorage } from './layout.js?v=logic-audit';
-import { projectLayoutWork, layoutWalkingAdjustments, workerTravelDistances, workerTravelSeconds } from './worker-travel.js?v=logic-audit';
+import { projectLayoutWork, layoutWalkingAdjustments, workerTravelDistances, workerTravelSeconds, measuredMovementEstimates } from './worker-travel.js?v=finite-movement';
 import { assignFacilityStock, bufferedBatches, haulingWorkload, allocateHauling, haulingBatchTrips,
     haulingTravelSeconds, haulingWorkSeconds, pickupStockLimit } from './hauling.js?v=base-travel';
 import { personalityInput, replacementCandidates, compareRecommendations, usefulUpgrade, keepBetterComparison, workerUsage } from './opportunity-comparison.js?v=logic-audit';
@@ -178,16 +178,19 @@ let lastPlanInput = null;
 let setupSolve = null;
 let mainSolve = null;
 const SETUP_TIMEOUT = 300_000;
-function ensurePlanFor(setup) {
+function ensurePlanFor(setup, refining = false) {
     if (plansBySetup[setup] || !lastPlanInput || setupSolve?.setup === setup
         || (mainSolve?.runId === planRunId && mainSolve.setup === setup)) return;
     stopSetupSolve();
     const runId = planRunId;
     const solver = new Worker(WORKER_URL, { type: 'module' });
     const timer = setTimeout(() => done({ success: false, error: 'This setup took too long. Try simplifying the priorities.' }), SETUP_TIMEOUT);
-    setupSolve = { setup, worker: solver, timer };
-    startProgress({ ...lastPlanInput, ...aniimoInput(setup) }, runId);
-    document.getElementById('aniimo-pending').textContent = translate('Updating Aniimo setup...');
+    setupSolve = { setup, worker: solver, timer, refining };
+    if (refining && progress?.runId === runId) {
+        if (!progress.steps.some(s => s.key === 'refine')) progress.steps.push({key:'refine',label:'Refining deliveries and worker loads',state:'pending'});
+        setStep('refine','start');
+    } else startProgress({ ...lastPlanInput, ...aniimoInput(setup) }, runId);
+    if (!refining) document.getElementById('aniimo-pending').textContent = translate('Updating Aniimo setup...');
     const done = (plan) => {
         clearTimeout(timer);
         solver.terminate();
@@ -195,14 +198,20 @@ function ensurePlanFor(setup) {
         if (runId !== planRunId) return;
         plansBySetup[setup] = plan;
         if (selectedAniimoSetup() === setup) {
+            if (!plan.success) resetPlanButton();
+            if (refining && !plan.success) {
+                setStep('refine','fail');
+                showError(`Delivery refinement failed: ${plan.error || 'No feasible plan found'}`);
+                return;
+            }
             finishSolveSteps();
-            showSelectedPlan();
+            showSelectedPlan(refining);
         }
     };
     solver.onmessage = (event) => {
         const { type, ok, result, error, count } = event.data;
         if (type === 'progress') {
-            if (setupSolve?.worker === solver && runId === planRunId && count && typeof count === 'object') {
+            if (!refining && setupSolve?.worker === solver && runId === planRunId && count && typeof count === 'object') {
                 setStep(count.step, count.state, undefined, count.proven);
             }
             return;
@@ -244,7 +253,7 @@ function switchAniimoSetup() {
 }
 
 // Shows the plan for the selected Aniimo setup, or a "still working" note if it isn't ready.
-function showSelectedPlan() {
+function showSelectedPlan(keepLayout = false) {
     const setup = selectedAniimoSetup();
     document.querySelectorAll('[data-roster="from-best"], [data-roster="from-minimum"]').forEach(button => {
         button.disabled = !lastPlanInput;
@@ -268,7 +277,7 @@ function showSelectedPlan() {
         reactiveDispatch = plan.roster_dispatch;
         plansBySetup[selectedAniimoSetup()] = plan;
     }
-    displayPlan(plan);
+    displayPlan(plan, keepLayout);
     if (plan.success) {
         runTimeToGoal();
         // Opportunities wait until the layout and any travel refinements have finished.
@@ -988,9 +997,8 @@ function rankImprovementsFor(setup, requested = null, detailed = false) {
         }
         if (base.roster && plan.layout_walking?.length && lastLayout) {
             const distances = workerTravelDistances(lastLayout.layout.pieces.flatMap(piece => piece.members));
-            for (const [member] of plan.layout_walking) {
-                base.roster.movement_by_member[member] = workerTravelSeconds(distances.get(member));
-            }
+            base.roster.movement_by_member = measuredMovementEstimates(base.roster.movement_by_member,
+                distances, plan.layout_walking.map(([member]) => member));
         }
         const prepared = improvementCandidates(base, setup, plan);
         const layout = lastLayout?.plan === plan ? lastLayout.layout : null;
@@ -1768,7 +1776,7 @@ function rememberLayout(plan, key, layout) {
     cached.set(key, layout);
 }
 
-function renderHomelandLayout(plan) {
+function renderHomelandLayout(plan, keepLayout = false) {
     const card = document.getElementById('layout-card');
     if (!plan?.success || !lastPlanInput) {
         card.style.display = 'none';
@@ -1778,10 +1786,11 @@ function renderHomelandLayout(plan) {
     lastLayout = null;
     layoutZoom = null;
     stopLayoutSim();
-    setStep('layout', 'start');
+    const layoutStep = keepLayout ? 'refine' : 'layout';
+    setStep(layoutStep, 'start');
     card.style.display = 'block';
-    document.getElementById('layout-summary').textContent = 'Laying out…';
-    document.getElementById('layout-diagram').innerHTML = '';
+    document.getElementById('layout-summary').textContent = keepLayout ? 'Updating map and worker loads…' : 'Laying out…';
+    if (!keepLayout) document.getElementById('layout-diagram').innerHTML = '';
     updateMapZoomControls(null);
     document.getElementById('layout-group-legend').hidden = true;
     document.getElementById('layout-building-index').hidden = true;
@@ -1870,7 +1879,7 @@ function renderHomelandLayout(plan) {
         lastLayout = { layout, homeLevel, plan };
         renderFacilityPlan(plan);
         drawLayout(lastLayout);
-        setStep('layout', 'done');
+        setStep(layoutStep, 'done');
         if (selectedSetupTab() === 'custom') {
             if (refineReactiveDispatch(layout, plan)) return;
         } else {
@@ -1879,7 +1888,10 @@ function renderHomelandLayout(plan) {
             if (assignLayoutHauling(layout, plan)) return;
         }
         renderAniimoSummary(plan);
-        rankImprovementsFor(selectedAniimoSetup());
+        if (!setupSolve && !mainSolve) {
+            resetPlanButton();
+            rankImprovementsFor(selectedAniimoSetup());
+        }
     };
     const cached = layoutsByPlan.get(plan)?.get(layoutKey);
     if (cached) {
@@ -1899,9 +1911,10 @@ function renderHomelandLayout(plan) {
         if (runId !== layoutRunId) return;
         stopLayout();
         document.getElementById('layout-summary').textContent = 'The layout couldn\'t be worked out.';
-        setStep('layout', 'fail');
+        setStep(layoutStep, 'fail');
+        if (!setupSolve && !mainSolve) resetPlanButton();
         if (selectedSetupTab() === 'best') renderBestTeam(plan, translate('Unavailable'));
-        rankImprovementsFor(selectedAniimoSetup());
+        if (!setupSolve && !mainSolve) rankImprovementsFor(selectedAniimoSetup());
     };
     solver.postMessage({ pieces, ...layoutOptions });
 }
@@ -2639,7 +2652,9 @@ function refineReactiveDispatch(layout, plan) {
     if (!existing && Object.keys(policy).length) {
         reactiveDispatch = policy;
         stopRanking();
-        switchAniimoSetup();
+        // This is the same calculation with measured routes, not a team change.
+        // Keep the completed steps/results visible while the final solve runs.
+        ensurePlanFor(selectedAniimoSetup(), true);
         return true;
     }
     const measured = measuredDispatchWork(plan, policy, recipeIndex);
@@ -5661,7 +5676,7 @@ function updateRateUnitDisplays() {
 // Render a successfully computed plan: rate summary + facility plan table. Goal-independent,
 // called once per Calculate click (or facility/currency/module change), not on every goal
 // keystroke.
-function displayPlan(plan) {
+function displayPlan(plan, keepLayout = false) {
     const resultsSection = document.getElementById('results-section');
     const errorEl = document.getElementById('error-message');
     const resultsContent = document.getElementById('results-content');
@@ -5694,7 +5709,7 @@ function displayPlan(plan) {
 
     updateRateDisplay(!rateUnitChosen);
     renderGoalTargets(plan);
-    renderHomelandLayout(plan);
+    renderHomelandLayout(plan, keepLayout);
 
     // Said only when the plan might not be the best: the solver ran out of time, or the backup
     // planner made it.
@@ -5874,7 +5889,7 @@ async function runFindPlan() {
         showError(`Plan calculation failed: ${error.message}`);
     } finally {
         if (mainSolve?.runId === runId) mainSolve = null;
-        if (runId === planRunId) resetPlanButton();
+        if (runId === planRunId && !layoutWorker && !setupSolve) resetPlanButton();
     }
 }
 

@@ -1,9 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ANIIMO_WALK_SPEED, workerTravelDistance, workerLayoutCost } from '../web/worker-travel.js';
+import { ANIIMO_WALK_SPEED, workerTravelDistance, workerLayoutCost, measuredMovementEstimates } from '../web/worker-travel.js';
 import { layOutHomeland } from '../web/layout.js';
 
 const site = (x, worker = 0, visits = 10) => ({ x, y: 0, w: 2, h: 2, weight: 1, workers: [[worker, visits]] });
+test('opportunity inputs preserve missing movement allowances without null numbers',()=>{
+    const previous={0:20,17:12};
+    const next=measuredMovementEstimates(previous,new Map([[0,8],[2,0],[3,NaN],[4,-1]]),[0,2,3,4,17,24]);
+    assert.deepEqual(next,{0:2,2:0,17:12});
+    assert.deepEqual(previous,{0:20,17:12});
+    assert.ok(!JSON.stringify(next).includes('null'));
+    assert.deepEqual(measuredMovementEstimates(undefined,new Map(),[17]),{});
+});
 test('travel uses delivery speed and measures only a shared worker’s own workplaces', () => {
     assert.equal(ANIIMO_WALK_SPEED, 4);
     assert.equal(workerTravelDistance([site(0), site(12)]), 12);
