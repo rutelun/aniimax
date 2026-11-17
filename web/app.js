@@ -1368,20 +1368,19 @@ function homelandPieces(plan, input) {
         count(step.facility, n);
     });
 
-    // What's owned but not in the plan at all, such as environment buildings it didn't need.
+    // Keep unused production facilities visible. Climate buildings are placed
+    // only with the growing clusters that actually need their coverage above.
     FACILITIES.forEach(f => {
+        if (f.name in ENVIRONMENT_BUILDING_SIZES) return;
         const owned = tierCount(input.facilities[f.name]);
         const extra = owned - (placed[f.name] || 0);
         if (extra <= 0) return;
-        const footprint = f.name in ENVIRONMENT_BUILDING_SIZES
-            ? [environmentBuildingSize(f.name), environmentBuildingSize(f.name)]
-            : FACILITY_FOOTPRINTS[f.name];
+        const footprint = FACILITY_FOOTPRINTS[f.name];
         if (!footprint) {
             unplaced.add(f.name);
             return;
         }
-        const building = f.name in ENVIRONMENT_BUILDING_SIZES;
-        for (let i = 0; i < extra; i++) pieces.push({ members: [{ x: 0, y: 0, w: footprint[0], h: footprint[1], weight: 0, facility: f.name, crop: null, building, mode: null }] });
+        for (let i = 0; i < extra; i++) pieces.push({ members: [{ x: 0, y: 0, w: footprint[0], h: footprint[1], weight: 0, facility: f.name, crop: null, building: false, mode: null }] });
     });
     const generators = Math.min(plan.power_generators || 0, generatorLimit(layoutHomeLevel()));
     for (let i = 0; i < generators; i++) pieces.push({ members: [{ x: 0, y: 0, w: 2, h: 2,
@@ -4662,7 +4661,7 @@ function productionCard(step, plan) {
     const crew = electric
         ? `<span class="production-electric"><svg viewBox="0 0 24 24" aria-hidden="true">${abilityGlyph('Lightning')}</svg><span class="production-grid-labels">${gridLabels.length?gridLabels.map(label=>`<span>${escapeText(label)}</span>`).join(''):'E-mode'}</span></span>`
         : workers.length
-            ? `<span class="production-workers">${workers.slice(0, 2).map(worker => worker.badge).join('')}${workers.length > 2 ? `<span class="production-more">+${workers.length - 2}</span>` : ''}</span>`
+            ? `<span class="production-workers">${workers.slice(0, 5).map(worker => worker.badge).join('')}${workers.length > 5 ? `<span class="production-more">+${workers.length - 5}</span>` : ''}</span>`
             : icons ? `<span class="production-workers" title="${escapeText(requirementText)}">${icons}</span>` : '';
     const unverified = unverifiedRowKeys.has(`${step.facility}|${step.item_name}`);
     return `

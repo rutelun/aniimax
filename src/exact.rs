@@ -1911,6 +1911,108 @@ fn reassign_crop_work(
     Some(candidate)
 }
 
+/// Exchange a climate shift for faster production, including an existing spare
+/// artisan as the production recipient. Keep every batch and validate capacity.
+pub fn improve_climate_staffing(
+    plan: &mut ExactPlan, workload: &mut Vec<f64>, items: &[ProductionItem],
+    currency: &str, counts: &FacilityCounts, modules: &ModuleLevels, level_up: Option<&LevelUp>,
+) {
+    let Some(crew) = counts.crew() else { return };
+    let owned = crew.assumed_from.unwrap_or(crew.members.len());
+    let all: HashMap<_, _> = items.iter().map(|r| (r.name.as_str(), r)).collect();
+    let score = |p: &ExactPlan, loads: &[f64]| {
+        let mut totals = loads.to_vec();
+        for &(id, time) in &p.hauling_staffing { totals[id] += time; }
+        let mut posts = vec![0.0_f64; totals.len()];
+        for (_, id, n) in p.staffing.iter().chain(p.work_posts.iter()) { posts[*id] += n; }
+        for (name, n) in &p.units {
+            let item = all[name.as_str()];
+            if crew.residents.contains(&item.facility) { if let Some(id) = item.crew { posts[id] += *n as f64; } }
+        }
+        (totals.iter().zip(posts).map(|(x, n)| (x - 1e-6).ceil().max(n).max(0.0) as u32).sum::<u32>(), totals.iter().sum::<f64>())
+    };
+    let better = |a: (u32, f64), b: (u32, f64)| a.0 < b.0 || (a.0 == b.0 && a.1 < b.1 - 1e-6);
+    let posts = plan.staffing.clone();
+    for (building, occupant, shifts) in posts {
+        if occupant >= owned { continue; }
+        let Some(ability) = crew.environment.get(&building) else { continue };
+        if building == GENERATOR { continue; }
+        for _ in 0..shifts.round() as usize {
+            let mut best = None;
+            let mut best_score = score(plan, workload);
+            for donor in 0..owned {
+                if donor == occupant || !crew.can_work(donor, ability, 1) { continue; }
+                for recipient in 0..owned {
+                    if recipient == donor || crew.members[recipient].count == 0 { continue; }
+                    let Some(mut candidate) = transfer_production(plan, &all, counts, donor, recipient) else { continue };
+                    let Some(post) = candidate.staffing.iter_mut().find(|(b, id, n)| *b == building && *id == occupant && *n > 0.5) else { continue };
+                    post.2 -= 1.0;
+                    candidate.staffing.retain(|(_, _, n)| *n > 0.5);
+                    if let Some(post) = candidate.staffing.iter_mut().find(|(b, id, _)| *b == building && *id == donor) {
+                        post.2 += 1.0;
+                    } else { candidate.staffing.push((building.clone(), donor, 1.0)); }
+                    let Ok((_, checked)) = check_plan_with_workload(&candidate, items, currency, counts, modules, level_up) else { continue };
+                    let next_score = score(&candidate, &checked);
+                    if better(next_score, best_score) { best_score = next_score; best = Some((candidate, checked)); }
+                }
+            }
+            let Some((candidate, checked)) = best else { break };
+            *plan = candidate;
+            *workload = checked;
+        }
+    }
+}
+
+fn transfer_production(plan: &ExactPlan, all: &HashMap<&str, &ProductionItem>, counts: &FacilityCounts,
+    from: usize, to: usize) -> Option<ExactPlan> {
+    let crew = counts.crew()?;
+    let mut names = HashMap::new();
+    let mut stations = HashMap::new();
+    for (name, rate) in &plan.recipe_rates {
+        if *rate <= 1e-9 { continue; }
+        let original = all[name.as_str()];
+        if original.crew != Some(from) { continue; }
+        if crew.residents.contains(&original.facility) { return None; }
+        let (base, _) = name.rsplit_once(crate::models::CREW_SUFFIX)?;
+        let key = format!("{base}{}{to}", crate::models::CREW_SUFFIX);
+        let replacement = all.get(key.as_str())?;
+        if replacement.production_time > original.production_time + 1e-9 { return None; }
+        names.insert(name.as_str(), replacement.name.as_str());
+        stations.insert(work_station(original), work_station(replacement));
+    }
+    if names.is_empty() { return None; }
+    let mut candidate = plan.clone();
+    for (&old, &new) in &names {
+        if let Some(rate) = candidate.recipe_rates.remove(old) { *candidate.recipe_rates.entry(new.into()).or_default() += rate; }
+        if let Some(units) = candidate.units.remove(old) { *candidate.units.entry(new.into()).or_default() += units; }
+    }
+    for (name, _, _) in &mut candidate.fixed_sites {
+        if let Some(&new) = names.get(name.as_str()) { *name = new.into(); }
+    }
+    for (name, _, _) in &mut candidate.hauling_routes {
+        if let Some(&new) = names.get(name.as_str()) { *name = new.into(); }
+    }
+    for (station, member, _) in &mut candidate.work_posts {
+        if *member == from { if let Some(new) = stations.get(station) { *station = new.clone(); *member = to; } }
+    }
+    for route in &mut candidate.work_routes {
+        if let Some(&new) = names.get(route.recipe.as_str()) {
+            if route.member != from || route.crop.is_some() { return None; }
+            route.recipe = new.into(); route.member = to;
+        }
+    }
+    if counts.movement_seconds() > 0.0 {
+        let mut walking = BTreeMap::<usize, f64>::new();
+        for route in &candidate.work_routes {
+            if !route.mobile { continue; }
+            let (_, visits) = work_spec(all[route.recipe.as_str()], route.crop.as_ref(), route.member, counts)?;
+            *walking.entry(route.member).or_default() += route.rate * visits as f64 * counts.member_movement_seconds(route.member);
+        }
+        candidate.movement_staffing = walking.into_iter().collect();
+    }
+    Some(candidate)
+}
+
 /// Free a better courier from a dedicated climate post when a less capable courier can
 /// cover the same shift. Recipe rates, workplace assignments and power stay the same.
 pub fn free_better_couriers(
