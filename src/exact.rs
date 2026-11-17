@@ -456,9 +456,23 @@ fn add_movement_work<'a>(model: &mut Model<'a>, rates: &[(&'a ProductionItem, us
     let mut turn_posts = BTreeMap::<String, Vec<(usize, f64)>>::new();
     for (&(recipe, rate), &(_, unit)) in rates.iter().zip(units) {
         for crop in work_groups(recipe, counts) {
+            let ability = crop.as_ref().map_or("Production", |(ability, _)| ability.as_str());
+            let policy = counts.dispatch(recipe, ability);
             let mut demand = vec![(rate, -1.0)];
             for member in 0..crew.members.len() {
                 let Some((seconds, visits)) = work_spec(recipe, crop.as_ref(), member, counts) else { continue };
+                if let Some(policy) = policy {
+                    let Some(entry) = policy.iter().find(|entry| entry.member == member) else { continue };
+                    let travel = entry.travel_seconds * visits as f64;
+                    let allocation = model.add(0.0, (0.0, f64::INFINITY), false, VarKind::WorkRoute {
+                        recipe, member, crop: crop.clone(), mobile: true, seconds, travel });
+                    demand.push((allocation, 1.0));
+                    busy[member].push((allocation, seconds + travel));
+                    if crop.is_some() {
+                        model.constrain(vec![(allocation, 1.0), (rate, -entry.share)], ComparisonOp::Eq, 0.0);
+                    }
+                    continue;
+                }
                 let key = (work_station(recipe), member);
                 let post = *posts.entry(key.clone()).or_insert_with(|| {
                     let post = model.add(0.0, (0.0, counts.get_count(&recipe.facility).min(crew.members[member].count) as f64), true,
@@ -511,6 +525,7 @@ fn check_movement(plan: &ExactPlan, all: &HashMap<&str, &ProductionItem>, counts
         anchored[*member] += count;
     }
     let mut covered = BTreeMap::<(&str, Option<(String, u32)>), f64>::new();
+    let mut dispatched = BTreeMap::<(&str, Option<(String, u32)>, usize), f64>::new();
     let mut local_used = BTreeMap::<(String, usize), f64>::new();
     let mut local_groups = BTreeMap::<(String, usize, Option<(String, u32)>), f64>::new();
     for route in &plan.work_routes {
@@ -520,7 +535,14 @@ fn check_movement(plan: &ExactPlan, all: &HashMap<&str, &ProductionItem>, counts
             return Err("invalid workplace rate".into());
         }
         *covered.entry((&route.recipe, route.crop.clone())).or_default() += route.rate;
-        let travel = if route.mobile { visits as f64 * counts.member_movement_seconds(route.member) } else { 0.0 };
+        let ability = route.crop.as_ref().map_or("Production", |(ability, _)| ability.as_str());
+        if let Some(policy) = counts.dispatch(recipe, ability) {
+            if !route.mobile || !policy.iter().any(|entry| entry.member == route.member) {
+                return Err("dispatch policy bypassed by workplace assignment".into());
+            }
+            *dispatched.entry((&route.recipe, route.crop.clone(), route.member)).or_default() += route.rate;
+        }
+        let travel = if route.mobile { visits as f64 * counts.request_travel(recipe, ability, route.member) } else { 0.0 };
         busy[route.member] += route.rate * (seconds + travel);
         if !route.mobile {
             *local_used.entry((work_station(recipe), route.member)).or_default() += route.rate * seconds;
@@ -529,6 +551,14 @@ fn check_movement(plan: &ExactPlan, all: &HashMap<&str, &ProductionItem>, counts
     }
     for (name, rate) in &plan.recipe_rates {
         for group in work_groups(all[name.as_str()], counts) {
+            if let Some((ability, _)) = &group {
+                if let Some(policy) = counts.dispatch(all[name.as_str()], ability) {
+                    for entry in policy {
+                        let assigned = dispatched.get(&(name.as_str(), group.clone(), entry.member)).copied().unwrap_or(0.0);
+                        if (assigned - rate * entry.share).abs() > EPS { return Err("crop dispatch share mismatch".into()); }
+                    }
+                }
+            }
             if (covered.get(&(name.as_str(), group)).copied().unwrap_or(0.0) - rate).abs() > EPS {
                 return Err(format!("unassigned production or crop visits for {name}"));
             }
@@ -594,11 +624,12 @@ fn fixed_site_accepts(recipe: &ProductionItem, all: &HashMap<&str, &ProductionIt
 
 fn add_fixed_sites<'a>(model: &mut Model<'a>, all: &HashMap<&str, &ProductionItem>,
     rates: &[(&'a ProductionItem, usize)], units: &[(&'a ProductionItem, usize)],
-    groups: &[crate::models::FixedSiteGroup]) {
+    groups: &[crate::models::FixedSiteGroup], counts: &FacilityCounts) {
     let mut dedicated = vec![Vec::new(); groups.len()];
     let mut turns = BTreeMap::<(usize, bool), Vec<(usize, f64)>>::new();
+    let mut dispatch = BTreeMap::<(usize, String), Vec<(usize, f64)>>::new();
     for (&(recipe, rate), &(_, unit)) in rates.iter().zip(units) {
-        let shares = takes_turns(recipe);
+        let shares = takes_turns(recipe) || counts.dispatch_production(recipe);
         let mut assigned = vec![(unit, -1.0)];
         if shares {
             model.constrain(vec![(rate, recipe.production_time), (unit, -1.0)], ComparisonOp::Eq, 0.0);
@@ -606,7 +637,9 @@ fn add_fixed_sites<'a>(model: &mut Model<'a>, all: &HashMap<&str, &ProductionIte
         for (group, site) in groups.iter().enumerate().filter(|(_, site)| fixed_site_accepts(recipe, all, site)) {
             let place = model.add(0.0, (0.0, site.count as f64), !shares, VarKind::FixedSite { recipe, group });
             assigned.push((place, 1.0));
-            if shares {
+            if counts.dispatch_production(recipe) {
+                dispatch.entry((group, crate::models::base_item_name(&recipe.name).into())).or_default().push((place, 1.0));
+            } else if shares {
                 turns.entry((group, electric_level(&recipe.name).is_some())).or_default().push((place, 1.0));
             } else {
                 dedicated[group].push((place, 1.0));
@@ -616,6 +649,12 @@ fn add_fixed_sites<'a>(model: &mut Model<'a>, all: &HashMap<&str, &ProductionIte
     }
     for ((group, electric), mut terms) in turns {
         let reserved = model.add(0.0, (0.0, groups[group].count as f64), true, VarKind::FixedTurnUnits { group, electric });
+        terms.push((reserved, -1.0));
+        model.constrain(terms, ComparisonOp::Le, 0.0);
+        dedicated[group].push((reserved, 1.0));
+    }
+    for ((group, _), mut terms) in dispatch {
+        let reserved = model.add(0.0, (0.0, groups[group].count as f64), true, VarKind::Extra);
         terms.push((reserved, -1.0));
         model.constrain(terms, ComparisonOp::Le, 0.0);
         dedicated[group].push((reserved, 1.0));
@@ -676,13 +715,32 @@ fn build_model<'a>(
     for &recipe in &recipes {
         let rate = model.add(-seed_cost(recipe), (0.0, f64::INFINITY), false, VarKind::Rate(recipe));
         let max = facility_counts.get_count(&recipe.facility) as f64;
-        let units = model.add(0.0, (0.0, max), !takes_turns(recipe), VarKind::Units(recipe));
-        model.constrain(vec![(rate, recipe.production_time), (units, -1.0)], ComparisonOp::Le, 0.0);
+        let dispatched = facility_counts.dispatch_production(recipe);
+        let units = model.add(0.0, (0.0, max), !takes_turns(recipe) && !dispatched, VarKind::Units(recipe));
+        model.constrain(vec![(rate, recipe.production_time), (units, -1.0)],
+            if dispatched { ComparisonOp::Eq } else { ComparisonOp::Le }, 0.0);
         rate_of.push((recipe, rate));
         units_of.push((recipe, units));
     }
     if let Some(fixed) = fixed {
-        add_fixed_sites(&mut model, &all, &rate_of, &units_of, &fixed.groups);
+        add_fixed_sites(&mut model, &all, &rate_of, &units_of, &fixed.groups, facility_counts);
+    }
+    // One physical reservation for a recipe, shared by its dispatched worker
+    // variants. Different recipes retain separate whole-building reservations.
+    let mut physical_units = Vec::new();
+    let mut dispatch_units = BTreeMap::<(&str, &str), Vec<(&ProductionItem, usize)>>::new();
+    for &(recipe, unit) in &units_of {
+        if facility_counts.dispatch_production(recipe) {
+            dispatch_units.entry((&recipe.facility, crate::models::base_item_name(&recipe.name))).or_default().push((recipe, unit));
+        } else { physical_units.push((recipe, unit)); }
+    }
+    for variants in dispatch_units.values() {
+        let recipe = variants[0].0;
+        let reserved = model.add(0.0, (0.0, facility_counts.get_count(&recipe.facility) as f64), true, VarKind::Extra);
+        let mut terms: Vec<_> = variants.iter().map(|(_, unit)| (*unit, 1.0)).collect();
+        terms.push((reserved, -1.0));
+        model.constrain(terms, ComparisonOp::Le, 0.0);
+        physical_units.push((recipe, reserved));
     }
     // The season currency the player can spend on seeds a day.
     if let Some((budget, spent)) = season_budget(&rate_of) {
@@ -830,7 +888,7 @@ fn build_model<'a>(
     let mut powered: BTreeMap<(&str, u32), Vec<(usize, bool)>> = BTreeMap::new();
     let mut generator_count = None;
     let mut roster_power_draw = None;
-    for &(recipe, units) in &units_of {
+    for &(recipe, units) in &physical_units {
         if let Some(level) = electric_level(&recipe.name) {
             powered.entry((recipe.facility.as_str(), level)).or_default().push((units, takes_turns(recipe)));
             if takes_turns(recipe) {
@@ -882,7 +940,7 @@ fn build_model<'a>(
     // Growing environments: plots of a crop needing environment E at facility F must be covered.
     let gated_types: Vec<&str> = ENVIRONMENT_GATED_FACILITIES.iter().map(|(f, _)| *f).collect();
     let mut needs_cover: BTreeMap<(&str, &str), Vec<usize>> = BTreeMap::new();
-    for &(recipe, units) in &units_of {
+    for &(recipe, units) in &physical_units {
         if let Some(environment) = recipe.environment.as_deref() {
             if gated_types.contains(&recipe.facility.as_str()) {
                 needs_cover.entry((recipe.facility.as_str(), environment)).or_default().push(units);
@@ -1057,7 +1115,7 @@ fn build_model<'a>(
             if crew.residents.contains(&recipe.facility) {
                 busy[member].push((units, 1.0));
                 anchored[member].push((units, 1.0));
-            } else if facility_counts.movement_seconds() <= 0.0 {
+            } else if !facility_counts.uses_work_routes() {
                 busy[member].push((rate, recipe.production_time));
             }
         }
@@ -1117,7 +1175,24 @@ fn build_model<'a>(
             model.constrain(draw, ComparisonOp::Le, 0.0);
         }
         let team_limit = facility_counts.power().and_then(|power| power.grid.max_aniimo.map(|n| (power, n)));
-        if facility_counts.movement_seconds() > 0.0 {
+        // Processor policies split original non-electric batch demand across the
+        // actual-speed crew variants, rather than creating extra tasks.
+        let mut production_groups = BTreeMap::<String, Vec<(&ProductionItem, usize)>>::new();
+        for &(recipe, rate) in &rate_of {
+            if recipe.crew.is_some() && facility_counts.dispatch(recipe, "Production").is_some() {
+                production_groups.entry(format!("{}|{}", recipe.facility, crate::models::base_item_name(&recipe.name)))
+                    .or_default().push((recipe, rate));
+            }
+        }
+        for group in production_groups.values() {
+            let policy = facility_counts.dispatch(group[0].0, "Production").unwrap();
+            for member in 0..crew.members.len() {
+                let share = policy.iter().find(|e| e.member == member).map_or(0.0, |e| e.share);
+                let terms = group.iter().map(|(r, rate)| (*rate, if r.crew == Some(member) { 1.0 - share } else { -share })).collect();
+                model.constrain(terms, ComparisonOp::Eq, 0.0);
+            }
+        }
+        if facility_counts.uses_work_routes() {
             add_movement_work(&mut model, &rate_of, &units_of, facility_counts, &mut busy, &mut anchored);
         } else if let Some(steps) = facility_counts.grower_steps() {
             for ((ability, level), mut needs) in crop_work(&rate_of, steps, crew) {
@@ -1132,11 +1207,15 @@ fn build_model<'a>(
             }
         }
         for &(recipe, rate) in &rate_of {
-            if facility_counts.hauling_seconds(recipe) <= 0.0 { continue; }
+            if !facility_counts.needs_hauling(recipe) { continue; }
             let mut deliveries = vec![(rate, -1.0)];
-            for (member, aniimo) in crew.members.iter().enumerate().filter(|(member, _)| crew.can_work(*member, "Hauling", 1)) {
-                let seconds = facility_counts.hauling_seconds_for(recipe, aniimo.level("Hauling"));
+            let policy = facility_counts.dispatch(recipe, "Hauling");
+            for (member, _) in crew.members.iter().enumerate().filter(|(member, _)| crew.can_work(*member, "Hauling", 1)) {
+                let share = policy.map(|entries| entries.iter().find(|e| e.member == member).map_or(0.0, |e| e.share));
+                if share == Some(0.0) { continue; }
+                let seconds = facility_counts.hauling_seconds_for_member(recipe, member);
                 let staff = model.add(0.0, (0.0, f64::INFINITY), false, VarKind::HaulingStaff { recipe, member, seconds });
+                if let Some(share) = share { model.constrain(vec![(staff, 1.0), (rate, -share)], ComparisonOp::Eq, 0.0); }
                 deliveries.push((staff, 1.0));
                 busy[member].push((staff, seconds));
             }
@@ -1627,7 +1706,7 @@ fn plan_from(model: &Model, value: f64, upper_bound: f64, proven_optimal: bool, 
     let mut work_posts = Vec::new();
     let mut local_used = BTreeMap::<(String, usize), f64>::new();
     let mut travel = BTreeMap::<usize, f64>::new();
-    for (kind, &v) in model.kinds.iter().zip(values) {
+    for (index, (kind, &v)) in model.kinds.iter().zip(values).enumerate() {
         match kind {
             VarKind::Pace => pace = Some(v),
             VarKind::Staff { building, member } if v > 1e-9 => staffing.push((building.clone(), *member, v)),
@@ -1649,7 +1728,7 @@ fn plan_from(model: &Model, value: f64, upper_bound: f64, proven_optimal: bool, 
             VarKind::FixedSite { recipe, group } if v > 1e-9 => {
                 fixed_sites.push((recipe.name.clone(), *group, v));
             }
-            VarKind::Units(recipe) if takes_turns(recipe) && v > 1e-9 => {
+            VarKind::Units(recipe) if !model.integer[index] && v > 1e-9 => {
                 // The units it runs on at least part of the time.
                 units.insert(recipe.name.clone(), ((v - 1e-6).ceil().max(1.0)) as u32);
             }
@@ -2001,12 +2080,13 @@ fn transfer_production(plan: &ExactPlan, all: &HashMap<&str, &ProductionItem>, c
             route.recipe = new.into(); route.member = to;
         }
     }
-    if counts.movement_seconds() > 0.0 {
+    if counts.uses_work_routes() {
         let mut walking = BTreeMap::<usize, f64>::new();
         for route in &candidate.work_routes {
             if !route.mobile { continue; }
             let (_, visits) = work_spec(all[route.recipe.as_str()], route.crop.as_ref(), route.member, counts)?;
-            *walking.entry(route.member).or_default() += route.rate * visits as f64 * counts.member_movement_seconds(route.member);
+            *walking.entry(route.member).or_default() += route.rate * visits as f64 * counts.request_travel(
+                all[route.recipe.as_str()], route.crop.as_ref().map_or("Production", |(ability, _)| ability.as_str()), route.member);
         }
         candidate.movement_staffing = walking.into_iter().collect();
     }
@@ -2067,7 +2147,7 @@ pub fn free_better_couriers(
                 let mut transferred = 0.0;
                 for (name, member, rate) in &mut candidate.hauling_routes {
                     if *member != replacement { continue; }
-                    transferred += *rate * counts.hauling_seconds_for(items_by_name[name.as_str()], tier(courier));
+                    transferred += *rate * counts.hauling_seconds_for_member(items_by_name[name.as_str()], courier);
                     *member = courier;
                 }
                 let new_courier_delivery = old_courier_delivery + transferred;
@@ -2128,8 +2208,8 @@ fn reassign_crew_pool(
         if *id != from { continue; }
         if !crew.can_work(to, "Hauling", 1) { return None; }
         let recipe = all[name.as_str()];
-        let time = counts.hauling_seconds_for(recipe, new.level("Hauling"));
-        if time > counts.hauling_seconds_for(recipe, old.level("Hauling")) { return None; }
+        let time = counts.hauling_seconds_for_member(recipe, to);
+        if time > counts.hauling_seconds_for_member(recipe, from) { return None; }
         delivery += time * *batches;
         *id = to;
     }
@@ -2174,13 +2254,16 @@ pub fn check_plan_with_workload(
         let mut assigned = BTreeMap::<&str, f64>::new();
         let mut used = vec![0.0; layout.groups.len()];
         let mut turns = BTreeMap::<(usize, bool), f64>::new();
+        let mut dispatch = BTreeMap::<(usize, &str), f64>::new();
         for (name, group, amount) in &plan.fixed_sites {
             let recipe = all.get(name.as_str()).ok_or("Unknown recipe in existing layout")?;
             let site = layout.groups.get(*group).ok_or("Unknown site group in existing layout")?;
             if !amount.is_finite() || *amount <= 0.0 || !fixed_site_accepts(recipe, &all, site) {
                 return Err(format!("{name} cannot run at site group {group}"));
             }
-            if takes_turns(recipe) {
+            if facility_counts.dispatch_production(recipe) {
+                *dispatch.entry((*group, crate::models::base_item_name(name))).or_default() += amount;
+            } else if takes_turns(recipe) {
                 *turns.entry((*group, electric_level(name).is_some())).or_default() += amount;
             } else {
                 if (amount - amount.round()).abs() > TOLERANCE {
@@ -2193,12 +2276,13 @@ pub fn check_plan_with_workload(
         for ((group, _), amount) in turns {
             used[group] += (amount - TOLERANCE).ceil().max(0.0);
         }
+        for ((group, _), amount) in dispatch { used[group] += (amount - TOLERANCE).ceil().max(0.0); }
         if used.iter().zip(&layout.groups).any(|(&used, site)| used > site.count as f64 + TOLERANCE) {
             return Err("An existing facility was assigned more than once".into());
         }
         for (name, rate) in &plan.recipe_rates {
             let recipe = all.get(name.as_str()).ok_or("Unknown recipe in existing layout")?;
-            let required = if takes_turns(recipe) {
+            let required = if takes_turns(recipe) || facility_counts.dispatch_production(recipe) {
                 rate * recipe.production_time
             } else {
                 plan.units.get(name).copied().unwrap_or(0) as f64
@@ -2213,6 +2297,7 @@ pub fn check_plan_with_workload(
     let mut plots_needing: HashMap<(&str, &str), u32> = HashMap::new();
     // Units in use per facility and level; a recipe taking turns counts only its share of time.
     let mut units_at: HashMap<&str, Vec<(u32, f64)>> = HashMap::new();
+    let mut dispatch_units = BTreeMap::<(&str, &str), (&ProductionItem, f64)>::new();
     for (name, &rate) in &plan.recipe_rates {
         let recipe = all.get(name.as_str()).ok_or(format!("unknown recipe {name}"))?;
         if !facility_counts.can_produce(&recipe.facility, recipe.facility_level) {
@@ -2228,10 +2313,13 @@ pub fn check_plan_with_workload(
             return Err(format!("{name} runs {rate}/s but has {units} units at {}s each", recipe.production_time));
         }
         let in_use = if takes_turns(recipe) { rate * recipe.production_time } else { units as f64 };
-        if electric_level(name).is_none() {
+        if facility_counts.dispatch_production(recipe) {
+            dispatch_units.entry((&recipe.facility, crate::models::base_item_name(name)))
+                .or_insert((recipe, 0.0)).1 += rate * recipe.production_time;
+        } else if electric_level(name).is_none() {
             units_at.entry(recipe.facility.as_str()).or_default().push((recipe.facility_level, in_use));
         }
-        if let Some(environment) = recipe.environment.as_deref() {
+        if let Some(environment) = recipe.environment.as_deref().filter(|_| !facility_counts.dispatch_production(recipe)) {
             *plots_needing.entry((recipe.facility.as_str(), environment)).or_default() += units;
         }
         *made.entry(made_item(&recipe.name, &all)).or_default() += rate * recipe.yield_amount as f64;
@@ -2245,6 +2333,13 @@ pub fn check_plan_with_workload(
         }
         if currency == "coins" {
             earned -= rate * recipe.cost.unwrap_or(0.0);
+        }
+    }
+    for (recipe, time) in dispatch_units.values() {
+        let physical = (time - TOLERANCE).ceil().max(0.0);
+        units_at.entry(&recipe.facility).or_default().push((recipe.facility_level, physical));
+        if let Some(environment) = recipe.environment.as_deref() {
+            *plots_needing.entry((&recipe.facility, environment)).or_default() += physical as u32;
         }
     }
     let rates: Vec<(&ProductionItem, f64)> = plan.recipe_rates.iter().filter_map(|(n, &r)| Some((*all.get(n.as_str())?, r))).collect();
@@ -2373,7 +2468,7 @@ pub fn check_plan_with_workload(
                 let units = plan.units.get(name).copied().unwrap_or(0) as f64;
                 *slot += units;
                 anchored[member] += units;
-            } else if facility_counts.movement_seconds() <= 0.0 {
+            } else if !facility_counts.uses_work_routes() {
                 *slot += rate * recipe.production_time;
             }
         }
@@ -2420,7 +2515,7 @@ pub fn check_plan_with_workload(
                 if !crew.can_work(*member, ability, *level) {
                     return Err(format!("crop work assigned to Aniimo without {ability} Lv.{level}"));
                 }
-                if facility_counts.movement_seconds() <= 0.0 { busy[*member] += share; }
+                if !facility_counts.uses_work_routes() { busy[*member] += share; }
                 let speed = crate::models::Worker::new(crew.members[*member].level(ability), false).speed(*level, true);
                 *assigned.entry((ability, *level)).or_default() += share * speed;
             }
@@ -2431,20 +2526,48 @@ pub fn check_plan_with_workload(
                 }
             }
         }
-        if facility_counts.movement_seconds() > 0.0 { check_movement(plan, &all, facility_counts, &mut busy, &mut anchored)?; }
+        if facility_counts.uses_work_routes() { check_movement(plan, &all, facility_counts, &mut busy, &mut anchored)?; }
+        let mut production = BTreeMap::<String, (&ProductionItem, BTreeMap<usize, f64>)>::new();
+        for (name, rate) in &plan.recipe_rates {
+            let recipe = all[name.as_str()];
+            if let Some(member) = recipe.crew.filter(|_| facility_counts.dispatch(recipe, "Production").is_some()) {
+                let (_, assigned) = production.entry(format!("{}|{}", recipe.facility, crate::models::base_item_name(name)))
+                    .or_insert_with(|| (recipe, BTreeMap::new()));
+                *assigned.entry(member).or_default() += rate;
+            }
+        }
+        for (recipe, assigned) in production.values() {
+            let total: f64 = assigned.values().sum();
+            let policy = facility_counts.dispatch(recipe, "Production").unwrap();
+            for member in 0..crew.members.len() {
+                let share = policy.iter().find(|e| e.member == member).map_or(0.0, |e| e.share);
+                if (assigned.get(&member).copied().unwrap_or(0.0) - total * share).abs() > TOLERANCE {
+                    return Err("production dispatch share mismatch".into());
+                }
+            }
+        }
         roster_workload = busy.clone();
         let mut delivered = BTreeMap::<&str, f64>::new();
         let mut haul_busy = BTreeMap::<usize, f64>::new();
+        let mut dispatched_hauling = BTreeMap::<(&str, usize), f64>::new();
         for (name, member, rate) in &plan.hauling_routes {
             let recipe = all.get(name.as_str()).ok_or("unknown hauled recipe")?;
             if !rate.is_finite() || *rate < 0.0 || !crew.can_work(*member, "Hauling", 1) {
                 return Err(format!("invalid hauling route for roster member {member}"));
             }
             *delivered.entry(name).or_default() += rate;
-            *haul_busy.entry(*member).or_default() += rate * facility_counts.hauling_seconds_for(recipe, crew.members[*member].level("Hauling"));
+            *dispatched_hauling.entry((name.as_str(), *member)).or_default() += rate;
+            *haul_busy.entry(*member).or_default() += rate * facility_counts.hauling_seconds_for_member(recipe, *member);
         }
         for (name, rate) in &plan.recipe_rates {
-            if facility_counts.hauling_seconds(all[name.as_str()]) > 0.0
+            if let Some(policy) = facility_counts.dispatch(all[name.as_str()], "Hauling") {
+                for member in 0..crew.members.len() {
+                    let share = policy.iter().find(|e| e.member == member).map_or(0.0, |e| e.share);
+                    let actual = dispatched_hauling.get(&(name.as_str(), member)).copied().unwrap_or(0.0);
+                    if (actual - rate * share).abs() > TOLERANCE { return Err("hauling dispatch share mismatch".into()); }
+                }
+            }
+            if facility_counts.needs_hauling(all[name.as_str()])
                 && delivered.get(name.as_str()).copied().unwrap_or(0.0) + TOLERANCE < *rate {
                 return Err(format!("unassigned hauling work for {name}"));
             }
@@ -2529,6 +2652,9 @@ fn integer_groups(model: &Model<'_>, counts: &FacilityCounts) -> Vec<(String, Ve
 }
 
 fn production_staff_zeros(model: &Model<'_>, counts: &FacilityCounts) -> Vec<usize> {
+    // Forced dispatch and approach time can consume the reserves that this
+    // optional symmetry reduction otherwise assumes can staff every climate post.
+    if counts.has_dispatch() { return Vec::new(); }
     let Some(crew) = counts.crew() else { return Vec::new() };
     let Some(first) = crew.assumed_from else { return Vec::new() };
     if counts.power().is_some_and(|p|p.grid.max_aniimo.is_some()) { return Vec::new(); }
@@ -3122,11 +3248,38 @@ fn production_plan(
         let shared: Vec<&str> = rows.iter().filter(|(r, _, _)| takes_turns(r)).map(|(r, _, _)| r.name.as_str()).collect();
         let shared_time: f64 = rows.iter().filter(|(r, _, _)| takes_turns(r) && electric_level(&r.name).is_none())
             .map(|(r, _, rate)| rate * r.production_time).sum();
+        let mut dispatched = BTreeMap::<&str, (&ProductionItem, f64, f64)>::new();
+        for (recipe, _, rate) in rows.iter().filter(|(r, _, _)| facility_counts.dispatch_production(r)) {
+            let entry = dispatched.entry(crate::models::base_item_name(&recipe.name)).or_insert((recipe, 0.0, 0.0));
+            entry.1 += rate;
+            entry.2 += rate * recipe.production_time;
+        }
+        let dispatched_count = |base: &str, time: f64| {
+            let mut sites = BTreeMap::<usize, f64>::new();
+            for (name, group, amount) in &exact.fixed_sites {
+                if crate::models::base_item_name(name) == base && all[name.as_str()].facility == facility {
+                    *sites.entry(*group).or_default() += amount;
+                }
+            }
+            if sites.is_empty() { (time - 1e-6).ceil().max(0.0) as u32 }
+            else { sites.values().map(|time| (time - 1e-6).ceil().max(0.0) as u32).sum() }
+        };
         let powered: u32 = electric.iter().filter(|((name, _), _)| *name == facility).map(|(_, n)| n).sum();
-        let used: u32 = rows.iter().filter(|(r, _, _)| !takes_turns(r) && electric_level(&r.name).is_none()).map(|(_, u, _)| u).sum::<u32>()
-            + ((shared_time - 1e-6).ceil().max(0.0) as u32) + powered;
+        let used: u32 = rows.iter().filter(|(r, _, _)| !takes_turns(r) && !facility_counts.dispatch_production(r)
+            && electric_level(&r.name).is_none()).map(|(_, u, _)| u).sum::<u32>()
+            + ((shared_time - 1e-6).ceil().max(0.0) as u32) + powered
+            + dispatched.iter().map(|(base, (_, _, time))| dispatched_count(base, *time)).sum::<u32>();
         let used = used.min(owned);
+        for (base, (recipe, rate, time)) in &dispatched {
+            coin_items.push(PlanStep {
+                item_name: Some((*base).into()), facility: facility.into(),
+                facility_count: dispatched_count(base, *time), status: PlanStepStatus::Producing,
+                reason: uses_of(recipe), is_grower: grower, cycle_time: Some(time / rate),
+                environment: None, busy_units: Some(*time), crew: None, electric_level: None,
+            });
+        }
         for (recipe, units, rate) in rows {
+            if facility_counts.dispatch_production(recipe) { continue; }
             let mut reason = uses_of(recipe);
             if takes_turns(recipe) {
                 let others: Vec<&str> = shared.iter().copied()

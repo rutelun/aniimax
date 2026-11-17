@@ -1289,9 +1289,18 @@ pub struct FacilityCounts {
     grower_steps: Option<GrowerSteps>,
     movement_seconds: f64,
     member_movement: std::collections::BTreeMap<usize, f64>,
+    dispatch: std::collections::BTreeMap<String, Vec<DispatchAssignment>>,
     hauling_seconds: std::collections::BTreeMap<String, f64>,
     hauling_default_seconds: f64,
     fixed_homeland: Option<FixedHomeland>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct DispatchAssignment {
+    pub member: usize,
+    pub share: f64,
+    #[serde(default)]
+    pub travel_seconds: f64,
 }
 
 /// Physical capacity grouped by interchangeable sites in an existing homeland.
@@ -1325,6 +1334,7 @@ impl Default for FacilityCounts {
             grower_steps: None,
             movement_seconds: 0.0,
             member_movement: Default::default(),
+            dispatch: Default::default(),
             hauling_seconds: Default::default(),
             hauling_default_seconds: 0.0,
             fixed_homeland: None,
@@ -1389,9 +1399,8 @@ impl FacilityCounts {
         let output = recipe.yield_amount.max(1) as f64;
         let byproduct = recipe.byproduct.as_ref().map_or(0.0, |(_, amount)| *amount as f64);
         let per_batch = |limit: u32| {
-            let limit = if base_item_name(&recipe.name) == "quick_aromathyst" { limit.min(36) } else { limit };
-            let batches = limit as f64 / (output + byproduct);
-            let batches = if matches!(recipe.facility.as_str(), "Farmland" | "Woodland") { batches.ceil() } else { batches.floor() }.max(1.0);
+            let threshold = limit as f64 * 0.4;
+            let batches = (threshold / (output + byproduct)).ceil().max(1.0);
             ((output + byproduct) * batches / capacity).ceil() / batches
         };
         // The exact model does not choose a physical tier for every ordinary
@@ -1409,6 +1418,72 @@ impl FacilityCounts {
     }
 
     pub fn movement_seconds(&self) -> f64 { self.movement_seconds }
+
+    pub fn has_dispatch(&self) -> bool { !self.dispatch.is_empty() }
+
+    pub fn dispatch_production(&self, recipe: &ProductionItem) -> bool {
+        recipe.crew.is_some() && self.dispatch(recipe, "Production").is_some()
+    }
+
+    pub fn uses_work_routes(&self) -> bool { self.movement_seconds > 0.0 || self.has_dispatch() }
+
+    pub fn dispatch(&self, recipe: &ProductionItem, ability: &str) -> Option<&[DispatchAssignment]> {
+        self.dispatch.get(&format!("{}|{}|{ability}", recipe.facility, base_item_name(&recipe.name))).map(Vec::as_slice)
+    }
+
+    pub fn request_travel(&self, recipe: &ProductionItem, ability: &str, member: usize) -> f64 {
+        self.dispatch(recipe, ability).and_then(|entries| entries.iter().find(|entry| entry.member == member))
+            .map_or_else(|| self.member_movement_seconds(member), |entry| entry.travel_seconds)
+    }
+
+    pub fn hauling_seconds_for_member(&self, recipe: &ProductionItem, member: usize) -> f64 {
+        // Hauling policies contain the full route cost per original production batch;
+        // production/crop policies instead contain approach time per task request.
+        self.dispatch(recipe, "Hauling").and_then(|entries| entries.iter().find(|entry| entry.member == member))
+            .map_or_else(|| self.hauling_seconds_for(recipe, self.crew.as_ref().unwrap().members[member].level("Hauling")),
+                |entry| entry.travel_seconds)
+    }
+
+    pub fn needs_hauling(&self, recipe: &ProductionItem) -> bool {
+        self.hauling_seconds(recipe) > 0.0 || self.dispatch(recipe, "Hauling").is_some()
+    }
+
+    /// Ignore stale/invalid entries, then normalize eligible shares. An entirely
+    /// invalid policy falls back to ordinary assignment, never drops its tasks.
+    pub fn set_dispatch(&mut self, policies: std::collections::BTreeMap<String, Vec<DispatchAssignment>>,
+        items: &[ProductionItem]) {
+        let Some(crew) = self.crew.as_ref() else { return };
+        let mut valid = std::collections::BTreeMap::new();
+        for (key, entries) in policies {
+            let parts: Vec<_> = key.split('|').collect();
+            if parts.len() != 3 { continue; }
+            let (facility, item, ability) = (parts[0], parts[1], parts[2]);
+            let recipes: Vec<_> = items.iter().filter(|r| r.facility == facility && base_item_name(&r.name) == item).collect();
+            if recipes.is_empty() || (ability != "Hauling" && crew.residents.contains(facility)) { continue; }
+            let eligible = |member| match ability {
+                "Production" => recipes.iter().any(|r| r.crew == Some(member)),
+                "Hauling" => crew.can_work(member, "Hauling", 1),
+                _ => self.grower_steps().is_some_and(|steps| {
+                    let jobs: Vec<_> = steps.get(item).iter().filter(|j| j.ability == ability).collect();
+                    !jobs.is_empty() && jobs.iter().all(|j| crew.can_work(member, ability, j.min_level))
+                }),
+            };
+            let mut merged = std::collections::BTreeMap::<usize, (f64, f64)>::new();
+            for entry in entries {
+                if !entry.share.is_finite() || entry.share <= 0.0 || !entry.travel_seconds.is_finite()
+                    || entry.travel_seconds < 0.0 || !eligible(entry.member) { continue; }
+                let value = merged.entry(entry.member).or_default();
+                value.0 += entry.share;
+                value.1 += entry.share * entry.travel_seconds;
+            }
+            let total: f64 = merged.values().map(|(s, _)| s).sum();
+            if total <= 0.0 || !total.is_finite() || merged.values().any(|(_, t)| !t.is_finite()) { continue; }
+            valid.insert(key, merged.into_iter().map(|(member, (share, travel))| DispatchAssignment {
+                member, share: share / total, travel_seconds: travel / share,
+            }).collect());
+        }
+        self.dispatch = valid;
+    }
 
     pub fn set_member_movement(&mut self, values: std::collections::BTreeMap<usize, f64>) {
         self.member_movement = values.into_iter().filter(|(_, s)| s.is_finite() && *s >= 0.0)

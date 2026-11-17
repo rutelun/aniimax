@@ -4,6 +4,7 @@ import facilityStock from './facility-stock.json' with { type: 'json' };
 
 // Hauling capacity from Skippy, Fenrier, Glacy and Prismana Glacy's Homeland profiles.
 export const HAULING_CAPACITY = Object.freeze({1:60, 2:80, 3:100, 4:120});
+export const HAULING_PICKUP_FILL = .4;
 const levels = [1, 2, 3, 4];
 const headcount = n => Math.max(0, Math.ceil(n - 1e-6));
 export const haulingTravelSeconds = (distance, accountForTravel = false) =>
@@ -15,11 +16,10 @@ export const facilityStockLimit = (facility, level = 1) =>
     facilityStock[facility]?.[Math.max(1, level) - 1] ?? facilityStock[facility]?.at(-1) ?? 0;
 
 export function bufferedBatches(recipe, limit = 0, facility) {
-    // A crop can finish a harvest while below its item limit. Quick Aromathyst has been
-    // observed to leave Dewy House after three batches, before local storage fills.
-    if (recipe?.name === 'quick_aromathyst') limit = Math.min(limit, 36);
-    const batches = limit / batchOutput(recipe);
-    return Math.max(1, facility === 'Farmland' || facility === 'Woodland' ? Math.ceil(batches) : Math.floor(batches));
+    // Model pickup readiness at 40% of the supplied output-buffer limit, rounded up
+    // to a completed batch. This is a modelling assumption, not an input-buffer rule.
+    const threshold = limit * HAULING_PICKUP_FILL;
+    return Math.max(1, Math.ceil(threshold / batchOutput(recipe)));
 }
 
 export function haulingBatchTrips(recipe, level = 3, limit = 0, facility) {

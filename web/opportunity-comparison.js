@@ -5,7 +5,12 @@ export function changeOneMember(input, index, changes) {
     const members = original.count > 1
         ? [...input.roster.members.map((m, i) => i === index ? { ...m, count: m.count - 1 } : m), changed]
         : input.roster.members.map((m, i) => i === index ? changed : m);
-    return { ...input, roster: { ...input.roster, members } };
+    const dispatch = Object.fromEntries(Object.entries(input.roster.dispatch || {}).map(([key, entries]) => [key,
+        entries.flatMap(entry => original.count > 1 && entry.member === index ? [
+            {...entry,share:entry.share*(original.count-1)/original.count},
+            {...entry,member:members.length-1,share:entry.share/original.count},
+        ] : [entry]) ]));
+    return { ...input, roster: { ...input.roster, members, ...(input.roster.dispatch ? {dispatch} : {}) } };
 }
 
 export function personalityInput(input, index, personality, pairs) {
@@ -37,6 +42,13 @@ export function replacementCandidates(input, plan, recipes, catalog, pairs, limi
         const [ability, level] = recipe.aniimo;
         add(step.crew, ability, level, step.busy_units ?? step.facility_count,
             personalities[step.facility], recipe.family, step.facility);
+    }
+    for (const route of plan.roster_routes || []) {
+        if (!route.jobs.some(([name])=>!name)) continue;
+        if ((plan.coin_items || []).some(step=>step.crew===route.member && step.facility===route.facility && step.item_name===route.item)) continue;
+        const recipe=byRecipe.get(`${route.facility}|${route.item}`);
+        if (recipe?.aniimo) add(route.member,recipe.aniimo[0],recipe.aniimo[1],route.jobs.reduce((s,[,load])=>s+load,0),
+            personalities[route.facility],recipe.family,route.facility);
     }
     for (const [ability, level, member, load] of plan.crop_assignments || []) add(member, ability, level, load);
     for (const [facility, member, load] of plan.staffing || []) {
@@ -172,14 +184,15 @@ export function workerUsage(plan, input) {
     }
     for (const [member, share] of plan.job_switching || []) add(member, share);
     for (const [member, share] of plan.delivery_assignments || plan.hauling_staffing || []) add(member, share);
-    const heads = (member, load) => Math.max(anchored.get(member) ?? 0, Math.ceil(load - 1e-6));
+    const heads = (member, load) => Math.min(input.roster.members[member]?.count ?? Infinity,
+        Math.max(anchored.get(member) ?? 0, Math.ceil(load - 1e-6)));
     const dedicated = new Map(plan.dedicated_delivery || []);
     const assignments = new Map([...new Set([...busy.keys(), ...dedicated.keys()])].map(member => {
         const regular = heads(member, busy.get(member) || 0), delivery = Math.ceil((dedicated.get(member) || 0) - 1e-6);
         return [member, regular + delivery];
     }));
-    const peakOf = ([member, load]) => Math.min(1, Math.max(load / Math.max(1, heads(member, load)),
-        (dedicated.get(member) || 0) / Math.max(1, Math.ceil(dedicated.get(member) || 0))));
+    const peakOf = ([member, load]) => Math.max(load / Math.max(1, heads(member, load)),
+        (dedicated.get(member) || 0) / Math.max(1, Math.ceil(dedicated.get(member) || 0)));
     const loads = plan.comparison_workloads?.flat().filter(Number.isFinite);
     const peak = loads ? Math.max(0, ...loads) : Math.max(0, ...[...busy].map(peakOf), ...[...dedicated].map(([member]) => peakOf([member, 0])));
     for (const [member, load] of dedicated) add(member, load);

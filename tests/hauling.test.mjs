@@ -133,21 +133,21 @@ test('a building accumulates several batches before sending a delivery, includin
     const crop = { x: 7, y: -1, w: 2, h: 2, weight: 60, facility: 'Farmland', crop: 'wheat' };
     assignFacilityStock([crop], facilities, new Map(recipes.map(recipe => [recipe.name, recipe])));
     assert.equal(crop.stockLimit, 30);
-    assert.equal(bufferedBatches(recipes[0], crop.stockLimit), 6);
+    assert.equal(bufferedBatches(recipes[0], crop.stockLimit), 3);
     const steps = [{ facility:'Farmland',item_name:'wheat',status:'producing',facility_count:1,cycle_time:60 }];
     const measured = haulingWorkload({ storages: [{ x:-1,y:-1,w:2,h:2 }], pieces: [{ members: [crop] }] }, steps, 0, recipes);
     const bounded = haulingWorkload({ storages: [], pieces: [] }, steps, haulingWorkSeconds(16), recipes, facilities);
-    assert.equal(measured.seconds['Farmland|wheat'], 4 / 6);
+    assert.equal(measured.seconds['Farmland|wheat'], 4 / 3);
     assert.equal(bounded.seconds['Farmland|wheat'], measured.seconds['Farmland|wheat']);
-    assert.equal(haulingBatchTrips({ yieldAmount: 4, byproductAmount: 2 }, 3, 18), 1 / 3);
+    assert.equal(haulingBatchTrips({ yieldAmount: 4, byproductAmount: 2 }, 3, 18), 1 / 2);
 });
 
-test('a full crop buffer can include the last harvest and Hauling 4 can carry 105 mixed items', () => {
+test('a 40% pickup includes the last harvest and Hauling 4 can carry 105 mixed items', () => {
     const maple = { name: 'quick_maple_syrup', yieldAmount: 30, byproductAmount: 75 };
     assert.equal(haulingBatchTrips(maple, 3, 28, 'Woodland'), 2);
     assert.equal(haulingBatchTrips(maple, 4, 28, 'Woodland'), 1);
-    assert.equal(bufferedBatches({ yieldAmount: 8 }, 35, 'Farmland'), 5);
-    assert.equal(bufferedBatches({ name: 'quick_aromathyst', yieldAmount: 12 }, 240, 'Dewy House'), 3);
+    assert.equal(bufferedBatches({ yieldAmount: 8 }, 35, 'Farmland'), 2);
+    assert.equal(bufferedBatches({ name: 'quick_aromathyst', yieldAmount: 12 }, 240, 'Dewy House'), 8);
 });
 
 test('prefer a more versatile courier at the same rate and keep a faster specialist', () => {

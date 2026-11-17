@@ -9,6 +9,19 @@ import {comparisonConcurrency,startComparisonQueue} from '../web/comparison-queu
 const input = () => ({priorities:['season_points','Wood Blocks','coins'],roster:{members:[
     {count:2,abilities:{Artisanship:3,Water:3},personalities:['Instinctive','Nimble'],family:'1017'},
 ],residents:['Tidewhisper Sandcastle']}});
+
+test('counterfactual copy replacement preserves the original dispatch demand',()=>{
+    const before=input();before.roster.dispatch={job:[{member:0,share:1,travel_seconds:4}]};
+    const after=changeOneMember(before,0,{abilities:{Artisanship:4}});
+    assert.deepEqual(after.roster.dispatch.job.map(e=>[e.member,e.share]),[[0,.5],[1,.5]]);
+    assert.equal(before.roster.dispatch.job[0].share,1);
+});
+
+test('comparison reports overload on owned workers instead of inventing copies',()=>{
+    const result=workerUsage({roster_workload:[2.6]},input());
+    assert.equal(result.assignments.get(0),2);
+    assert.equal(result.peak,1.3);
+});
 const plan = (coins=10,wood=2) => ({success:true,proven_optimal:true,rate_per_second:coins,season_points:1,
     priorities:[{target:'season_points',per_second:1},{target:'Wood Blocks',per_second:wood}],
     comparison_scores:{crop_variety:26,material_pace:.3,material_work:3},
@@ -66,7 +79,8 @@ test('comparison totals use checked shifts and add the actual courier work once'
         staffing: [['Cooling Unit', 0, 1]], hauling_staffing: [[0, .01]],
         delivery_assignments: [[0, .2]] };
     const usage = workerUsage(checked, input());
-    assert.equal(usage.working, 4);
+    assert.equal(usage.working, 3);
+    assert.equal(usage.peak, 1.05);
     assert.equal(usage.additional, 1);
     assert.ok(Math.abs(usage.hours - 55.2) < 1e-9);
 });

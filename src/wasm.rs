@@ -805,6 +805,8 @@ pub struct JsRoster {
     #[serde(default)]
     pub movement_by_member: std::collections::BTreeMap<usize, f64>,
     #[serde(default)]
+    pub dispatch: std::collections::BTreeMap<String, Vec<crate::models::DispatchAssignment>>,
+    #[serde(default)]
     pub hauling_seconds: std::collections::BTreeMap<String, f64>,
     #[serde(default)]
     pub hauling_default_seconds: f64,
@@ -1870,7 +1872,8 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
                 jobs,
                 visits,
                 job_rate,
-                walking: visits * prepared.facility_counts.member_movement_seconds(route.member),
+                walking: visits * prepared.facility_counts.request_travel(item,
+                    route.crop.as_ref().map_or("Production", |(ability, _)| ability.as_str()), route.member),
                 local_plots: if !route.mobile && route.crop.is_some() { route.rate * item.production_time } else { 0.0 },
             });
         }
@@ -1900,7 +1903,7 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
                 cycle: item.production_time,
                 crew: item.crew,
                 electric_level: crate::power::electric_level(name),
-                turns: crate::exact::takes_turns(item),
+                turns: crate::exact::takes_turns(item) || prepared.facility_counts.dispatch_production(item),
             }
         }).collect();
     }
@@ -2165,6 +2168,7 @@ impl PreparedInput {
             }
             facility_counts.set_power(power);
         }
+        if let Some(roster) = &input.roster { facility_counts.set_dispatch(roster.dispatch.clone(), &items); }
         Ok(PreparedInput { input, facility_counts, module_levels, items, setup, crew, requirements, grower_steps })
     }
 

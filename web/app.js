@@ -27,6 +27,7 @@ import { aniimoPortrait, attachRosterPicker, rosterCatalogId, rosterCatalogFamil
 import { placeRosterCopy, ROSTER_ROW_SIZE, rosterSlotsFor, swapRosterSlots } from './roster-slots.js';
 import { scheduleRosterCopies } from './roster-work.js?v=measured-walking';
 import { buildDispatch, rosterJobSwitching, TASK_SWITCHING } from './task-switching.js?v=base-travel';
+import { buildReactiveDispatch, permanentWorkers, measuredDispatchWork, routeDispatchKey } from './reactive-dispatch.js';
 import { placeBestJobs, recommendBestTeam } from './best-team.js?v=base-travel';
 import facilityIcons from './facility-icons.json' with { type: 'json' };
 import { abilityGlyph, gameAbilityIcon } from './ability-icons.js?v=game-heads';
@@ -157,7 +158,7 @@ let planRunId = 0;
 function selectedAniimoSetup() {
     const tab = selectedSetupTab();
     if (tab === 'minimum') return 'minimum';
-    if (tab === 'custom') return `roster:${JSON.stringify({ members: roster.map(({ count, abilities, personalities, family }) => ({ count, abilities, personalities, family })), movementDistance: movementDefaultDistance, movementDistances, haulingSeconds, haulingDefaultSeconds })}`;
+    if (tab === 'custom') return `roster:${JSON.stringify({ members: roster.map(({ count, abilities, personalities, family }) => ({ count, abilities, personalities, family })), movementDistance: movementDefaultDistance, movementDistances, haulingSeconds, haulingDefaultSeconds, dispatch: reactiveDispatch })}`;
     return bestAniimoSetup();
 }
 
@@ -1055,6 +1056,14 @@ function opportunityWorkload(plan, input, layout) {
     for (const [index, ability, level, count, family] of reserves) {
         members[index] = { count, abilities: { [ability]: level }, assumed: true, family };
     }
+    if (Object.keys(input.roster.dispatch || {}).length) {
+        const policy = buildReactiveDispatch({layout, recipes:recipeIndex, members,
+            busy:plan.roster_workload || [], permanent:permanentWorkers(plan,members,RESIDENT_FACILITIES),
+            routes:plan.roster_routes || [], previous:input.roster.dispatch});
+        const measured = measuredDispatchWork(plan,policy,recipeIndex);
+        return {...plan, reactive_dispatch:policy, layout_walking:measured.walking,
+            delivery_assignments:measured.delivery, dedicated_delivery:[], job_switching:[]};
+    }
     // Rebuild layout-dependent work equally for rendered and fresh solver plans.
     const production = { ...plan,
         layout_walking: layoutWalkingAdjustments(layout.pieces.flatMap(piece => piece.members), plan),
@@ -1092,7 +1101,7 @@ function opportunityIndividualLoads(plan, input) {
         if (members[member]) walking[member] += share;
     }
     const shifts = rosterCopyShifts(plan, members, regular, walking);
-    return { ...plan, comparison_workloads: shifts.map(pool => pool.map(shift => Math.min(shift.busy, 1))) };
+    return { ...plan, comparison_workloads: shifts.map(pool => pool.map(shift => shift.busy)) };
 }
 
 function comparisonMetricLabel(row) {
@@ -1847,9 +1856,13 @@ function renderHomelandLayout(plan) {
         renderFacilityPlan(plan);
         drawLayout(lastLayout);
         setStep('layout', 'done');
-        if (refineWorkerMovement(layout, plan)) return;
-        plan.layout_walking = layoutWalkingAdjustments(layout.pieces.flatMap(piece => piece.members), plan);
-        if (assignLayoutHauling(layout, plan)) return;
+        if (selectedSetupTab() === 'custom') {
+            if (refineReactiveDispatch(layout, plan)) return;
+        } else {
+            if (refineWorkerMovement(layout, plan)) return;
+            plan.layout_walking = layoutWalkingAdjustments(layout.pieces.flatMap(piece => piece.members), plan);
+            if (assignLayoutHauling(layout, plan)) return;
+        }
         renderAniimoSummary(plan);
         rankImprovementsFor(selectedAniimoSetup());
     };
@@ -1968,6 +1981,13 @@ function layoutWorkAtSites(plan, sites, layout) {
             const item = translate(prettyItem(job.item));
             if (job.electric_level != null) return [{ text: `${item} · ${translate('E-mode')} · ${suffix}` },
                 ...(m.power_networks??[]).map(i=>({text:powerNetworkLabel(layout.power.networks[i])}))];
+            const captured = owned && job.crew == null ? (plan.roster_routes || []).filter(route =>
+                route.facility === m.facility && route.item === job.item && route.jobs.some(([name, share]) => !name && share > 1e-9)) : [];
+            if (captured.length) return [...new Map(captured.map(route => [route.member,route])).values()].map(route => {
+                const ability = recipeIndex.find(recipe => recipe.name === job.item)?.aniimo?.[0];
+                const worker = iconFor(route.member,ability,roster[route.member]?.abilities[ability]);
+                return {worker,text:`${item} · ${worker.label} · ${suffix}`};
+            });
             const task = row?.aniimo ?? assumed.get(job.crew);
             if (task || job.crew != null) {
                 const worker = iconFor(job.crew, task?.ability, task?.level);
@@ -2584,13 +2604,36 @@ function attachPlannerEditor() {
 let roster = [];
 let rosterSlots = rosterSlotsFor(roster);
 let movementDistances = {};
+let reactiveDispatch = {};
 let movementDefaultDistance = 20;
 let travelRefinements = 0;
 let haulingSeconds = {};
 let haulingDefaultSeconds = 0;
 let haulingRefinements = 0;
 const haulingBaseByPlan = new WeakMap();
-const HAULING_ESTIMATE_HINT = 'Delivery estimates use facility stock limits, carrying capacity, and a 2× delivery workload allowance. Pickup timing is approximate.';
+const HAULING_ESTIMATE_HINT = 'Deliveries start at 40% output storage, rounded up to a complete batch. Carrying capacity and travel are included; pickup timing is approximate.';
+
+function refineReactiveDispatch(layout, plan) {
+    const { members, busy } = rosterWorkload(plan);
+    const permanent = permanentWorkers(plan, members, RESIDENT_FACILITIES);
+    const existing = Object.keys(reactiveDispatch).length > 0;
+    const policy = buildReactiveDispatch({layout, recipes:recipeIndex, members, busy, permanent,
+        routes:plan.roster_routes || [], previous:existing ? reactiveDispatch : null});
+    if (!existing && Object.keys(policy).length) {
+        reactiveDispatch = policy;
+        stopRanking();
+        switchAniimoSetup();
+        return true;
+    }
+    const measured = measuredDispatchWork(plan, policy, recipeIndex);
+    plan.reactive_dispatch = policy;
+    plan.layout_walking = measured.walking;
+    plan.delivery_assignments = measured.delivery;
+    plan.hauling_busy = measured.delivery.reduce((sum,[,share])=>sum+share,0);
+    plan.dedicated_delivery = [];
+    plan.job_switching = [];
+    return false;
+}
 
 function haulingRouteBound(accountForTravel = false) {
     const open = homelandPlots().filter(p => p.number <= layoutHomeLevel());
@@ -2686,6 +2729,7 @@ const RESIDENT_FACILITIES = new Set(FACILITIES.filter(f => f.category === 'Aniim
 // The roster for the solver (see `JsRoster` in wasm.rs).
 function rosterPayload() {
     return {
+        dispatch: reactiveDispatch,
         hauling_seconds: haulingSeconds,
         hauling_default_seconds: haulingDefaultSeconds,
         movement_seconds: workerTravelSeconds(movementDefaultDistance),
@@ -2923,6 +2967,7 @@ function showSetupOnly() {
 // Plans again once the player stops changing the roster for a moment, not on every click.
 let rosterReplan = null;
 function rosterChanged(rerender = true) {
+    reactiveDispatch = {};
     refreshRosterTileWorkloads();
     travelRefinements = 0;
     movementDistances = {};
@@ -3342,7 +3387,8 @@ function rosterCopyShifts(plan, members, assigned, walking) {
             ]);
             if (route.visits > 0) {
                 const extra = (extraWalking.get(route.member) || 0) * route.visits / visits[route.member];
-                const duration = Math.max(0, route.walking + extra);
+                const entry = plan.reactive_dispatch?.[routeDispatchKey(route, recipeIndex)]?.find(e => e.member === route.member);
+                const duration = entry ? entry.travel_seconds * route.visits : Math.max(0, route.walking + extra);
                 if (duration > 1e-6) jobs.push([
                     `${walkingLabel} → ${translate(route.facility)} (${item})`, duration,
                 ]);
@@ -3381,7 +3427,7 @@ function renderRosterSummary(plan) {
     });
     for (const [member, share] of plan.job_switching || []) busy[member] += share;
     const have = roster.reduce((sum, a) => sum + a.count, 0);
-    const regular = busy.map((load, member) => Math.max(anchored[member], Math.ceil(load - 1e-6)));
+    const regular = busy.map((load, member) => Math.min(members[member].count, Math.max(anchored[member], Math.ceil(load - 1e-6))));
     const assigned = [...regular];
     for (const [member, share] of plan.dedicated_delivery || []) {
         busy[member] += share;
@@ -4604,7 +4650,11 @@ function facilityPlanCards(rows, plan, heading, first = []) {
 
 function productionWorkers(step, recipe, plan) {
     if (selectedSetupTab() !== 'custom' || step.electric_level != null) return [];
-    const crew = step.crew != null ? [[step.crew, step.aniimo?.ability]] : [...new Map((plan.crop_assignments || [])
+    const actual = (plan.roster_routes || []).filter(route => route.facility === step.facility
+        && route.item === step.item_name && route.jobs.some(([, share]) => share > 1e-9));
+    const crew = step.crew != null ? [[step.crew, step.aniimo?.ability]] : actual.length
+        ? [...new Map(actual.map(route => [route.member,recipe?.aniimo?.[0] ?? recipe?.jobs?.find(([job])=>route.jobs.some(([name])=>name===job))?.[1]]))]
+        : [...new Map((plan.crop_assignments || [])
         .filter(([ability, required, , share]) => share > 1e-9
             && recipe?.jobs.some(([, job, level]) => job === ability && level === required))
         .map(([ability, , id]) => [id, ability]))].sort(([a], [b]) => a - b);
@@ -5692,6 +5742,7 @@ function displayGoal(goalResult) {
 // Solve for the best achievable plan (facilities + currency + modules); the heavier computation,
 // triggered explicitly by the Calculate button or Enter in a facility/module field.
 async function runFindPlan() {
+    reactiveDispatch = {};
     travelRefinements = 0;
     movementDistances = {};
     movementDefaultDistance = 20;

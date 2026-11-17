@@ -1,0 +1,12 @@
+# Reactive dispatch and hauling correction
+
+Goal: count work picked up by eligible free Aniimo, conserve jobs, include approach travel and capacity delays in optimization, and never truncate a reported overload. User specifies pickup at 40% of a building's output stock.
+
+Model: estimate each eligible worker's availability from the initial feasible plan, excluding dedicated climate/resident shifts. For each active recipe and ability, normalize availability into dispatch shares. Keep these estimates explicit and deterministic, not a claim about undocumented game priorities. Constrain the next optimization to those shares (crop routes and production variants); enforce approach time in worker capacity. This moves existing work instead of adding duplicate tasks. After physical placement, recompute travel and report any overload rather than dropping it. Bound feedback solves to preserve speed.
+
+1. Hauling: use first complete batch reaching 40% buffer, at least one; preserve carrying-capacity trips and synchronize Rust fallback. Tests for partial batches, overflow and capacity.
+2. Dispatch policy contract: roster.dispatch is a map keyed `facility|item|ability`. Values are arrays `{member, share, travel_seconds}`. Shares sum to one; travel is seconds per request, excludes task execution. Processor ability key `Production`, crop keys actual abilities, delivery key `Hauling`. Unknown/invalid entries rejected/ignored safely; only valid members are used.
+3. Rust optimizer: constraints conserve original job rates, distribute work across specified members, charge each member's real skill/personality speed and travel. No local-post escape for policy-controlled jobs. Checker validates the same constraints. Post-solve staffing swaps may not violate a policy.
+4. Browser: construct policies from active recipes, roster routes and physical locations; include pickup travel from prior work sites. Replan once with policy and reset when user inputs change. Policy solves and comparison inputs share the same data.
+5. Reports: remove capped switching surcharge; list actual picked-up jobs via solver routes. Preserve overflow in copy packing and comparisons. Show measured travel differences without double adding execution or delivery.
+6. Verification: regression scenario from user, task conservation, no permanent-worker diversion, unexpected skill capture, overload retained, real solved feasibility, 40% hauling parity, all node tests, browser no errors and reasonable runtime.

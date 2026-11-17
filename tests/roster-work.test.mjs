@@ -4,6 +4,16 @@ import { scheduleRosterCopies } from '../web/roster-work.js';
 
 const loads = shifts => shifts.map(shift => Number(shift.busy.toFixed(6)));
 
+test('overload preserves execution and travel beyond 100% on existing copies', () => {
+    const shifts = scheduleRosterCopies(2, [['Heat Furnace',1]], [], [
+        {jobs:[['Production',.8],['Approach',.3]]},
+        {jobs:[['Reaping',.2]]},
+    ]);
+    assert.deepEqual(loads(shifts),[1,1.3]);
+    assert.ok(Math.abs(shifts[1].tasks.get('Approach')-.3)<1e-9);
+    assert.equal(shifts[0].tasks.size,1);
+});
+
 test('identical copies take separate routes and keep each route’s walking time', () => {
     const shifts = scheduleRosterCopies(2, [], [], [
         { jobs: [['Watering · Ginseng', 0.30], ['Walking', 0.30]] },
@@ -37,7 +47,7 @@ test('splits a route only when its workload cannot fit within a single available
     for (const shift of shifts) assert.equal(shift.tasks.get('Sowing'), shift.tasks.get('Walking'));
 });
 
-test('reactive switching is shared by each active copy�s spare time, not packed into one copy', () => {
+test('reactive switching is shared by each active copy�s spare time, not packed into one copy', () => {
     const shifts = scheduleRosterCopies(3, [], [], [
         {jobs:[['Field A',.8]]},
         {jobs:[['Field B',.6]]},

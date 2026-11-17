@@ -28,12 +28,19 @@ export function scheduleRosterCopies(count, fixed, posts, routes) {
             add(shift, jobs, part / total);
             remaining -= part;
         }
+        // A measured route can exceed the model estimate. Preserve that demand
+        // on an existing worker instead of silently truncating it at one shift.
+        if (remaining > EPSILON && pool.length) {
+            const leastBusy = pool.reduce((a, b) => a.busy <= b.busy ? a : b);
+            add(leastBusy, jobs, remaining / total);
+        }
     };
 
     let next = 0;
     for (const [label, units] of fixed) {
         for (let i = 0; i < units; i++) add(shifts[next++], [[label, 1]], 1);
     }
+    const mobile = shifts.slice(next);
     const byStation = new Map();
     for (const [station, units] of posts) {
         byStation.set(station, shifts.slice(next, next + units));
@@ -56,11 +63,11 @@ export function scheduleRosterCopies(count, fixed, posts, routes) {
         if (spread) {
             // Reactive diversions are estimates across active copies, proportional to
             // their opportunity to pick up work. Do not wake an otherwise idle copy.
-            const active = shifts.filter(shift => shift.busy > EPSILON && free(shift) > EPSILON);
+            const active = mobile.filter(shift => shift.busy > EPSILON);
             const spare = active.reduce((sum, shift) => sum + free(shift), 0);
-            const weights = active.map(shift => spare > 0 ? free(shift) / spare : 0);
+            const weights = active.map(shift => spare > 0 ? free(shift) / spare : 1 / active.length);
             active.forEach((shift, i) => add(shift, jobs, weights[i]));
-        } else pack(jobs, shifts);
+        } else pack(jobs, mobile.length ? mobile : shifts);
     }
     return shifts;
 }

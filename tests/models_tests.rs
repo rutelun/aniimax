@@ -143,7 +143,7 @@ fn test_production_item_creation() {
 
     let mut counts = FacilityCounts::only(&[("Farmland", 1, 6)]);
     counts.set_hauling(12.0, Default::default());
-    assert_eq!(counts.hauling_seconds_for(&item, 3), 4.0); // Three wheat batches in 30 slots.
+    assert_eq!(counts.hauling_seconds_for(&item, 3), 6.0); // Two batches reach 40% of 30 slots.
     counts.add_tier("Farmland", 1, 1);
     assert_eq!(counts.hauling_seconds_for(&item, 3), 12.0); // Conservative when the plot's tier is unknown.
 }
@@ -157,7 +157,7 @@ fn test_hauling_capacity_and_pickup_thresholds() {
     counts.set_hauling(12.0, Default::default());
     assert_eq!(counts.hauling_seconds_for(maple, 3), 24.0);
     assert_eq!(counts.hauling_seconds_for(maple, 4), 12.0);
-    assert_eq!(counts.hauling_seconds_for(dewy, 3), 4.0);
+    assert_eq!(counts.hauling_seconds_for(dewy, 3), 1.5); // Eight batches reach 40% of 240 slots.
 }
 
 #[test]
