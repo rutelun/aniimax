@@ -5796,7 +5796,7 @@ function updateRateUnitDisplays() {
 // keystroke.
 function displayPlan(plan, keepLayout = false) {
     const scheduleCard=document.getElementById('recipe-schedule-container');
-    scheduleCard.innerHTML=renderRecipeSchedule(plan.recipe_schedule,{itemName:prettyItem,formatNumber,buildingName:b=>`${translate(b.facility)} #${b.id.split(':').at(-1)}`});
+    scheduleCard.innerHTML=renderRecipeSchedule(plan.recipe_schedule,{itemName:prettyItem,buildingIcon:facilityIconUrl,buildingName:b=>`${translate(b.facility)} #${b.id.split(':').at(-1)}`});
     if(!plan.recipe_schedule&&plan.recipe_switching_note){const note=document.createElement('p');note.className='hint';note.textContent=plan.recipe_switching_note;scheduleCard.append(note);}
     const resultsSection = document.getElementById('results-section');
     const errorEl = document.getElementById('error-message');

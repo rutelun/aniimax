@@ -3778,3 +3778,30 @@ html { scroll-padding-top: 0.8rem; }
     .env-unit { overflow-wrap: anywhere; }
     #facility-plan-container { min-width: 0; overflow-wrap: anywhere; }
 }
+/* Daily actions belong beside the production plan, rather than a separate result card. */
+.recipe-schedule { margin: 16px 0 20px; border-block: 1px solid var(--border); padding: 12px 0; }
+.recipe-schedule > summary { cursor: pointer; }
+.recipe-schedule-count { margin-left: 12px; color: var(--accent); font-size: .85em; white-space: nowrap; }
+.recipe-schedule-scroll { margin-top: 12px; max-width: 100%; overflow-x: auto; }
+.recipe-schedule-table th, .recipe-schedule-table td { border: 0; border-bottom: 1px solid var(--border); padding: 10px 12px; vertical-align: middle; background: transparent; }
+.recipe-schedule-table th { text-transform: none; letter-spacing: normal; }
+.recipe-schedule-table thead th { color: var(--text-muted); font-weight: 400; white-space: nowrap; }
+.recipe-schedule-table tbody th { font-size: inherit; min-width: 200px; }
+.recipe-schedule-table td { min-width: 150px; }
+.recipe-schedule-table tr:last-child > * { border-bottom: 0; }
+.recipe-schedule-building { display: flex; align-items: center; gap: 10px; }
+.recipe-schedule-building img { object-fit: contain; flex: 0 0 32px; }
+.recipe-schedule-table tbody tr td { color: var(--text); font-weight: normal; }
+.recipe-schedule-table tbody tr td.recipe-schedule-changed { color: var(--accent); }
+.recipe-schedule-arrow { color: var(--text-muted); margin-right: 10px; }
+@media (max-width: 600px) {
+    .recipe-schedule-count { display: block; margin: 6px 0 0 18px; }
+    .recipe-schedule-table, .recipe-schedule-table tbody { display: block; }
+    .recipe-schedule-table thead { display: none; }
+    .recipe-schedule-table tr { display: block; padding: 10px 0; border-bottom: 1px solid var(--border); }
+    .recipe-schedule-table tr:last-child { border-bottom: 0; }
+    .recipe-schedule-table tbody th { display: block; padding: 0 0 8px; min-width: 0; border: 0; }
+    .recipe-schedule-table td { display: grid; grid-template-columns: 70px minmax(0, 1fr); gap: 8px; padding: 5px 0 5px 42px; min-width: 0; border: 0; overflow-wrap: anywhere; }
+    .recipe-schedule-table td::before { content: attr(data-time); color: var(--text-muted); font-variant-numeric: tabular-nums; }
+    .recipe-schedule-arrow { display: none; }
+}

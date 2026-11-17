@@ -13,22 +13,21 @@ const schedule = {
     buildings: [{id: 'a', facility: 'Kitchen', level: 2}, {id: 'b', facility: 'Unchanged facility', level: 1}],
 };
 
-test('schedule uses common elapsed boundaries and lists switching buildings once', () => {
+test('schedule opens above production with morning setup and changed recipes only', () => {
     const html = renderRecipeSchedule(schedule);
     assert.match(html, /Daily recipe schedule/);
     assert.match(html, /Morning/);
     assert.match(html, /\+6:00/);
     assert.match(html, /\+14:00/);
-    assert.match(html, /\+24:00/);
+    assert.doesNotMatch(html, /\+24:00/);
     assert.match(html, /2 switches/);
-    assert.equal((html.match(/<th scope="row">/g) || []).length, 1);
+    assert.equal((html.match(/scope="row"/g) || []).length, 1);
+    assert.match(html, /<details class="recipe-schedule" open>/);
     assert.doesNotMatch(html, /Unchanged facility/);
     assert.match(html, /Bread/);
     assert.match(html, /Jam/);
     assert.match(html, /Idle/);
-    assert.match(html, /25 wheat/);
-    assert.match(html, /replenished daily/);
-    assert.match(html, /morning reset does not count/i);
+    assert.doesNotMatch(html, /wheat|buffer|replenished|checkbox|morning reset/i);
 });
 
 test('all custom labels and formatted amounts are escaped', () => {
@@ -40,7 +39,7 @@ test('all custom labels and formatted amounts are escaped', () => {
     assert.doesNotMatch(html, /<script>|<img|<b>25/);
     assert.match(html, /&lt;script&gt;/);
     assert.match(html, /&lt;img/);
-    assert.match(html, /&lt;b&gt;25/);
+    assert.doesNotMatch(html, /25/);
 });
 
 test('empty schedule is omitted and a no-switch day remains explicit', () => {
@@ -54,6 +53,6 @@ test('empty schedule is omitted and a no-switch day remains explicit', () => {
 
 test('event total comes from actual switches even when a phase boundary changes no recipe', () => {
     const html = renderRecipeSchedule({...schedule, switches: [21600]});
-    assert.match(html, /1 switch;/);
+    assert.match(html, /1 switch\/day/);
     assert.doesNotMatch(html, /2 switches/);
 });
