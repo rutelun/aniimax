@@ -122,17 +122,19 @@ function envelopeFits(box,group,layout){
     });
 }
 
-export function refineProductionGroups(input,cells,{accept=()=>true}={}){
+export function refineProductionGroups(input,cells,{accept=()=>true,passes=2,steps=[4,2,.5],diagonals=false}={}){
     const layout=structuredClone(input),inside=createInsideTest(cells);
     let cost=layoutDeliveryCost(layout);
-    for(const step of [4,2,.5])for(let pass=0;pass<2;pass++){
+    for(const step of steps)for(let pass=0;pass<passes;pass++){
         let changed=false;
         for(const group of layout.groups){
             const members=group.indices.flatMap(i=>layout.pieces[i].members);
             const carried=[...members,...layout.storages.filter(r=>contains(group.bounds,r)),
                 ...layout.power.poles.filter(r=>contains(group.bounds,r))];
             const moving=new Set(carried),blocked=[...layout.pieces.flatMap(p=>p.members),...layout.storages,...layout.power.poles].filter(r=>!moving.has(r));
-            for(const [dx,dy] of [[-step,0],[step,0],[0,-step],[0,step]]){
+            const directions=[[-step,0],[step,0],[0,-step],[0,step]];
+            if(diagonals)directions.push([-step,-step],[-step,step],[step,-step],[step,step]);
+            for(const [dx,dy] of directions){
                 const box={...group.bounds,x:group.bounds.x+dx,y:group.bounds.y+dy};
                 if(!inside(box)||!envelopeFits(box,group,layout))continue;
                 if(carried.some(r=>{const next={...r,x:r.x+dx,y:r.y+dy};return !inside(next)||blocked.some(b=>overlaps(b,next));}))continue;
@@ -270,6 +272,9 @@ export async function productionGroupLayout(pieces,cells,{storageCount=1,poleLim
         if(!next.power.disconnected&&keeps(next)&&layoutDeliveryCost(next)<=layoutDeliveryCost(best)+1e-8)best=next;
         const stored=improveFixedStorage(best,cells,0,storageCount);
         if(keeps(stored)&&layoutDeliveryCost(stored)<=layoutDeliveryCost(best)+1e-8)best=stored;
+        // Storage/member moves can unlock translations rejected earlier. Polish
+        // only the winner, on the same quarter-tile grid as individual sites.
+        best=refineProductionGroups(best,cells,{accept:keeps,passes:12,steps:[8,4,2,1,.5,.25],diagonals:true});
         if(layoutDeliveryCost(best)>=before-1e-8)break;
     }
     best=refineFlexibleProduction(best,cells,{accept:keeps});

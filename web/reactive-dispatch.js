@@ -2,10 +2,47 @@ import { dispatchLocations } from './task-switching.js';
 import { haulingBatchTrips, pickupStockLimit } from './hauling.js';
 import { workerTravelSeconds } from './worker-travel.js';
 import { deliveryRouting, deliveryApproach } from './delivery-routing.js';
+import { FACILITY_CATEGORY_BY_NAME } from './facility-config.js';
 
 const center=r=>[r.x+r.w/2,r.y+r.h/2];
 const distance=(a,b)=>Math.hypot(a[0]-b[0],a[1]-b[1]);
 export const dispatchKey=(facility,item,ability)=>`${facility}|${item}|${ability}`;
+
+// Identical recipes do not imply one worker visits every physical building.
+// Bind only unambiguous single-copy, single-task workers. Mobile workers and
+// couriers retain the full set of possible origins/destinations.
+function activeOutputs(sites){
+    return new Set(sites.flatMap(s=>(s.jobs||[{item:s.crop,rate:s.batchWeight??s.weight,electric_level:s.electric_level}])
+        .filter(j=>j.item&&j.rate>0).flatMap(j=>{
+            const prefix=`${s.facility}|${j.item}`;
+            return [`${prefix}|Hauling`,...(j.electric_level==null?[`${prefix}|Production`]:[]),
+                ...(['Farmland','Woodland'].includes(s.facility)?[`${prefix}|Crop`]:[])];
+        })));
+}
+function taskSites(targets,member,facility,item,members,routes,policy,active){
+    const key=dispatchKey(facility,item,'Production');
+    const focused=id=>members[id]?.count===1
+        && routes.some(r=>r.member===id&&r.facility===facility&&r.item===item&&r.job_rate>0)
+        && routes.filter(r=>r.member===id&&r.job_rate>0).every(r=>r.facility===facility&&r.item===item&&!r.jobs?.some(([name])=>name))
+        && Object.entries(policy).every(([k,entries])=>k===key||(!active.has(k)&&!active.has(k.slice(0,k.lastIndexOf('|'))+'|Crop'))||!entries.some(e=>e.member===id&&e.share>1e-12));
+    if(!focused(member))return targets;
+    const rateOf=id=>routes.filter(r=>r.member===id&&r.facility===facility&&r.item===item)
+        .reduce((sum,r)=>sum+Math.max(0,r.job_rate||0),0);
+    const siteRate=s=>s.jobs?s.jobs.filter(j=>j.item===item&&j.electric_level==null).reduce((sum,j)=>sum+(j.rate||0),0):(s.batchWeight??s.weight??0)/3600;
+    const matches=(id,s)=>Math.abs(rateOf(id)-siteRate(s))<=1e-9+Math.max(rateOf(id),siteRate(s))*1e-6;
+    const own=targets.filter(s=>s.crew===member||s.jobs?.some(j=>j.item===item&&j.crew===member));
+    if(own.length===1&&matches(member,own[0]))return own;
+    if(targets.some(s=>s.crew!=null||s.jobs?.some(j=>j.item===item&&j.crew!=null)))return targets;
+    const peers=members.flatMap((_,id)=>focused(id)?[id]:[]);
+    if(peers.length!==targets.length)return targets;
+    const remaining=[...targets],assigned=new Map();
+    for(const id of peers){
+        const index=remaining.findIndex(s=>matches(id,s));
+        if(index<0)return targets;
+        assigned.set(id,remaining.splice(index,1)[0]);
+    }
+    return [assigned.get(member)];
+}
 
 // Expected random dispatch among eligible free workers. A policy allocates ONE
 // original request across workers; it never adds a second copy of its execution.
@@ -44,7 +81,7 @@ export function buildReactiveDispatch({layout,recipes,members,busy=[],permanent=
         if(!physical?.length)continue;
         const positions=physical.filter(r=>r.crop===recipe.name||r.jobs?.some(j=>j.item===recipe.name));
         const targets=positions.length?positions:physical;
-        const roles=recipe.aniimo?[['Production',recipe.aniimo[0],recipe.aniimo[1]]]
+        const roles=FACILITY_CATEGORY_BY_NAME.get(recipe.facility)==='Aniimo Materials'?[]:recipe.aniimo?[['Production',recipe.aniimo[0],recipe.aniimo[1]]]
             :[...new Map((recipe.jobs||[]).map(([,a,l])=>[a,[a,a,l]])).values()];
         roles.push(['Hauling','Hauling',1]);
         for(const [keyAbility,ability,level] of roles){
@@ -108,6 +145,7 @@ export function buildReactiveDispatch({layout,recipes,members,busy=[],permanent=
     const routed={storages:layout.storages,pieces:layout.pieces.map(p=>({...p,members:p.members.map(m=>({...m}))}))};
     attachDeliveryFlows(routed,policy,recipes,members,routes);
     const flow=deliveryRouting(routed);
+    const active=activeOutputs(sites);
     for(const recipe of recipes){
         const physical=byFacility.get(recipe.facility);if(!physical?.length)continue;
         const exact=physical.filter(r=>r.crop===recipe.name||r.jobs?.some(j=>j.item===recipe.name));
@@ -115,7 +153,8 @@ export function buildReactiveDispatch({layout,recipes,members,busy=[],permanent=
         const workTargets=targets.filter(s=>s.jobs?s.jobs.some(j=>j.item===recipe.name&&j.electric_level==null):s.electric_level==null);
         const abilities=recipe.aniimo?['Production']:[...new Set((recipe.jobs||[]).map(([,ability])=>ability))];
         if(workTargets.length)for(const ability of abilities)for(const e of policy[dispatchKey(recipe.facility,recipe.name,ability)]||[]){
-            const values=workTargets.map(s=>deliveryApproach(flow,e.member,center(s)));
+            const workerTargets=ability==='Production'?taskSites(workTargets,e.member,recipe.facility,recipe.name,members,routes,policy,active):workTargets;
+            const values=workerTargets.map(s=>deliveryApproach(flow,e.member,center(s)));
             if(values.every(v=>v!=null))e.travel_seconds=values.reduce((sum,v)=>sum+workerTravelSeconds(v),0)/values.length;
         }
         for(const e of policy[dispatchKey(recipe.facility,recipe.name,'Hauling')]||[]){
@@ -135,6 +174,7 @@ export function buildReactiveDispatch({layout,recipes,members,busy=[],permanent=
 export function attachDeliveryFlows(layout,policy,recipes,members,routes=[]){
     const recipeOf=new Map(recipes.map(r=>[r.name,r]));
     const sites=layout.pieces.flatMap(p=>p.members);
+    const active=activeOutputs(sites);
     for(const s of sites){
         s.deliveryWorkers=[];s.deliveryOrigins=[];
         const weights=new Map();
@@ -150,8 +190,11 @@ export function attachDeliveryFlows(layout,policy,recipes,members,routes=[]){
     }
     for(const route of routes){
         if(!(route.job_rate>0))continue;
-        const targets=sites.filter(s=>s.facility===route.facility&&(s.jobs
+        let targets=sites.filter(s=>s.facility===route.facility&&(s.jobs
             ?s.jobs.some(j=>j.item===route.item&&j.electric_level==null):s.crop===route.item&&s.electric_level==null));
+        if(routeDispatchKey(route,recipes)===dispatchKey(route.facility,route.item,'Production')){
+            targets=taskSites(targets,route.member,route.facility,route.item,members,routes,policy,active);
+        }
         const rates=targets.map(s=>s.jobs?s.jobs.filter(j=>j.item===route.item&&j.electric_level==null)
             .reduce((sum,j)=>sum+Math.max(0,j.rate||0),0):Math.max(0,s.batchWeight??s.weight??0)/3600);
         const total=rates.reduce((sum,rate)=>sum+rate,0);

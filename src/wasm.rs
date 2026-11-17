@@ -1309,6 +1309,8 @@ pub struct JsProductionPlan {
     /// Task routes retain their local workplace or mobile walking cost for per-copy scheduling.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub roster_routes: Vec<JsRosterRoute>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub roster_dispatch: std::collections::BTreeMap<String, Vec<crate::models::DispatchAssignment>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub roster_posts: Vec<(String, usize, f64)>,
     #[serde(default)]
@@ -1423,6 +1425,7 @@ fn empty_production_plan(success: bool, error: Option<String>) -> JsProductionPl
         crop_staffing: false,
         crop_assignments: Vec::new(),
         roster_routes: Vec::new(),
+        roster_dispatch: Default::default(),
         roster_posts: Vec::new(),
         movement_staffing: Vec::new(),
         workplace_anchors: Vec::new(),
@@ -1742,6 +1745,7 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
         Ok(p) => p,
         Err(error) => return error,
     };
+    let mut report_counts = prepared.facility_counts.clone();
     let stage: JsStage = serde_json::from_str(stage_json).unwrap_or_default();
     let Ok(result) = serde_json::from_str::<JsSolverResult>(solution_json) else { return no_plan() };
     let currency = prepared.input.currency.clone();
@@ -1755,7 +1759,7 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
     let Some(mut exact) = crate::exact::plan_from_values(
         &prepared.items,
         &currency,
-        &prepared.facility_counts,
+        &report_counts,
         &prepared.module_levels,
         stage.with_material_work(&stock),
         &result.values,
@@ -1770,17 +1774,17 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
     // Independent re-check of every limit before trusting the plan; the caller falls back to the
     // heuristic planner if this ever fails.
     let (_, mut roster_workload) = match crate::exact::check_plan_with_workload(
-        &exact, &prepared.items, &currency, &prepared.facility_counts, &prepared.module_levels, level_up,
+        &exact, &prepared.items, &currency, &report_counts, &prepared.module_levels, level_up,
     ) {
         Ok(checked) => checked,
         Err(problem) => return serde_json::to_string(&empty_production_plan(false, Some(format!("Exact plan failed its check: {problem}"))))
             .unwrap_or_default(),
     };
     if let Some(candidate) = crate::exact::consolidate_reserve_workplaces(
-        &exact, &roster_workload, &prepared.items, &prepared.facility_counts,
+        &exact, &roster_workload, &prepared.items, &report_counts,
     ) {
         if let Ok((_, checked)) = crate::exact::check_plan_with_workload(
-            &candidate, &prepared.items, &currency, &prepared.facility_counts, &prepared.module_levels, level_up,
+            &candidate, &prepared.items, &currency, &report_counts, &prepared.module_levels, level_up,
         ) {
             exact = candidate;
             roster_workload = checked;
@@ -1788,16 +1792,16 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
     }
     crate::exact::prefer_versatile_crew(
         &mut exact, &mut roster_workload, &prepared.items, &currency,
-        &prepared.facility_counts, &prepared.module_levels, level_up,
+        &report_counts, &prepared.module_levels, level_up,
     );
     crate::exact::improve_climate_staffing(
         &mut exact, &mut roster_workload, &prepared.items, &currency,
-        &prepared.facility_counts, &prepared.module_levels, level_up,
+        &mut report_counts, &prepared.module_levels, level_up,
     );
     if !result.summary_only {
         crate::exact::free_better_couriers(
             &mut exact, &mut roster_workload, &prepared.items, &currency,
-            &prepared.facility_counts, &prepared.module_levels, level_up,
+            &report_counts, &prepared.module_levels, level_up,
         );
     }
     let mut reporting_items = &prepared.items[..];
@@ -1805,7 +1809,7 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
     if !result.summary_only && matches!(prepared.setup, Some(crate::models::AniimoSetup::Best(_)))
         && prepared.input.fixed_homeland.is_none()
     {
-        if let Some(power) = prepared.facility_counts.power().filter(|power| power.automatic.is_some()) {
+        if let Some(power) = report_counts.power().filter(|power| power.automatic.is_some()) {
             let active = prepared.items.iter()
                 .filter(|item| item.workload.is_some() && crate::power::electric_level(&item.name).is_none()
                     && exact.recipe_rates.contains_key(&item.name))
@@ -1813,13 +1817,13 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
             // Slower gathering variants are useful only if spare buildings preserve the
             // solved rate. Check them here to keep them out of the production search.
             crate::power::add_electric_variants(
-                &mut extra_electric, active, &prepared.facility_counts, &prepared.requirements, &power.grid,
+                &mut extra_electric, active, &report_counts, &prepared.requirements, &power.grid,
             );
             let existing: std::collections::HashSet<_> = prepared.items.iter().map(|item| item.name.as_str()).collect();
             extra_electric.retain(|item| !existing.contains(item.name.as_str()));
             extra_electric.extend(prepared.items.iter().cloned());
             if let Some(candidate) = crate::exact::prefer_electric_staffing(
-                &exact, &extra_electric, &currency, &prepared.facility_counts, &prepared.module_levels, level_up,
+                &exact, &extra_electric, &currency, &report_counts, &prepared.module_levels, level_up,
             ) {
                 exact = candidate;
                 reporting_items = &extra_electric;
@@ -1829,7 +1833,7 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
     let proof = (exact.proven_optimal, exact.upper_bound);
     let report_at = |target, seconds| {
         let mut net = crate::exact::net_rates(&exact, reporting_items);
-        for (name, rate) in prepared.facility_counts.quest_income() {
+        for (name, rate) in report_counts.quest_income() {
             *net.entry(name.clone()).or_default() += rate;
         }
         level_up_report(exact.rate_per_second, &net, reporting_items, target, seconds)
@@ -1841,7 +1845,7 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
     let preview = prepared.input.level_up_preview.as_ref().filter(|_| currency == "coins")
         .map(|target| report_at(target, exact.pace.filter(|&pace| pace > 0.0).map(|pace| crate::exact::PACE_UNIT / pace)));
     let build_report = if result.summary_only { crate::exact::to_production_summary } else { crate::exact::to_production_plan };
-    let plan = build_report(&exact, reporting_items, &currency, &prepared.facility_counts);
+    let plan = build_report(&exact, reporting_items, &currency, &report_counts);
     let mut js = prepared.to_js(plan, Some(proof));
     js.level_up = report.filter(|_| prepared.input.level_up.is_some());
     js.level_up_preview = preview;
@@ -1872,7 +1876,7 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
                 jobs,
                 visits,
                 job_rate,
-                walking: visits * prepared.facility_counts.request_travel(item,
+                walking: visits * report_counts.request_travel(item,
                     route.crop.as_ref().map_or("Production", |(ability, _)| ability.as_str()), route.member),
                 local_plots: if !route.mobile && route.crop.is_some() { route.rate * item.production_time } else { 0.0 },
             });
@@ -1887,6 +1891,7 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
     js.roster_posts = exact.work_posts.clone();
     js.hauling_staffing = exact.hauling_staffing.clone();
     js.roster_workload = roster_workload;
+    js.roster_dispatch = report_counts.dispatch_policies().clone();
     if prepared.input.fixed_homeland.is_some() {
         let items: std::collections::HashMap<_, _> = prepared.items.iter().map(|item| (item.name.as_str(), item)).collect();
         let mut total_units = std::collections::HashMap::<&str, f64>::new();
@@ -1903,7 +1908,7 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
                 cycle: item.production_time,
                 crew: item.crew,
                 electric_level: crate::power::electric_level(name),
-                turns: crate::exact::takes_turns(item) || prepared.facility_counts.dispatch_production(item),
+                turns: crate::exact::takes_turns(item) || report_counts.dispatch_production(item),
             }
         }).collect();
     }
@@ -1914,7 +1919,7 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
         Some((crate::models::base_item_name(&item.name).to_string(), item.facility.clone(), route.member,
             route.rate * visits as f64 * 3600.0, route.crop.is_some()))
     }).collect();
-    if let Some(power) = prepared.facility_counts.power() {
+    if let Some(power) = report_counts.power() {
         js.generator_watts_by_lightning = (1..=4).map(|level| power.generator_output(level)).collect();
         let draw = crate::exact::rated_power_draw(&exact, reporting_items);
         let needed = draw * power.grid.percent as f64 / 100.0;
@@ -2271,6 +2276,7 @@ impl PreparedInput {
             crop_staffing: false,
             crop_assignments: Vec::new(),
             roster_routes: Vec::new(),
+            roster_dispatch: Default::default(),
             roster_posts: Vec::new(),
             movement_staffing: Vec::new(),
             workplace_anchors: Vec::new(),

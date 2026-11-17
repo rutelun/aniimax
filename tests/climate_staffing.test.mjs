@@ -63,3 +63,25 @@ test('a third artisan can free a cooling worker; unavailable capacity cannot',
 
 
 
+
+test('measured dispatch follows an accepted climate swap instead of locking the slower producer',
+ {skip:!fs.existsSync(wasmPath)},async()=>{
+ const pkg=await import('../web/pkg/aniimax.js');pkg.initSync({module:fs.readFileSync(wasmPath)});
+ const highs=await highsModule({wasmBinary:fs.readFileSync(new URL('../web/vendor/highs/highs.wasm',import.meta.url)),print(){},printErr(){}});
+ const key='Chimney Kiln|coarse_sifted_ore|Production';
+ const input={currency:'coins',aniimo:'roster',quest_income_per_day:{mineral_sand:800},level_up:{cost:[['coarse_sifted_ore',100]],stock:[]},
+ fixed_homeland:{groups:[{facility:'Chimney Kiln',count:1,level:1,lit:false,powered:false}],climate:{'Heat Furnace':1},generators:0},
+ roster:{members:[{count:1,abilities:{Fire:4}},{count:1,abilities:{Fire:2}}],environment:{'Heat Furnace':'Fire'},residents:[],movement_seconds:0,
+ dispatch:{[key]:[{member:1,share:1,travel_seconds:3}]}}};
+ const payload=JSON.stringify(input),p=JSON.parse(pkg.exact_level_up_problem(payload)),s=highs.solve(p.lp);
+ assert.equal(s.Status,'Optimal');
+ const values=Array.from({length:p.variables},(_,i)=>s.Columns[`x${i}`]?.Primal??0);
+ const r=JSON.parse(pkg.exact_plan(payload,JSON.stringify({pace:s.ObjectiveValue}),JSON.stringify({values,proven:true,bound:s.ObjectiveValue})));
+ assert.equal(r.success,true,r.error);
+ assert.deepEqual(r.staffing,[['Heat Furnace',1,1]]);
+ assert.equal(r.roster_routes[0].member,0);
+ assert.equal(r.roster_dispatch[key][0].member,0);
+ assert.equal(r.roster_dispatch[key][0].share,1);
+ assert.ok(r.roster_workload[0]<0.02);
+ assert.equal(r.level_up.seconds,86400);
+});

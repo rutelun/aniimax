@@ -262,6 +262,10 @@ function showSelectedPlan() {
     }
     pending.style.display = 'none';
     lastPlan = plan;
+    if (selectedSetupTab() === 'custom' && plan.roster_dispatch && Object.keys(plan.roster_dispatch).length) {
+        reactiveDispatch = plan.roster_dispatch;
+        plansBySetup[selectedAniimoSetup()] = plan;
+    }
     displayPlan(plan);
     if (plan.success) {
         runTimeToGoal();

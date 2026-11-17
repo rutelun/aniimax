@@ -132,3 +132,15 @@ test('narrow land retains a compact fallback when wider processing rows do not f
     assert.equal(layout.unplaced.length,0);
     assert.equal(layout.pieces.flatMap(p=>p.members).length,8);
 });
+
+test('final group polishing closes a large gap while carrying its storage',()=>{
+ const group=(y,i)=>({bounds:{x:0,y,w:4,h:2},indices:[i],themes:['extraction'],reserved:[]});
+ const input={pieces:[0,40].map((y,i)=>({members:[{x:0,y,w:2,h:2,facility:'Mine',weight:10,productionGroup:i}]})),
+ storages:[0,40].map(y=>({x:2,y,w:2,h:2})),power:{poles:[],disconnected:0},groups:[group(0,0),group(40,1)],unplaced:[]};
+ const out=refineProductionGroups(input,[{x:0,y:0,w:8,h:48}],{passes:12,steps:[8,4,2,1,.5,.25],
+ accept:l=>l.groups[0].bounds.y===0&&l.groups.every(g=>g.bounds.x===0)});
+ assert.ok(out.groups[1].bounds.y<=2.25,`remaining gap: ${out.groups[1].bounds.y-2}`);
+ assert.equal(out.storages[1].y,out.groups[1].bounds.y);
+ assert.ok(layoutDeliveryCost(out)<layoutDeliveryCost(input));
+ assert.equal(input.storages[1].y,40);
+});

@@ -71,3 +71,33 @@ test('a changed ability cannot retain a stale dispatch share or lose remaining d
     const p=buildReactiveDispatch({layout,recipes,members:changed,previous,routes});
     assert.deepEqual(p['Farmland|crop|Dark'].map(e=>[e.member,e.share]),[[1,1]]);
 });
+
+test('one well per worker does not invent travel between identical recipes',()=>{
+ const recipe={name:'water',facility:'Well',aniimo:['Water',1]};
+ const site=(x,crew)=>({x,y:0,w:2,h:2,facility:'Well',crop:'water',crew,batchWeight:60});
+ const args={layout:{pieces:[{members:[site(0,0),site(20,1)]}],storages:[]},recipes:[recipe],members:[{count:1,abilities:{Water:4}},{count:1,abilities:{Water:4}}],busy:[1,1],routes:[0,1].map(member=>({member,facility:'Well',item:'water',station:null,job_rate:1/60,jobs:[['',1]],walking:0}))};
+ for(const assigned of [true,false]){
+   if(!assigned)args.layout.pieces[0].members.forEach(s=>s.crew=null);
+   const p=buildReactiveDispatch(args);
+   assert.ok(p['Well|water|Production'].every(e=>e.travel_seconds===0));
+ }
+});
+
+test('unequal shares across identical wells retain real travel between sites',()=>{
+ const recipe={name:'water',facility:'Well',aniimo:['Water',1]},key='Well|water|Production';
+ const args={layout:{pieces:[{members:[0,20].map(x=>({x,y:0,w:2,h:2,facility:'Well',crop:'water',batchWeight:60}))}],storages:[]},recipes:[recipe],
+ members:[{count:1,abilities:{Water:4}},{count:1,abilities:{Water:4}}],busy:[.9,.3],previous:{[key]:[{member:0,share:.75},{member:1,share:.25}]},
+ routes:[.75,.25].map((share,member)=>({member,facility:'Well',item:'water',station:null,job_rate:share/30,jobs:[['',share]],walking:0}))};
+ assert.ok(buildReactiveDispatch(args)[key].every(e=>e.travel_seconds>0));
+});
+
+test('resident Leisure work and inactive recipes cannot invent a second job for a well worker',()=>{
+ const recipes=[{name:'water',facility:'Well',aniimo:['Water',1]}, {name:'other_water',facility:'Well',aniimo:['Water',1]},
+ {name:'pearl',facility:'Tidewhisper Sandcastle',aniimo:['Leisure',1]}, {name:'rice',facility:'Carousel Mill',aniimo:['Artisanship',1]}];
+ const p=buildReactiveDispatch({layout:{pieces:[{members:[{x:0,y:0,w:2,h:2,facility:'Well',crop:'water',batchWeight:60},
+ {x:20,y:0,w:2,h:2,facility:'Tidewhisper Sandcastle',crop:'pearl',batchWeight:60},
+ {x:10,y:0,w:2,h:2,facility:'Carousel Mill',crop:'rice',batchWeight:60,electric_level:3}]}],storages:[]},recipes,
+ members:[{count:1,abilities:{Water:4,Leisure:4,Artisanship:4}}],busy:[1],routes:[{member:0,facility:'Well',item:'water',job_rate:1/60,jobs:[['',1]],walking:0}]});
+ assert.equal(p['Tidewhisper Sandcastle|pearl|Production'],undefined);
+ assert.equal(p['Well|water|Production'][0].travel_seconds,0);
+});

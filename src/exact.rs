@@ -1994,9 +1994,9 @@ fn reassign_crop_work(
 /// artisan as the production recipient. Keep every batch and validate capacity.
 pub fn improve_climate_staffing(
     plan: &mut ExactPlan, workload: &mut Vec<f64>, items: &[ProductionItem],
-    currency: &str, counts: &FacilityCounts, modules: &ModuleLevels, level_up: Option<&LevelUp>,
+    currency: &str, counts: &mut FacilityCounts, modules: &ModuleLevels, level_up: Option<&LevelUp>,
 ) {
-    let Some(crew) = counts.crew() else { return };
+    let Some(crew) = counts.crew().cloned() else { return };
     let owned = crew.assumed_from.unwrap_or(crew.members.len());
     let all: HashMap<_, _> = items.iter().map(|r| (r.name.as_str(), r)).collect();
     let score = |p: &ExactPlan, loads: &[f64]| {
@@ -2021,23 +2021,30 @@ pub fn improve_climate_staffing(
             let mut best_score = score(plan, workload);
             for donor in 0..owned {
                 if donor == occupant || !crew.can_work(donor, ability, 1) { continue; }
+                let active: std::collections::HashSet<_> = plan.recipe_rates.iter()
+                    .filter(|(name, rate)| **rate > 1e-9 && all[name.as_str()].crew == Some(donor))
+                    .map(|(name, _)| format!("{}|{}|Production", all[name.as_str()].facility, crate::models::base_item_name(name))).collect();
+                if active.is_empty() { continue; }
                 for recipient in 0..owned {
                     if recipient == donor || crew.members[recipient].count == 0 { continue; }
-                    let Some(mut candidate) = transfer_production(plan, &all, counts, donor, recipient) else { continue };
+                    let mut candidate_counts = counts.clone();
+                    candidate_counts.transfer_production_dispatch(donor, recipient, &active);
+                    let Some(mut candidate) = transfer_production(plan, &all, &candidate_counts, donor, recipient) else { continue };
                     let Some(post) = candidate.staffing.iter_mut().find(|(b, id, n)| *b == building && *id == occupant && *n > 0.5) else { continue };
                     post.2 -= 1.0;
                     candidate.staffing.retain(|(_, _, n)| *n > 0.5);
                     if let Some(post) = candidate.staffing.iter_mut().find(|(b, id, _)| *b == building && *id == donor) {
                         post.2 += 1.0;
                     } else { candidate.staffing.push((building.clone(), donor, 1.0)); }
-                    let Ok((_, checked)) = check_plan_with_workload(&candidate, items, currency, counts, modules, level_up) else { continue };
+                    let Ok((_, checked)) = check_plan_with_workload(&candidate, items, currency, &candidate_counts, modules, level_up) else { continue };
                     let next_score = score(&candidate, &checked);
-                    if better(next_score, best_score) { best_score = next_score; best = Some((candidate, checked)); }
+                    if better(next_score, best_score) { best_score = next_score; best = Some((candidate, checked, candidate_counts)); }
                 }
             }
-            let Some((candidate, checked)) = best else { break };
+            let Some((candidate, checked, candidate_counts)) = best else { break };
             *plan = candidate;
             *workload = checked;
+            *counts = candidate_counts;
         }
     }
 }
@@ -2065,8 +2072,14 @@ fn transfer_production(plan: &ExactPlan, all: &HashMap<&str, &ProductionItem>, c
         if let Some(rate) = candidate.recipe_rates.remove(old) { *candidate.recipe_rates.entry(new.into()).or_default() += rate; }
         if let Some(units) = candidate.units.remove(old) { *candidate.units.entry(new.into()).or_default() += units; }
     }
-    for (name, _, _) in &mut candidate.fixed_sites {
-        if let Some(&new) = names.get(name.as_str()) { *name = new.into(); }
+    for (name, _, units) in &mut candidate.fixed_sites {
+        if let Some(&new) = names.get(name.as_str()) {
+            let old = all[name.as_str()];
+            if takes_turns(old) || counts.dispatch_production(old) {
+                *units *= all[new].production_time / old.production_time;
+            }
+            *name = new.into();
+        }
     }
     for (name, _, _) in &mut candidate.hauling_routes {
         if let Some(&new) = names.get(name.as_str()) { *name = new.into(); }

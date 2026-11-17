@@ -1295,7 +1295,7 @@ pub struct FacilityCounts {
     fixed_homeland: Option<FixedHomeland>,
 }
 
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct DispatchAssignment {
     pub member: usize,
     pub share: f64,
@@ -1420,6 +1420,21 @@ impl FacilityCounts {
     pub fn movement_seconds(&self) -> f64 { self.movement_seconds }
 
     pub fn has_dispatch(&self) -> bool { !self.dispatch.is_empty() }
+
+    pub fn dispatch_policies(&self) -> &std::collections::BTreeMap<String, Vec<DispatchAssignment>> { &self.dispatch }
+
+    /// A worker moving to a permanent post cannot keep its old production share.
+    /// Transfer that share atomically with the checked production routes. Travel
+    /// retains the recipient's measured approach when known; the map refreshes it.
+    pub fn transfer_production_dispatch(&mut self, from: usize, to: usize, active: &std::collections::HashSet<String>) {
+        for (key, entries) in &mut self.dispatch {
+            if !active.contains(key) { continue; }
+            let Some(old) = entries.iter().find(|e| e.member == from).cloned() else { continue };
+            entries.retain(|e| e.member != from);
+            if let Some(recipient) = entries.iter_mut().find(|e| e.member == to) { recipient.share += old.share; }
+            else { entries.push(DispatchAssignment { member: to, ..old }); }
+        }
+    }
 
     pub fn dispatch_production(&self, recipe: &ProductionItem) -> bool {
         recipe.crew.is_some() && self.dispatch(recipe, "Production").is_some()
