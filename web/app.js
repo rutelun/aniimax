@@ -8,7 +8,7 @@ import { productionGroupOutline } from './group-outline.js?v=compact-groups';
 import { powerJobDetails } from './power-islands.js?v=independent-grids';
 import { questIncome } from './quest-income.js';
 import { splitProductionSites } from './physical-production.js';
-import { cropPeakInput, selectCropPeakTeam, plannedCropPeakTeam, criticalCropJob } from './crop-peaks.js?v=peak90';
+import { cropPeakInput, selectCropPeakTeam, plannedCropPeakTeam, criticalCropJob } from './crop-peaks.js?v=peak95';
 
 import {
     FACILITIES, FACILITY_CATEGORIES, FACILITY_CATEGORY_BY_NAME, FACILITY_FOOTPRINTS, HOMELAND_PLOTS, HOMELAND_PLOT_SIZE,
@@ -3530,8 +3530,8 @@ function cropPeakNote(peak, members, generated = false) {
         const m=members[member];
         return `${count} x ${escapeText(m.name || Object.entries(m.abilities).map(([a,l])=>`${a} Lv.${l}`).join(' / '))}`;
     }).join(', ')}: ${formatNumber(peak.recommendedCompletion)} s with additions.` : '';
-    const shortfall = peak.shortfall?.length ? ` Beyond the RV limit: ${peak.shortfall.map(a=>`${a.count} x ${Object.entries(a.abilities).map(([name,level])=>`${escapeText(name)} Lv.${level}`).join(' / ')}`).join(', ')} would give ${formatNumber(peak.shortfallCompletion)} s${peak.shortfallCompletion > 90 ? "; still above the target" : ""}.` : '';
-    return `<p class="hint small">Crop peak: <strong>${time}</strong> average; target &le;90 s.${additions}${!met&&(!additions||!peak.recommendedTargetMet)?' Target not met within the available team/RV limit.':''}${shortfall}<br>Harvest, reclaim and sow; includes approach and ongoing work. Watering uses average demand.</p>`;
+    const shortfall = peak.shortfall?.length ? ` Beyond the RV limit: ${peak.shortfall.map(a=>`${a.count} x ${Object.entries(a.abilities).map(([name,level])=>`${escapeText(name)} Lv.${level}`).join(' / ')}`).join(', ')} would give ${formatNumber(peak.shortfallCompletion)} s${peak.shortfallCompletion > peak.targetSeconds ? "; still above the target" : ""}.` : '';
+    return `<p class="hint small">Crop peak: <strong>${time}</strong> average; target &le;${peak.targetSeconds} s.${additions}${!met&&(!additions||!peak.recommendedTargetMet)?' Target not met within the available team/RV limit.':''}${shortfall}<br>Harvest, reclaim and sow; includes approach and ongoing work. Watering uses average demand.</p>`;
 }
 
 function assignmentTile(member, label, detail, status, active = true, context = '', memberIndex = null) {

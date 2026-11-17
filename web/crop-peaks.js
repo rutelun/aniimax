@@ -2,7 +2,7 @@ import { workerTravelSeconds } from './worker-travel.js';
 import { dispatchLocations } from './task-switching.js';
 
 const EPS=1e-8;
-export const CROP_PEAK_TARGET_SECONDS=90;
+export const CROP_PEAK_TARGET_SECONDS=95;
 export const criticalCropJob = name => ['Reaping','Logging','Collecting','Reclaiming','Sowing'].includes(name);
 
 export function cropPeakInput({layout,recipes,members,busy,permanent=[],routes=[],limit=Infinity,delivery=[]}) {
