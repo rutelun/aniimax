@@ -2630,7 +2630,18 @@ function openPlannerEditor(panel) {
     if (panel === 'team' && selectedSetupTab() === 'custom') document.getElementById('roster-config').open = true;
 }
 
+function updateRecipeSwitchingSummary() {
+    const settings=recipeSwitchingInput();
+    document.getElementById('recipe-switching-summary').textContent=!settings?translate('Off'):
+        `${settings.max_buildings} ${settings.max_buildings===1?'building':'buildings'} · ${settings.max_switches} ${settings.max_switches===1?'switch':'switches'}/day`;
+}
+
 function attachPlannerEditor() {
+    updateRecipeSwitchingSummary();
+    for(const id of ['recipe-switching-buildings','recipe-switching-switches']){
+        document.getElementById(id).addEventListener('input',updateRecipeSwitchingSummary);
+        document.getElementById(id).addEventListener('change',updateRecipeSwitchingSummary);
+    }
     document.querySelector('.planner-editor-options').addEventListener('click', event => {
         const button = event.target.closest('[data-planner-editor]');
         if (!button) return;
