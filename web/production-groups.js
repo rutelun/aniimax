@@ -267,9 +267,9 @@ export async function productionGroupLayout(pieces,cells,{storageCount=1,poleLim
         const before=layoutDeliveryCost(best);
         const next=refineGroupedMembers(best,cells,{accept:keeps});
         updatePowerConnections(next);
-        if(!next.power.disconnected&&keeps(next))best=next;
+        if(!next.power.disconnected&&keeps(next)&&layoutDeliveryCost(next)<=layoutDeliveryCost(best)+1e-8)best=next;
         const stored=improveFixedStorage(best,cells,0,storageCount);
-        if(keeps(stored))best=stored;
+        if(keeps(stored)&&layoutDeliveryCost(stored)<=layoutDeliveryCost(best)+1e-8)best=stored;
         if(layoutDeliveryCost(best)>=before-1e-8)break;
     }
     best=refineFlexibleProduction(best,cells,{accept:keeps});

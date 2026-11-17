@@ -59,6 +59,8 @@ struct Rectangle {
     p: Pose,
     #[serde(default)]
     weight: f64,
+    #[serde(default)]
+    arrival_weights: Vec<f64>,
     #[serde(default = "minus_one")]
     owner: i32,
     #[serde(default)]
@@ -320,14 +322,19 @@ impl Search {
         }
         let r = self.poses[i];
         let mut nearest = f64::INFINITY;
-        for s in &self.poses
+        let mut arrival = 0.0;
+        for (index, s) in self.poses
             [self.input.producer_count..self.input.producer_count + self.input.store_count]
+            .iter().enumerate()
         {
             let dx = r.cx() - s.cx();
             let dy = r.cy() - s.cy();
             nearest = nearest.min(dx * dx + dy * dy);
+            let share = self.input.rectangles[i].arrival_weights.get(index).copied().unwrap_or(0.0);
+            if share.is_finite() && share > 0.0 { arrival += share * (dx * dx + dy * dy).sqrt(); }
         }
-        weight * nearest.sqrt()
+        if self.input.rectangles[i].arrival_weights.is_empty() { weight * nearest.sqrt() }
+        else { weight * (nearest.sqrt() + arrival) * 0.5 }
     }
     fn total_cost(&self) -> f64 {
         if self.input.store_count == 0 {

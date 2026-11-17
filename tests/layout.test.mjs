@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { improveFixedStorage, layOut, layOutHomeland, nearestStorage, layoutCost, refineDistrictClimate, refineDistrictDeliveries,
     refineStorageNeighborhood, seededStorageLayouts, layoutDeliveryCost, createInsideTest } from '../web/layout.js';
 import { storageUnitLimit } from '../web/facility-config.js';
+import { fastLayoutSeed } from '../web/fast-layout.js';
 
 const cells = [{ x: 0, y: 0, w: 20, h: 15 }, { x: 20, y: 0, w: 20, h: 15 }];
 const pieces = Array.from({ length: 24 }, (_, index) => ({
@@ -59,7 +60,7 @@ test('shortest delivery repositions the climate source and the trees it covers t
     assert.deepEqual(refined.pieces[1].members, existing.pieces[1].members);
 });
 
-test('the fast RV 15 search matches the reference route cost with all facilities powered', async () => {
+test('the fast RV 15 search improves the full-route seed with all facilities powered', async () => {
     const input = JSON.parse(await readFile(new URL('./fixtures/rv15-delivery-layout.json', import.meta.url), 'utf8'));
     let result;
     globalThis.self = { postMessage: layout => { result = layout; } };
@@ -72,7 +73,7 @@ test('the fast RV 15 search matches the reference route cost with all facilities
     assert.equal(result.unplaced.length, 0);
     assert.equal(result.power.disconnected, 0);
     assert.equal(result.storages.length, input.storageCount);
-    assert.ok(layoutDeliveryCost(result) <= 700.841778);
+    assert.ok(layoutDeliveryCost(result) <= layoutDeliveryCost(fastLayoutSeed(input))+1e-8);
     const rectangles = [...result.storages, ...result.power.poles, ...result.pieces.flatMap(piece => piece.members)];
     const inside = createInsideTest(input.cells);
     assert.ok(rectangles.every((rect, i) => inside(rect) && rectangles.slice(i + 1).every(other => !overlap(rect, other))));

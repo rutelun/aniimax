@@ -27,7 +27,7 @@ import { aniimoPortrait, attachRosterPicker, rosterCatalogId, rosterCatalogFamil
 import { placeRosterCopy, ROSTER_ROW_SIZE, rosterSlotsFor, swapRosterSlots } from './roster-slots.js';
 import { scheduleRosterCopies } from './roster-work.js?v=measured-walking';
 import { buildDispatch, rosterJobSwitching, TASK_SWITCHING } from './task-switching.js?v=base-travel';
-import { buildReactiveDispatch, permanentWorkers, measuredDispatchWork, routeDispatchKey } from './reactive-dispatch.js';
+import { buildReactiveDispatch, permanentWorkers, measuredDispatchWork, routeDispatchKey, attachDeliveryFlows } from './reactive-dispatch.js';
 import { placeBestJobs, recommendBestTeam } from './best-team.js?v=base-travel';
 import facilityIcons from './facility-icons.json' with { type: 'json' };
 import { abilityGlyph, gameAbilityIcon } from './ability-icons.js?v=game-heads';
@@ -1417,6 +1417,9 @@ function homelandPieces(plan, input) {
             * haulingBatchTrips(recipesByName.get(job.item), 3, limit, member.facility), 0)
             : member.weight * haulingBatchTrips(recipesByName.get(member.crop), 3, limit, member.facility);
     }
+    if(selectedSetupTab()==='custom'&&Object.keys(reactiveDispatch).length){
+        attachDeliveryFlows({pieces:[{members:physical}]},reactiveDispatch,recipeIndex,rosterWorkload(plan).members,plan.roster_routes||[]);
+    }
     return { pieces, unplaced: [...unplaced] };
 }
 
@@ -1722,6 +1725,10 @@ function layoutOptionsFor(plan, homeLevel, setup = selectedSetupTab()) {
         for (const [, , member, count] of plan.mobile_work || []) visits[member] = (visits[member] || 0) + count;
         staffing = {
             limit: rvLimit,
+            dispatch:ownedPlan&&Object.keys(reactiveDispatch).length?reactiveDispatch:null,
+            routes:ownedPlan?plan.roster_routes:[],
+            dispatchRecipes:ownedPlan?recipeIndex.filter(r=>(plan.coin_items||[]).some(s=>s.status==='producing'&&s.item_name===r.name)):[],
+            permanent:ownedPlan?permanentWorkers(plan,team.members,RESIDENT_FACILITIES):[],
             members: team?.members,
             busy: team?.busy,
             anchored: team?.anchored,

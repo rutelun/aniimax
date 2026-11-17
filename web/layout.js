@@ -1,6 +1,7 @@
+import { deliveryRouteCost } from './delivery-routing.js';
 // Places a whole homeland around its Storage Units, so the Aniimo hauling each finished batch
-// walk as little as they can: a piece's cost is its trips (finished batches) per hour times its
-// straight-line distance to the nearest Storage Unit, center to center.
+// walk as little as they can. Final scoring includes the approach from the previous task
+// and the loaded leg to storage; local nearest-storage costs only guide cheap proposals.
 //
 // Environment buildings keep every plot the plan gives them covered as planned, but not in any set
 // arrangement: a plot may go anywhere its footprint overlaps its building's 9x9 coverage square by
@@ -645,8 +646,13 @@ export function layoutCost(layout) {
 }
 
 // Compare complete alternatives using their estimated delivery and workplace routes.
-// Loaded and next-pickup legs have the same total distance within each storage pool.
+// Couriers share a global task queue, so approach legs can cross storage groups.
 export function layoutDeliveryCost(layout) {
+    // Half the full route keeps the historical score scale for one storage.
+    return deliveryRouteCost(layout) / 2;
+}
+
+export function layoutLocalDeliveryCost(layout) {
     return layout.pieces.flatMap(piece => piece.members).reduce((sum, member) => {
         const store = nearestStorage(member, layout.storages);
         if (!store) return sum;
@@ -876,11 +882,11 @@ export function refineDistrictDeliveries(layout, groups, {
     const tryMove = (entry, next, swap = null) => {
         const old = { x: entry.rect.x, y: entry.rect.y };
         const back = swap && { x: swap.rect.x, y: swap.rect.y };
-        const before = costOf === layoutDeliveryCost
+        const before = costOf === layoutLocalDeliveryCost
             ? entry.rect.weight * distance(entry.rect) + (swap ? (swap.rect.weight || 0) * distance(swap.rect) : 0) : 0;
         Object.assign(entry.rect, { x: next.x, y: next.y });
         if (swap) Object.assign(swap.rect, old);
-        const nextCost = costOf === layoutDeliveryCost
+        const nextCost = costOf === layoutLocalDeliveryCost
             ? cost - before + entry.rect.weight * distance(entry.rect) + (swap ? (swap.rect.weight || 0) * distance(swap.rect) : 0)
             : costOf(result);
         if (nextCost < cost - EPSILON && accept(result)) {
@@ -1077,7 +1083,8 @@ function improveStorageLayout(layout, pieces, cells, storage, maximum, fast, fix
 
 export function improveFixedStorage(layout, cells, minGain = .01, maximum = layout.storages.length) {
     if (!layout.storages.length || layout.unplaced.length || layout.power.disconnected) return layout;
-    return improveStorageLayout(layout, null, cells, layout.storages[0], maximum, true, true, true, minGain);
+    const candidate=improveStorageLayout(layout, null, cells, layout.storages[0], maximum, true, true, true, minGain);
+    return layoutDeliveryCost(candidate)<=layoutDeliveryCost(layout)+1e-8?candidate:layout;
 }
 
 // Puts `plots` on `slots` (the plan's own arrangement, one slot per plot, each slot sized for the

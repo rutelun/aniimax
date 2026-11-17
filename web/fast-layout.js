@@ -1,6 +1,7 @@
 // WASM boundary shared by the layout worker and offline benchmarks. No saved
 // placements or RV-specific coordinates are used by the search.
-import {layoutDeliveryCost,layOutHomeland,createInsideTest,refineDistrictDeliveries,improveFixedStorage} from './layout.js';
+import {layoutDeliveryCost,layoutLocalDeliveryCost,layOutHomeland,createInsideTest,refineDistrictDeliveries,improveFixedStorage} from './layout.js';
+import {deliveryRouting} from './delivery-routing.js';
 import {updatePowerConnections,connectPower} from './power-layout.js';
 
 export function fastLayoutSeed({pieces,cells,storageCount,poleLimit}) {
@@ -8,17 +9,19 @@ export function fastLayoutSeed({pieces,cells,storageCount,poleLimit}) {
     if(!cells.length||layout.unplaced.length||layout.power.disconnected)return layout;
     const inside=createInsideTest(cells),x=Math.min(...cells.map(c=>c.x)),y=Math.min(...cells.map(c=>c.y));
     const bounds={x,y,w:Math.max(...cells.map(c=>c.x+c.w))-x,h:Math.max(...cells.map(c=>c.y+c.h))-y};
-    layout=refineDistrictDeliveries(layout,[{bounds,reserved:[]}],{passes:1,includeMines:true,costOf:layoutDeliveryCost,canPlace:(_,__,rs)=>rs.every(inside)});
+    layout=refineDistrictDeliveries(layout,[{bounds,reserved:[]}],{passes:1,includeMines:true,costOf:layoutLocalDeliveryCost,canPlace:(_,__,rs)=>rs.every(inside)});
     return improveFixedStorage(layout,cells,0);
 }
 
 export function encodeRefinement(layout,cells,options={}) {
     const rectangles=[],climates=[];
+    const flow=deliveryRouting(layout);
     for(const piece of layout.pieces){
         const start=rectangles.length,owner=piece.cluster?climates.length:-1;
         if(piece.cluster)climates.push(piece.buildings.map((_,j)=>start+j));
         for(const [j,r] of piece.members.entries())rectangles.push({
-            x:r.x,y:r.y,w:r.w,h:r.h,weight:r.weight||0,
+            x:r.x,y:r.y,w:r.w,h:r.h,weight:flow.arrivals[start+j].trips,
+            arrival_weights:flow.arrivals[start+j].storeWeights,
             owner:piece.cluster&&j>=piece.buildings.length?owner:-1,zone:r.zone||0,
             sensitive:!!r.sensitive,generator:!!r.generator,electric:r.electric_level!=null,
             movable:piece.cluster?j>=piece.buildings.length:piece.members.length===1&&!r.generator,

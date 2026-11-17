@@ -14,13 +14,13 @@ test('delivery goes through storage to the next frequency-weighted pickup', () =
         {facility:'Well',item_name:'near',status:'producing',facility_count:1,cycle_time:120},
     ];
     const work = haulingWorkload(layout, steps);
-    assert.equal(work.seconds['Mine|far'], 3.25);
-    assert.equal(work.seconds['Well|near'], 2.25);
+    assert.equal(work.seconds['Mine|far'], 4);
+    assert.equal(work.seconds['Well|near'], 2);
     assert.ok(Math.abs(work.busy - 100/3600) < 1e-12);
     assert.ok(Math.abs(work.trips - 40/3600) < 1e-12);
     const withTravel = haulingWorkload(layout, steps, 0, [], null, true);
-    assert.equal(withTravel.seconds['Mine|far'], 3.25);
-    assert.equal(withTravel.seconds['Well|near'], 2.25);
+    assert.equal(withTravel.seconds['Mine|far'], 4);
+    assert.equal(withTravel.seconds['Well|near'], 2);
     assert.ok(Math.abs(withTravel.busy - 100/3600) < 1e-12);
     assert.equal(haulingWorkSeconds(40, true), haulingTravelSeconds(40, true));
 });

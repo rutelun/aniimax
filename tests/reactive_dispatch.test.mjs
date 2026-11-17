@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {buildReactiveDispatch,permanentWorkers,measuredDispatchWork} from '../web/reactive-dispatch.js';
+import {buildReactiveDispatch,permanentWorkers,measuredDispatchWork,attachDeliveryFlows} from '../web/reactive-dispatch.js';
 
 const layout={pieces:[{members:[{facility:'Chimney Kiln',crop:'ore',x:0,y:0,w:2,h:2,weight:1},
     {facility:'Farmland',crop:'crop',x:20,y:0,w:2,h:2,weight:1,stockLimit:40}]}],storages:[{x:24,y:0,w:2,h:2}]};
@@ -9,6 +9,12 @@ const recipes=[{name:'ore',facility:'Chimney Kiln',aniimo:['Fire',2]},
 const members=[{count:2,abilities:{Fire:3,Dark:4,Hauling:3}},{count:1,abilities:{Dark:3}}];
 const routes=[{member:0,facility:'Chimney Kiln',item:'ore',job_rate:.1},
     {member:1,facility:'Farmland',item:'crop',job_rate:.1}];
+
+test('previous work origins follow actual production rates, not number of matching buildings',()=>{
+ const m={pieces:[{members:[9,1,0].map(rate=>({facility:'Chimney Kiln',jobs:[{item:'ore',rate}]}))}]};
+ attachDeliveryFlows(m,{},recipes,members,[{member:0,facility:'Chimney Kiln',item:'ore',job_rate:10}]);
+ assert.deepEqual(m.pieces[0].members.map(s=>s.deliveryOrigins),[[[0,32400]],[[0,3600]],[]]);
+});
 
 test('a fully occupied specialist retains its own work instead of becoming ineligible',()=>{
     const team=[{count:1,abilities:{Fire:4}},{count:1,abilities:{Fire:2}}];
@@ -31,7 +37,7 @@ test('unexpected crop pickup conserves requests and starts at previous productio
     const crop=p['Farmland|crop|Dark'];
     assert.ok(crop.find(e=>e.member===0).share>0);
     assert.ok(Math.abs(crop.reduce((s,e)=>s+e.share,0)-1)<1e-12);
-    assert.equal(crop.find(e=>e.member===0).travel_seconds,5);
+    assert.equal(crop.find(e=>e.member===0).travel_seconds,(360*5+1.5*1)/361.5);
     assert.equal(crop.find(e=>e.member===1).travel_seconds,0);
 });
 test('only permanent shifts exclude copies; no imaginary workplace reservation',()=>{
@@ -45,7 +51,9 @@ test('only permanent shifts exclude copies; no imaginary workplace reservation',
 test('hauling replaces depot approximation with prior task to pickup to storage and40% cargo',()=>{
     const p=buildReactiveDispatch({layout,recipes,members,routes,busy:[1.8,.5],permanent:[1,0]});
     // Two ten-item harvests reach40% of40. One trip per two batches.
-    assert.equal(p['Farmland|crop|Hauling'][0].travel_seconds,(5+1)/2);
+    // 360 previous production completions/hour plus 1.5 completed deliveries.
+    // Those deliveries end at storage, so the next approach starts there.
+    assert.equal(p['Farmland|crop|Hauling'][0].travel_seconds,((360*5+1.5*1)/361.5+1)/2);
 });
 test('measured dispatch preserves overload and subtracts old travel rather than repeating execution',()=>{
     const p={'Farmland|crop|Dark':[{member:0,share:1,travel_seconds:10}],

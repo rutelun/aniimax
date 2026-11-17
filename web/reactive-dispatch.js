@@ -1,6 +1,7 @@
 import { dispatchLocations } from './task-switching.js';
 import { haulingBatchTrips, pickupStockLimit } from './hauling.js';
 import { workerTravelSeconds } from './worker-travel.js';
+import { deliveryRouting, deliveryApproach } from './delivery-routing.js';
 
 const center=r=>[r.x+r.w/2,r.y+r.h/2];
 const distance=(a,b)=>Math.hypot(a[0]-b[0],a[1]-b[1]);
@@ -104,7 +105,58 @@ export function buildReactiveDispatch({layout,recipes,members,busy=[],permanent=
             });
         }
     }
+    const routed={storages:layout.storages,pieces:layout.pieces.map(p=>({...p,members:p.members.map(m=>({...m}))}))};
+    attachDeliveryFlows(routed,policy,recipes,members,routes);
+    const flow=deliveryRouting(routed);
+    for(const recipe of recipes){
+        const physical=byFacility.get(recipe.facility);if(!physical?.length)continue;
+        const exact=physical.filter(r=>r.crop===recipe.name||r.jobs?.some(j=>j.item===recipe.name));
+        const targets=exact.length?exact:physical;
+        const workTargets=targets.filter(s=>s.jobs?s.jobs.some(j=>j.item===recipe.name&&j.electric_level==null):s.electric_level==null);
+        const abilities=recipe.aniimo?['Production']:[...new Set((recipe.jobs||[]).map(([,ability])=>ability))];
+        if(workTargets.length)for(const ability of abilities)for(const e of policy[dispatchKey(recipe.facility,recipe.name,ability)]||[]){
+            const values=workTargets.map(s=>deliveryApproach(flow,e.member,center(s)));
+            if(values.every(v=>v!=null))e.travel_seconds=values.reduce((sum,v)=>sum+workerTravelSeconds(v),0)/values.length;
+        }
+        for(const e of policy[dispatchKey(recipe.facility,recipe.name,'Hauling')]||[]){
+            e.travel_seconds=targets.reduce((sum,target)=>{
+                const point=center(target),walk=deliveryApproach(flow,e.member,point);
+                const loaded=(layout.storages||[]).length?Math.min(...layout.storages.map(s=>distance(point,center(s)))):0;
+                return sum+((walk==null?approach(e.member,point):workerTravelSeconds(walk))+workerTravelSeconds(loaded))
+                    *haulingBatchTrips(recipe,members[e.member].abilities.Hauling,pickupStockLimit(target),recipe.facility);
+            },0)/targets.length;
+        }
+    }
     return policy;
+}
+
+// Rates are completed trips/jobs per hour. Coordinates can be assigned later by
+// the layout worker; worker identities travel with each physical building.
+export function attachDeliveryFlows(layout,policy,recipes,members,routes=[]){
+    const recipeOf=new Map(recipes.map(r=>[r.name,r]));
+    const sites=layout.pieces.flatMap(p=>p.members);
+    for(const s of sites){
+        s.deliveryWorkers=[];s.deliveryOrigins=[];
+        const weights=new Map();
+        for(const job of s.jobs||[{item:s.crop,rate:(s.batchWeight??s.weight??0)/3600}]){
+            const recipe=recipeOf.get(job.item);
+            const entries=policy[dispatchKey(s.facility,job.item,'Hauling')];
+            for(const e of entries||[]){
+                const trips=job.rate*3600*e.share*haulingBatchTrips(recipe,members[e.member]?.abilities.Hauling||3,pickupStockLimit(s),s.facility);
+                weights.set(e.member,(weights.get(e.member)||0)+trips);
+            }
+        }
+        s.deliveryWorkers=[...weights].filter(([,rate])=>rate>0);
+    }
+    for(const route of routes){
+        if(!(route.job_rate>0))continue;
+        const targets=sites.filter(s=>s.facility===route.facility&&(s.jobs
+            ?s.jobs.some(j=>j.item===route.item&&j.electric_level==null):s.crop===route.item&&s.electric_level==null));
+        const rates=targets.map(s=>s.jobs?s.jobs.filter(j=>j.item===route.item&&j.electric_level==null)
+            .reduce((sum,j)=>sum+Math.max(0,j.rate||0),0):Math.max(0,s.batchWeight??s.weight??0)/3600);
+        const total=rates.reduce((sum,rate)=>sum+rate,0);
+        targets.forEach((s,i)=>{if(total>0&&rates[i]>0)s.deliveryOrigins.push([route.member,route.job_rate*3600*rates[i]/total]);});
+    }
 }
 
 export function permanentWorkers(plan,members,residents){

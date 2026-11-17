@@ -1,6 +1,7 @@
 import { nearestStorage } from './layout.js?v=logic-audit';
 import { ANIIMO_WALK_SPEED, workerTravelSeconds } from './worker-travel.js?v=logic-audit';
 import facilityStock from './facility-stock.json' with { type: 'json' };
+import { deliveryRouting } from './delivery-routing.js';
 
 // Hauling capacity from Skippy, Fenrier, Glacy and Prismana Glacy's Homeland profiles.
 export const HAULING_CAPACITY = Object.freeze({1:60, 2:80, 3:100, 4:120});
@@ -61,13 +62,13 @@ function fallbackTrips(step, recipe, level, facilities) {
 
 // Accumulate whole batches in the building's output buffer, then split the
 // pickup over carrying capacity. An oversized harvest still needs all its trips. After storage
-// comes the next pickup, weighted by its delivery frequency in the same storage pool.
+// comes the next pickup, weighted by its delivery frequency across all storage groups.
 // Pickup thresholds are estimates. Each leg uses base speed; fallback seconds cover the full route.
 export function haulingWorkload(layout, steps, fallbackSeconds = 0, recipes = [], facilities = null, accountForTravel = false) {
     const recipeOf = new Map(recipes.map(recipe => [recipe.name, recipe]));
     const seconds = {}, tripsPerBatch = {}, jobs = new Map(), tripSites = [];
     for (const level of levels) {
-        const routes = new Map(), pickups = [], pools = new Map();
+        const routes = new Map(), pickups = [];
         for (const member of layout.pieces.flatMap(piece => piece.members)) {
             if (!(member.weight > 0)) continue;
             const storage = nearestStorage(member, layout.storages);
@@ -76,26 +77,23 @@ export function haulingWorkload(layout, steps, fallbackSeconds = 0, recipes = []
                 member.y + member.h / 2 - storage.y - storage.h / 2);
             const loaded = haulingWorkSeconds(distance, accountForTravel);
             const cargo = member.jobs?.map(job => [job.item, job.rate * 3600]) || [[member.crop, member.batchWeight ?? member.weight]];
-            const pool = pools.get(storage) || { trips: 0, pickupSeconds: 0 };
             for (const [item, batches] of cargo) {
                 const trips = batches * haulingBatchTrips(recipeOf.get(item), level, pickupStockLimit(member), member.facility);
-                pool.trips += trips;
-                pool.pickupSeconds += trips * loaded;
-                pickups.push({key:`${member.facility}|${item}`, storage, loaded, trips, batches});
+                pickups.push({key:`${member.facility}|${item}`, member, storage, loaded, trips, batches});
                 if (level === 3) tripSites.push({
                     point: [member.x + member.w / 2, member.y + member.h / 2],
                     returnFrom: [storage.x + storage.w / 2, storage.y + storage.h / 2],
                     rate: trips / 3600,
                 });
             }
-            pools.set(storage, pool);
         }
-        for (const pickup of pickups) {
-            const pool = pools.get(pickup.storage);
+        const flow=deliveryRouting({storages:layout.storages,pieces:[{members:pickups.map(p=>({
+            x:p.member.x,y:p.member.y,w:p.member.w,h:p.member.h,weight:p.trips}))}]});
+        for (const [index,pickup] of pickups.entries()) {
             const route = routes.get(pickup.key) || { batches: 0, seconds: 0, trips: 0 };
             route.batches += pickup.batches;
             route.trips += pickup.trips;
-            route.seconds += pickup.trips * (pickup.loaded + pool.pickupSeconds / pool.trips);
+            route.seconds += pickup.trips * (pickup.loaded + haulingWorkSeconds(flow.arrivals[index].approach,accountForTravel));
             routes.set(pickup.key, route);
         }
         for (const [key, route] of routes) {
