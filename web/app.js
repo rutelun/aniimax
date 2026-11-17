@@ -8,7 +8,7 @@ import { productionGroupOutline } from './group-outline.js?v=compact-groups';
 import { powerJobDetails } from './power-islands.js?v=independent-grids';
 import { questIncome } from './quest-income.js';
 import { splitProductionSites } from './physical-production.js';
-import { cropPeakInput, selectCropPeakTeam, plannedCropPeakTeam, criticalCropJob } from './crop-peaks.js?v=peak95';
+import { cropPeakInput, selectCropPeakTeam, plannedCropPeakTeam, criticalCropJob } from './crop-peaks.js?v=peak100';
 
 import {
     FACILITIES, FACILITY_CATEGORIES, FACILITY_CATEGORY_BY_NAME, FACILITY_FOOTPRINTS, HOMELAND_PLOTS, HOMELAND_PLOT_SIZE,
