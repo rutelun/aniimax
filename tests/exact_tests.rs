@@ -1671,3 +1671,29 @@ fn crop_visits_include_walking_and_resident_leisure_workers_stay_put() {
     check_plan(&plan, &items, "coins", &counts, &modules, None).unwrap();
     assert!(plan.movement_staffing.is_empty());
 }
+
+#[test]
+fn versatile_crew_keeps_crop_workers_separate_when_route_detail_is_unavailable() {
+    use aniimax::exact::{check_plan_with_workload, prefer_versatile_couriers};
+    let items: Vec<_> = load_items().unwrap().into_iter().filter(|item| item.name == "wheat").collect();
+    let mut counts = FacilityCounts::only(&[("Farmland", 4, 1)]);
+    counts.set_grower_steps(aniimax::data::load_grower_steps(Path::new("data")).unwrap());
+    counts.set_crew(crew_of(&[
+        (1, &[("Earth", 3), ("Hauling", 3)]),
+        (3, &[("Earth", 3), ("Grass", 3), ("Water", 3), ("Dark", 3), ("Hauling", 3)]),
+    ]));
+    counts.set_hauling(10.0, Default::default());
+    let modules = ModuleLevels::default();
+    let mut plan = solve_exact(&items, "coins", &counts, &modules, Goal::Earn { floors: &[] }, None, None).unwrap();
+    assert!(plan.work_routes.is_empty());
+    for (_, _, member, _) in &mut plan.crop_staffing { *member = 1; }
+    for (_, member, _) in &mut plan.hauling_routes { *member = 0; }
+    let delivery: f64 = plan.hauling_staffing.iter().map(|(_, n)| n).sum();
+    assert!(delivery > 0.0);
+    plan.hauling_staffing = vec![(0, delivery)];
+    let (income, mut busy) = check_plan_with_workload(&plan, &items, "coins", &counts, &modules, None).unwrap();
+    prefer_versatile_couriers(&mut plan, &mut busy, &items, "coins", &mut counts, &modules, None);
+    assert!(plan.hauling_routes.iter().all(|(_, id, _)| *id == 0));
+    assert!(plan.crop_staffing.iter().all(|(_, _, id, _)| *id == 1));
+    assert_eq!(check_plan(&plan, &items, "coins", &counts, &modules, None).unwrap(), income);
+}

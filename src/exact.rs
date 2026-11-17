@@ -2229,8 +2229,8 @@ fn reassign_crew_pool(
     candidate.hauling_staffing.retain(|(id, _)| *id != from);
     if delivery > 0.0 { candidate.hauling_staffing.push((to, delivery)); }
     for (original, replacement) in &names {
-        if let Some(rate) = candidate.recipe_rates.remove(*original) { candidate.recipe_rates.insert((*replacement).into(), rate); }
-        if let Some(units) = candidate.units.remove(*original) { candidate.units.insert((*replacement).into(), units); }
+        if let Some(rate) = candidate.recipe_rates.remove(*original) { *candidate.recipe_rates.entry((*replacement).into()).or_default() += rate; }
+        if let Some(units) = candidate.units.remove(*original) { *candidate.units.entry((*replacement).into()).or_default() += units; }
     }
     for (name, _, _) in &mut candidate.fixed_sites {
         if let Some(&replacement) = names.get(name.as_str()) { *name = replacement.to_owned(); }
@@ -2245,9 +2245,97 @@ fn reassign_crew_pool(
         if let Some(&replacement) = names.get(route.recipe.as_str()) { route.recipe = replacement.to_owned(); }
         route.member = member(route.member);
     }
+    for (ability, level, id, share) in &mut candidate.crop_staffing {
+        if *id != from { continue; }
+        if !crew.can_work(to, ability, *level) || new.level(ability) < old.level(ability) { return None; }
+        let speed = |value| crate::models::Worker::new(value, false).speed(*level, true);
+        *share *= speed(old.level(ability)) / speed(new.level(ability));
+        *id = to;
+    }
     for (_, id, _) in &mut candidate.staffing { *id = member(*id); }
     for (id, _) in &mut candidate.movement_staffing { *id = member(*id); }
     Some(candidate)
+}
+
+/// Consolidate courier-led work onto spare copies of a skill superset. Crop
+/// responsiveness is checked separately: universality never wins by making a
+/// crop request more likely to find its worker occupied with another task.
+pub fn prefer_versatile_couriers(
+    plan: &mut ExactPlan, workload: &mut Vec<f64>, items: &[ProductionItem],
+    currency: &str, counts: &mut FacilityCounts, modules: &ModuleLevels, level_up: Option<&LevelUp>,
+) {
+    let Some(crew) = counts.crew().cloned() else { return };
+    let owned = crew.assumed_from.unwrap_or(crew.members.len());
+    let all: HashMap<_, _> = items.iter().map(|r| (r.name.as_str(), r)).collect();
+    let totals = |p: &ExactPlan, busy: &[f64]| {
+        let mut result = busy.to_vec();
+        for &(id, time) in &p.hauling_staffing { result[id] += time; }
+        result
+    };
+    let copies = |p: &ExactPlan, busy: &[f64]| {
+        let mut result: Vec<f64> = busy.iter().map(|n| (n - 1e-6).ceil().max(0.0)).collect();
+        let mut posts = vec![0.0; result.len()];
+        for (_, id, n) in p.staffing.iter().chain(p.work_posts.iter()) { posts[*id] += n; }
+        for (name, n) in &p.units { let r=all[name.as_str()]; if crew.residents.contains(&r.facility) {
+            if let Some(id)=r.crew { posts[id] += *n as f64; }
+        }}
+        for (n, post) in result.iter_mut().zip(posts) { *n = n.max(post); }
+        result
+    };
+    let blocking = |p: &ExactPlan, busy: &[f64], allocated: &[f64], c: &FacilityCounts| {
+        let mut result = BTreeMap::<(String, String), f64>::new();
+        for r in &p.work_routes {
+            let Some((ability, _)) = &r.crop else { continue };
+            let item=all[r.recipe.as_str()];
+            let Some((seconds, visits))=work_spec(item, r.crop.as_ref(), r.member, c) else { continue };
+            let own=r.rate*(seconds+if r.mobile { visits as f64*c.request_travel(item,ability,r.member) } else { 0.0 });
+            let blocked=(busy[r.member]-own).max(0.0)/allocated[r.member].max(1.0);
+            *result.entry((crate::models::base_item_name(&r.recipe).into(),ability.clone())).or_default() += r.rate*blocked;
+        }
+        result
+    };
+    let skills=|id:usize| crew.members[id].abilities.values().filter(|&&level| level>0).count();
+    let mut recipients:Vec<_>=(0..owned).collect();
+    recipients.sort_by_key(|&id| std::cmp::Reverse(skills(id)));
+    for from in 0..owned {
+        let before=totals(plan,workload);
+        let haul:f64=plan.hauling_staffing.iter().filter(|(id,_)| *id==from).map(|(_,time)|time).sum();
+        if haul<=1e-9 || haul<before[from]*0.5 { continue; }
+        let before_copies=copies(plan,&before);
+        let before_blocking=blocking(plan,&before,&before_copies,counts);
+        for &to in &recipients {
+            if to==from || skills(to)<=skills(from) || crew.members[to].count==0
+                || before[to]+before[from]>crew.members[to].count as f64+1e-6
+                || crew.members[from].abilities.iter().any(|(a,&level)| crew.members[to].level(a)<level) { continue; }
+            // Legacy inputs may contain only aggregate crop staffing. Without
+            // task rates we cannot prove the same crop availability after a merge.
+            if !counts.uses_work_routes() && plan.crop_staffing.iter().any(|(_,_,id,n)|
+                (*id==from || *id==to) && *n>1e-9) { continue; }
+            let Some(mut candidate)=reassign_crew_pool(plan,&all,counts,from,to) else { continue };
+            let mut candidate_counts=counts.clone();
+            candidate_counts.transfer_worker_dispatch(from,to);
+            let mut walking=BTreeMap::<usize,f64>::new();
+            for r in &candidate.work_routes { if r.mobile {
+                let Some((_,visits))=work_spec(all[r.recipe.as_str()],r.crop.as_ref(),r.member,&candidate_counts) else { continue };
+                *walking.entry(r.member).or_default() += r.rate*visits as f64*candidate_counts.request_travel(
+                    all[r.recipe.as_str()],r.crop.as_ref().map_or("Production",|(a,_)|a.as_str()),r.member);
+            }}
+            candidate.movement_staffing=walking.into_iter().collect();
+            let mut delivery=BTreeMap::<usize,f64>::new();
+            for (name,id,rate) in &candidate.hauling_routes {
+                *delivery.entry(*id).or_default() += rate*candidate_counts.hauling_seconds_for_member(all[name.as_str()],*id);
+            }
+            candidate.hauling_staffing=delivery.into_iter().collect();
+            let Ok((_,checked))=check_plan_with_workload(&candidate,items,currency,&candidate_counts,modules,level_up) else { continue };
+            let after=totals(&candidate,&checked);let after_copies=copies(&candidate,&after);
+            if after.iter().sum::<f64>()>before.iter().sum::<f64>()+1e-6
+                || after_copies.iter().sum::<f64>()>before_copies.iter().sum::<f64>() { continue; }
+            let after_blocking=blocking(&candidate,&after,&after_copies,&candidate_counts);
+            if after_blocking.iter().any(|(key,value)| *value>before_blocking.get(key).copied().unwrap_or(0.0)+1e-9) { continue; }
+            *plan=candidate;*workload=checked;*counts=candidate_counts;
+            break;
+        }
+    }
 }
 
 /// Also return each roster pool's checked workload before delivery. The map can

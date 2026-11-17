@@ -1436,6 +1436,18 @@ impl FacilityCounts {
         }
     }
 
+    pub fn transfer_worker_dispatch(&mut self, from: usize, to: usize) {
+        for entries in self.dispatch.values_mut() {
+            let Some(old) = entries.iter().find(|e| e.member == from).cloned() else { continue };
+            entries.retain(|e| e.member != from);
+            if let Some(recipient) = entries.iter_mut().find(|e| e.member == to) {
+                let share = recipient.share + old.share;
+                recipient.travel_seconds = (recipient.travel_seconds * recipient.share + old.travel_seconds * old.share) / share;
+                recipient.share = share;
+            } else { entries.push(DispatchAssignment { member: to, ..old }); }
+        }
+    }
+
     pub fn dispatch_production(&self, recipe: &ProductionItem) -> bool {
         recipe.crew.is_some() && self.dispatch(recipe, "Production").is_some()
     }

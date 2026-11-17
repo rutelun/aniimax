@@ -1798,6 +1798,10 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
         &mut exact, &mut roster_workload, &prepared.items, &currency,
         &mut report_counts, &prepared.module_levels, level_up,
     );
+    crate::exact::prefer_versatile_couriers(
+        &mut exact, &mut roster_workload, &prepared.items, &currency,
+        &mut report_counts, &prepared.module_levels, level_up,
+    );
     if !result.summary_only {
         crate::exact::free_better_couriers(
             &mut exact, &mut roster_workload, &prepared.items, &currency,
