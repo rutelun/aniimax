@@ -15,7 +15,7 @@ function page() {
         return elements.get(id);
     };
     const workers = [], timers = new Map(), shown = [], steps = [];
-    const state = { tab: 'custom' };
+    const state = { tab: 'custom', resets:0, starts:0 };
     const context = {
         document: { getElementById: element, querySelectorAll: () => [] },
         selectedSetupTab: () => state.tab, levelledAbilities: () => [],
@@ -26,8 +26,9 @@ function page() {
         },
         setTimeout(callback) { const id = timers.size + 1; timers.set(id, callback); return id; },
         clearTimeout(id) { timers.delete(id); },
-        displayPlan: plan => shown.push(plan), runTimeToGoal() {},
-        startProgress() {}, finishSolveSteps() {}, renderProgress() {}, setStep: (...args) => steps.push(args), translate: s => s,
+        displayPlan: (plan,keepLayout) => {shown.push(plan);state.keepLayout=keepLayout;}, runTimeToGoal() {},
+        resetPlanButton() {state.resets++;}, showError(error) {state.error=error;},
+        startProgress() {state.starts++;}, finishSolveSteps() {}, renderProgress() {}, setStep: (...args) => steps.push(args), translate: s => s,
         stopRanking() {}, stopLayout() {}, renderImprovements() {}, restartWorker() {}, refreshRosterTileWorkloads() {},
         ENVIRONMENT_BUILDING_ABILITY: {}, RESIDENT_FACILITIES: [], FACILITIES: [], workerTravelSeconds,
     };
@@ -80,7 +81,32 @@ test('an invalid or timed-out response settles as an error instead of waiting fo
         assert.ok(p.shown[0].error, failure);
         assert.ok(p.workers[0].stopped, failure);
         assert.equal(p.timers.size, 0, failure);
+        assert.equal(p.state.resets,1,failure);
     }
+});
+
+test('automatic refinement keeps completed progress and updates the map in place',()=>{
+    const p=page();
+    p.element('aniimo-pending').style.display='none';
+    p.run("progress={runId:1,steps:[{key:'plan',state:'done'}]};ensurePlanFor(selectedAniimoSetup(),true)");
+    assert.equal(p.state.starts,0);
+    assert.equal(p.element('aniimo-pending').style.display,'none');
+    assert.equal(p.run('progress.steps[0].state'),'done');
+    assert.deepEqual(p.steps,[['refine','start']]);
+    p.workers[0].onmessage({data:{type:'progress',count:{step:'priority:coins',state:'start'}}});
+    assert.equal(p.steps.length,1,'internal solves must not restart completed progress rows');
+    p.workers[0].onmessage({data:{ok:true,result:'{"success":true}'}});
+    assert.equal(p.state.keepLayout,true);
+});
+
+test('failed refinement retains results and releases the calculate button',()=>{
+    const p=page();
+    p.run("progress={runId:1,steps:[]};ensurePlanFor(selectedAniimoSetup(),true)");
+    p.workers[0].onmessage({data:{ok:false,error:'failure'}});
+    assert.equal(p.shown.length,0);
+    assert.equal(p.state.resets,1);
+    assert.match(p.state.error,/failure/);
+    assert.deepEqual(p.steps.at(-1),['refine','fail']);
 });
 
 test('a roster always accounts for walking and a corrected distance restarts its solve', () => {
