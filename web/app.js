@@ -7,6 +7,7 @@ import { normalizeMapStyle } from './map-style.js?v=production-groups';
 import { productionGroupOutline } from './group-outline.js?v=compact-groups';
 import { powerJobDetails } from './power-islands.js?v=independent-grids';
 import { questIncome } from './quest-income.js';
+import { splitProductionSites } from './physical-production.js';
 
 import {
     FACILITIES, FACILITY_CATEGORIES, FACILITY_CATEGORY_BY_NAME, FACILITY_FOOTPRINTS, HOMELAND_PLOTS, HOMELAND_PLOT_SIZE,
@@ -1369,13 +1370,15 @@ function homelandPieces(plan, input) {
             if (n > 0) unplaced.add(step.facility);
             return;
         }
+        const physicalCrew = n===step.facility_count ? splitProductionSites(step,plan.roster_routes) : null;
         for (let i = 0; i < n; i++) {
             // A crop that needs an environment but is grown without one stays out of every
             // coverage square, so no building's temperature changes it.
             const growing = step.status === 'producing';
-            pieces.push({ members: [{ x: 0, y: 0, w: footprint[0], h: footprint[1], weight: tripsPerUnit(step), crew: step.crew,
-                electric_level: step.electric_level, cycle: step.cycle_time,
-                load: growing ? (step.busy_units ?? step.facility_count) / step.facility_count : 0,
+            const assigned=physicalCrew?.[i];
+            pieces.push({ members: [{ x: 0, y: 0, w: footprint[0], h: footprint[1], weight: assigned?assigned.rate*3600:tripsPerUnit(step), crew: assigned?.crew??step.crew,
+                electric_level: step.electric_level, cycle: assigned?.cycle??step.cycle_time,
+                load: assigned?.load??(growing ? (step.busy_units ?? step.facility_count) / step.facility_count : 0),
                 facility: step.facility, crop: growing ? step.item_name : null, sensitive: growing && needsEnvironment(step.item_name) }] });
         }
         count(step.facility, n);
@@ -1836,7 +1839,7 @@ function renderHomelandLayout(plan) {
         const arrangementNotice = [
             layout.groupFallback === 'storage' ? translate('Grouped maps need at least one Storage Unit. Showing the delivery layout.') : '',
             layout.groupFallback === 'space' ? translate('The grouped map could not fit every facility and connect the grid. Showing the delivery layout.') : '',
-            layout.groupFallback === 'ranges' ? translate('No separate workshop blocks could fit with this plan. Showing the delivery layout.') : '',
+            layout.groupFallback === 'workload' ? translate('Grouped layouts could not preserve this plan’s worker capacity and output. Showing the delivery layout.') : '',
             layout.groupPurposeFallback ? translate('Separate sale and support groups did not fit. Showing mixed groups.') : '',
             layout.rangeMixedPurposes ? translate('Some sale and support workshops share a block to keep letter ranges intact.') : '',
             layout.groupGap < layout.requestedGroupGap ? translate('The selected gap did not fit. The map uses {gap} tile(s) between groups.')

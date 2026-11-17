@@ -2,7 +2,6 @@
 // takes a few seconds: posts back what `layOutHomeland` returns for the pieces and open cells
 // it's sent. Loaded with the page's own load tag (see `WORKER_URL` in app.js), passed on to
 // layout.js so a cached older copy is never used with newer page code.
-import { FACILITY_CATEGORY_BY_NAME } from './facility-config.js?v=leisure-families';
 import { normalizeMapStyle } from './map-style.js';
 import { parkIdleBuildings } from './idle-layout.js';
 import { optimizePowerNetworks } from './power-islands.js';
@@ -28,10 +27,14 @@ self.onmessage = async (event) => {
     const { recipes, staffing } = event.data;
     const style = normalizeMapStyle(event.data.style);
     const grouped = style === 'groups';
+    let groupFailure = 'space';
     const deliver = layout => self.postMessage(optimizePowerNetworks(parkIdleBuildings(layout,cells),cells,poleLimit));
     if (grouped && storageCount > 0) {
         const { productionGroupLayout } = await import('./production-groups.js' + new URL(import.meta.url).search);
-        const arranged = await productionGroupLayout(pieces, cells, { storageCount, poleLimit, recipes, staffing });
+        const arranged = await productionGroupLayout(pieces, cells, { storageCount, poleLimit, recipes, staffing,
+            onCandidate: candidate => {
+                if (candidate.layout && candidate.disconnected === 0) groupFailure = 'workload';
+            } });
         if (arranged) {
             self.postMessage(optimizePowerNetworks(arranged,cells,poleLimit));
             return;
@@ -53,9 +56,7 @@ self.onmessage = async (event) => {
                     const polished=polishFastLayout(broad,seed,cells,refineJSON);
                     const candidate=layoutKeepsIncome(polished,staffing,recipes||[])?polished:broad;
                     if(layoutKeepsIncome(candidate,staffing,recipes||[])) {
-                        const needsRanges=recipes?.some(recipe=>recipe.takes.length)||(recipes?.length>0&&pieces.some(piece=>
-                            piece.members?.some(member=>FACILITY_CATEGORY_BY_NAME.get(member.facility)==='Materials Processing')));
-                        deliver(grouped?{...candidate,groupFallback:needsRanges?'ranges':'space'}:candidate);
+                        deliver(grouped?{...candidate,groupFallback:groupFailure}:candidate);
                         return;
                     }
                 }
@@ -173,8 +174,6 @@ self.onmessage = async (event) => {
             } });
         }
     }
-    const needsRanges = recipes?.some(recipe => recipe.takes.length) || (recipes?.length > 0 && pieces.some(piece =>
-        piece.members?.some(member => FACILITY_CATEGORY_BY_NAME.get(member.facility) === 'Materials Processing')));
-    const fallback = storageCount === 0 ? 'storage' : needsRanges ? 'ranges' : 'space';
+    const fallback = storageCount === 0 ? 'storage' : groupFailure;
     deliver(grouped ? { ...best, groupFallback: fallback } : best);
 };
