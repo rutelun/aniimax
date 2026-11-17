@@ -30,6 +30,14 @@ export function buildReactiveDispatch({layout,recipes,members,busy=[],permanent=
         return total>0?from.reduce((s,p)=>s+p.rate*workerTravelSeconds(distance(p.point,point)),0)/total:0;
     };
     const policy={};
+    const planned=new Map();
+    for(const route of routes){
+        if(!(route.job_rate>0)||!route.jobs?.length)continue;
+        const key=routeDispatchKey(route,recipes);
+        if(!key)continue;
+        if(!planned.has(key))planned.set(key,[]);
+        planned.get(key).push(route);
+    }
     for(const recipe of recipes){
         const physical=byFacility.get(recipe.facility);
         if(!physical?.length)continue;
@@ -53,6 +61,32 @@ export function buildReactiveDispatch({layout,recipes,members,busy=[],permanent=
             if(total<=1e-9){for(const e of eligible)e.weight=e.mobile;total=eligible.reduce((s,e)=>s+e.weight,0);}
             const valid=new Set(eligible.map(e=>e.member));
             let entries=previous?.[key]?.filter(e=>valid.has(e.member)&&Number.isFinite(e.share)&&e.share>0);
+            if(!entries?.length&&planned.has(key)){
+                const own=planned.get(key).filter(r=>valid.has(r.member));
+                const rate=own.reduce((s,r)=>s+r.job_rate,0);
+                if(rate>0){
+                    const assigned=new Map();
+                    for(const r of own){
+                        const row=assigned.get(r.member)||{share:0,work:0};
+                        row.share+=r.job_rate/rate;
+                        row.work+=r.jobs.reduce((s,[,work])=>s+work,0)+(r.walking||0);
+                        assigned.set(r.member,row);
+                    }
+                    let captured=0;
+                    const weights=new Map();
+                    for(const [member,row] of assigned){
+                        const mobile=eligible.find(e=>e.member===member).mobile;
+                        const elsewhere=Math.max(0,(busy[member]||0)-(permanent[member]||0)-row.work);
+                        const diverted=row.share*Math.min(1,elsewhere/mobile);
+                        weights.set(member,row.share-diverted);
+                        captured+=diverted;
+                    }
+                    // Being busy doing THIS task is not a reason to lose it.
+                    // Only overlapping other work exposes its requests to pickup.
+                    for(const e of eligible)weights.set(e.member,(weights.get(e.member)||0)+captured*e.weight/total);
+                    entries=[...weights].filter(([,share])=>share>1e-12).map(([member,share])=>({member,share}));
+                }
+            }
             if(!entries?.length)entries=eligible.filter(e=>e.weight>0).map(e=>({member:e.member,share:e.weight/total}));
             const shares=entries.reduce((s,e)=>s+e.share,0);
             policy[key]=entries.map(e=>{

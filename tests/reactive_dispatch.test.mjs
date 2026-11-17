@@ -10,6 +10,22 @@ const members=[{count:2,abilities:{Fire:3,Dark:4,Hauling:3}},{count:1,abilities:
 const routes=[{member:0,facility:'Chimney Kiln',item:'ore',job_rate:.1},
     {member:1,facility:'Farmland',item:'crop',job_rate:.1}];
 
+test('a fully occupied specialist retains its own work instead of becoming ineligible',()=>{
+    const team=[{count:1,abilities:{Fire:4}},{count:1,abilities:{Fire:2}}];
+    const actual=[{member:0,facility:'Chimney Kiln',item:'ore',job_rate:.1,jobs:[['',1]],walking:0}];
+    const p=buildReactiveDispatch({layout,recipes,members:team,routes:actual,busy:[1,0]});
+    assert.deepEqual(p['Chimney Kiln|ore|Production'].map(e=>[e.member,e.share]),[[0,1]]);
+});
+
+test('only the fraction blocked by other work can be captured, conserving task demand',()=>{
+    const team=[{count:1,abilities:{Fire:4}},{count:1,abilities:{Fire:2}}];
+    const actual=[{member:0,facility:'Chimney Kiln',item:'ore',job_rate:.1,jobs:[['',.6]],walking:0}];
+    const p=buildReactiveDispatch({layout,recipes,members:team,routes:actual,busy:[1,0]});
+    const shares=p['Chimney Kiln|ore|Production'];
+    assert.ok(Math.abs(shares.find(e=>e.member===0).share-.6)<1e-9);
+    assert.ok(Math.abs(shares.find(e=>e.member===1).share-.4)<1e-9);
+});
+
 test('unexpected crop pickup conserves requests and starts at previous production site',()=>{
     const p=buildReactiveDispatch({layout,recipes,members,routes,busy:[1.8,.5],permanent:[1,0]});
     const crop=p['Farmland|crop|Dark'];
