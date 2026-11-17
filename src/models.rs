@@ -1293,6 +1293,8 @@ pub struct FacilityCounts {
     hauling_seconds: std::collections::BTreeMap<String, f64>,
     hauling_default_seconds: f64,
     fixed_homeland: Option<FixedHomeland>,
+    recipe_switching_relaxation: bool,
+    recipe_switching_facilities: Vec<String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -1338,6 +1340,8 @@ impl Default for FacilityCounts {
             hauling_seconds: Default::default(),
             hauling_default_seconds: 0.0,
             fixed_homeland: None,
+            recipe_switching_relaxation: false,
+            recipe_switching_facilities: Vec::new(),
         }
     }
 }
@@ -1354,6 +1358,28 @@ fn facility_stock_limit(facility: &str, level: u32) -> u32 {
 }
 
 impl FacilityCounts {
+    /// Internal candidate relaxation only; a phase certificate is required before display.
+    pub fn set_recipe_switching_relaxation(&mut self, enabled: bool) {
+        self.recipe_switching_relaxation = enabled;
+    }
+
+    pub fn recipe_switching_relaxation(&self) -> bool { self.recipe_switching_relaxation }
+
+    pub fn set_recipe_switching_facilities(&mut self, facilities: Vec<String>) {
+        self.recipe_switching_facilities = facilities;
+    }
+
+    pub fn takes_turns(&self, recipe: &ProductionItem) -> bool {
+        self.recipe_switching_relaxation && recipe.environment.is_none()
+            && (self.recipe_switching_facilities.is_empty() || self.recipe_switching_facilities.contains(&recipe.facility))
+            && !self.crew.as_ref().is_some_and(|crew| crew.residents.contains(&recipe.facility))
+            && matches!(recipe.facility.as_str(),
+                "Carousel Mill" | "Crafting Table" | "Claw Game Cooker" | "Jukebox Dryer"
+                | "Simmering Pot" | "Phonolfactory Table" | "Bouncy Brew Keg" | "Blazing Stove"
+                | "Pickling Jar" | "Joy Wheel Loom" | "Dance Pad Polisher" | "Aniipod Maker"
+                | "Woodworking Bench" | "Chimney Kiln")
+    }
+
     pub fn set_quest_income_per_day(&mut self, income: &std::collections::BTreeMap<String, f64>) {
         self.quest_income = income.iter()
             .filter(|(name, amount)| matches!(name.as_str(), "wood_block" | "mineral_sand") && amount.is_finite() && **amount > 0.0)
@@ -1449,7 +1475,7 @@ impl FacilityCounts {
     }
 
     pub fn dispatch_production(&self, recipe: &ProductionItem) -> bool {
-        recipe.crew.is_some() && self.dispatch(recipe, "Production").is_some()
+        !self.takes_turns(recipe) && recipe.crew.is_some() && self.dispatch(recipe, "Production").is_some()
     }
 
     pub fn uses_work_routes(&self) -> bool { self.movement_seconds > 0.0 || self.has_dispatch() }
@@ -1910,4 +1936,51 @@ pub struct ProcessingRowNoEnergy {
     /// Module requirement (format: "module_name:level" or empty)
     #[serde(default)]
     pub module_requirement: Option<String>,
+}
+
+#[cfg(test)]
+mod recipe_switching_candidate_tests {
+    use super::*;
+
+    fn item(facility: &str) -> ProductionItem {
+        ProductionItem {
+            name: "candidate".into(), facility: facility.into(), raw_materials: None,
+            required_amount: None, cost: None, sell_currency: "coins".into(), sell_value: 1.0,
+            production_time: 10.0, yield_amount: 1, energy: None, facility_level: 1,
+            module_requirement: None, workload: None, byproduct: None, environment: None,
+            season: None, crew: Some(0),
+        }
+    }
+
+    #[test]
+    fn relaxation_is_opt_in_and_never_shares_growers_residents_or_climate() {
+        let mut counts = FacilityCounts::default();
+        let mut workshop = item("Chimney Kiln");
+        assert!(!counts.takes_turns(&workshop));
+        counts.set_recipe_switching_relaxation(true);
+        assert!(counts.takes_turns(&workshop));
+        for facility in ["Farmland", "Woodland", "Mine", "Well", "Tidewhisper Sandcastle", "Heat Furnace"] {
+            assert!(!counts.takes_turns(&item(facility)));
+        }
+        workshop.environment = Some("Warm".into());
+        assert!(!counts.takes_turns(&workshop));
+        workshop.environment = None;
+        let mut crew = Crew::default();
+        crew.residents.insert(workshop.facility.clone());
+        counts.set_crew(crew);
+        assert!(!counts.takes_turns(&workshop));
+    }
+
+    #[test]
+    fn candidate_physical_sharing_does_not_remove_worker_dispatch_policy() {
+        let mut counts = FacilityCounts::default();
+        let recipe = item("Chimney Kiln");
+        counts.dispatch.insert("Chimney Kiln|candidate|Production".into(),
+            vec![DispatchAssignment { member: 0, share: 1.0, travel_seconds: 3.0 }]);
+        assert!(counts.dispatch_production(&recipe));
+        counts.set_recipe_switching_relaxation(true);
+        assert!(!counts.dispatch_production(&recipe));
+        assert_eq!(counts.request_travel(&recipe, "Production", 0), 3.0);
+        assert_eq!(counts.dispatch(&recipe, "Production").unwrap()[0].share, 1.0);
+    }
 }

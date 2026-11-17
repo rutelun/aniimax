@@ -793,6 +793,13 @@ pub struct JsPlanInput {
     pub max_working_aniimo: Option<u32>,
     #[serde(default)]
     pub fixed_homeland: Option<crate::models::FixedHomeland>,
+    /// Internal candidate-only relaxation, never an executable schedule.
+    #[serde(default)]
+    pub recipe_switching_relaxation: bool,
+    #[serde(default)]
+    pub recipe_switching_facilities: Vec<String>,
+    #[serde(default)]
+    pub recipe_switching_normal_only: bool,
 }
 
 /// The player's Aniimo, and what the page knows of the facilities they work (see
@@ -1243,6 +1250,11 @@ impl From<JsEnvironmentAssignment> for crate::models::EnvironmentAssignment {
 /// allocation solve just because the goal amount changed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsProductionPlan {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub recipe_switching_candidate: bool,
+    /// Exact coefficients for independent scheduling; not itself a certificate.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub schedule_sources: Vec<JsScheduleSource>,
     pub success: bool,
     pub error: Option<String>,
     pub currency: String,
@@ -1330,6 +1342,23 @@ pub struct JsProductionPlan {
     pub fixed_site_jobs: Vec<JsFixedSiteJob>,
 }
 
+/// Candidate-only effective recipes, including background production.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JsScheduleSource {
+    pub id: String,
+    pub item: String,
+    pub facility: String,
+    pub facility_level: u32,
+    pub cycle: f64,
+    pub rate: f64,
+    pub crew: Option<usize>,
+    pub electric_level: Option<u32>,
+    pub turns: bool,
+    pub inputs: Vec<(String, u32)>,
+    pub outputs: Vec<(String, u32)>,
+    pub hauling_seconds: Vec<f64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsRosterRoute {
     member: usize,
@@ -1398,6 +1427,8 @@ pub struct JsLevelUpRequirement {
 
 fn empty_production_plan(success: bool, error: Option<String>) -> JsProductionPlan {
     JsProductionPlan {
+        recipe_switching_candidate: false,
+        schedule_sources: Vec::new(),
         success,
         error,
         currency: default_currency(),
@@ -1824,7 +1855,7 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
                 &mut extra_electric, active, &report_counts, &prepared.requirements, &power.grid,
             );
             let existing: std::collections::HashSet<_> = prepared.items.iter().map(|item| item.name.as_str()).collect();
-            extra_electric.retain(|item| !existing.contains(item.name.as_str()));
+            extra_electric.retain(|item| !existing.contains(item.name.as_str()) && !(prepared.input.recipe_switching_normal_only && report_counts.takes_turns(item)));
             extra_electric.extend(prepared.items.iter().cloned());
             if let Some(candidate) = crate::exact::prefer_electric_staffing(
                 &exact, &extra_electric, &currency, &report_counts, &prepared.module_levels, level_up,
@@ -1851,6 +1882,32 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
     let build_report = if result.summary_only { crate::exact::to_production_summary } else { crate::exact::to_production_plan };
     let plan = build_report(&exact, reporting_items, &currency, &report_counts);
     let mut js = prepared.to_js(plan, Some(proof));
+    js.recipe_switching_candidate = prepared.input.recipe_switching_relaxation;
+    if js.recipe_switching_candidate {
+        let all: std::collections::HashMap<_, _> = reporting_items.iter()
+            .map(|item| (item.name.as_str(), item)).collect();
+        js.schedule_sources = exact.recipe_rates.iter().filter(|(_, rate)| **rate > 1e-9)
+            .map(|(name, &rate)| {
+                let item = all[name.as_str()];
+                let inputs = item.raw_materials.iter().flatten().cloned()
+                    .zip(item.required_amount.iter().flatten().copied()).collect();
+                let mut outputs = vec![(crate::exact::made_item(name, &all).to_owned(), item.yield_amount)];
+                if let Some((resource, amount)) = &item.byproduct {
+                    if let Some(name) = crate::models::byproduct_item(resource) {
+                        outputs.push((name.to_owned(), *amount));
+                    }
+                }
+                JsScheduleSource {
+                    id: name.clone(), item: crate::models::base_item_name(name).to_owned(),
+                    facility: item.facility.clone(), facility_level: item.facility_level,
+                    cycle: item.production_time, rate, crew: item.crew,
+                    electric_level: crate::power::electric_level(name),
+                    turns: report_counts.takes_turns(item), inputs, outputs,
+                    hauling_seconds: prepared.crew.as_ref().map(|crew| (0..crew.members.len())
+                        .map(|member| report_counts.hauling_seconds_for_member(item, member)).collect()).unwrap_or_default(),
+                }
+            }).collect();
+    }
     js.level_up = report.filter(|_| prepared.input.level_up.is_some());
     js.level_up_preview = preview;
     js.staffing = exact.staffing.clone();
@@ -1912,7 +1969,7 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
                 cycle: item.production_time,
                 crew: item.crew,
                 electric_level: crate::power::electric_level(name),
-                turns: crate::exact::takes_turns(item) || report_counts.dispatch_production(item),
+                turns: report_counts.takes_turns(item) || report_counts.dispatch_production(item),
             }
         }).collect();
     }
@@ -1925,7 +1982,7 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
     }).collect();
     if let Some(power) = report_counts.power() {
         js.generator_watts_by_lightning = (1..=4).map(|level| power.generator_output(level)).collect();
-        let draw = crate::exact::rated_power_draw(&exact, reporting_items);
+        let draw = crate::exact::rated_power_draw_with_counts(&exact, reporting_items, &report_counts);
         let needed = draw * power.grid.percent as f64 / 100.0;
         if let Some(automatic) = power.automatic.filter(|_| draw > 0.0) {
             let staff = if let Some(crew) = &prepared.crew {
@@ -2062,6 +2119,8 @@ impl PreparedInput {
             serde_json::to_string(&empty_production_plan(false, Some(format!("Invalid input: {}", e)))).unwrap_or_default()
         })?;
         let mut facility_counts = input.facility_counts();
+        facility_counts.set_recipe_switching_relaxation(input.recipe_switching_relaxation);
+        facility_counts.set_recipe_switching_facilities(input.recipe_switching_facilities.clone());
         facility_counts.set_quest_income_per_day(&input.quest_income_per_day);
         let module_levels = ModuleLevels {
             ecological_module: input.modules.ecological_module,
@@ -2177,6 +2236,9 @@ impl PreparedInput {
             }
             facility_counts.set_power(power);
         }
+        if input.recipe_switching_normal_only && input.recipe_switching_relaxation {
+            items.retain(|item| !facility_counts.takes_turns(item) || crate::power::electric_level(&item.name).is_none());
+        }
         if let Some(roster) = &input.roster { facility_counts.set_dispatch(roster.dispatch.clone(), &items); }
         Ok(PreparedInput { input, facility_counts, module_levels, items, setup, crew, requirements, grower_steps })
     }
@@ -2253,6 +2315,8 @@ impl PreparedInput {
             }).collect())
         }).unwrap_or_default();
         JsProductionPlan {
+            recipe_switching_candidate: self.input.recipe_switching_relaxation,
+            schedule_sources: Vec::new(),
             success: true,
             error: None,
             currency: plan.currency,

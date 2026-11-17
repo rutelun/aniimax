@@ -10,7 +10,7 @@ const heavy=new Set(['Mine','Well','Aniipod Maker','Dance Pad Polisher']);
 const light=new Set(['Carousel Mill','Crafting Table','Jukebox Dryer','Claw Game Cooker','Joy Wheel Loom',
     'Phonolfactory Table','Bouncy Brew Keg','Simmering Pot','Blazing Stove','Woodworking Bench','Chimney Kiln','Pickling Jar']);
 const rated=m=>(heavy.has(m.facility)?30:light.has(m.facility)?15:NaN)*m.electric_level;
-const minimum=m=>120*(m.jobs?.length?m.jobs.reduce((s,j)=>s+(j.rate!=null&&j.cycle>0?j.rate*j.cycle:j.load??1),0):m.load??1);
+const minimum=m=>120*(m.schedulePeak??(m.jobs?.length?m.jobs.reduce((s,j)=>s+(j.rate!=null&&j.cycle>0?j.rate*j.cycle:j.load??1),0):m.load??1));
 
 export function analyzePowerNetworks(layout){
     const members=layout.pieces.flatMap(p=>p.members),generators=members.filter(m=>m.generator);

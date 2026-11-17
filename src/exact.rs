@@ -265,7 +265,7 @@ fn processes_upgrade_materials(recipe: &ProductionItem) -> bool {
 
 /// The item a recipe makes: a quick variant makes the regular item, and an uncovered crop (see
 /// [`crate::models::add_uncovered_variants`]) makes the same crop, just slower.
-fn made_item<'a>(name: &'a str, all: &HashMap<&str, &ProductionItem>) -> &'a str {
+pub(crate) fn made_item<'a>(name: &'a str, all: &HashMap<&str, &ProductionItem>) -> &'a str {
     let name = crate::models::base_item_name(name);
     match name.strip_prefix("quick_") {
         Some(base) if all.contains_key(base) => base,
@@ -478,7 +478,7 @@ fn add_movement_work<'a>(model: &mut Model<'a>, rates: &[(&'a ProductionItem, us
                     let post = model.add(0.0, (0.0, counts.get_count(&recipe.facility).min(crew.members[member].count) as f64), true,
                         VarKind::WorkPost { station: key.0.clone(), member });
                     anchored[member].push((post, 1.0));
-                    if takes_turns(recipe) { turn_posts.entry(recipe.facility.clone()).or_default().push((post, 1.0)); }
+                    if counts.takes_turns(recipe) { turn_posts.entry(recipe.facility.clone()).or_default().push((post, 1.0)); }
                     else { model.constrain(vec![(post, 1.0), (unit, -1.0)], ComparisonOp::Le, 0.0); }
                     post
                 });
@@ -629,7 +629,7 @@ fn add_fixed_sites<'a>(model: &mut Model<'a>, all: &HashMap<&str, &ProductionIte
     let mut turns = BTreeMap::<(usize, bool), Vec<(usize, f64)>>::new();
     let mut dispatch = BTreeMap::<(usize, String), Vec<(usize, f64)>>::new();
     for (&(recipe, rate), &(_, unit)) in rates.iter().zip(units) {
-        let shares = takes_turns(recipe) || counts.dispatch_production(recipe);
+        let shares = counts.takes_turns(recipe) || counts.dispatch_production(recipe);
         let mut assigned = vec![(unit, -1.0)];
         if shares {
             model.constrain(vec![(rate, recipe.production_time), (unit, -1.0)], ComparisonOp::Eq, 0.0);
@@ -716,7 +716,7 @@ fn build_model<'a>(
         let rate = model.add(-seed_cost(recipe), (0.0, f64::INFINITY), false, VarKind::Rate(recipe));
         let max = facility_counts.get_count(&recipe.facility) as f64;
         let dispatched = facility_counts.dispatch_production(recipe);
-        let units = model.add(0.0, (0.0, max), !takes_turns(recipe) && !dispatched, VarKind::Units(recipe));
+        let units = model.add(0.0, (0.0, max), !facility_counts.takes_turns(recipe) && !dispatched, VarKind::Units(recipe));
         model.constrain(vec![(rate, recipe.production_time), (units, -1.0)],
             if dispatched { ComparisonOp::Eq } else { ComparisonOp::Le }, 0.0);
         rate_of.push((recipe, rate));
@@ -890,8 +890,8 @@ fn build_model<'a>(
     let mut roster_power_draw = None;
     for &(recipe, units) in &physical_units {
         if let Some(level) = electric_level(&recipe.name) {
-            powered.entry((recipe.facility.as_str(), level)).or_default().push((units, takes_turns(recipe)));
-            if takes_turns(recipe) {
+            powered.entry((recipe.facility.as_str(), level)).or_default().push((units, facility_counts.takes_turns(recipe)));
+            if facility_counts.takes_turns(recipe) {
                 continue;
             }
         }
@@ -2075,7 +2075,7 @@ fn transfer_production(plan: &ExactPlan, all: &HashMap<&str, &ProductionItem>, c
     for (name, _, units) in &mut candidate.fixed_sites {
         if let Some(&new) = names.get(name.as_str()) {
             let old = all[name.as_str()];
-            if takes_turns(old) || counts.dispatch_production(old) {
+            if counts.takes_turns(old) || counts.dispatch_production(old) {
                 *units *= all[new].production_time / old.production_time;
             }
             *name = new.into();
@@ -2364,7 +2364,7 @@ pub fn check_plan_with_workload(
             }
             if facility_counts.dispatch_production(recipe) {
                 *dispatch.entry((*group, crate::models::base_item_name(name))).or_default() += amount;
-            } else if takes_turns(recipe) {
+            } else if facility_counts.takes_turns(recipe) {
                 *turns.entry((*group, electric_level(name).is_some())).or_default() += amount;
             } else {
                 if (amount - amount.round()).abs() > TOLERANCE {
@@ -2383,7 +2383,7 @@ pub fn check_plan_with_workload(
         }
         for (name, rate) in &plan.recipe_rates {
             let recipe = all.get(name.as_str()).ok_or("Unknown recipe in existing layout")?;
-            let required = if takes_turns(recipe) || facility_counts.dispatch_production(recipe) {
+            let required = if facility_counts.takes_turns(recipe) || facility_counts.dispatch_production(recipe) {
                 rate * recipe.production_time
             } else {
                 plan.units.get(name).copied().unwrap_or(0) as f64
@@ -2413,7 +2413,7 @@ pub fn check_plan_with_workload(
         if rate * recipe.production_time > units as f64 + TOLERANCE {
             return Err(format!("{name} runs {rate}/s but has {units} units at {}s each", recipe.production_time));
         }
-        let in_use = if takes_turns(recipe) { rate * recipe.production_time } else { units as f64 };
+        let in_use = if facility_counts.takes_turns(recipe) { rate * recipe.production_time } else { units as f64 };
         if facility_counts.dispatch_production(recipe) {
             dispatch_units.entry((&recipe.facility, crate::models::base_item_name(name)))
                 .or_insert((recipe, 0.0)).1 += rate * recipe.production_time;
@@ -2444,7 +2444,7 @@ pub fn check_plan_with_workload(
         }
     }
     let rates: Vec<(&ProductionItem, f64)> = plan.recipe_rates.iter().filter_map(|(n, &r)| Some((*all.get(n.as_str())?, r))).collect();
-    let electric = electric_usage(plan, &all);
+    let electric = electric_usage(plan, &all, facility_counts);
     let mut required_power = 0.0;
     if !electric.is_empty() {
         let power = facility_counts.power().ok_or("E-mode requires a power grid")?;
@@ -3134,14 +3134,14 @@ fn seed_costs_by_item<'a>(exact: &'a ExactPlan, all: &HashMap<&str, &'a Producti
     (per_unit, total)
 }
 
-fn electric_usage<'a>(plan: &ExactPlan, all: &HashMap<&str, &'a ProductionItem>) -> BTreeMap<(&'a str, u32), u32> {
+fn electric_usage<'a>(plan: &ExactPlan, all: &HashMap<&str, &'a ProductionItem>, counts: &FacilityCounts) -> BTreeMap<(&'a str, u32), u32> {
     let mut units = BTreeMap::new();
     let mut shared = BTreeMap::<_, f64>::new();
     for (name, &rate) in &plan.recipe_rates {
         let Some(level) = electric_level(name) else { continue };
         let Some(recipe) = all.get(name.as_str()) else { continue };
         let key = (recipe.facility.as_str(), level);
-        if takes_turns(recipe) {
+        if counts.takes_turns(recipe) {
             *shared.entry(key).or_default() += rate * recipe.production_time;
         } else {
             *units.entry(key).or_default() += plan.units.get(name).copied().unwrap_or(0);
@@ -3173,8 +3173,12 @@ fn with_active_electric_times<'a>(plan: &ExactPlan, all: &HashMap<&'a str, &'a P
 
 /// Rated watts drawn by the selected E-mode buildings at 100% supply.
 pub fn rated_power_draw(plan: &ExactPlan, items: &[ProductionItem]) -> f64 {
+    rated_power_draw_with_counts(plan, items, &FacilityCounts::default())
+}
+
+pub fn rated_power_draw_with_counts(plan: &ExactPlan, items: &[ProductionItem], counts: &FacilityCounts) -> f64 {
     let all = items.iter().map(|i| (i.name.as_str(), i)).collect();
-    electric_usage(plan, &all).into_iter()
+    electric_usage(plan, &all, counts).into_iter()
         .map(|((facility, level), units)| watts_per_level(facility) as f64 * level as f64 * units as f64)
         .sum()
 }
@@ -3192,7 +3196,7 @@ pub fn prefer_electric_staffing(
     let power = counts.power()?;
     let generator = power.automatic?;
     let generator_count = |plan: &ExactPlan| {
-        let watts = rated_power_draw(plan, items) * power.grid.percent as f64 / 100.0;
+        let watts = rated_power_draw_with_counts(plan, items, counts) * power.grid.percent as f64 / 100.0;
         ((watts - 1e-6) / generator.max_output() as f64).ceil().max(0.0) as u32
     };
     let all: HashMap<_, _> = items.iter().map(|item| (item.name.as_str(), item)).collect();
@@ -3284,7 +3288,7 @@ fn production_plan(
 
     // What each made item goes to: the recipes using it, and whether the rest sells.
     let net = net_rates(exact, items);
-    let electric = electric_usage(exact, &all);
+    let electric = electric_usage(exact, &all, facility_counts);
     let uses_of = |recipe: &ProductionItem| -> String {
         let made = made_item(&recipe.name, &all);
         let mut uses: Vec<&str> = exact
@@ -3346,8 +3350,8 @@ fn production_plan(
             continue;
         }
         // Recipes taking turns share units, so what's in use is their combined time.
-        let shared: Vec<&str> = rows.iter().filter(|(r, _, _)| takes_turns(r)).map(|(r, _, _)| r.name.as_str()).collect();
-        let shared_time: f64 = rows.iter().filter(|(r, _, _)| takes_turns(r) && electric_level(&r.name).is_none())
+        let shared: Vec<&str> = rows.iter().filter(|(r, _, _)| facility_counts.takes_turns(r)).map(|(r, _, _)| r.name.as_str()).collect();
+        let shared_time: f64 = rows.iter().filter(|(r, _, _)| facility_counts.takes_turns(r) && electric_level(&r.name).is_none())
             .map(|(r, _, rate)| rate * r.production_time).sum();
         let mut dispatched = BTreeMap::<&str, (&ProductionItem, f64, f64)>::new();
         for (recipe, _, rate) in rows.iter().filter(|(r, _, _)| facility_counts.dispatch_production(r)) {
@@ -3366,7 +3370,7 @@ fn production_plan(
             else { sites.values().map(|time| (time - 1e-6).ceil().max(0.0) as u32).sum() }
         };
         let powered: u32 = electric.iter().filter(|((name, _), _)| *name == facility).map(|(_, n)| n).sum();
-        let used: u32 = rows.iter().filter(|(r, _, _)| !takes_turns(r) && !facility_counts.dispatch_production(r)
+        let used: u32 = rows.iter().filter(|(r, _, _)| !facility_counts.takes_turns(r) && !facility_counts.dispatch_production(r)
             && electric_level(&r.name).is_none()).map(|(_, u, _)| u).sum::<u32>()
             + ((shared_time - 1e-6).ceil().max(0.0) as u32) + powered
             + dispatched.iter().map(|(base, (_, _, time))| dispatched_count(base, *time)).sum::<u32>();
@@ -3382,7 +3386,7 @@ fn production_plan(
         for (recipe, units, rate) in rows {
             if facility_counts.dispatch_production(recipe) { continue; }
             let mut reason = uses_of(recipe);
-            if takes_turns(recipe) {
+            if facility_counts.takes_turns(recipe) {
                 let others: Vec<&str> = shared.iter().copied()
                     .filter(|n| *n != recipe.name && electric_level(n) == electric_level(&recipe.name))
                     .map(crate::models::base_item_name).collect();

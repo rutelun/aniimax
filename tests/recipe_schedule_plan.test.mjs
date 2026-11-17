@@ -1,0 +1,44 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {scheduleInputForPlan, attachRecipeSchedule, scheduleProfiles} from '../web/recipe-schedule-plan.js';
+const source=(item,extra={})=>({id:item,item,facility:'Chimney Kiln',facility_level:1,cycle:10,rate:.02,crew:0,electric_level:null,turns:true,inputs:[],outputs:[[item,1]],...extra});
+const input={facilities:{'Chimney Kiln':[{count:1,level:1}]},recipe_switching:{max_buildings:1,max_switches:1},roster:{members:[{count:1}]}};
+const plan={recipe_switching_candidate:true,schedule_sources:[source('ore'),source('brick')],roster_workload:[.4],coin_items:[]};
+test('adapter uses actual physical tiers, worker identity and daily rates',()=>{
+    const p=scheduleInputForPlan(input,plan);
+    assert.equal(p.buildings.length,1);assert.equal(p.jobs.length,2);
+    assert.equal(p.jobs[0].batches,1728);assert.equal(p.jobs[0].workers['0'],10);
+    assert.equal(p.workerCapacity['0'],1);assert.equal(p.backgroundWorkers['0'],0);
+});
+test('electric and normal recipes never share a physical site',()=>{
+    const p=scheduleInputForPlan({...input,facilities:{'Chimney Kiln':[{count:2,level:1}]}},
+        {...plan,schedule_sources:[source('ore',{electric_level:1,crew:null}),source('brick')]});
+    assert.equal(p.buildings.length,2);
+    assert.ok(p.buildings.every(b=>b.jobs.length===1));
+});
+test('background production and sales enter the renewable inventory balance',()=>{
+    const p=scheduleInputForPlan(input,{...plan,schedule_sources:[...plan.schedule_sources,
+        source('raw',{turns:false,facility:'Mine',outputs:[['sand',4]],inputs:[]})],income_streams:[{item_name:'ore',units_per_second:.01}]});
+    assert.equal(p.backgroundOutputs.sand,.08);assert.equal(p.backgroundInputs.ore,.01);
+});
+test('validated schedule produces map jobs and time profiles without changing production',()=>{
+    const p=scheduleInputForPlan(input,plan);
+    const schedule={phases:[{duration:43200,assignments:[{building:p.buildings[0].id,job:'ore',batches:1728}]},
+        {duration:43200,assignments:[{building:p.buildings[0].id,job:'brick',batches:1728}]}],initialStock:{},switchedBuildings:[p.buildings[0].id],switches:[43200]};
+    const result=attachRecipeSchedule(plan,p,schedule);
+    assert.deepEqual(scheduleProfiles(result).get('Chimney Kiln|ore'),[2,0]);
+    assert.equal(result.recipe_schedule.sites[0].jobs.length,2);
+    assert.equal(result.recipe_switching_candidate,undefined);
+    assert.deepEqual(result.coin_items,plan.coin_items);
+});
+import {materialChainSchedule} from '../web/recipe-schedule-plan.js';
+test('material template implements two raw buildings then moves one to tier 3',()=>{
+ const p=materialChainSchedule({maxSwitches:2,jobs:['rough_lumber','standard_planks','laminated_beams','densified_timber_component'].map(recipe=>({facility:'Woodworking Bench',recipe})),buildings:Array.from({length:4},(_,i)=>({id:String(i),facility:'Woodworking Bench'}))});
+ assert.equal(p.maxSwitches,1);
+ assert.deepEqual(p.buildings.map(b=>b.phaseRecipes),[[['rough_lumber'],['rough_lumber']],[['rough_lumber'],['laminated_beams']],[['standard_planks'],['standard_planks']],[['densified_timber_component'],['densified_timber_component']]]);
+});
+test('unchanged steady production does not reserve a full phase of its inputs',async()=>{
+ const module=await import('../web/recipe-schedule.js');
+ const p={daySeconds:100,approximate:true,maxBuildings:0,maxSwitches:0,jobs:[],buildings:[],workerCapacity:{},backgroundInputs:{water:2},backgroundOutputs:{water:2}};
+ assert.equal(module.validateRecipeSchedule(p,{phases:[{duration:100,assignments:[]}],initialStock:{}}).valid,true);
+});

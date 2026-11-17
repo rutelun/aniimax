@@ -9,6 +9,7 @@
 // The message handler below is installed right away and waits on this, so no request can arrive
 // before there's a handler for it.
 import { autoMaximizeSeasonPoints, hasSeasonCropMinimums } from './season-planning.js?v=optional-season-points';
+import {searchRecipeSwitches} from './recipe-switch-search.js';
 
 const load = new URL(import.meta.url).search;
 const incumbentSolver = import('./highs-solve.js' + load);
@@ -119,7 +120,7 @@ function tiebreakOf(problem, values) {
 // nothing before it, `{ measure, objective, proven }`: the most of its first priority, its
 // level-up pace, or its Home Coins. The page's Opportunities solve that same model for the plan
 // as it stands, so they take it from here.
-async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, comparison = null) {
+async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, comparison = null, deadline = null) {
     const { exact_byproduct_problems, exact_priority_problem, exact_level_up_problem, exact_problem, exact_plan } = pkg;
     const input = JSON.parse(payload);
     const maximizeBenchAndKiln = input.maximize_material_work ?? !input.fixed_homeland;
@@ -134,7 +135,14 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
     const {productionObjective,productionCertificate,withProductionBounds} = await prioritySearch;
     const certificates = [];
     const searchModel = comparison?.solve || solveModel;
-    const runModel = (problem,...args)=>searchModel(withProductionBounds(problem,certificates),...args);
+    const runModel = (problem,...args)=>{
+        if(deadline!=null){
+            const remaining=(deadline-performance.now())/1000;
+            if(remaining<.05)throw new Error('Recipe switching search time exhausted');
+            args[0]={...(args[0]||options),time_limit:Math.min(remaining,2)};
+        }
+        return searchModel(withProductionBounds(problem,certificates),...args);
+    };
     const solve = async (problem, goal) => {
         const certified = goal && await comparison?.bound(problem, goal);
         if (certified && !certified.values) return certified;
@@ -408,6 +416,14 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
     return finish(plan);
 }
 
+async function withRecipeSwitches(pkg,input,baseline,progress=()=>{}) {
+    const deadline=performance.now()+10000;
+    return searchRecipeSwitches(input,baseline,{
+        candidate:async trial=>JSON.parse(await exactPlanJson(pkg,JSON.stringify(trial),()=>{},()=>{},null,deadline)),
+        solve:async model=>(await newHighs()).solve(model.lp,{time_limit:Math.max(.05,Math.min(3,(deadline-performance.now())/1000)),mip_rel_gap:0}),progress,
+    });
+}
+
 // A queue worker handles one alternative at a time. Share only proved results for
 // identical solver models across its requests. Incumbents and cuts stay per request.
 const comparisonMemo = { entries: new Map(), size: 0 };
@@ -424,6 +440,7 @@ async function rankImprovements(pkg, payload, report, memo) {
     for (const [index, input] of candidates.entries()) {
         try {
             comparison.begin(input);
+            if(input.recipe_switching?.max_buildings)comparison.disableBounds();
             const search = () => exactPlanJson(pkg, JSON.stringify(input),
                 (step, state, proven) => report({ index, step, state, proven }), () => {}, comparison);
             let json;
@@ -436,7 +453,7 @@ async function rankImprovements(pkg, payload, report, memo) {
                 comparison.disableBounds();
                 json = await search();
             }
-            const plan = JSON.parse(json);
+            const plan = input.recipe_switching?.max_buildings?await withRecipeSwitches(pkg,input,JSON.parse(json)):JSON.parse(json);
             if (plan.success && comparison.inconclusive(plan, base, input)) {
                 report({index, error:'The search did not match the current plan. This does not show that the upgrade reduces production. Use Detailed search.', detailed});
                 continue;
@@ -495,6 +512,11 @@ self.onmessage = async (event) => {
                 const plan = JSON.parse(pkg.find_plan(payload, onProgress));
                 plan.fallback_reason = fallbackReason;
                 result = JSON.stringify(plan);
+            }
+            const switchingInput=JSON.parse(payload);
+            if(switchingInput.recipe_switching?.max_buildings>0){
+                const selected=await withRecipeSwitches(pkg,switchingInput,JSON.parse(result),step);
+                result=JSON.stringify(selected);
             }
             self.postMessage({ id, ok: true, result });
             return;

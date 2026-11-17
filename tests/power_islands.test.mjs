@@ -95,3 +95,8 @@ test('network optimization preserves outputs and does not add generators or muta
     assert.equal(out.pieces[1].members[0].cycle,100);
     assert.equal(out.pieces[1].members[0].load,.5);
 });
+test('scheduled peak load prevents using a slow island despite spare daily capacity',()=>{
+ const c=consumer(0,.25);c.schedulePeak=1;
+ const l=layout([generator(0,150),c]);analyzePowerNetworks(l);
+ assert.equal(l.power.disconnected,1);
+});

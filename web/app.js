@@ -1,3 +1,7 @@
+import {siteSchedule,scheduledRate} from './recipe-timeline.js';
+import {renderRecipeSchedule} from './recipe-schedule-view.js';
+import {scheduleProfiles,haulingScheduleProfile} from './recipe-schedule-plan.js';
+import {splitPhaseTasks} from './phase-work.js';
 // Aniimax Web Application
 
 import { currentLocale, sourceAttribute, translate } from './i18n.js?v=recommendations';
@@ -482,7 +486,7 @@ let rateUnitChosen = false;
 // element per facility).
 function getPersistedFieldIds() {
     return [
-        'target-amount', 'current-amount',
+        'target-amount', 'current-amount', 'recipe-switching-buildings', 'recipe-switching-switches',
         'crop-variety', 'level-up-target',
         'electricity-on',
         'home-level',
@@ -612,6 +616,8 @@ async function shareCurrentConfig() {
 }
 
 function loadInputsFromStorage(data) {
+    document.getElementById('recipe-switching-buildings').value='0';
+    document.getElementById('recipe-switching-switches').value='2';
     if (!data) return;
     customBuildings = Boolean(data.customBuildings);
     questIncomePerDay = questIncome(data.questIncomePerDay);
@@ -1352,15 +1358,21 @@ function homelandPieces(plan, input) {
     // For every facility type, recipes allowed to take turns share a unit only when there are not
     // enough owned units to give each recipe its own. No facility names are special-cased here.
     const turnAllocations = allocateTurnFacilities(steps, facility => tierCount(input.facilities[facility]), takesTurns);
+    const scheduledSites=new Map();
+    for(const site of plan.recipe_schedule?.sites||[]){
+        if(!scheduledSites.has(site.facility))scheduledSites.set(site.facility,[]);
+        scheduledSites.get(site.facility).push(site);
+    }
+    for(const [facility,sites] of scheduledSites)turnAllocations.set(facility,sites.map(site=>site.jobs));
     turnAllocations.forEach((allocations, facility) => {
         const footprint = FACILITY_FOOTPRINTS[facility];
         if (!footprint) {
             unplaced.add(facility);
             return;
         }
-        allocations.forEach(jobs => {
+        allocations.forEach((jobs,index) => {
             const weight = jobs.reduce((sum, j) => sum + j.rate * 3600, 0);
-            pieces.push({ members: [{ x: 0, y: 0, w: footprint[0], h: footprint[1], weight, jobs: jobs.length ? jobs : undefined, electric_level: jobs[0]?.electric_level, cycle: jobs[0]?.cycle, facility, crop: jobs[0]?.item ?? null, sensitive: false }] });
+            pieces.push({ members: [{ x: 0, y: 0, w: footprint[0], h: footprint[1], weight, scheduleId: scheduledSites.get(facility)?.[index]?.id, schedulePhases:siteSchedule(plan.recipe_schedule,scheduledSites.get(facility)?.[index]?.id), schedulePeak:scheduledSites.get(facility)?.[index]?.peakLoad, jobs: jobs.length ? jobs : undefined, electric_level: jobs[0]?.electric_level, cycle: jobs[0]?.cycle, facility, crop: jobs[0]?.item ?? null, sensitive: false }] });
         });
         count(facility, allocations.length);
     });
@@ -1682,7 +1694,7 @@ function drawLayout(drawn) {
     // With the simulation off, the layout is drawn on its own.
     const on = document.getElementById('layout-sim-on').checked;
     diagram.classList.toggle('no-sim', !on);
-    startLayoutSim(on ? diagram.querySelector('.layout-svg') : null, layoutFlows(drawn.layout), new Map());
+    startLayoutSim(on ? diagram.querySelector('.layout-svg') : null, layoutFlows(drawn.layout), new Map(Object.entries(drawn.plan.recipe_schedule?.initialStock||{})));
 }
 
 function renderBuildingIndex(layout) {
@@ -1735,7 +1747,7 @@ function layoutOptionsFor(plan, homeLevel, setup = selectedSetupTab()) {
         const ownedPlan = setup === 'custom';
         const team = ownedPlan ? rosterWorkload({ ...plan, layout_walking: [],
             assumed_aniimo: haulingBaseByPlan.get(plan) ?? plan.assumed_aniimo }) : null;
-        const bestTeam = setup === 'best' ? bestPlanTeam(plan, 0, null) : null;
+        const bestTeam = (setup === 'best'||setup!=='custom'&&plan.recipe_schedule) ? bestPlanTeam(plan, 0, null) : null;
         const accountForTravel = true;
         const rvLimit = ANIIMO_MAX[homeLevel - 1] ?? Infinity;
         const visits = {};
@@ -2122,14 +2134,14 @@ function homelandSvg(layout, homeLevel, plan) {
         const away = storage ? Math.hypot(m.x + m.w / 2 - storage.x - storage.w / 2, m.y + m.h / 2 - storage.y - storage.h / 2) : 0;
         const electric = m.electric_level != null;
         const electricDetail = electric ? ` · ${translate('E-mode')} · ${translate(m.power_connected ? 'Connected to power' : 'No power connection')}` : '';
-        const tip = tipAttrs(m.power_generator_id?`${m.facility} · G${m.power_generator_id}`:m.facility, {
+        const tip = tipAttrs(m.power_generator_id?`${m.facility} · G${m.power_generator_id}`:m.scheduleId?`${m.facility} #${m.scheduleId.split(':').at(-1)}`:m.facility, {
             detail: m.generatorTier ? translate('Building Lv.{level}').replace('{level}', m.generatorTier)
                 : m.jobs ? m.jobs.map(j => prettyItem(j.item)).join(', ') : m.crop ? prettyItem(m.crop) : m.building && m.mode ? m.mode : 'Idle',
             stats: [
                 m.weight > 0 && storage ? `${formatRate(m.weight)} trips/hour · ${away.toFixed(1)} tiles from storage` : '',
                 m.stockLimit ? translate('Local output stock: {n} items').replace('{n}', m.stockLimit) : '',
             ].filter(Boolean).join(' · ') + electricDetail,
-            work: workAtSites[index].map(line => line.text).join('\n'),
+            work: [...workAtSites[index].map(line => line.text),...(m.schedulePhases?m.schedulePhases.map((p,i)=>`Period ${i+1}: ${Object.keys(p.rates).map(prettyItem).join(', ')||'Idle'}`):[])].join('\n'),
             color,
         });
         const focus = workAtSites[index].length ? 'tabindex="0" role="group"' : '';
@@ -2249,7 +2261,7 @@ function layoutFlows(layout) {
         return {
             x1, y1, x2, y2, storage: layout.storages.indexOf(s), length: Math.hypot(x2 - x1, y2 - y1),
             ring, rx: m.x + m.w - ring - 0.12, ry: m.y + ring + 0.12,
-            trips: m.weight, stockLimit: pickupStockLimit(m), facility: m.facility,
+            schedulePhases:m.schedulePhases, trips: m.weight, stockLimit: pickupStockLimit(m), facility: m.facility,
             jobs: (m.jobs || [{ item: m.crop, cycle: m.cycle, rate: (m.batchWeight ?? m.weight) / 3600 }])
                 .map(job=>({...job,cycle:job.cycle*(m.electric_level!=null&&m.power_percent>0?120/m.power_percent:1)})),
         };
@@ -2371,7 +2383,7 @@ const simDue = job => job.pace >= 1 - 1e-9;
 
 // Starts the first job of `unit` that's due and has its materials, at game time `at`.
 function simStart(sim, unit, at) {
-    const job = unit.jobs.find(j => simDue(j) && simHas(sim, j));
+    const job = unit.jobs.find(j => (scheduledRate(unit.flow.schedulePhases,j.item,at)??j.rate)>0 && simDue(j) && simHas(sim, j));
     if (!job) return;
     job.terms.takes.forEach(([item, n]) => {
         if (sim.made.has(item) || sim.stock.has(item)) sim.store.set(item, (sim.store.get(item) || 0) - n);
@@ -2392,7 +2404,7 @@ function stepLayoutSim(sim, dt) {
         [order[i], order[j]] = [order[j], order[i]];
     }
     for (const unit of order) {
-        unit.jobs.forEach(job => { job.pace = Math.min(1 + job.rate * SIM_STEP, job.pace + job.rate * dt); });
+        unit.jobs.forEach(job => { const rate=scheduledRate(unit.flow.schedulePhases,job.item,sim.game)??job.rate; job.pace = rate>0?Math.min(1 + rate * SIM_STEP, job.pace + rate * dt):0; });
         // Only full estimated pickup groups leave the facility's local buffer.
         while (unit.until != null && unit.until <= sim.game) {
             const { makes, byproduct, yield: amount } = unit.job.terms;
@@ -2498,6 +2510,7 @@ function startProgress(input, runId) {
         ...season,
         { key: 'plan', label: priorities.at(-1) === 'coins'
             ? 'Finish Production Plan' : priorities.length || seasonFirst || planting ? "Home Coins with What's Left" : 'Most Home Coins' },
+        ...(input.recipe_switching?.max_buildings?[{key:'recipe_switching',label:'Daily recipe schedule'}]:[]),
         { key: 'layout', label: 'Homeland Layout' },
     ];
     progress = { runId, steps: steps.map(step => ({ ...step, state: 'pending' })) };
@@ -2658,6 +2671,12 @@ function refineReactiveDispatch(layout, plan) {
         ensurePlanFor(selectedAniimoSetup(), true);
         return true;
     }
+    if(plan.recipe_schedule){
+        // The certificate already allocates both production and hauling by phase.
+        // A daily-average postpass must not move that hauling to another worker.
+        plan.delivery_assignments=[...(plan.hauling_staffing||[])];
+        return false;
+    }
     const measured = measuredDispatchWork(plan, policy, recipeIndex);
     plan.reactive_dispatch = policy;
     plan.layout_walking = measured.walking;
@@ -2684,6 +2703,7 @@ function assignLayoutHauling(layout, plan) {
     plan.hauling_busy = work.busyByLevel[setup === 'minimum' ? 1 : 3];
     if (setup !== 'custom') bestTeamLayouts.set(plan, { layout, hauling: work });
     if (setup !== 'custom') return false;
+    if(plan.recipe_schedule){plan.delivery_assignments=[...(plan.hauling_staffing||[])];return false;}
     if (!haulingBaseByPlan.has(plan)) haulingBaseByPlan.set(plan, [...(plan.assumed_aniimo || [])]);
     plan.assumed_aniimo = [...haulingBaseByPlan.get(plan)];
     plan.dedicated_delivery = [];
@@ -3037,7 +3057,7 @@ async function fillRosterFrom(setup) {
         const hauling = haulingWorkload(layout, plan.coin_items || [], haulingRouteBound(accountForTravel),
             recipeIndex, sourceInput.facilities, accountForTravel);
         const haulingBusy = hauling.busyByLevel[haulingLevel];
-        if (setup.startsWith('best:') || setup === 'best') {
+        if (setup.startsWith('best:') || setup === 'best' || plan.recipe_schedule) {
             const { shifts } = bestPlanTeam(plan, haulingBusy, layout, hauling);
             if (!shifts.length) {
                 status.textContent = 'No working team to copy from this plan.';
@@ -3458,6 +3478,13 @@ function rosterCopyShifts(plan, members, assigned, walking) {
         const hours = dedicated.get(member) || 0;
         if (hours > 1e-6) shifts.push(...scheduleRosterCopies(Math.ceil(hours - 1e-6), [], [],
             [{ jobs: [[translate('Hauling to Storage Units'), hours]] }]));
+        if(plan.recipe_schedule){
+            const profiles=scheduleProfiles(plan),labels=new Map(),totals=new Map();
+            for(const [key,value] of profiles){const [facility,item]=key.split('|'),label=`${translate(facility)} (${prettyItem(item)})`;labels.set(label,value);labels.set(`${walkingLabel} → ${label}`,value);}
+            labels.set(translate('Hauling to Storage Units'),plan.recipe_schedule.haulingProfiles?.[member]);
+            for(const shift of shifts)for(const [label,busy] of shift.tasks)totals.set(label,(totals.get(label)||0)+busy);
+            return splitPhaseTasks([...totals].map(([label,busy])=>({label,busy,profile:labels.get(label),fixed:fixed[member].some(([name])=>name===label)})),plan.recipe_schedule.phases.map(p=>p.duration),assigned[member]);
+        }
         return shifts;
     });
 }
@@ -3470,7 +3497,7 @@ function renderRosterSummary(plan) {
     });
     for (const [member, share] of plan.job_switching || []) busy[member] += share;
     const have = roster.reduce((sum, a) => sum + a.count, 0);
-    const regular = busy.map((load, member) => Math.min(members[member].count, Math.max(anchored[member], Math.ceil(load - 1e-6),plan.crop_peaks?.counts?.[member]||0)));
+    const regular = busy.map((load, member) => Math.min(members[member].count, Math.max(anchored[member], Math.ceil(load - 1e-6),Math.ceil(Math.max(0,...(plan.recipe_schedule?.workerProfiles?.[member]||[]))-1e-6),plan.crop_peaks?.counts?.[member]||0)));
     const assigned = [...regular];
     for (const [member, share] of plan.dedicated_delivery || []) {
         busy[member] += share;
@@ -3490,6 +3517,7 @@ function renderRosterSummary(plan) {
         const shift = shifts[i][copy];
         if (!shift) return unassigned;
         const tasks = [...shift.tasks].sort((a, b) => b[1] - a[1]).map(([job, share]) => [job, workload(share)]);
+        if(shift.phaseBusy?.length)tasks.unshift(['Peak during recipe schedule',workload(Math.max(...shift.phaseBusy))]);
         const summary = translate('{load} busy').replace('{load}', workload(shift.busy));
         return { active: true, summary, tasks, lines: tasks.map(([job, share]) => `${job} · ${share}`) };
     };
@@ -4434,10 +4462,16 @@ function buildingInventory() {
     return { facilities, modules };
 }
 
+function recipeSwitchingInput() {
+    const count=id=>{const n=Number(document.getElementById(id)?.value);return Number.isFinite(n)?Math.max(0,Math.floor(n)):0;};
+    const max_buildings=count('recipe-switching-buildings');
+    return max_buildings?{max_buildings,max_switches:count('recipe-switching-switches')}:undefined;
+}
 function getPlanInputValues() {
     const { facilities, modules } = buildingInventory();
     return {
         currency: 'coins',
+        recipe_switching: recipeSwitchingInput(),
         priorities: activePriorities(),
         prioritize_byproducts: false,
         level_up_preview: levelUpInput(),
@@ -4908,6 +4942,7 @@ function bestPlanTeam(plan, haulingBusy = plan.hauling_busy || 0,
     let cached = bestTeamCache.get(plan);
     if (!cached) {
         const jobs = environmentTeamJobs(plan);
+        const profiles=scheduleProfiles(plan);
         const families = new Map(recipeIndex.filter(recipe => recipe.family).map(recipe => [recipe.name, recipe.family]));
         const personalities = new Map(FACILITIES.map(facility => [facility.name, facility.personality]));
         for (const step of plan.coin_items || []) {
@@ -4921,6 +4956,7 @@ function bestPlanTeam(plan, haulingBusy = plan.hauling_busy || 0,
                 const batches = step.cycle_time > 0 ? (step.busy_units ?? step.facility_count) / step.cycle_time : 0;
                 jobs.push({
                     ability: task.ability, level: task.level, label,
+                    profile:profiles.get(`${step.facility}|${step.item_name}`),
                     busy: resident ? step.facility_count : task.busy,
                     siteKey: resident ? null : `${step.facility}|${step.item_name}`,
                     visitsPerShare: !resident && task.busy > 0 ? batches * (task.jobs?.length || 1) / task.busy : 0,
@@ -4935,15 +4971,16 @@ function bestPlanTeam(plan, haulingBusy = plan.hauling_busy || 0,
         cached = { jobs };
         bestTeamCache.set(plan, cached);
     }
-    if (!layout && !haulingBusy) return cached.baseline ??= recommendBestTeam(cached.jobs);
+    const scheduleOptions={phaseDurations:plan.recipe_schedule?.phases.map(p=>p.duration),haulingProfile:haulingScheduleProfile(plan,hauling)};
+    if (!layout && !haulingBusy) return cached.baseline ??= recommendBestTeam(cached.jobs,0,[],scheduleOptions);
     if (cached.layout !== layout || cached.haulingBusy !== haulingBusy || cached.hauling !== hauling) {
         cached.layout = layout;
         cached.haulingBusy = haulingBusy;
         cached.hauling = hauling;
         const dispatch = layout && buildDispatch(layout, recipeIndex, hauling, RESIDENT_FACILITIES);
-        cached.result = recommendBestTeam(placeBestJobs(cached.jobs, layout, dispatch?.locations), haulingBusy, dispatch?.opportunities);
+        cached.result = recommendBestTeam(placeBestJobs(cached.jobs, layout, dispatch?.locations), haulingBusy, dispatch?.opportunities||[],scheduleOptions);
         if (layout) {
-            const pools = cached.result.shifts.map(shift => ({ ...shift, count: 1 }));
+            const pools = cached.result.shifts.map(shift => ({ ...shift, busy:Math.max(shift.busy,...(shift.phaseBusy||[])), count: 1 }));
             const support = withCropSupport({ layout, recipes: recipeIndex, pools, limit: ANIIMO_MAX[layoutHomeLevel()-1] });
             const peak = support.peak;
             cached.result.cropPeaks = peak;
@@ -5002,6 +5039,7 @@ function renderBestTeam(plan, routeStatus = translate('Calculating…')) {
             for (const [job, share] of [...shift.tasks].sort((a, b) => b[1] - a[1])) {
                 if (!routeLabels.includes(job) && job !== TASK_SWITCHING) tasks.push([translate(job), percent(share)]);
             }
+            if(shift.phaseBusy?.length)tasks.unshift(['Peak during recipe schedule',percent(Math.max(...shift.phaseBusy))]);
             const status = shift.peakSupport ? translate('Crop peak support') : translate('{load} busy').replace('{load}', percent(shift.busy));
             const traits = [...shift.personalities].map(translate).join(' · ');
             return assignmentTile(member, label, tasks, status, true, traits);
@@ -5137,7 +5175,7 @@ function renderAniimoSummary(plan) {
         renderRosterSummary(plan);
         return;
     }
-    if (setup === 'best') {
+    if (setup === 'best'||setup!=='custom'&&plan.recipe_schedule) {
         renderBestTeam(plan);
         return;
     }
@@ -5746,6 +5784,9 @@ function updateRateUnitDisplays() {
 // called once per Calculate click (or facility/currency/module change), not on every goal
 // keystroke.
 function displayPlan(plan, keepLayout = false) {
+    const scheduleCard=document.getElementById('recipe-schedule-container');
+    scheduleCard.innerHTML=renderRecipeSchedule(plan.recipe_schedule,{itemName:prettyItem,formatNumber,buildingName:b=>`${translate(b.facility)} #${b.id.split(':').at(-1)}`});
+    if(!plan.recipe_schedule&&plan.recipe_switching_note){const note=document.createElement('p');note.className='hint';note.textContent=plan.recipe_switching_note;scheduleCard.append(note);}
     const resultsSection = document.getElementById('results-section');
     const errorEl = document.getElementById('error-message');
     const resultsContent = document.getElementById('results-content');
