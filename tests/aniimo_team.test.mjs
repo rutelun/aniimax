@@ -37,4 +37,17 @@ test('Minimum needs a resident per unit and counts every separate climate pair',
     }
     assert.equal(team.total, 8);
     assert.equal(team.kept.find(group => group.ability === 'Lightning').level, 2);
+    assert.equal(team.kept.find(group => group.ability === 'Fire').level, 2);
+    assert.equal(team.kept.find(group => group.ability === 'Ice').level, 1);
+});
+
+test('strong climate jobs reject level-one placeholders while mild modes keep them eligible', () => {
+    for (const [building, ability, mild, strong] of [['Heat Furnace','Fire','Warm','Scorching'], ['Cooling Unit','Ice','Cool','Freeze']]) {
+        for (const [mode, level] of [[mild,1],[strong,2]]) {
+            const team = aniimoTeam({coin_items:[],environment_assignments:[{building,mode,units:1}],power_generator_levels:[],hauling_busy:0});
+            const job = team.kept.find(g => g.ability === ability);
+            assert.equal(job.level, level, mode);
+            assert.equal(job.anyLevel, false, mode);
+        }
+    }
 });

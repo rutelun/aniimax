@@ -3954,7 +3954,7 @@ const ABILITY_DEFAULTS = { Perfumery: 3 };
 const defaultLevelFor = ability => ABILITY_DEFAULTS[ability] ?? MAX_ANIIMO_LEVEL;
 
 // Which abilities a level matters for: the ones a facility works with, since a crop's grow time
-// is fixed and an environment building's Aniimo level isn't known to change anything. Largest
+// is fixed; climate jobs use their own mode-dependent minimum levels. Largest
 // first so the list reads in the game's ability order.
 function levelledAbilities() {
     const used = new Set(FACILITIES.map(f => f.ability).filter(Boolean));
@@ -4926,7 +4926,7 @@ function environmentTeamJobs(plan) {
     const pairs = new Map();
     for (const a of plan.environment_assignments || []) {
         if (!a.partner) {
-            add(a.building, a.units, `${a.building} (${a.mode})`);
+            add(a.building, a.units, `${a.building} (${a.mode})`, ['Scorching', 'Freeze'].includes(a.mode) ? 2 : 1);
             continue;
         }
         const key = environmentPairKey(a);
@@ -4935,8 +4935,8 @@ function environmentTeamJobs(plan) {
             units: Math.max(seen?.units ?? 0, a.units), modes: a.pair_modes || [a.mode, a.mode] });
     }
     pairs.forEach(({ building, partner, units, modes }) => {
-        add(building, units, `${building} (${modes[0]})`);
-        add(partner, units, `${partner} (${modes[1]})`);
+        add(building, units, `${building} (${modes[0]})`, ['Scorching', 'Freeze'].includes(modes[0]) ? 2 : 1);
+        add(partner, units, `${partner} (${modes[1]})`, ['Scorching', 'Freeze'].includes(modes[1]) ? 2 : 1);
     });
     for (const [tier, lightning] of plan.power_generator_levels || []) {
         add('Crackle Generator', 1, `Crackle Generator Lv.${tier}`, lightning);
@@ -5098,7 +5098,7 @@ function aniimoTeam(plan) {
         });
     });
     // Environment buildings in use each keep an Aniimo busy (abilities confirmed in game; whether
-    // level or personality matters isn't known yet, so any level is shown).
+    // minimum level comes from the selected climate mode; personality gives no bonus).
     const needsAniimo = ({ ability, busy, label, level, anyLevel }) => {
         const key = `${ability} (environment:${anyLevel ? 0 : level})`;
         if (!groups.has(key)) {

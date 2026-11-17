@@ -1121,7 +1121,19 @@ fn build_model<'a>(
         }
         // The environment buildings of each kind the plan sets up; a pair counts each of its two.
         let mut set_up: BTreeMap<String, BTreeMap<usize, f64>> = BTreeMap::new();
+        // Strong climate modes require level 2, independently for each half of a pair.
+        let mut strong_climate: BTreeMap<String, Vec<(usize, f64)>> = BTreeMap::new();
         for (v, kind) in model.kinds.iter().enumerate() {
+            let modes = match kind {
+                VarKind::Environment { building, mode, .. } => vec![(building, mode)],
+                VarKind::EnvironmentPair { buildings: (a, b), modes: (ma, mb), .. } => vec![(a, ma), (b, mb)],
+                _ => Vec::new(),
+            };
+            for (building, mode) in modes {
+                if matches!(*mode, "Scorching" | "Freeze") {
+                    strong_climate.entry(building.to_string()).or_default().push((v, -1.0));
+                }
+            }
             let named: Vec<&str> = match kind {
                 VarKind::Environment { building, .. } => vec![building],
                 VarKind::EnvironmentPair { buildings: (a, b), .. } => vec![a, b],
@@ -1143,6 +1155,8 @@ fn build_model<'a>(
             // A building with no ability listed needs no Aniimo (as `check_plan` takes it).
             let ability = if building == GENERATOR { Some("Lightning") } else { crew.environment.get(&building).map(String::as_str) };
             let Some(ability) = ability else { continue };
+            let mut strong_staffed = strong_climate.remove(&building).unwrap_or_default();
+            let needs_strong = !strong_staffed.is_empty();
             let mut staffed: Vec<(usize, f64)> = used.into_iter().map(|(v, n)| (v, -n)).collect();
             let mut eligible = crew.members.iter().enumerate()
                 .filter(|(member, _)| crew.can_work(*member, ability, 1)).peekable();
@@ -1156,6 +1170,7 @@ fn build_model<'a>(
                 let integer = building == GENERATOR || eligible.peek().is_some();
                 let staff = model.add(0.0, (0.0, maximum as f64), integer, VarKind::Staff { building: building.clone(), member });
                 staffed.push((staff, 1.0));
+                if needs_strong && crew.can_work(member, ability, 2) { strong_staffed.push((staff, 1.0)); }
                 busy[member].push((staff, 1.0));
                 anchored[member].push((staff, 1.0));
                 if building == GENERATOR {
@@ -1170,6 +1185,7 @@ fn build_model<'a>(
                 staffed.push((absent, 1.0));
             }
             model.constrain(staffed, ComparisonOp::Eq, already_active as f64);
+            if needs_strong { model.constrain(strong_staffed, ComparisonOp::Ge, 0.0); }
         }
         if let Some(draw) = roster_power_draw {
             model.constrain(draw, ComparisonOp::Le, 0.0);
@@ -2574,6 +2590,7 @@ pub fn check_plan_with_workload(
             }
         }
         let mut staffed: HashMap<&str, f64> = HashMap::new();
+        let mut strong_staffed: HashMap<&str, f64> = HashMap::new();
         let mut generated = 0.0;
         for (building, member, share) in &plan.staffing {
             let ability = if building == GENERATOR { Some("Lightning") } else { crew.environment.get(building).map(String::as_str) };
@@ -2587,6 +2604,7 @@ pub fn check_plan_with_workload(
             busy[*member] += share;
             anchored[*member] += share;
             *staffed.entry(building.as_str()).or_default() += share;
+            if crew.can_work(*member, ability, 2) { *strong_staffed.entry(building.as_str()).or_default() += share; }
             if building == GENERATOR {
                 let power = facility_counts.power().ok_or("Crackle Generator staffed without a power grid")?;
                 generated += share * power.generator_output(crew.members[*member].level("Lightning"));
@@ -2594,6 +2612,16 @@ pub fn check_plan_with_workload(
         }
         for (&building, &used) in &buildings_used {
             if !crew.environment.contains_key(building) { continue; }
+            let strong_units = plan.environment.iter().filter(|env| env.building == building && matches!(env.mode.as_str(), "Scorching" | "Freeze"))
+                .map(|env| env.count).sum::<u32>()
+                + plan.pairs.iter().map(|pair| {
+                    let a = pair.buildings.0 == building && matches!(pair.modes.0.as_str(), "Scorching" | "Freeze");
+                    let b = pair.buildings.1 == building && matches!(pair.modes.1.as_str(), "Scorching" | "Freeze");
+                    pair.count * (u32::from(a) + u32::from(b))
+                }).sum::<u32>();
+            if strong_staffed.get(building).copied().unwrap_or(0.0) + TOLERANCE < strong_units as f64 {
+                return Err(format!("{building}: {strong_units} strong climate posts require ability level 2"));
+            }
             let have = staffed.get(building).copied().unwrap_or(0.0);
             if (used as f64 - have).abs() > TOLERANCE {
                 return Err(format!("{used} {building} set up but {have} staffed"));
@@ -2774,13 +2802,18 @@ fn production_staff_zeros(model: &Model<'_>, counts: &FacilityCounts) -> Vec<usi
         });
         crops_fit.then(||(a.abilities.keys().next().unwrap().as_str(),member))
     }).collect();
-    // Staffing an environment/generator never benefits from ability level or personality.
+    // Climate staffing needs the mode's minimum level but gains no speed above it.
     // A sufficient single-ability reserve can take all such shifts, freeing productive
     // owned workers. Final staffing preferences retain the full original choice of workers.
     model.kinds.iter().enumerate().filter_map(|(v,kind)| {
         let VarKind::Staff{building,member} = kind else { return None };
         let ability = if building==GENERATOR {"Lightning"} else {crew.environment.get(building)?.as_str()};
         let chosen = *reserves.get(ability)?;
+        // A level-1 reserve cannot stand in for a worker supporting a strong climate mode.
+        if matches!(building.as_str(), "Heat Furnace" | "Cooling Unit")
+            && crew.members[chosen].level(ability) < crew.members[*member].level(ability).min(2) {
+            return None;
+        }
         if building == GENERATOR && counts.power().is_some_and(|p| {
             p.generator_output(crew.members[chosen].level(ability))
                 < p.generator_output(crew.members[*member].level(ability))
