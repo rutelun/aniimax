@@ -7,6 +7,8 @@ const teamCode = source.slice(source.indexOf('function aniimoTeam('), source.ind
 const environmentCode = source.slice(source.indexOf('function environmentTeamJobs('), source.indexOf('const bestTeamCache'));
 const pairCode = source.slice(source.indexOf('function environmentPairKey('), source.indexOf('function splitByEnvironmentUnit('));
 const aniimoTeam = new Function(`
+    const bestTeamLayouts = new WeakMap(), minimumTeamCache = new WeakMap();
+    const criticalCropJob = name => ['Reaping','Logging','Collecting','Reclaiming','Sowing'].includes(name);
     const RESIDENT_FACILITIES = new Set(['Tidewhisper Sandcastle']);
     const ENVIRONMENT_BUILDING_ABILITY = { 'Heat Furnace': 'Fire', 'Cooling Unit': 'Ice', 'Crackle Generator': 'Lightning' };
     const FACILITIES = [], recipeIndex = [{ name: 'salt', family: 'salt-family' }];

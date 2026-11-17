@@ -55,7 +55,7 @@ export function recommendBestTeam(jobs, haulingBusy = 0, dispatch = []) {
             let excess = 0;
             for (const role of shift.roles.values()) excess += entry.abilities[role.ability] - role.level;
             const distractions = shift.growing ? skills.filter(skill => entry.abilities[skill] >= outsideCrops.get(skill)).length : 0;
-            const value = distractions * 1000 + excess * 100 - skills.length;
+            const value = distractions * 1000 + (shift.growing ? -excess : excess) * 100 - skills.length;
             if (value < lowest) {
                 best = entry;
                 lowest = value;
@@ -77,6 +77,7 @@ export function recommendBestTeam(jobs, haulingBusy = 0, dispatch = []) {
     const add = (shift, job, share, walking = 0) => {
         shift.point ||= job.point;
         shift.busy += share + walking;
+        shift.allocations.push({ ...job, busy: share + walking });
         if (job.personality) shift.personalities.add(job.personality);
         const key = roleKey(job);
         if (!shift.roles.has(key)) shift.roles.set(key, job);
@@ -129,7 +130,7 @@ export function recommendBestTeam(jobs, haulingBusy = 0, dispatch = []) {
             }
             if (!best) {
                 best = { busy: 0, candidates, roles: new Map(), tasks: new Map(), personalities: new Set(),
-                    growing: Boolean(job.growing), homes: [] };
+                    growing: Boolean(job.growing), homes: [], allocations: [] };
                 shifts.push(best);
                 if (share < 1 - EPSILON) available.push(best);
             } else {

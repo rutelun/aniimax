@@ -7,7 +7,7 @@ const jobs = Array.from({length:8}, (_,i)=>({key:'Farmland|rice|Dark',ability:'D
     seconds:[10,10],point:[i*2,0],release:0}));
 const workers = [{count:1,abilities:{Dark:3,Fire:3}},{count:2,abilities:{Dark:3}}];
 const input = {members:workers,counts:[1,1],permanent:[0,0],jobs,
-    outside:[{busy:.8,seconds:120,point:[80,0]},{busy:0,seconds:0,point:[0,0]}],limit:3};
+    targetSeconds:30,outside:[{busy:.8,seconds:120,point:[80,0]},{busy:0,seconds:0,point:[0,0]}],limit:3};
 
 test('an idle crop copy reduces a simultaneous harvest queue while a multi-role worker is busy',()=>{
     const result=selectCropPeakTeam(input);

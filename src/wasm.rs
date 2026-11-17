@@ -2482,6 +2482,8 @@ struct RecipeInfo {
     verified: bool,
     /// For crops and trees, each Aniimo job in growing order: `(step, ability, min level)`.
     jobs: Vec<(String, String, u32)>,
+    /// Canonical job workloads; keep the existing jobs tuple API unchanged.
+    job_workloads: Vec<(String, f64)>,
     /// The growing environment a crop or tree needs, if any.
     environment: Option<String>,
     /// The item its byproduct is used as in other recipes, e.g. `mineral_sand` for Mineral Sand
@@ -2529,6 +2531,7 @@ pub fn get_all_items() -> String {
             family: requirements.family(&item.name).map(str::to_string),
             verified: !unverified.iter().any(|(name, facility)| *name == item.name && *facility == item.facility),
             jobs: grower_steps.get(&item.name).iter().map(|s| (s.step.clone(), s.ability.clone(), s.min_level)).collect(),
+            job_workloads: grower_steps.get(&item.name).iter().map(|s| (s.step.clone(), s.workload)).collect(),
             environment: item.environment.clone(),
             byproduct_item: item.byproduct.as_ref().and_then(|(resource, _)| crate::models::byproduct_item(resource)).map(str::to_string),
             season: season_of.get(&item.name).map(|id| id.to_string()),
