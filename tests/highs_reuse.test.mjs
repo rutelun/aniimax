@@ -54,6 +54,23 @@ test('LP parsing keeps scientific coefficients, duplicate terms and native colum
     assert.equal(parsed.rows[0].hi,4);
 });
 
+test('a one-off or identical shift never needs a native row-name scan',async()=>{
+    const highs=await runtime(),create=highs.createModel.bind(highs);
+    let scans=0;
+    highs.createModel=source=>{
+        const model=create(source),name=model.getRowName.bind(model);
+        model.getRowName=i=>{scans++;return name(i);};
+        return model;
+    };
+    const first=problem('x0 + x1',' cap: x0 + x1 <= 2');
+    for(let i=0;i<2;i++)assert.equal(solveWithIncumbent(highs,first,{time_limit:1}).ObjectiveValue,2);
+    assert.equal(scans,0);
+    const updated=problem('x0 + x1',' cap: x0 + x1 <= 3');
+    assert.equal(solveWithIncumbent(highs,updated,{time_limit:1}).ObjectiveValue,3);
+    assert.ok(scans>0);
+    discardReusableModel(highs);
+});
+
 test('per-solve options and clocks reset without changing protected runtime settings',async()=>{
     const highs=await runtime(),create=highs.createModel.bind(highs);
     let resets=0,clocks=0;

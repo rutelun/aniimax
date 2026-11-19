@@ -64,17 +64,16 @@ test('a correction reports real solver progress instead of silently waiting behi
     p.workers[0].onmessage({data:{type:'progress',count:{step:'priority:coins',state:'start'}}});
     assert.deepEqual(p.steps[0],['priority:coins','start',undefined,undefined]);
     assert.equal(p.element('aniimo-pending').textContent,'Updating Aniimo setup...');
-    assert.equal(p.timers.size,1);
+    assert.equal(p.timers.size,0);
     p.workers[0].onmessage({data:{ok:true,result:'{"success":true}'}});
     assert.equal(p.element('aniimo-pending').style.display,'none');
 });
 
-test('an invalid or timed-out response settles as an error instead of waiting forever', () => {
-    for (const failure of ['invalid', 'timeout', 'messageerror']) {
+test('an invalid or unreadable response settles as an error instead of waiting forever', () => {
+    for (const failure of ['invalid', 'messageerror']) {
         const p = page();
         p.run('showSelectedPlan();');
         if (failure === 'invalid') p.workers[0].onmessage({ data: { ok: true, result: 'broken JSON' } });
-        else if (failure === 'timeout') [...p.timers.values()][0]();
         else p.workers[0].onmessageerror();
         assert.equal(p.element('aniimo-pending').style.display, 'none', failure);
         assert.equal(p.shown[0].success, false, failure);
@@ -118,7 +117,7 @@ test('a roster always accounts for walking and a corrected distance restarts its
     const key = p.run('selectedAniimoSetup()');
     p.run('movementDistances = {0:100}; switchAniimoSetup();');
     assert.ok(p.workers[0].stopped);
-    assert.equal(p.timers.size, 1);
+    assert.equal(p.timers.size, 0);
     const payload = JSON.parse(p.workers[1].request.payload);
     assert.equal(payload.roster.movement_seconds, 5);
     assert.deepEqual(payload.roster.movement_by_member, {0:25});

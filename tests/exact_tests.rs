@@ -390,6 +390,15 @@ fn test_material_work_fills_both_facilities_up_to_their_supply() {
     assert!((lumber_rate - 1.0 / (bamboo_time * 8.0)).abs() < 1e-9);
     assert_eq!(limited.units.get("coarse_sifted_ore"), Some(&2));
     check_plan(&limited, &items, "coins", &counts, &modules, None).unwrap();
+
+    let mut continuous = counts.clone();
+    continuous.set_always_running(true);
+    let problem = aniimax::exact::write_lp(&items, "coins", &continuous, &modules, work);
+    let availability: Vec<_> = problem.variable_keys.iter().enumerate()
+        .filter(|(_, key)| key.starts_with("extra#")).map(|(v, _)| v).collect();
+    assert!(!availability.is_empty());
+    assert!(availability.iter().all(|v| !problem.material_fixed.contains(v)),
+        "a different production rate must be able to change which inputs are exhausted");
 }
 
 #[test]

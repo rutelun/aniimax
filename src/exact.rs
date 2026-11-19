@@ -301,7 +301,7 @@ enum VarKind<'a> {
     UnavailableCrop,
     PoweredUnits,
     PowerGenerators,
-    /// Auxiliary model variable, including continuous-availability factors.
+    /// Auxiliary variable, including scope-local availability and site reservations.
     Extra,
     /// Made beyond what the level-up needs, of one of its costs.
     ExtraStock,
@@ -323,7 +323,7 @@ enum VarKind<'a> {
     HaulingStaff { recipe: &'a ProductionItem, member: usize, seconds: f64 },
     FixedSite { recipe: &'a ProductionItem, group: usize },
     FixedTurnUnits { group: usize, electric: bool },
-    ContinuousSite(String),
+    ContinuousSite { key: String, recipe: &'a ProductionItem },
 }
 
 /// One linear constraint: `(variable, coefficient)` terms, comparison, right-hand side.
@@ -792,7 +792,9 @@ fn build_model<'a>(
     }
     for variants in dispatch_units.values() {
         let recipe = variants[0].0;
-        let kind = if facility_counts.always_running() { VarKind::ContinuousSite(format!("{}|{}", recipe.facility, crate::models::base_item_name(&recipe.name))) } else { VarKind::Extra };
+        let kind = if facility_counts.always_running() {
+            VarKind::ContinuousSite { key: format!("{}|{}", recipe.facility, crate::models::base_item_name(&recipe.name)), recipe }
+        } else { VarKind::Extra };
         let reserved = model.add(0.0, (0.0, facility_counts.get_count(&recipe.facility) as f64), true, kind);
         let mut terms: Vec<_> = variants.iter().map(|(_, unit)| (*unit, 1.0)).collect();
         terms.push((reserved, -1.0));
@@ -1823,7 +1825,7 @@ fn plan_from(model: &Model, upper_bound: f64, proven_optimal: bool, nodes: u32, 
     let mut travel = BTreeMap::<usize, f64>::new();
     for (index, (kind, &v)) in model.kinds.iter().zip(values).enumerate() {
         match kind {
-            VarKind::ContinuousSite(key) if v > 0.5 => { continuous_sites.insert(key.clone(), v.round() as u32); },
+            VarKind::ContinuousSite { key, .. } if v > 0.5 => { continuous_sites.insert(key.clone(), v.round() as u32); },
             VarKind::Pace => pace = Some(v),
             VarKind::Staff { building, member } if v > 1e-9 => staffing.push((building.clone(), *member, v)),
             VarKind::CropStaff { ability, level, member } if v > 1e-9 => crop_staffing.push((ability.clone(), *level, *member, v)),
@@ -2977,7 +2979,7 @@ fn warm_start_keys(model: &Model<'_>, items: &[ProductionItem], counts: &Facilit
             VarKind::PoweredUnits => "powered_units".into(),
             VarKind::PowerGenerators => "generators".into(),
             VarKind::Extra | VarKind::ExtraStock => "extra".into(),
-            VarKind::ContinuousSite(key) => format!("continuous_site:{key}"),
+            VarKind::ContinuousSite { key, .. } => format!("continuous_site:{key}"),
             VarKind::Environment { building, mode, types, option } =>
                 format!("environment:{building}:{mode}:{types:?}:{:?}", option.counts),
             VarKind::EnvironmentPair { buildings, modes, types, option } =>
@@ -3059,7 +3061,10 @@ pub fn write_lp(
     let material_fixed = model.kinds.iter().enumerate().filter_map(|(v, kind)| {
         if !model.integer[v] { return None; }
         let flexible = match kind {
-            VarKind::Units(recipe) => processes_upgrade_materials(recipe),
+            VarKind::Units(recipe) | VarKind::FixedSite { recipe, .. } | VarKind::ContinuousSite { recipe, .. } => processes_upgrade_materials(recipe),
+            // Always-running models derive availability and auxiliary site reservations
+            // from this shift. Anonymous indices can refer to other rows in the income LP.
+            VarKind::Extra => facility_counts.always_running(),
             VarKind::WorkPost { .. } => true,
             VarKind::Staff { .. } | VarKind::ActiveAniimo { .. } | VarKind::PowerGenerators | VarKind::PoweredUnits => true,
             _ => false,
@@ -3102,7 +3107,7 @@ pub fn write_lp(
         }).collect(),
         recipe_variables: model.kinds.iter().enumerate().filter_map(|(v,k)|match k {
             VarKind::Rate(r)|VarKind::Units(r)=>Some((v,crate::models::base_item_name(&r.name).to_owned())),
-            VarKind::ContinuousSite(key)=>key.split_once('|').map(|(_,name)|(v,name.to_owned())),
+            VarKind::ContinuousSite { recipe, .. }=>Some((v,crate::models::base_item_name(&recipe.name).to_owned())),
             _=>None,
         }).collect(),
         variable_keys: warm_start_keys(&model, items, facility_counts), production_zero:production_staff_zeros(&model,facility_counts),

@@ -47,7 +47,7 @@ export async function searchRecipeSwitches(input,baseline,{candidate,solve,progr
                 const pattern=chosen.normal?materialChainSchedule(scheduleInput):null;
                 for(const attempt of [pattern,scheduleInput].filter(Boolean)){
                     const model=buildRecipeSchedule(attempt),solution=await solve(model);
-                    if(!solution?.Columns||!['Optimal','Time limit reached'].includes(solution.Status)){detail='No feasible common schedule found in the search time.';continue;}
+                    if(!solution?.Columns||!['Optimal','Time limit reached','Iteration limit reached','Solution limit reached'].includes(solution.Status)){detail='No feasible common schedule found.';continue;}
                     try{return attachRecipeSchedule(proposed,attempt,readRecipeSchedule(model,solution));}
                     catch(error){detail=String(error.message||error);}
                 }

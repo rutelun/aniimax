@@ -45,7 +45,6 @@ function workerPoolBounds(highs, problem, pools) {
             previous = terms.map(([v])=>v);
             model.changeColsCost({kind:'set',indices:previous},terms.map(([,c])=>c));
             model.zeroAllClocks();
-            model.options.set({time_limit:.4});
             model.run();
             if (model.getModelStatus()===highs.constants.modelStatus.optimal) {
                 pool.upper = model.getObjectiveValue()+1e-9;
@@ -196,7 +195,8 @@ export function economicRecipeCounts(highs, problem, {input,timeLimit=1.5}={}) {
         'General',...[...sites.keys()].map(v=>' '+v),'End'].join('\n');
     const model = highs.createModel({format:'lp',data:lp});
     try {
-        model.options.set({time_limit:timeLimit,mip_rel_gap:.0001});
+        // The compact model can cheaply compare hundreds of building-count patterns.
+        model.options.set({mip_max_nodes:256,mip_rel_gap:.0001});
         model.run();
         if (model.info.get('primal_solution_status')!==highs.constants.solutionStatus.feasible) return null;
         const values = model.getSolution().colValue;
@@ -237,7 +237,7 @@ export function economicCountNeighborhood(highs,problem,counts,minimumIncome) {
     const earnings = expression(problem.primary_objective.map(([v,c])=>['x'+v,c]));
     rows.push(` local_income: ${earnings} >= ${minimumIncome}`);
     const restrict = () => problem.lp.replace('\nBounds\n','\n'+rows.join('\n')+'\nBounds\n');
-    const relaxation = highs.solve(restrict().replace(/\nGeneral\n[\s\S]*?\nEnd/,'\nEnd'),{time_limit:.6});
+    const relaxation = highs.solve(restrict().replace(/\nGeneral\n[\s\S]*?\nEnd/,'\nEnd'));
     if (relaxation.Status!=='Optimal' || !relaxation.Columns) return null;
     const index = new Map(problem.variable_keys.map((k,i)=>[k,i]));
     for (const [rate,,,source,electric] of problem.recipe_options) {

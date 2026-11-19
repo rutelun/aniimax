@@ -75,7 +75,7 @@ export function priorityCeiling(highs, problem, goal) {
     }
     const model = highs.createModel({format:'lp',data:lp.replace(/\nGeneral\n[\s\S]*?\nEnd/,'\nEnd')});
     try {
-        model.options.set({time_limit:1,primal_feasibility_tolerance:1e-9,dual_feasibility_tolerance:1e-9});
+        model.options.set({primal_feasibility_tolerance:1e-9,dual_feasibility_tolerance:1e-9});
         model.run();
         const status = model.getModelStatus();
         if (status===highs.constants.modelStatus.infeasible && lp!==problem.lp) return 0;

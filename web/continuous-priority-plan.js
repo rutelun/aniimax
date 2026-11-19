@@ -54,21 +54,29 @@ function siteCounts(problem,values) {
 }
 
 // A compact catalogue can change material aliases or climate coverage choices.
-// Lift the physical production and sales, then let the complete catalogue
-// assign compatible workers, climate, and auxiliary availability variables.
-async function restoreCatalogue(highs,solveModel,problem,seed,includeSales=true) {
+// Lift the production shift. Recompute sales from its material balances:
+// a prior stage can reserve a rounded amount of an output, while the full
+// model accounts for every remaining unit. Its priority floors still apply.
+async function restoreCatalogue(highs,solveModel,problem,seed) {
     const previous=new Map(seed.keys.map((key,v)=>[key,seed.values[v]]));
     const rows=[];
     for(let v=0;v<problem.variables;v++){
         const key=problem.variable_keys[v];
-        if(!/^(rate|units|continuous_site):/.test(key)
-            && !(includeSales&&/^(sold:|pace#|material_pace#)/.test(key)))continue;
+        if(!/^(rate:|units:|continuous_site:|pace#|material_pace#)/.test(key))continue;
         const value=previous.get(key)??0;
         if(!Number.isFinite(value))return null;
         rows.push(` actual_shift_${v}: x${v} = ${Math.max(0,value)}`);
     }
     const fixed=addRows(problem,rows);
-    const result=await solveModel(fixed,options(1),undefined,align(problem,seed));
+    const warm=align(problem,seed);
+    // Try the physical coverage from this candidate first. A different
+    // catalogue or dispatch may require other coverage, so retry freely.
+    const cover=problem.variable_keys.flatMap((key,v)=>
+        /^(environment|pair):/.test(key) && previous.has(key)
+            ? [` shift_cover_${v}: x${v} = ${Math.round(warm[v])}`] : []);
+    let result;
+    if(cover.length) result=await solveModel(addRows(fixed,cover),options(1),undefined,warm);
+    if(!result?.values) result=await solveModel(fixed,options(1),undefined,warm);
     if(!result?.values)return null;
     return polishSolution(highs,fixed,result);
 }
@@ -87,7 +95,7 @@ function fixPhysical(problem,warm,recipeSitesOnly=false) {
 }
 
 export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=()=>{},initialWitness,
-    evaluateBound,evaluateCounts} = {}) {
+    evaluateBound,evaluateCounts,onIncumbent} = {}) {
     const currency=input.currency||'coins', priorities=[...(input.priorities??[])];
     if(!priorities.includes(currency))priorities.push(currency);
     const pos=priorities.indexOf(currency);
@@ -118,6 +126,16 @@ export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},fi
         else if(key==='level_up'){if(upper>1e-9)stage.pace=upper;}
         else stage.floors.push([key,upper]);
     }
+    // With no upgrade-material pace, many ore/wood and electric assignments
+    // have the same provisional income. Explore more of those cheap branches
+    // before the map fixes the dispatch shares for the second solve.
+    if (input.roster && !stage.pace && !witnessSeed) {
+        const solveIncomeShift = solveModel;
+        solveModel = (model,settings,message,seed) => {
+            const effort = settings?.time_limit ?? 2;
+            return solveIncomeShift(model,{mip_max_nodes:Math.ceil(128*effort),mipIterations:4000*effort,...settings},message,seed);
+        };
+    }
     const currencyStage=structuredClone(stage), raw=priority(relaxed,stage,currency);
     if(!raw.production_only || !raw.recipe_variables?.length)return null;
     const lpCeiling=priorityCeiling(highs,raw,currency);
@@ -125,7 +143,16 @@ export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},fi
     let upper=Number.isFinite(lpCeiling)?lpCeiling:Infinity;
     const priorSales=new Set(early.flatMap(({terms})=>terms.filter(([key,c])=>c>0&&key.startsWith('sold:'))
         .map(([key])=>key.slice(5).replace(/#\d+$/,''))));
-    let scope=[],best;
+    // Reserved crops and earlier sales already impose demand. Include their
+    // continuous-operation rules in the first roster proposal so that the
+    // planting pattern and processor counts reflect that demand together.
+    // At a fixed upgrade pace both upgrade chains also reserve worker time.
+    // Start with the joint relaxation to let their staffed and electric sites
+    // trade places before measuring routes. On the measured map these prior
+    // demands can immediately tighten the income bound.
+    let scope=input.roster && (!stage.pace || witnessSeed)
+        ? [...new Set([...Object.keys(input.season_crop_minimums??{}),...priorSales])] : [];
+    let best;
     const contenders=[];
     const remember=(keys,values,objective)=>{
         if(!Number.isFinite(objective)||objective<=0)return;
@@ -155,7 +182,10 @@ export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},fi
             });
             model=addRows(p,rows);
         }
-        if(!fixed&&best)model=keepRawIncome(model,p,best.objective+2e-7);
+        // Leave the incumbent feasible while looking for a better shift.
+        // Requiring a strict improvement turns an already optimal neighborhood
+        // into an infeasibility proof and triggers a second solve without presolve.
+        if(!fixed&&best)model=keepRawIncome(model,p,best.objective);
         let candidate=await solveModel(model,options(fixed?1:2),undefined,warm);
         if(!candidate?.values&&fixed&&!sourceModel) {
             model=fixPhysical(p,warm,true);
@@ -200,11 +230,39 @@ export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},fi
         }
     }
     if (!siteSearch || siteSearch.upper > siteSearch.best.objective * 1.0025 + 1e-7) {
-        const masterOptions={seed:witnessSeed,scope:[],timeLimit:2};
-        let pending=evaluateBound?{model:raw,result:evaluateBound(raw,masterOptions)}:null;
+        const initialModel=scope.length ? priority(payloadFor(scope),currencyStage,currency) : raw;
+        const discovery=scope.length>0 && !witnessSeed;
+        const masterOptions={seed:witnessSeed,scope,timeLimit:discovery?3:2,discovery};
+        const priceSitesFirst = input.roster && stage.pace && !witnessSeed && !dispatched;
+        let pending=!priceSitesFirst && evaluateBound?{model:initialModel,result:evaluateBound(initialModel,masterOptions)}:null;
         const countOptions={input,timeLimit:2};
-        const countJob=evaluateCounts?evaluateCounts(raw,countOptions):null;
-        if(witnessSeed){
+        let countJob;
+        const startCounts=()=>{countJob??=evaluateCounts(raw,countOptions);};
+        // With measured shares the strict master can settle the income stage on
+        // its first solve. Try its actual staffing before searching alternative
+        // building counts or fixing plots from the provisional map.
+        let measuredClosed=false, nextBound=null;
+        if(witnessSeed && dispatched && scope.length){
+            const measuredBound=pending?await pending.result:solveEconomicBound(highs,initialModel,masterOptions);
+            pending={model:initialModel,result:measuredBound};
+            if(measuredBound?.values && Number.isFinite(measuredBound.upper)){
+                for(const name of measuredBound.activeRecipes)names.add(name);
+                await checkedCandidate(measuredBound);
+                measuredClosed=best && close(best.objective,measuredBound.upper);
+                if(measuredClosed){
+                    ceilings.push(measuredBound.upper);
+                    upper=Math.min(upper,measuredBound.upper);
+                }else if(evaluateBound){
+                    const next=suggestEconomicScope(initialModel,measuredBound.values,scope);
+                    if(next.length>scope.length){
+                        const model=scopedModel(next);
+                        nextBound={model,scope:next,result:evaluateBound(model,{seed:best??witnessSeed,scope:next,timeLimit:5})};
+                    }
+                }
+            }
+        }
+        if(!measuredClosed && evaluateCounts)startCounts();
+        if(witnessSeed && !measuredClosed){
             await checkedCandidate(witnessSeed);
             if(!best)await checkedCandidate(witnessSeed,true,raw);
             await repairModes(initialWitness.counts??initialWitness.continuous_site_counts);
@@ -219,7 +277,7 @@ export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},fi
                 }
             }
         }
-        {
+        if(!measuredClosed){
             const counts=countJob?await countJob:economicRecipeCounts(highs,raw,countOptions);
             if(counts?.size&&economicCountNeighborhood){
                 const allowed=new Set(counts.keys());
@@ -236,9 +294,15 @@ export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},fi
                 if(Number.isFinite(counts.upper)){ceilings.push(counts.upper);upper=Math.min(upper,counts.upper);}
             }
         }
-        for(let round=0;round<3;round++){
-            const model=pending?.model??(round===0?raw:priority(payloadFor(scope),currencyStage,currency));
-            const settings={seed:best??witnessSeed,scope:round===0?[]:scope,timeLimit:round===0?2:5};
+        // An independently priced building pattern may already meet the
+        // preliminary income tolerance. The full catalogue and measured map
+        // are still checked below and in the dispatch pass.
+        const pricedWithinGap = priceSitesFirst && best && upper >= best.objective-1e-7
+            && upper <= best.objective*1.0025;
+        if (pricedWithinGap && !close(upper,best.objective)) await repairModes();
+        for(let round=0;!measuredClosed && !pricedWithinGap && round<3;round++){
+            const model=pending?.model??(round===0?initialModel:priority(payloadFor(scope),currencyStage,currency));
+            const settings=round===0?masterOptions:{seed:best??witnessSeed,scope,timeLimit:5};
             const result=pending?await pending.result:evaluateBound?await evaluateBound(model,settings):solveEconomicBound(highs,model,settings);
             pending=null;
             if(Number.isFinite(result?.upper)){ceilings.push(result.upper);upper=Math.min(upper,result.upper);}
@@ -252,8 +316,13 @@ export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},fi
             const next=result?.values?suggestEconomicScope(model,result.values,required,{nearFloorOnly}):scope;
             if(evaluateBound&&dispatched&&round<2&&(!best||!close(upper,best.objective))
                 &&next.length>scope.length){
-                const narrowed=priority(payloadFor(next),currencyStage,currency);
-                pending={model:narrowed,result:evaluateBound(narrowed,{seed:best??witnessSeed,scope:next,timeLimit:5})};
+                if(nextBound && next.length===nextBound.scope.length && next.every((name,i)=>name===nextBound.scope[i])){
+                    pending=nextBound;
+                }else{
+                    const narrowed=scopedModel(next);
+                    pending={model:narrowed,result:evaluateBound(narrowed,{seed:best??witnessSeed,scope:next,timeLimit:5})};
+                }
+                nextBound=null;
             }
             if(result?.values)await checkedCandidate(result);
             if(!witnessSeed&&!round&&best&&!close(best.objective,upper))await repairModes();
@@ -287,7 +356,8 @@ export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},fi
     // against the previous shift and its global ceiling warrants the full
     // search, while a small measured change retains its explicit proof gap.
     const transferred = witnessSeed&&Number.isFinite(oldCurrency)&&best.objective*1.01>=oldCurrency;
-    if(!transferred && upper>best.objective*1.0025)return null;
+    const needsWiderSearch=!transferred && upper>best.objective*1.0025;
+    if(needsWiderSearch && !(dispatched && onIncumbent))return null;
     const income=best.objective;
     bounds.push([stageKey(currency,currencyStage),upper]);
     stage.floors.push([currency,income]);
@@ -411,7 +481,7 @@ export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},fi
     const top=early.find(({key})=>key!=='crop_variety');
     if(top&&Number.isFinite(top.earned))first({measure:top.key,objective:top.earned,proven:close(top.earned,top.upper)});
     else if(!top)first({measure:currency,objective:achievedIncome,proven:close(achievedIncome,upper)});
-    return {...plan,continuous_production_checked:true,continuous_checked_recipes:[...names],
+    const verifiedPlan={...plan,continuous_production_checked:true,continuous_checked_recipes:[...names],
         active_continuous_recipes:[...new Set(used)],continuous_site_counts:siteCounts(p,final.values),
         continuous_upper_bounds:bounds,comparison_seed:{keys:p.variable_keys,values:final.values},
         comparison_goals:{currency,currency_value:achievedIncome,
@@ -419,4 +489,9 @@ export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},fi
             pace:stage.pace??null,crop_variety:stage.crop_variety??null},
         comparison_scores:{crop_variety:stage.crop_variety??null,material_pace:materialPace,material_work:materialWork,stock:null},
         material_work_note:materialNote};
+    if(needsWiderSearch){
+        onIncumbent(verifiedPlan);
+        return null;
+    }
+    return verifiedPlan;
 }

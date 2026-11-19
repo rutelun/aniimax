@@ -37,6 +37,12 @@ test('fast priority plan checks the occupied recipe and returns the actual shift
     const generated=await tryPriorityPlan(pkg,{currency:'coins',priorities:['coins'],always_running:true},{highs,solveModel});
     assert.equal(generated.rate_per_second,.25);
     assert.deepEqual(generated.continuous_upper_bounds,plan.continuous_upper_bounds);
+    const measured=await tryPriorityPlan(pkg,{...input,season_crop_minimums:{crop:1}},{
+        highs,solveModel,initialWitness:plan,
+        evaluateCounts:()=>assert.fail('alternate buildings cannot improve a checked shift at its ceiling'),
+    });
+    assert.equal(measured.rate_per_second,.25);
+    assert.deepEqual(measured.continuous_upper_bounds,plan.continuous_upper_bounds);
 });
 
 test('a site proposal that violates full climate coverage cannot certify its revenue',async()=>{
@@ -69,4 +75,53 @@ test('a shift feasible only with omitted recipes cannot become the published inc
     const pkg={exact_priority_problem:build,exact_problem:build,exact_plan:()=>assert.fail('mismatched shift reached publication')};
     const plan=await tryPriorityPlan(pkg,{currency:'coins',always_running:true,roster:{dispatch:{fixed:[1]}}},{highs,solveModel});
     assert.equal(plan,null);
+});
+
+test('restoring a shift accounts for unsold output left by an earlier priority floor',async()=>{
+    const highs=await highsModule({wasmBinary:fs.readFileSync(new URL('../web/vendor/highs/highs.wasm',import.meta.url)),
+        print(){},printErr(){}});
+    const build=payload=>{
+        const sale=JSON.parse(payload).always_running_recipes===undefined ? 1 : 0.9999;
+        return JSON.stringify({variables:3,variable_keys:['rate:crop#0','units:crop#0','sold:token#0'],
+            primary_objective:[[0,1]],tiebreak:[],integer_groups:[['crop',[[1,1]],1]],
+            recipe_options:[[0,'crop','Farm',false,false,1]],recipe_variables:[[0,'crop'],[1,'crop']],
+            lp:`Maximize\n obj: + 1 x0\nSubject To\n work: x0 - x1 = 0\n balance: ${sale} x0 - x2 = 0\nBounds\n 0 <= x0 <= 1\n 0 <= x1 <= 1\n 0 <= x2 <= 1\nGeneral\n x1\nEnd`});
+    };
+    const pkg={exact_priority_problem:build,exact_problem:build,exact_plan:(_input,_stage,report)=>{
+        assert.deepEqual(JSON.parse(report).values,[1,1,1]);
+        return JSON.stringify({success:true,rate_per_second:1});
+    }};
+    const solveModel=(p,o,_,seed)=>{
+        const r=solveWithIncumbent(highs,p,o,seed,false);
+        return r.Columns?{values:p.variable_keys.map((_k,i)=>r.Columns['x'+i].Primal),objective:r.ObjectiveValue}:null;
+    };
+    const plan=await tryPriorityPlan(pkg,{currency:'coins',always_running:true,roster:{members:[]}},{highs,solveModel});
+    assert.equal(plan?.rate_per_second,1);
+});
+
+test('a measured shift with an open income gap survives as a fully checked fallback',async()=>{
+    const highs=await highsModule({wasmBinary:fs.readFileSync(new URL('../web/vendor/highs/highs.wasm',import.meta.url)),
+        print(){},printErr(){}});
+    const build=payload=>{
+        const relaxed=JSON.parse(payload).always_running_recipes?.length===0;
+        return JSON.stringify({variables:2,variable_keys:['rate:crop#0','units:crop#0'],primary_objective:[[0,1]],tiebreak:[],
+            integer_groups:[['crop',[[1,1]],1]],recipe_options:[[0,'crop','Farm',false,false,1]],recipe_variables:[[0,'crop'],[1,'crop']],
+            lp:`Maximize\n obj: x0\nSubject To\n shift: x0 - x1 <= 0\nBounds\n 0 <= x0 <= ${relaxed?1:0.5}\n 0 <= x1 <= 1\nGeneral\n x1\nEnd`});
+    };
+    const pkg={exact_priority_problem:build,exact_problem:build,exact_plan:(payload,_stage,report)=>{
+        assert.equal(JSON.parse(payload).always_running_recipes,undefined);
+        assert.equal(JSON.parse(report).verify_only,true);
+        assert.deepEqual(JSON.parse(report).values,[.5,1]);
+        return JSON.stringify({success:true,rate_per_second:.5});
+    }};
+    const solveModel=(p,o,_,seed)=>{
+        const r=solveWithIncumbent(highs,p,o,seed,false);
+        return r.Columns?{values:p.variable_keys.map((_k,i)=>r.Columns['x'+i].Primal),objective:r.ObjectiveValue}:null;
+    };
+    let fallback;
+    const fast=await tryPriorityPlan(pkg,{currency:'coins',always_running:true,roster:{dispatch:{fixed:[1]}}},
+        {highs,solveModel,evaluateCounts:()=>null,onIncumbent:plan=>{fallback=plan;}});
+    assert.equal(fast,null);
+    assert.equal(fallback?.rate_per_second,.5);
+    assert.equal(fallback.continuous_production_checked,true);
 });

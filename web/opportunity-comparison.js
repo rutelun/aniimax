@@ -217,21 +217,21 @@ const rateOf = (plan, target) => target === 'coins' ? plan.rate_per_second || 0
     : plan.priorities?.find(p => p.target === target)?.per_second || 0;
 const reportOf = plan => plan.level_up || plan.level_up_preview;
 
-function direction(before, after, lower, kind) {
+function direction(before, after, lower, kind, relativeTolerance = 1e-3) {
     if (before == null || after == null) {
         if (kind !== 'duration' || before === after) return 0;
         return before == null ? 1 : -1;
     }
-    const tolerance = kind === 'count' ? .5 : Math.max(1e-8, Math.abs(before) * 1e-3);
+    const tolerance = kind === 'count' ? .5 : Math.max(1e-8, Math.abs(before) * relativeTolerance);
     if (Math.abs(after - before) <= tolerance) return 0;
     return (after > before ? 1 : -1) * (lower ? -1 : 1);
 }
 
 // Preserve the optimizer's ordering. A gain in a lower priority cannot hide a loss above it.
-export function comparePlans(beforePlan, afterPlan, beforeInput, afterInput = beforeInput) {
+export function comparePlans(beforePlan, afterPlan, beforeInput, afterInput = beforeInput, relativeTolerance = 1e-3) {
     const rows = [], objectives = [];
     const add = (id, kind, before, after, lower = false, objective = false) => {
-        const row = { id, kind, before, after, lower, direction: direction(before, after, lower, kind) };
+        const row = { id, kind, before, after, lower, direction: direction(before, after, lower, kind, relativeTolerance) };
         rows.push(row);
         if (objective) objectives.push(row);
         return row;
@@ -239,7 +239,7 @@ export function comparePlans(beforePlan, afterPlan, beforeInput, afterInput = be
     const score = (name, kind = 'score') => {
         const before = beforePlan.comparison_scores?.[name], after = afterPlan.comparison_scores?.[name];
         if (before != null && after != null) {
-            const row = { id: name, kind, before, after, lower: false, direction: direction(before, after, false, kind) };
+            const row = { id: name, kind, before, after, lower: false, direction: direction(before, after, false, kind, relativeTolerance) };
             objectives.push(row);
             if (name === 'crop_variety') rows.push(row);
         }

@@ -1,8 +1,10 @@
+import {planSearchOptions,runPlanModel,searchStopped} from './highs-solve.js';
+
 // An unrestricted recipe-scope model retains every recipe, dispatch policy,
 // physical building and balance. Omitting a recipe's work-conservation rules
 // enlarges its feasible set, so its MIP dual bound also bounds the full model.
 // A primal from this relaxation still needs the caller's full production audit.
-export function solveEconomicBound(highs, problem, {seed, scope = [], timeLimit = 2} = {}) {
+export function solveEconomicBound(highs, problem, {seed, scope = [], timeLimit = 2, discovery = false} = {}) {
     const keys = problem.variable_keys;
     if (!problem.production_only || problem.continuousRestricted || !problem.primary_objective?.length
         || keys?.length !== problem.variables || !problem.recipe_options || !(timeLimit > 0)) return null;
@@ -11,8 +13,10 @@ export function solveEconomicBound(highs, problem, {seed, scope = [], timeLimit 
         const {numCols} = model.getDimensions();
         const indices = Array.from({length:numCols}, (_, i) => Number(model.getColName(i).slice(1)));
         if (indices.some(v => !Number.isInteger(v) || v < 0 || v >= keys.length)) return null;
-        model.options.set({time_limit:timeLimit, mip_abs_gap:0, mip_rel_gap:0,
-            primal_feasibility_tolerance:1e-9, mip_feasibility_tolerance:1e-9});
+        const nativeOptions = planSearchOptions({time_limit:timeLimit, mip_abs_gap:0, mip_rel_gap:0,
+            primal_feasibility_tolerance:discovery?1e-7:1e-9, mip_feasibility_tolerance:discovery?1e-8:1e-9});
+        if (discovery) nativeOptions.mip_max_nodes = Math.ceil(128*timeLimit);
+        model.options.set(nativeOptions);
         if (seed?.keys?.length === seed?.values?.length && seed?.keys) {
             const previous = new Map(seed.keys.map((key, v) => [key, seed.values[v]]));
             // Let HiGHS refit rates and complete the scope-local availability
@@ -31,12 +35,12 @@ export function solveEconomicBound(highs, problem, {seed, scope = [], timeLimit 
             });
             if (warm.indices.length) model.setSolution(warm);
         }
-        model.run();
+        runPlanModel(model,highs,(seed || discovery) ? Math.ceil(timeLimit * 4000) : undefined);
         const status = model.getModelStatus(), statuses = highs.constants.modelStatus;
-        if (status !== statuses.optimal && status !== statuses.timeLimit) return null;
+        if (status !== statuses.optimal && !searchStopped(status,statuses)) return null;
         const optimal = status === statuses.optimal;
         const upper = optimal ? model.getObjectiveValue() : model.info.get('mip_dual_bound');
-        const result = {upper:Number.isFinite(upper) ? upper : null, proven:optimal, scope:[...scope]};
+        const result = {upper:!discovery && Number.isFinite(upper) ? upper : null, proven:optimal && !discovery, scope:[...scope]};
         if (model.info.get('primal_solution_status') !== highs.constants.solutionStatus.feasible) return result;
         const values = Array(keys.length).fill(0), native = model.getSolution().colValue;
         indices.forEach((v, i) => { values[v] = native[i]; });

@@ -82,6 +82,7 @@ function initWorker() {
         });
         pendingWorkerRequests.clear();
     };
+    worker.onmessageerror = () => worker.onerror({message:'The planner returned an unreadable response.'});
 }
 
 // Throws away the worker and anything still running in it, e.g. a Minimum-setup solve from an
@@ -104,11 +105,11 @@ function restartWorker() {
 function callWorker(type, payload, onProgress) {
     return new Promise((resolve, reject) => {
         const id = ++nextRequestId;
-        const timer = setTimeout(() => {
+        const timer = type === 'find_plan' ? null : setTimeout(() => {
             pendingWorkerRequests.delete(id);
             reject(new Error('This setup took too long. Try simplifying the priorities.'));
             restartWorker();
-        }, type === 'find_plan' ? SETUP_TIMEOUT : 30_000);
+        }, 30_000);
         pendingWorkerRequests.set(id, { resolve, reject, onProgress, timer });
         worker.postMessage({ id, type, payload });
     });
@@ -189,15 +190,13 @@ function ensurePlanFor(setup, refining = false, previousPlan = null) {
     stopSetupSolve();
     const runId = planRunId;
     const solver = new Worker(WORKER_URL, { type: 'module' });
-    const timer = setTimeout(() => done({ success: false, error: 'This setup took too long. Try simplifying the priorities.' }), SETUP_TIMEOUT);
-    setupSolve = { setup, worker: solver, timer, refining };
+    setupSolve = { setup, worker: solver, refining };
     if (refining && progress?.runId === runId) {
         if (!progress.steps.some(s => s.key === 'refine')) progress.steps.push({key:'refine',label:'Refining deliveries and worker loads',state:'pending'});
         setStep('refine','start');
     } else startProgress({ ...lastPlanInput, ...aniimoInput(setup) }, runId);
     if (!refining) document.getElementById('aniimo-pending').textContent = translate('Updating Aniimo setup...');
     const done = (plan) => {
-        clearTimeout(timer);
         solver.terminate();
         if (setupSolve?.worker === solver) setupSolve = null;
         if (runId !== planRunId) return;
@@ -244,7 +243,6 @@ function stopSetupSolve() {
         progress = null;
         renderProgress();
     }
-    clearTimeout(setupSolve?.timer);
     setupSolve?.worker.terminate();
     setupSolve = null;
 }
@@ -2566,7 +2564,7 @@ function searchNote(proven) {
     if (proven === undefined) return '';
     return proven
         ? `<span title="${PROVEN_MEANS}">proven best</span>`
-        : '<span title="The solver ran out of time before it could prove nothing does better.">best found in time</span>';
+        : '<span title="A feasible plan was found. Its optimality is unproven.">best found</span>';
 }
 
 // Once the plan is back, any solve that never ran (a level-up out of reach skips the last one;
@@ -5843,14 +5841,14 @@ function displayPlan(plan, keepLayout = false) {
     const materialHint = document.getElementById('material-work-hint');
     materialHint.hidden = !plan.material_work_note;
     materialHint.textContent = !plan.material_work_note ? ''
-        : plan.material_work_note === 'unavailable' ? translate('The production plan is valid. The extra Bench and Kiln workload could not be optimized in time.')
-        : translate('Bench and Kiln workload is the best found in the time allowed; its maximum is not proven.');
+        : plan.material_work_note === 'unavailable' ? translate('The production plan is valid. Extra Bench and Kiln workload could not be verified.')
+        : translate('Higher Bench and Kiln workload may be possible.');
     explored.style.display = plan.proven_optimal === true ? 'none' : '';
     if (plan.proven_optimal === true) {
         explored.textContent = '';
     } else if (plan.proven_optimal === false && plan.upper_bound > 0) {
-        const gap = Math.max(0, (plan.upper_bound - plan.rate_per_second) / plan.upper_bound * 100);
-        explored.textContent = `Best plan found in the time allowed; the best possible is at most ${gap.toFixed(1)}% higher.`;
+        const gap = Math.ceil(Math.max(0,(plan.upper_bound - plan.rate_per_second) / plan.upper_bound) * 1000) / 10;
+        explored.textContent = `Remaining income gap is at most ${gap.toFixed(1)}%.`;
     } else {
         const reason = plan.fallback_reason ? ` (${plan.fallback_reason})` : '';
         explored.textContent = `The exact planner couldn't run${reason}, so this plan comes from the backup planner and may not be the very best. Reloading the page usually fixes this.`;

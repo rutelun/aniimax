@@ -14,6 +14,7 @@ import {continuousNeighborhood, incomeRepairNeighborhood, neighborhoodResult, ke
 import {searchRecipeSwitches} from './recipe-switch-search.js';
 import {refineStaffing} from './staffing-search.js';
 import {economicWorkers} from './economic-parallel.js';
+import {comparePlans} from './opportunity-comparison.js';
 
 const load = new URL(import.meta.url).search;
 const incumbentSolver = import('./highs-solve.js' + load);
@@ -70,11 +71,12 @@ const STRICT_OPTIONS = { ...SOLVE_OPTIONS, mip_feasibility_tolerance: 1e-9 };
 // Solves one exact-planner model with HiGHS: `{ values, proven, objective }`, or null if HiGHS
 // found no plan at all. `objective` leaves out the model's tie-break (see `BUILDING_TIE_BREAK` in
 // exact.rs), so it's what the plan really makes and can be a floor for a later solve.
-async function solveModel(problem, options = SOLVE_OPTIONS, infeasibleMessage, incumbent) {
+async function solveModel(problem, options = SOLVE_OPTIONS, infeasibleMessage, incumbent, timed = false) {
     let result;
     try {
         const highs = await newHighs();
-        const run = (await incumbentSolver).solveWithIncumbent;
+        const {solveWithIncumbent:run,planSearchOptions} = await incumbentSolver;
+        if (!timed) options = planSearchOptions(options);
         result = run(highs, problem, options, incumbent);
         if (result.Status === 'Infeasible') {
             // Presolve can call a tightly constrained model infeasible when it isn't.
@@ -87,7 +89,7 @@ async function solveModel(problem, options = SOLVE_OPTIONS, infeasibleMessage, i
     }
     if (result.Status === 'Infeasible' && infeasibleMessage) throw new Error(infeasibleMessage);
     const proven = result.Status === 'Optimal';
-    if (!proven && result.Status !== 'Time limit reached') return null;
+    if (!proven && result.Status !== 'Time limit reached' && result.Status !== 'Search limit reached') return null;
     // Out of time before finding any plan at all.
     if (!Number.isFinite(result.ObjectiveValue) || !result.Columns) return null;
     const values = columnValues(problem, result);
@@ -142,7 +144,7 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
     }
     // Comparisons use the full model: their summary may omit the active recipe list.
     if (!input.always_running || comparison) return exactPlanJsonOnce(pkg, payload, step, first, comparison, deadline);
-    let top = null, seed = null;
+    let top = null, seed = null, checkedShift = null;
     step('continuous_production', 'start');
     if (deadline == null) {
         let accelerated;
@@ -151,8 +153,12 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
             const {tryPriorityPlan} = await import('./continuous-priority-plan.js'+load);
             accelerated = await tryPriorityPlan(pkg,input,{
                 highs:await newHighs(), solveModel, step, first, initialWitness:routeWitness, ...workers.callbacks,
+                onIncumbent:plan=>{ checkedShift=plan; },
             });
             if (!accelerated && routeWitness) accelerated = await repairDispatchPlan(pkg,input,routeWitness);
+            if(accelerated?.success && checkedShift && comparePlans(checkedShift,accelerated,input,input,1e-8).direction<0){
+                accelerated=null;
+            }
         } catch (error) {
             console.warn('Continuing with the full production model.',error);
         } finally {
@@ -163,7 +169,12 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
             return JSON.stringify(accelerated);
         }
     }
-    const plan = await continuousProduction(input, async (trial, pass) => {
+    // A measured shift that passed the full audit is a starting solution for
+    // the wider search. Its open proof gap is not a reason to discard it.
+    const searchInput=checkedShift ? {...input,always_running_recipes:checkedShift.active_continuous_recipes} : input;
+    if(checkedShift)seed={...checkedShift.comparison_seed,goals:checkedShift.comparison_goals,
+        currencyTarget:checkedShift.rate_per_second,upperBounds:checkedShift.continuous_upper_bounds};
+    let plan = await continuousProduction(searchInput, async (trial, pass) => {
         top = null;
         if (pass === 1 && seed?.goals && input.aniimo?.startsWith('roster') && !Object.keys(input.roster?.dispatch || {}).length
             && !input.level_up_strategy && !input.prioritize_byproducts && !input.recipe_switching?.max_buildings) {
@@ -188,7 +199,16 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
         seed = plan.comparison_seed ? {...plan.comparison_seed, upperBounds:plan.continuous_upper_bounds,
             currencyTarget:plan.comparison_goals?.currency_value, goals:plan.comparison_goals} : null;
         return plan;
+    }).catch(error=>{
+        if(!checkedShift)throw error;
+        console.warn('Keeping the validated shift after a wider search failed.',error);
+        top=null;
+        return checkedShift;
     });
+    if(checkedShift && (!plan.success || comparePlans(checkedShift,plan,input,input,1e-8).direction<0)){
+        plan=checkedShift;
+        top=null;
+    }
     if (plan.success && top) first(top);
     step('continuous_production', plan.success ? 'done' : 'fail');
     return JSON.stringify(plan);
@@ -214,7 +234,7 @@ async function exactPlanJsonOnce(pkg, payload, step = () => {}, first = () => {}
     const certificates = [];
     let nearCertifiedCurrencyCeiling = false, nearDiscoveryIncome = false;
     const stageUpperBounds=new Map(initialSeed?.upperBounds||[]);
-    const searchModel = comparison?.solve || solveModel;
+    const searchModel = comparison?.solve || (deadline == null ? solveModel : (p,o,message,seed)=>solveModel(p,o,message,seed,true));
     const runModel = async (problem,...args)=>{
         if(deadline!=null){
             const remaining=(deadline-performance.now())/1000;
@@ -682,8 +702,23 @@ async function repairProductionPriorities(pkg,input,seed) {
     const local = incomeRepairNeighborhood(model,input.always_running_recipes,seed,seed.currencyTarget/1.0025);
     if (!local) return null;
     const previous = new Map(seed.keys.map((key,i)=>[key,seed.values[i]]));
-    const found = await solveModel(local,{...SOLVE_OPTIONS,time_limit:3},undefined,
-        local.variable_keys.map(key=>key.startsWith('extra')?0:previous.get(key)??0));
+    const warmIncome = local.variable_keys.map(key=>key.startsWith('extra')?0:previous.get(key)??0);
+    // Try the discovery plan's grid and climate before reopening the full
+    // production neighborhood. Buildings, recipes and worker choices stay free.
+    const general = local.lp.match(/\nGeneral\n([\s\S]*?)\nEnd/);
+    const infrastructure = [];
+    for (const match of (general?.[1] ?? '').matchAll(/\bx(\d+)\b/g)) {
+        const v = Number(match[1]), key = local.variable_keys[v];
+        if (!/^(environment:|pair:|generators#)/.test(key) || !previous.has(key)) continue;
+        infrastructure.push(` shift_${v}: x${v} = ${Math.round(previous.get(key))}`);
+    }
+    const search = {...SOLVE_OPTIONS,mip_max_nodes:32};
+    let found;
+    if (infrastructure.length) {
+        const fixed = {...local,lp:local.lp.replace('\nBounds\n','\n'+infrastructure.join('\n')+'\nBounds\n')};
+        found = await solveModel(fixed,search,undefined,warmIncome);
+    }
+    found ??= await solveModel(local,search,undefined,warmIncome);
     if (!found || found.objective < seed.currencyTarget/1.0025 || found.objective > upper+1e-7) return null;
     stage.floors = floors.map(([name,value])=>[name,name===currency?found.objective:value]);
     stage.maximize_material_work = true;
@@ -763,7 +798,7 @@ async function repairDispatchPlan(pkg, input, witness) {
             : productionObjective(JSON.parse(pkg.exact_priority_problem(relaxed,JSON.stringify(stages),key)));
         if (!p.lp || (key !== 'crop_variety' && !p.production_only)) return null;
         const lp = p.lp.replace(/\nGeneral\n[\s\S]*\nEnd/,'\nEnd');
-        const result = highs.solve(lp,{time_limit:1});
+        const result = highs.solve(lp);
         let upper = result.Status === 'Optimal' ? result.ObjectiveValue : Infinity;
         const tolerance = key === currency ? .0025 * target : 1e-8 * Math.max(1,Math.abs(target));
         if (upper > target + tolerance) {
@@ -788,11 +823,11 @@ async function repairDispatchPlan(pkg, input, witness) {
         material_work_note:'unproven'};
 }
 
-async function withRecipeSwitches(pkg,input,baseline,progress=()=>{}) {
-    const deadline=performance.now()+10000;
+async function withRecipeSwitches(pkg,input,baseline,progress=()=>{},timed=false) {
+    const deadline=timed ? performance.now()+10000 : null;
     return searchRecipeSwitches(input,baseline,{
         candidate:async trial=>JSON.parse(await exactPlanJson(pkg,JSON.stringify(trial),()=>{},()=>{},null,deadline)),
-        solve:async model=>(await newHighs()).solve(model.lp,{time_limit:Math.max(.05,Math.min(3,(deadline-performance.now())/1000)),mip_rel_gap:0}),progress,
+        solve:async model=>(await newHighs()).solve(model.lp,timed ? {time_limit:Math.max(.05,Math.min(3,(deadline-performance.now())/1000)),mip_rel_gap:0} : {mip_max_nodes:128,mip_rel_gap:0}),progress,
     });
 }
 
@@ -806,7 +841,7 @@ async function rankImprovements(pkg, payload, report, memo) {
     const { base, basePlan, candidates, detailed = false, warm_start = true } = JSON.parse(payload);
     const original = basePlan?.success ? basePlan : JSON.parse(await exactPlanJson(pkg, JSON.stringify(base)));
     report({ index: -1, plan: original });
-    const comparison = (await comparisonSearch).createComparisonSearch(original, solveModel, {
+    const comparison = (await comparisonSearch).createComparisonSearch(original, (p,o,message,seed)=>solveModel(p,o,message,seed,true), {
         detailed, warmStart: warm_start, baseInput: base, memo,
     });
     for (const [index, input] of candidates.entries()) {
@@ -825,7 +860,7 @@ async function rankImprovements(pkg, payload, report, memo) {
                 comparison.disableBounds();
                 json = await search();
             }
-            const plan = input.recipe_switching?.max_buildings?await withRecipeSwitches(pkg,input,JSON.parse(json)):JSON.parse(json);
+            const plan = input.recipe_switching?.max_buildings?await withRecipeSwitches(pkg,input,JSON.parse(json),undefined,true):JSON.parse(json);
             if (plan.success && comparison.inconclusive(plan, base, input)) {
                 report({index, error:'The search did not match the current plan. This does not show that the upgrade reduces production. Use Detailed search.', detailed});
                 continue;

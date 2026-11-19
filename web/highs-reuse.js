@@ -62,32 +62,40 @@ export const reuseStatistics = highs => ({...(runtimes.get(highs)?.stats || {})}
 export function acquireModel(highs, problem, reuse = true) {
     let state = runtimes.get(highs);
     if (!state) { state = {stats:{created:0,reused:0,addedRows:0,removedRows:0}}; runtimes.set(highs,state); }
-    let parsed;
-    if (reuse) {
-        parsed = state.lastLp === problem.lp ? state.lastParsed : parseLinearLp(problem.lp,problem.variables);
-        state.lastLp = problem.lp; state.lastParsed = parsed;
-    }
     const sameKeys = !problem.variable_keys && !state.keys || problem.variable_keys?.length === state.keys?.length
         && problem.variable_keys?.every((key,i) => key === state.keys[i]);
+    const compatible = reuse && state.model && sameKeys && state.names.length === problem.variables;
+    if (compatible && state.lp === problem.lp) {
+        state.stats.reused++;
+        return {model:state.model,names:state.names,persistent:true};
+    }
+    // The native parser already read the initial LP. Only construct a second
+    // matrix in JS when a subsequent solve can actually patch this model.
+    const parsed = compatible ? parseLinearLp(problem.lp,problem.variables) : null;
     // MIP branching is sensitive to the native reader's column order. Keep its cold
     // order when a new objective introduces columns in a different sequence.
     const integerOrderChanged = parsed?.integers.some(Boolean) && state.names
         && state.names.some((name,i)=>Number(name.slice(1)) !== parsed.order[i]);
-    if (!reuse || !parsed || !state.model || !sameKeys || integerOrderChanged || state.parsed.costs.length !== problem.variables) {
+    if (parsed && !integerOrderChanged && !state.parsed) {
+        const original = parseLinearLp(state.lp,problem.variables);
+        if (original) {
+            const byName = new Map(original.rows.map(row=>[row.name,row]));
+            const rows = Array.from({length:state.model.getDimensions().numRows},(_,i)=>byName.get(state.model.getRowName(i)));
+            if (rows.length === original.rows.length && byName.size === rows.length && rows.every(Boolean)) {
+                state.parsed = {...original,rows};
+            }
+        }
+    }
+    if (!parsed || integerOrderChanged || !state.parsed) {
         discardReusableModel(highs);
         const model = highs.createModel({format:'lp',data:problem.lp});
         state.stats.created++;
         const names = Array.from({length:model.getDimensions().numCols},(_,i) => model.getColName(i));
         const index = new Map(names.map((name,i) => [Number(name.slice(1)),i]));
         // Native LP readers may omit unused columns. Rebuild rather than guessing their order.
-        let persistent = reuse && parsed && names.length === problem.variables
+        const persistent = reuse && names.length === problem.variables
             && names.every(name => /^x\d+$/.test(name)) && index.size === problem.variables;
-        if (persistent) {
-            const byName = new Map(parsed.rows.map(row=>[row.name,row]));
-            const rows = Array.from({length:model.getDimensions().numRows},(_,i)=>byName.get(model.getRowName(i)));
-            persistent = rows.length === parsed.rows.length && byName.size === parsed.rows.length && rows.every(Boolean);
-            if (persistent) Object.assign(state,{model,names,index,parsed:{...parsed,rows},keys:problem.variable_keys?.slice()});
-        }
+        if (persistent) Object.assign(state,{model,names,index,lp:problem.lp,parsed:null,keys:problem.variable_keys?.slice()});
         return {model,names,persistent};
     }
     const {model,index} = state, old = state.parsed;
@@ -136,6 +144,7 @@ export function acquireModel(highs, problem, reuse = true) {
             nativeRows.push(...additions);
         }
         state.parsed = {...parsed,rows:nativeRows};
+        state.lp = problem.lp;
         state.stats.reused++; state.stats.addedRows+=additions.length; state.stats.removedRows+=removed.length;
         return {model,names:state.names,persistent:true};
     } catch (error) {

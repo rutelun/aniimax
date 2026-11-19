@@ -44,7 +44,7 @@ test('a numerical bound just below an integer cannot remove that integer solutio
 test('no bound is fabricated without a usable incumbent, metadata, or probing budget',()=>{
     assert.deepEqual(tightenIntegerBounds(highs,{...problem,production_only:false},{values:[2,0],objective:10}),[]);
     assert.deepEqual(tightenIntegerBounds(highs,problem,{values:[2],objective:10}),[]);
-    assert.deepEqual(tightenIntegerBounds(highs,problem,{values:[2,0],objective:10},{timeLimit:0}),[]);
+    assert.deepEqual(tightenIntegerBounds(highs,problem,{values:[2,0],objective:10},{maxProbes:0}),[]);
 });
 
 test('a feasible zero/capacity witness skips only probes that cannot tighten a bound',()=>{

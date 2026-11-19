@@ -36,7 +36,7 @@ export async function refineStaffing(problem, incumbent, solve) {
     const staffing = {...problem, lp, primary_objective:[...costs], tiebreak:[]};
     let result;
     try {
-        result = await solve(staffing, {time_limit:2, mip_rel_gap:0, mip_abs_gap:0}, undefined, original);
+        result = await solve(staffing, {mip_max_nodes:256, mipIterations:12000, mip_rel_gap:0, mip_abs_gap:0}, undefined, original);
     } catch (error) {
         console.warn('Keeping the checked production shift after a staffing solve error.',error);
         return incumbent;

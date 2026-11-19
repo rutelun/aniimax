@@ -19,6 +19,10 @@ test('unrestricted relaxation returns its bound and a keyed primal for auditing'
     assert.deepEqual(result.keys,problem.variable_keys);
     assert.deepEqual(result.values,[.25,1]);
     assert.deepEqual(result.throttledRecipes,['a']);
+    const discovery = solveEconomicBound(highs,problem,{discovery:true,timeLimit:1});
+    assert.equal(discovery.objective,.25);
+    assert.equal(discovery.upper,null);
+    assert.equal(discovery.proven,false);
     assert.equal(solveEconomicBound(highs,{...problem,continuousRestricted:true}),null);
 });
 
