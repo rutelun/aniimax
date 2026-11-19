@@ -9,6 +9,8 @@
 // The message handler below is installed right away and waits on this, so no request can arrive
 // before there's a handler for it.
 import { autoMaximizeSeasonPoints, hasSeasonCropMinimums } from './season-planning.js?v=optional-season-points';
+import {continuousProduction} from './continuous-production.js';
+import {continuousNeighborhood, incomeRepairNeighborhood, neighborhoodResult, keepProductionWitness} from './continuous-neighborhood.js';
 import {searchRecipeSwitches} from './recipe-switch-search.js';
 
 const load = new URL(import.meta.url).search;
@@ -99,6 +101,17 @@ function columnValues(problem, result) {
     return Array.from({ length: problem.variables }, (_, i) => result.Columns?.['x' + i]?.Primal ?? 0);
 }
 
+function physicalRecipeColumns(model) {
+    const groups = new Map((model.integer_groups || []).map(([name,terms]) => [name, terms.map(([v]) => v)]));
+    for (const [v,name] of model.recipe_variables || []) {
+        if (model.variable_keys[v].startsWith('continuous_site:')) {
+            if (!groups.has(name)) groups.set(name,[]);
+            groups.get(name).push(v);
+        }
+    }
+    return groups;
+}
+
 // What the model's tie-break (see `BUILDING_TIE_BREAK` in exact.rs) took off an objective.
 function tiebreakOf(problem, values) {
     return (problem.tiebreak || []).reduce((sum, [v, weight]) => sum + weight * (values[v] || 0), 0);
@@ -121,29 +134,89 @@ function tiebreakOf(problem, values) {
 // level-up pace, or its Home Coins. The page's Opportunities solve that same model for the plan
 // as it stands, so they take it from here.
 async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, comparison = null, deadline = null) {
+    const input = JSON.parse(payload);
+    if (input.always_running && !pkg.supports_continuous_production?.()) {
+        throw new Error('The production solver is outdated. Reload the page to load the current version.');
+    }
+    // Comparisons use the full model: their summary may omit the active recipe list.
+    if (!input.always_running || comparison) return exactPlanJsonOnce(pkg, payload, step, first, comparison, deadline);
+    let top = null, seed = null;
+    step('continuous_production', 'start');
+    const plan = await continuousProduction(input, async (trial, pass) => {
+        top = null;
+        if (pass === 1 && seed?.goals && input.aniimo?.startsWith('roster') && !Object.keys(input.roster?.dispatch || {}).length
+            && !input.level_up_strategy && !input.prioritize_byproducts && !input.recipe_switching?.max_buildings) {
+            step('final','start');
+            try {
+                const joint = await repairProductionPriorities(pkg,trial,seed);
+                if (joint) {
+                    step('final','done',false);
+                    step('check','done',false);
+                    return joint;
+                }
+            } catch (error) {
+                console.warn('Joint priorities need the full production search.',error);
+            }
+        }
+        const plan = JSON.parse(await exactPlanJsonOnce(pkg, JSON.stringify(trial),
+            (key,state,proof) => {
+                // The discovery pass only identifies candidate recipes. Report
+                // priority timings and proofs from the constrained search.
+                if (pass > 0 || trial.always_running_recipes?.length) step(key,state,proof);
+            }, value => { top ||= value; }, null, deadline, seed));
+        seed = plan.comparison_seed ? {...plan.comparison_seed, upperBounds:plan.continuous_upper_bounds,
+            currencyTarget:plan.comparison_goals?.currency_value, goals:plan.comparison_goals} : null;
+        return plan;
+    });
+    if (plan.success && top) first(top);
+    step('continuous_production', plan.success ? 'done' : 'fail');
+    return JSON.stringify(plan);
+}
+
+async function exactPlanJsonOnce(pkg, payload, step = () => {}, first = () => {}, comparison = null, deadline = null, initialSeed = null) {
     const { exact_byproduct_problems, exact_priority_problem, exact_level_up_problem, exact_problem, exact_plan } = pkg;
     const input = JSON.parse(payload);
-    const maximizeBenchAndKiln = input.maximize_material_work ?? !input.fixed_homeland;
+    const discoveryPass = input.always_running && input.always_running_recipes?.length === 0;
+    const maximizeBenchAndKiln = !discoveryPass && (input.maximize_material_work ?? !input.fixed_homeland);
     const stage = { floors: [] };
-    let incumbent = null;
-    let incumbentKeys = null;
+    let incumbent = initialSeed ? {values:initialSeed.values} : null;
+    // Auxiliary columns depend on which recipes are constrained in this pass.
+    let incumbentKeys = initialSeed?.keys.map((key,i)=>key.startsWith('extra') ? `discarded:${i}` : key) ?? null;
     let lastCurrencySolve = null;
-    let provenCurrencyMaximum = null;
-    let provenCurrencyPace;
+    let retainedCurrency = null;
+    let currencyMaximumGlobal = false;
+    let retainedCurrencyPace;
+    let currencyCeiling = Infinity;
     let materialWorkNote = null;
     const options = comparison?.options || SOLVE_OPTIONS;
     const {productionObjective,productionCertificate,withProductionBounds} = await prioritySearch;
     const certificates = [];
+    let nearCertifiedCurrencyCeiling = false, nearDiscoveryIncome = false;
+    const stageUpperBounds=new Map(initialSeed?.upperBounds||[]);
     const searchModel = comparison?.solve || solveModel;
-    const runModel = (problem,...args)=>{
+    const runModel = async (problem,...args)=>{
         if(deadline!=null){
             const remaining=(deadline-performance.now())/1000;
             if(remaining<.05)throw new Error('Recipe switching search time exhausted');
             args[0]={...(args[0]||options),time_limit:Math.min(remaining,2)};
         }
-        return searchModel(withProductionBounds(problem,certificates),...args);
+        const bounded = withProductionBounds(problem,certificates);
+        const local = input.continuous_fast_neighborhood
+            ? continuousNeighborhood(bounded,input.always_running_recipes,initialSeed) : bounded;
+        const localArgs = [...args];
+        if (local.continuousRestricted) localArgs[1] = undefined;
+        // Downstream priorities inherit the currency floor. Once a verified
+        // witness is close to its global ceiling, spend a short pass on each
+        // remaining objective. Retry with the normal budget if no witness exists.
+        const shortPass = (nearCertifiedCurrencyCeiling || nearDiscoveryIncome) && !comparison && deadline == null
+            && (localArgs[0]?.time_limit ?? options.time_limit) > 2;
+        const searchArgs = shortPass ? [{...(localArgs[0] || options),time_limit:2}, undefined, localArgs[2]] : localArgs;
+        let result = await searchModel(local,...searchArgs);
+        if (!result && shortPass) result = await searchModel(local,...localArgs);
+        if (!result && local.continuousRestricted) return searchModel(bounded,...args);
+        return neighborhoodResult(result,local.continuousRestricted);
     };
-    const solve = async (problem, goal) => {
+    const solveOnce = async (problem, goal) => {
         const certified = goal && await comparison?.bound(problem, goal);
         if (certified && !certified.values) return certified;
         let seed = incumbent?.values;
@@ -152,6 +225,7 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
             const previous = new Map(incumbentKeys.map((key,i)=>[key,seed[i]]));
             seed = problem.variable_keys.map(key=>previous.get(key) ?? 0);
         }
+        const structuralSeed=seed;
         // HiGHS can accept a zero-output MIP start as optimal for a small new
         // production objective, even when a cold solve finds a positive rate.
         // An incumbent which makes none of the newly prioritized output isn't useful.
@@ -163,12 +237,53 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
             ? 'The minimum event crop plots cannot be met. Check plot levels, growing conditions, and the seed budget.'
             : undefined;
         const protectedProblem=comparison?.protect(problem,goal)||problem;
+        const boundKey=JSON.stringify([goal,stage],(_,value)=>typeof value==='number'?Number(value.toPrecision(12)):value);
+        const knownUpper=stageUpperBounds.get(boundKey);
+        let repaired=null;
+        if(input.always_running&&structuralSeed&&Number.isFinite(knownUpper)&&(problem.production_only||goal==='crop_variety')) {
+            const general=problem.lp.match(/\nGeneral\n([\s\S]*?)\nEnd/);
+            const integers=[...(general?.[1]||'').matchAll(/\bx(\d+)\b/g)].map(m=>Number(m[1]));
+            const fixed=integers.filter(v=>!problem.variable_keys[v].startsWith('extra'))
+                .map(v=>` continuous_seed_${v}: x${v} = ${Math.round(structuralSeed[v])}`).join('\n');
+            if(fixed) {
+                const local={...protectedProblem,lp:protectedProblem.lp.replace('\nBounds\n',`\n${fixed}\nBounds\n`)};
+                repaired=await runModel(local,{...options,time_limit:Math.min(2,options.time_limit)},undefined,seed);
+                if(repaired?.values&&(goal==='crop_variety'?Math.round(repaired.objective)===Math.round(knownUpper):Math.abs(repaired.objective-knownUpper)<=1e-8*Math.max(1,Math.abs(knownUpper)))) {
+                    incumbent={...repaired,proven:true};incumbentKeys=problem.variable_keys;
+                    return incumbent;
+                }
+                if(repaired?.values)seed=repaired.values;
+            }
+        }
+        // Fixing the entire team can rule out a worker swap that is necessary
+        // under the measured dispatch policy. Keep the active recipes flexible
+        // and try to reach the same certified upper bound before branching over
+        // all buildings. Failure simply leaves a warm start for the full search.
+        if (input.always_running && initialSeed && goal !== (input.currency || 'coins')
+            && problem.production_only && Number.isFinite(knownUpper)) {
+            const local = continuousNeighborhood(withProductionBounds(protectedProblem,certificates),
+                input.always_running_recipes,initialSeed);
+            if (local.continuousRestricted) {
+                const witness = await searchModel(local,{...options,time_limit:Math.min(1,options.time_limit)},undefined,seed);
+                if (witness && (!repaired || witness.objective > repaired.objective)) {
+                    repaired = neighborhoodResult(witness,true);
+                    seed = repaired.values;
+                    if (Math.abs(repaired.objective-knownUpper) <= 1e-8*Math.max(1,Math.abs(knownUpper))) {
+                        incumbent = {...repaired,proven:true,upper:knownUpper};
+                        incumbentKeys = problem.variable_keys;
+                        return incumbent;
+                    }
+                }
+            }
+        }
         let result;
         if (certified) result = certified;
-        else if((!comparison || options.time_limit>=EXACT_TIME_LIMIT) && goal===(input.currency||'coins') && problem.production_only
+        else if(!(input.always_running && initialSeed) && (!comparison || options.time_limit>=EXACT_TIME_LIMIT) && goal===(input.currency||'coins') && problem.production_only
             && problem.variables>=1000 && problem.integer_groups?.length){
             const initial=await runModel(protectedProblem,{...options,time_limit:Math.min(2,options.time_limit)},message,seed);
-            if(initial?.proven)result=initial;
+            if(initial?.proven || initial?.searchProven || (discoveryPass && initial?.objective > 0
+                && Number.isFinite(initial.upper) && initial.upper >= initial.objective - 1e-8
+                && initial.upper <= initial.objective * 1.005))result=initial;
             else {
                 let refined=initial;
                 if(initial?.values){
@@ -188,18 +303,86 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
                 result=await runModel(protectedProblem,options,message,initial?.values||seed);
                 if(refined && (!result || (!result.proven && refined.objective>result.objective)))result={...refined,proven:false};
             }
+        }else if (!input.continuous_fast_neighborhood && initialSeed && goal === (input.currency || 'coins') && problem.production_only) {
+            const bounded = withProductionBounds(protectedProblem, certificates);
+            const local = continuousNeighborhood(bounded, input.always_running_recipes, initialSeed);
+            const witness = local.continuousRestricted
+                ? await searchModel(local, {...options,time_limit:Math.min(4,options.time_limit)}, undefined, seed)
+                : null;
+            let bestSeed = witness && (!repaired || witness.objective > repaired.objective) ? witness : repaired;
+            const target = initialSeed.currencyTarget / 1.0025;
+            if (input.aniimo?.startsWith('roster') && target > 0 && !(bestSeed?.objective >= target)) {
+                const alternative = incomeRepairNeighborhood(bounded,input.always_running_recipes,initialSeed,target);
+                if (alternative) {
+                    const candidate = await searchModel(alternative,{...options,time_limit:Math.min(3,options.time_limit)},undefined,seed);
+                    if (candidate && (!bestSeed || candidate.objective > bestSeed.objective)) bestSeed = candidate;
+                }
+            }
+            nearCertifiedCurrencyCeiling = Number.isFinite(knownUpper) && bestSeed?.objective > 0
+                && bestSeed.objective <= knownUpper + 1e-8
+                && knownUpper - bestSeed.objective <= 0.0025 * bestSeed.objective;
+            nearDiscoveryIncome = bestSeed?.objective > 0 && initialSeed.currencyTarget > 0
+                && bestSeed.objective >= initialSeed.currencyTarget / 1.0025;
+            // The discovery relaxation already bounded the unrestricted
+            // objective for these exact priority floors. A feasible witness
+            // within the search tolerance needs no second branch-and-bound
+            // pass. Never promote its local proof to a global one.
+            result = nearCertifiedCurrencyCeiling
+                ? {...bestSeed, proven:false, searchProven:false, upper:knownUpper}
+                : keepProductionWitness(await runModel(protectedProblem, options, message, bestSeed?.values ?? seed), bestSeed);
+            if (result && Number.isFinite(knownUpper) && knownUpper >= result.objective)
+                result.upper = Math.min(result.upper ?? Infinity, knownUpper);
         }else result=await runModel(protectedProblem,options,message,seed);
+        // A repair fixes whole buildings. Only the parent solve can supply a
+        // bound that later priorities may reuse across different buildings.
+        result = keepProductionWitness(result,repaired);
         if (result) { incumbent = result; incumbentKeys = problem.variable_keys; }
+        if(result?.proven&&(problem.production_only||goal==='crop_variety')) {
+            stageUpperBounds.set(boundKey,result.objective);
+        } else if (problem.production_only && Number.isFinite(result?.upper) && result.upper >= result.objective) {
+            stageUpperBounds.set(boundKey,Math.min(stageUpperBounds.get(boundKey) ?? Infinity,result.upper));
+        }
         const certificate = productionCertificate(problem,result);
-        if (certificate) certificates.push(certificate);
+        if (certificate) certificates.push({...certificate, continuousStable:true});
         comparison?.observe(goal, result);
         return result;
+    };
+    const solve = async (problem, goal, rebuild) => {
+        for(let pass=0;;pass++) {
+            let result=await solveOnce(problem,goal);
+            if(!result?.values || !input.always_running || discoveryPass || !Array.isArray(input.always_running_recipes) || !rebuild)return result;
+            if(!Array.isArray(problem.recipe_variables))throw new Error('Missing recipe variables for continuous production');
+            const checked=new Set(input.always_running_recipes);
+            const producing=new Set(problem.recipe_variables.filter(([v])=>problem.variable_keys[v].startsWith('rate:')&&result.values[v]>1e-9).map(([,name])=>name));
+            if(problem.recipe_variables.some(([v,name])=>result.values[v]>1e-9&&!checked.has(name)&&!producing.has(name))) {
+                // Pure priority objectives leave arbitrary unused sites selected.
+                // Remove those only if a smaller model reproduces the achieved
+                // objective; this preserves the original upper-bound certificate.
+                const zero=new Set(problem.recipe_variables.filter(([,name])=>!producing.has(name)).map(([v])=>v));
+                const local={...problem,lp:problem.lp.replace(/^ (?:0 <= x(\d+) <= [^\n]+|x(\d+) >= 0)$/gm,
+                    (line,a,b)=>zero.has(Number(a??b))?` 0 <= x${a??b} <= 0`:line)};
+                const sparse=await runModel(local,{...options,time_limit:Math.min(2,options.time_limit)},undefined,result.values.map((v,i)=>zero.has(i)?0:v));
+                if(sparse?.values&&sparse.objective>=result.objective-1e-8*Math.max(1,Math.abs(result.objective))) {
+                    result={...sparse,proven:result.proven,searchProven:result.searchProven,upper:result.upper};incumbent=result;incumbentKeys=problem.variable_keys;
+                }
+            }
+            const missing=problem.recipe_variables.filter(([v,name])=>result.values[v]>1e-9&&!checked.has(name));
+            if(!missing.length)return result;
+            for(const [,name] of missing)checked.add(name);
+            input.always_running_recipes=pass<7?[...checked]:undefined;
+            payload=JSON.stringify(input);
+            // Auxiliary identities shift when new availability constraints appear.
+            incumbentKeys=incumbentKeys?.map((key,i)=>key.startsWith('extra')?`discarded:${i}`:key);
+            const stable=certificates.filter(c=>c.continuousStable&&c.terms.every(([key])=>!key.startsWith('extra')));
+            certificates.splice(0,certificates.length,...stable);
+            Object.assign(problem,rebuild());
+        }
     };
     let allProven = true;
     if (!input.level_up_strategy && (input.crop_variety || input.season)) {
         step('crop_variety', 'start');
         const model = JSON.parse(pkg.exact_crop_variety_problem(payload));
-        const most = model.lp ? await solve(model, 'crop_variety') : { objective: 0, proven: true };
+        const most = model.lp ? await solve(model, 'crop_variety',()=>JSON.parse(pkg.exact_crop_variety_problem(payload))) : { objective: 0, proven: true };
         if (!most) throw new Error('no plan found for crop and tree variety');
         stage.crop_variety = Math.round(most.objective);
         allProven &&= most.proven;
@@ -230,13 +413,22 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
         const finalCurrency = priorityIndex === priorities.length-1 && target === (input.currency || 'coins');
         if (!finalCurrency) priority = productionObjective(priority,{prune:!comparison});
         // The final currency needs an actual feasible vector for the subsequent material solve.
-        const most = await solve(priority, target);
+        const most = await solve(priority, target,()=>{
+            const rebuilt=JSON.parse(exact_priority_problem(payload,JSON.stringify(stage),target));
+            return finalCurrency?rebuilt:productionObjective(rebuilt,{prune:!comparison});
+        });
         lastCurrencySolve = finalCurrency ? most : null;
         step(`priority:${target}`, 'done', most?.proven);
         if (!most) throw new Error(`no plan found for the most ${target}`);
-        if (target === (input.currency || 'coins') && most.proven && priority.production_only) {
-            provenCurrencyMaximum = most.objective;
-            provenCurrencyPace = stage.pace;
+        if (target === (input.currency || 'coins') && priority.production_only) {
+            const dual = most.proven ? most.objective : most.upper;
+            if (Number.isFinite(dual) && dual >= most.objective - 1e-9)
+                currencyCeiling = Math.min(currencyCeiling, dual);
+        }
+        if (target === (input.currency || 'coins') && (most.proven || most.searchProven || discoveryPass || nearCertifiedCurrencyCeiling || nearDiscoveryIncome) && priority.production_only) {
+            retainedCurrency = most.objective;
+            currencyMaximumGlobal = most.proven;
+            retainedCurrencyPace = stage.pace;
         }
         if (alone) first({ measure: target, objective: most.objective, proven: most.proven });
         allProven &&= most.proven;
@@ -251,7 +443,7 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
     const levelUp = JSON.parse(exact_level_up_problem(payload));
     if (levelUp.lp) {
         step('level_up', 'start');
-        const fastest = await solve(levelUp, 'level_up');
+        const fastest = await solve(levelUp, 'level_up',()=>JSON.parse(exact_level_up_problem(payload)));
         step('level_up', 'done', fastest?.proven);
         if (!fastest) throw new Error('no plan found for the level-up');
         if (stage.floors.length === 0) first({ measure: 'level_up', objective: fastest.objective, proven: fastest.proven });
@@ -264,7 +456,7 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
     }
     if (autoMaximizeSeasonPoints(input)) {
         step('season', 'start');
-        const most = await solve(JSON.parse(exact_priority_problem(payload, JSON.stringify(stage), SEASON_POINTS)), SEASON_POINTS);
+        const most = await solve(JSON.parse(exact_priority_problem(payload, JSON.stringify(stage), SEASON_POINTS)), SEASON_POINTS,()=>JSON.parse(exact_priority_problem(payload,JSON.stringify(stage),SEASON_POINTS)));
         step('season', 'done', most?.proven);
         if (!most) throw new Error('no plan found for the most season points');
         allProven &&= most.proven;
@@ -281,32 +473,38 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
         // plan once, after material allocation, rather than rebuilding this intermediate one.
         solved = lastCurrencySolve;
     }
-    if (!solved && !comparison && provenCurrencyMaximum != null && provenCurrencyPace === stage.pace && !input.level_up_strategy
-        && maximizeBenchAndKiln && hasMaterialProcessors(input) && incumbent?.values && incumbentKeys?.length === incumbent.values.length
+    if (!solved && !comparison && retainedCurrency != null && retainedCurrencyPace === stage.pace && !input.level_up_strategy
+        && (discoveryPass || (maximizeBenchAndKiln && hasMaterialProcessors(input))) && incumbent?.values && incumbentKeys?.length === incumbent.values.length
         && problem.variable_keys?.length === problem.variables
-        && JSON.parse(exact_problem(payload,JSON.stringify({...stage,maximize_material_work:true}))).lp) {
-        // The currency already has a proved maximum under the current RV pace. The material
+        && (discoveryPass || JSON.parse(exact_problem(payload,JSON.stringify({...stage,maximize_material_work:true}))).lp)) {
+        // The currency already has a feasible target under the current RV pace. The material
         // stage below retains max(final currency, that priority), so another currency MIP
-        // cannot raise its floor. Map the latest feasible priority plan directly into that
+        // can reuse that target. Map the latest feasible priority plan directly into that
         // stage instead of spending another search merely to obtain an incumbent.
         const previous = new Map(incumbentKeys.map((key,i)=>[key,incumbent.values[i]]));
         solved = {values:problem.variable_keys.map(key=>previous.get(key) ?? 0),
-            objective:provenCurrencyMaximum,proven:true};
+            objective:retainedCurrency,proven:currencyMaximumGlobal};
     }
     const finalReused = !!solved;
     step('final', finalReused ? 'skip' : 'start');
-    solved ||= await solve(problem, input.currency || 'coins');
+    solved ||= await solve(problem, input.currency || 'coins',()=>JSON.parse(exact_problem(payload,stageJson)));
     if (!solved) throw new Error('the solver found no plan');
     if (alone) first({ measure: 'coins', objective: solved.objective, proven: solved.proven });
     let proven = solved.proven && allProven;
     let bound = solved.objective;
     if (!proven) {
         // The same model without whole units: the most any plan could earn.
-        if (!comparison) {
-            const relaxed = (await newHighs()).solve(problem.lp.replace(/\nGeneral\n[\s\S]*\nEnd/, '\nEnd'), {});
-            if (Number.isFinite(relaxed.ObjectiveValue)) {
-                bound = Math.max(bound, relaxed.ObjectiveValue + tiebreakOf(problem, columnValues(problem, relaxed)));
-            }
+        if (!comparison && Number.isFinite(currencyCeiling) && currencyCeiling >= bound - 1e-9) {
+            // Subsequent priorities only add requirements. A certified ceiling
+            // on raw currency still bounds the final plan's raw earnings.
+            bound = Math.max(bound, currencyCeiling);
+        } else if (!comparison) {
+            // Maximize raw earnings directly. Removing the tie-break from the
+            // value at a penalized LP optimum need not bound raw earnings.
+            const raw = productionObjective(problem);
+            const relaxed = (await newHighs()).solve(raw.lp.replace(/\nGeneral\n[\s\S]*\nEnd/, '\nEnd'), {});
+            if (relaxed.Status === 'Optimal' && Number.isFinite(relaxed.ObjectiveValue))
+                bound = Math.max(bound, relaxed.ObjectiveValue);
         }
     }
     if (!finalReused) step('final', 'done', solved.proven);
@@ -329,7 +527,7 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
             const stockJson = JSON.stringify({ ...workStage, maximize_upgrade_materials: true });
             const stockProblem = JSON.parse(exact_problem(payload, stockJson));
             const seed = stockProblem.variables === solved.values.length + 1 ? [...solved.values, 0] : undefined;
-            const stocked = await (await materialSearch).searchMaterials(stockProblem, seed, runModel, options);
+            const stocked = await (await materialSearch).searchMaterials({...stockProblem,continuousMaterialSearch:true}, seed, runModel, options);
             if (!stocked) throw new Error('no plan found for the RV upgrade materials');
             workStage.material_pace = stocked.objective;
             materialPace = stocked.objective;
@@ -346,7 +544,7 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
         };
         if (workProblem.lp) {
             step('materials', 'start');
-            const worked = await (await materialSearch).searchMaterials(workProblem, solved.values, runModel, options);
+            const worked = await (await materialSearch).searchMaterials({...workProblem,continuousMaterialSearch:true}, solved.values, runModel, options);
             step('materials', worked ? 'done' : 'fail', worked?.proven);
             if (worked) {
                 allProven &&= solved.proven;
@@ -368,6 +566,14 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
         }
     }
     const finish = (plan, stock = null, seedProblem = problem, seedSolved = solved) => {
+        plan.continuous_upper_bounds = [...stageUpperBounds];
+        plan.continuous_checked_recipes = input.always_running_recipes;
+        plan.continuous_production_checked = !!input.always_running && input.always_running_recipes == null;
+        plan.active_continuous_recipes = seedProblem.recipe_variables?.filter(([v])=>seedSolved.values[v]>1e-9).map(([,name])=>name);
+        if (input.always_running && !comparison && input.aniimo?.startsWith('roster')) {
+            plan.continuous_site_counts = Object.fromEntries([...physicalRecipeColumns(seedProblem)].map(([name,columns]) =>
+                [name,Math.round(columns.reduce((total,v) => total + seedSolved.values[v],0))]));
+        }
         plan.level_up_note = levelUpNote;
         plan.material_work_note = materialWorkNote;
         plan.comparison_scores = { crop_variety: stage.crop_variety ?? null,
@@ -414,6 +620,128 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
     if (!plan.success) throw new Error(plan.error || 'the plan failed its check');
     step('check', 'done');
     return finish(plan);
+}
+
+// Aim for the optimistic priority targets in a single feasible staffing plan.
+// The unmodified multi-stage search handles any missing or infeasible target.
+async function repairProductionPriorities(pkg,input,seed) {
+    const {currency,pace,crop_variety,floors} = seed.goals;
+    if (!pace || !floors.some(([name])=>name===currency) || !hasMaterialProcessors(input)) return null;
+    const currencyIndex = floors.findIndex(([name])=>name===currency);
+    const prefix = {floors:floors.slice(0,currencyIndex)};
+    if (crop_variety != null) prefix.crop_variety = crop_variety;
+    if (input.priorities.indexOf('level_up') > input.priorities.indexOf(currency)) return null;
+    prefix.pace = pace;
+    const boundKey = JSON.stringify([currency,prefix],(_,v)=>typeof v==='number'?Number(v.toPrecision(12)):v);
+    const upper = new Map(seed.upperBounds).get(boundKey);
+    if (!Number.isFinite(upper) || !(seed.currencyTarget > 0)) return null;
+    const payload = JSON.stringify(input);
+    const stage = {crop_variety,pace,floors:floors.filter(([name])=>name!==currency)};
+    const {productionObjective} = await prioritySearch;
+    const model = productionObjective(JSON.parse(pkg.exact_priority_problem(payload,JSON.stringify(stage),currency)));
+    const local = incomeRepairNeighborhood(model,input.always_running_recipes,seed,seed.currencyTarget/1.0025);
+    if (!local) return null;
+    const previous = new Map(seed.keys.map((key,i)=>[key,seed.values[i]]));
+    const found = await solveModel(local,{...SOLVE_OPTIONS,time_limit:3},undefined,
+        local.variable_keys.map(key=>key.startsWith('extra')?0:previous.get(key)??0));
+    if (!found || found.objective < seed.currencyTarget/1.0025 || found.objective > upper+1e-7) return null;
+    stage.floors = floors.map(([name,value])=>[name,name===currency?found.objective:value]);
+    stage.maximize_material_work = true;
+    const stageJson = JSON.stringify(stage);
+    const work = JSON.parse(pkg.exact_problem(payload,stageJson));
+    const valuesByKey = new Map(model.variable_keys.map((key,i)=>[key,found.values[i]]));
+    const warm = work.variable_keys.map(key=>valuesByKey.get(key)??0);
+    const checked = new Set(input.always_running_recipes);
+    const rows = work.recipe_variables.filter(([,name])=>!checked.has(name)).map(([v])=>` inactive_${v}: x${v} = 0`);
+    for (const v of work.material_fixed || []) rows.push(` retain_${v}: x${v} = ${Math.round(warm[v])}`);
+    const fixed = {...work,lp:work.lp.replace('\nBounds\n',`\n${rows.join('\n')}\nBounds\n`)};
+    const worked = await solveModel(fixed,{...SOLVE_OPTIONS,time_limit:1},undefined,warm);
+    if (!worked) return null;
+    const result = (await incumbentSolver).polishSolution(await newHighs(),fixed,worked);
+    if (work.recipe_variables.some(([v,name])=>result.values[v]>1e-9&&!checked.has(name))) return null;
+    const plan = JSON.parse(pkg.exact_plan(payload,stageJson,JSON.stringify({values:result.values,proven:false,bound:upper})));
+    if (!plan.success || plan.rate_per_second < seed.currencyTarget/1.0025) return null;
+    return {...plan,continuous_production_checked:true,continuous_checked_recipes:[...checked],
+        active_continuous_recipes:work.recipe_variables.filter(([v])=>result.values[v]>1e-9).map(([,name])=>name),
+        continuous_site_counts:Object.fromEntries([...physicalRecipeColumns(work)].map(([name,vs])=>
+            [name,Math.round(vs.reduce((n,v)=>n+result.values[v],0))])),
+        continuous_upper_bounds:seed.upperBounds,comparison_goals:{...seed.goals,floors:stage.floors,currency_value:found.objective},
+        comparison_seed:{keys:work.variable_keys,values:result.values},material_work_note:'unproven',
+        comparison_scores:{crop_variety,material_pace:null,material_work:result.objective,stock:null}};
+}
+
+// Recheck a completed shift against the dispatch policy measured on its map.
+// Both its worker assignments and its bounds must be rebuilt for that policy.
+async function repairDispatchPlan(pkg, input, witness) {
+    if (!input.always_running || !pkg.supports_continuous_production?.() || !input.roster?.dispatch || !witness?.recipes?.length
+        || !witness.seed?.keys?.length || !witness.goals?.pace || witness.scores?.material_work == null
+        || input.recipe_switching?.max_buildings || input.level_up_strategy || input.prioritize_byproducts) return null;
+    const {pace, floors, crop_variety, currency} = witness.goals;
+    if (!floors.some(([name]) => name === currency) || witness.scores.material_pace != null) return null;
+    const recipes = new Set(witness.recipes);
+    const payload = JSON.stringify({...input, always_running_recipes:[...recipes]});
+    // Measured travel can change the best power mode or require two normal
+    // buildings where one faster worker previously sufficed. Retain the
+    // earlier priorities, then optimize actual earnings inside this roster.
+    const stage = JSON.stringify({floors:floors.map(([name,value])=>[name,name===currency?value/1.0025:value]),
+        pace, crop_variety, material_work:witness.scores.material_work});
+    const model = JSON.parse(pkg.exact_problem(payload, stage));
+    if (!model.recipe_variables || !model.lp) return null;
+    const zeros = model.recipe_variables.filter(([,name]) => !recipes.has(name))
+        .map(([v]) => ` route_scope_${v}: x${v} = 0`).join('\n');
+    const counts = [...physicalRecipeColumns(model)].filter(([name]) => recipes.has(name)
+        && Number.isInteger(witness.counts?.[name])).map(([name,columns],i) =>
+        ` route_sites_${i}: ${columns.map(v => 'x'+v).join(' + ')} >= ${witness.counts[name]}`).join('\n');
+    const local = {...model, lp:model.lp.replace('\nBounds\n', `\n${zeros}\n${counts}\nBounds\n`)};
+    const previous = new Map(witness.seed.keys.map((key,i) => [key,witness.seed.values[i]]));
+    const seedFor = p => p.variable_keys.map(key => key.startsWith('extra') ? 0 : previous.get(key) ?? 0);
+    const found = await solveModel(local, {...SOLVE_OPTIONS,time_limit:1}, undefined, seedFor(model));
+    if (!found) return null;
+    const highs = await newHighs();
+    const solved = (await incumbentSolver).polishSolution(highs,local,found);
+    if (model.recipe_variables.some(([v,name]) => !recipes.has(name) && solved.values[v] > 1e-9)) return null;
+    const work = JSON.parse(pkg.exact_problem(payload,JSON.stringify({floors,pace,crop_variety,maximize_material_work:true})));
+    const byKey = new Map(model.variable_keys.map((key,i)=>[key,solved.values[i]]));
+    const materialWork = work.primary_objective.reduce((value,[v,c])=>value+c*(byKey.get(work.variable_keys[v])??0),0);
+    if (materialWork < witness.scores.material_work - 1e-6) return null;
+
+    const relaxed = JSON.stringify({...input, always_running_recipes:[]});
+    const thresholds = new Map(floors);
+    thresholds.set(currency,solved.objective);
+    const stages = {floors:[]};
+    const upperBounds = [];
+    const {productionObjective} = await prioritySearch;
+    let currencyUpper;
+    for (const key of [...(crop_variety == null ? [] : ['crop_variety']), ...input.priorities]) {
+        const target = key === 'crop_variety' ? crop_variety : key === 'level_up' ? pace : thresholds.get(key);
+        if (!Number.isFinite(target)) return null;
+        const p = key === 'crop_variety' ? JSON.parse(pkg.exact_crop_variety_problem(relaxed))
+            : productionObjective(JSON.parse(pkg.exact_priority_problem(relaxed,JSON.stringify(stages),key)));
+        if (!p.lp || (key !== 'crop_variety' && !p.production_only)) return null;
+        const lp = p.lp.replace(/\nGeneral\n[\s\S]*\nEnd/,'\nEnd');
+        const result = highs.solve(lp,{time_limit:1});
+        let upper = result.Status === 'Optimal' ? result.ObjectiveValue : Infinity;
+        const tolerance = key === currency ? .0025 * target : 1e-8 * Math.max(1,Math.abs(target));
+        if (upper > target + tolerance) {
+            const mip = await solveModel(p,{...SOLVE_OPTIONS,time_limit:2},undefined,seedFor(p));
+            if (Number.isFinite(mip?.upper)) upper = Math.min(upper,mip.upper);
+        }
+        if (!Number.isFinite(upper) || upper < target - 1e-7 || upper > target + tolerance) return null;
+        upperBounds.push([JSON.stringify([key,stages],(_,v)=>typeof v === 'number' ? Number(v.toPrecision(12)) : v), upper]);
+        if (key === currency) currencyUpper = upper;
+        if (key === 'crop_variety') stages.crop_variety = target;
+        else if (key === 'level_up') stages.pace = target;
+        else stages.floors.push([key,target]);
+    }
+    if (!Number.isFinite(currencyUpper)) return null;
+    const plan = JSON.parse(pkg.exact_plan(payload, stage, JSON.stringify({values:solved.values, proven:false, bound:currencyUpper})));
+    if (!plan.success || currencyUpper - plan.rate_per_second > .0025 * plan.rate_per_second) return null;
+    return {...plan, continuous_production_checked:true, continuous_checked_recipes:[...recipes],
+        active_continuous_recipes:model.recipe_variables.filter(([v])=>solved.values[v]>1e-9).map(([,name])=>name),
+        continuous_upper_bounds:upperBounds, comparison_seed:{keys:model.variable_keys,values:solved.values},
+        comparison_goals:{...witness.goals,floors:[...thresholds],currency_value:plan.rate_per_second},
+        comparison_scores:{crop_variety,material_pace:null,material_work:materialWork,stock:null},
+        material_work_note:'unproven'};
 }
 
 async function withRecipeSwitches(pkg,input,baseline,progress=()=>{}) {
@@ -482,7 +810,15 @@ self.onmessage = async (event) => {
             const step = (key, state, proven) => self.postMessage({ id, type: 'progress', count: { step: key, state, proven } });
             try {
                 let top = null;
-                result = await exactPlanJson(pkg, payload, step, found => { top ||= found; });
+                let repaired = null;
+                if (event.data.routeWitness) {
+                    try {
+                        repaired = await repairDispatchPlan(pkg,JSON.parse(payload),event.data.routeWitness);
+                    } catch (error) {
+                        console.warn('Dispatch witness could not be checked. Searching the measured model.',error);
+                    }
+                }
+                result = repaired ? JSON.stringify(repaired) : await exactPlanJson(pkg, payload, step, found => { top ||= found; });
                 if (top) {
                     const plan = JSON.parse(result);
                     plan.measure_top = top;
@@ -492,7 +828,7 @@ self.onmessage = async (event) => {
                 fallbackReason = error && error.message ? error.message : String(error);
                 // The backup planner doesn't know the player's roster, so a roster plan stops here.
                 const input = JSON.parse(payload);
-                if (input.fixed_homeland || input.e_mode_rv >= 12 || input.electricity || Object.values(input.quest_income_per_day||{}).some(n=>n>0) || hasSeasonCropMinimums(input) || hasMaterialProcessors(input)
+                if (input.always_running || input.fixed_homeland || input.e_mode_rv >= 12 || input.electricity || Object.values(input.quest_income_per_day||{}).some(n=>n>0) || hasSeasonCropMinimums(input) || hasMaterialProcessors(input)
                     || (!input.level_up_strategy && (input.crop_variety || input.season || input.priorities?.includes('level_up')))) {
                     result = JSON.stringify({ success: false, error: fallbackReason });
                 } else if (input.aniimo?.startsWith('roster')) {

@@ -1294,6 +1294,8 @@ pub struct FacilityCounts {
     hauling_default_seconds: f64,
     fixed_homeland: Option<FixedHomeland>,
     recipe_switching_relaxation: bool,
+    always_running: bool,
+    always_running_recipes: Option<std::collections::HashSet<String>>,
     recipe_switching_facilities: Vec<String>,
 }
 
@@ -1341,6 +1343,8 @@ impl Default for FacilityCounts {
             hauling_default_seconds: 0.0,
             fixed_homeland: None,
             recipe_switching_relaxation: false,
+            always_running: false,
+            always_running_recipes: None,
             recipe_switching_facilities: Vec::new(),
         }
     }
@@ -1367,6 +1371,18 @@ impl FacilityCounts {
 
     pub fn set_recipe_switching_facilities(&mut self, facilities: Vec<String>) {
         self.recipe_switching_facilities = facilities;
+    }
+
+    pub fn set_always_running(&mut self, enabled: bool) { self.always_running = enabled; }
+
+    pub fn always_running(&self) -> bool { self.always_running }
+
+    pub fn set_always_running_recipes(&mut self, names: Option<Vec<String>>) {
+        self.always_running_recipes=names.map(|names|names.into_iter().collect());
+    }
+
+    pub fn checks_continuous_recipe(&self, name: &str) -> bool {
+        self.always_running_recipes.as_ref().is_none_or(|names|names.contains(base_item_name(name)))
     }
 
     pub fn takes_turns(&self, recipe: &ProductionItem) -> bool {

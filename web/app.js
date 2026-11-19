@@ -183,7 +183,7 @@ let lastPlanInput = null;
 let setupSolve = null;
 let mainSolve = null;
 const SETUP_TIMEOUT = 300_000;
-function ensurePlanFor(setup, refining = false) {
+function ensurePlanFor(setup, refining = false, previousPlan = null) {
     if (plansBySetup[setup] || !lastPlanInput || setupSolve?.setup === setup
         || (mainSolve?.runId === planRunId && mainSolve.setup === setup)) return;
     stopSetupSolve();
@@ -233,7 +233,10 @@ function ensurePlanFor(setup, refining = false) {
     solver.onmessageerror = () => done({ success: false, error: 'The planner returned an unreadable response.' });
     // The levels are read afresh: the player may have changed which abilities they have since
     // the plan this input came from.
-    solver.postMessage({ id: 1, type: 'find_plan', payload: JSON.stringify({ ...lastPlanInput, ...aniimoInput(setup) }) });
+    const routeWitness = previousPlan?.continuous_production_checked && !previousPlan.recipe_schedule
+        ? {recipes:previousPlan.active_continuous_recipes, counts:previousPlan.continuous_site_counts, seed:previousPlan.comparison_seed,
+            goals:previousPlan.comparison_goals, scores:previousPlan.comparison_scores} : null;
+    solver.postMessage({ id: 1, type: 'find_plan', routeWitness, payload: JSON.stringify({ ...lastPlanInput, ...aniimoInput(setup) }) });
 }
 
 function stopSetupSolve() {
@@ -2510,6 +2513,7 @@ function startProgress(input, runId) {
         ...season,
         { key: 'plan', label: priorities.at(-1) === 'coins'
             ? 'Finish Production Plan' : priorities.length || seasonFirst || planting ? "Home Coins with What's Left" : 'Most Home Coins' },
+        ...(input.always_running ? [{key:'continuous_production',label:'Continuous resource allocation'}] : []),
         ...(input.recipe_switching?.max_buildings?[{key:'recipe_switching',label:'Daily recipe schedule'}]:[]),
         { key: 'layout', label: 'Homeland Layout' },
     ];
@@ -2679,7 +2683,7 @@ function refineReactiveDispatch(layout, plan) {
         stopRanking();
         // This is the same calculation with measured routes, not a team change.
         // Keep the completed steps/results visible while the final solve runs.
-        ensurePlanFor(selectedAniimoSetup(), true);
+        ensurePlanFor(selectedAniimoSetup(), true, plan);
         return true;
     }
     if(plan.recipe_schedule){
@@ -4482,6 +4486,7 @@ function getPlanInputValues() {
     const { facilities, modules } = buildingInventory();
     return {
         currency: 'coins',
+        always_running: true,
         recipe_switching: recipeSwitchingInput(),
         priorities: activePriorities(),
         prioritize_byproducts: false,

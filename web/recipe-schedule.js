@@ -68,9 +68,10 @@ export function buildRecipeSchedule(input) {
         const recipes=[...new Set(allowed.map(j=>j.recipe))];
         const switched=add(1,true,1e-4); changed.push(switched);
         const selections=[];
+        const active=input.alwaysRunning?add(1,true):null;
         for(let p=0;p<phases;p++) {
             const selected=new Map(recipes.map(r=>[r,add(1,true)])); selections.push(selected);
-            row([...selected.values()].map(v=>[v,1]),'=',1);
+            row([...selected.values()].map(v=>[v,1]).concat(active==null?[]:[[active,-1]]),'=',active==null?1:0);
             if(p) for(const recipe of recipes) {
                 row([[selected.get(recipe),1],[selections[0].get(recipe),-1],[switched,-1]],'<=',0);
                 row([[selected.get(recipe),-1],[selections[0].get(recipe),1],[switched,-1]],'<=',0);
@@ -84,6 +85,7 @@ export function buildRecipeSchedule(input) {
                 cells.push({building:b.id,phase:p,job:job.id,variable:batches});
             }
             row([...work,[durations[p],-1]],'<=',0);
+            if(active!=null)row([...work,[durations[p],-1],[active,-D]],'>=',-D);
         }
     }
     row(changed.map(v=>[v,1]),'<=',input.maxBuildings);
@@ -164,7 +166,10 @@ export function validateRecipeSchedule(input,schedule) {
             last.set(b,r);
         }
         if(changed)switches.push(elapsed);
-        for(const time of work.values())if(time>phase.duration+EPS)errors.push('Building overloaded');
+        for(const time of work.values()){
+            if(time>phase.duration+EPS)errors.push('Building overloaded');
+            if(input.alwaysRunning&&time<phase.duration-EPS)errors.push('Active recipe manually throttled');
+        }
         for(const [w,time] of workers)if(time>((input.workerCapacity?.[w]||0)-(input.backgroundWorkers?.[w]||0))*phase.duration+EPS)errors.push('Worker overloaded');
         if(!errors.length&&!input.approximate) {
             const packed=packPhase(phase,jobs,input.workerCapacity||{});
@@ -175,6 +180,7 @@ export function validateRecipeSchedule(input,schedule) {
         for(const [r,n] of entries(produced))inventory[r]=(inventory[r]||0)+n;
         elapsed+=phase.duration;
     }
+    if(input.alwaysRunning)for(const id of seen.keys())if(phases.some(p=>p.duration>EPS&&!p.assignments?.some(a=>a.building===id&&a.batches>EPS)))errors.push('Active building paused between phases');
     for(const j of input.jobs)if(Math.abs((totals.get(j.id)||0)-j.batches)>EPS*Math.max(1,j.batches))errors.push(`Wrong daily batches for ${j.id}`);
     for(const [r,start] of entries(schedule.initialStock))if((inventory[r]||0)<start-EPS)errors.push(`Stock does not replenish: ${r}`);
     const switchedBuildings=[...seen].filter(([,rs])=>rs.size>1).map(([b])=>b);

@@ -74,7 +74,42 @@ export function scheduleInputForPlan(input,plan) {
             workerCapacity[key]=buildings.filter(b=>b.electric_level==null).length;
         }
     }
-    return {daySeconds:DAY,approximate:true,maxBuildings:settings.max_buildings||0,maxSwitches:settings.max_switches||0,
+    if(input.always_running) {
+        // A phase can release ingredients or workers to an unchanged recipe.
+        // Its average throttled rate is then no longer a valid background load.
+        // Until that equilibrium is solved per phase, reject such candidates
+        // instead of certifying a stock buffer which cannot replenish.
+        const resources=new Set(jobs.flatMap(j=>[...Object.keys(j.inputs),...Object.keys(j.outputs)]));
+        const members=new Set(jobs.flatMap(j=>Object.keys(j.workers)));
+        const background=sources.filter(s=>!s.turns&&s.rate>EPS);
+        const affected=new Set();
+        let changed=true;
+        while(changed) {
+            changed=false;
+            for(const s of background) {
+                const key=`${s.facility}|${s.item}`;
+                const related=[...s.inputs,...s.outputs].some(([r])=>resources.has(r))
+                    || (s.crew!=null&&members.has(String(s.crew)))
+                    || (s.hauling_seconds||[]).some((seconds,i)=>seconds>0&&members.has(String(i)));
+                if(!related||affected.has(key))continue;
+                affected.add(key);changed=true;
+                for(const peer of background.filter(p=>p.facility===s.facility&&p.item===s.item)) {
+                    for(const [r] of [...peer.inputs,...peer.outputs])resources.add(r);
+                    if(peer.crew!=null)members.add(String(peer.crew));
+                }
+            }
+        }
+        for(const key of affected) {
+            const group=background.filter(s=>`${s.facility}|${s.item}`===key);
+            const work=group.reduce((n,s)=>n+s.rate*s.cycle,0);
+            const sites=(plan.coin_items||[]).filter(r=>`${r.facility}|${r.item_name}`===key&&r.status==='producing')
+                .reduce((n,r)=>n+r.facility_count,0);
+            if(!sites||work<sites-EPS*Math.max(1,sites)) {
+                throw new Error(`Switching changes availability for ${group[0].item}; its phase production is not verified.`);
+            }
+        }
+    }
+    return {alwaysRunning:!!input.always_running,daySeconds:DAY,approximate:true,maxBuildings:settings.max_buildings||0,maxSwitches:settings.max_switches||0,
         buildings,jobs,workerCapacity,backgroundWorkers,backgroundInputs,backgroundOutputs,haulingLoads:Object.fromEntries(plan.hauling_staffing||[])};
 }
 

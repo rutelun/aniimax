@@ -81,3 +81,14 @@ test('background work consumes capacity in every interval',()=>{
         jobs:problem().jobs.map(j=>({...j,workers:{fire:j.seconds}}))});
     assert.equal(solve(input),null);
 });
+
+test('always-running schedules reject unexplained manual throttling',()=>{
+    const input=problem({alwaysRunning:true,maxSwitches:0,buildings:[{id:'kiln',recipes:['ore']}],
+        jobs:[{id:'ore',recipe:'ore',batches:2,seconds:10,outputs:{ore:1}}]});
+    assert.equal(solve(input),null);
+    assert.equal(validateRecipeSchedule(input,{initialStock:{},phases:[{duration:100,assignments:[{building:'kiln',job:'ore',batches:2}]}]}).valid,false);
+});
+test('always-running schedules allow a full-speed switch and unused buildings',()=>{
+    const input=problem({alwaysRunning:true,buildings:[{id:'kiln',recipes:['ore','brick']},{id:'spare',recipes:['ore','brick']}]});
+    assert.ok(solve(input));
+});

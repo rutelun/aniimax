@@ -21,6 +21,16 @@ test('background production and sales enter the renewable inventory balance',()=
         source('raw',{turns:false,facility:'Mine',outputs:[['sand',4]],inputs:[]})],income_streams:[{item_name:'ore',units_per_second:.01}]});
     assert.equal(p.backgroundOutputs.sand,.08);assert.equal(p.backgroundInputs.ore,.01);
 });
+
+test('always-running switching cannot freeze a competing background recipe at its average rate',()=>{
+    const wet=source('wet',{inputs:[['water',1]],crew:null,electric_level:1,cycle:1,rate:.5});
+    const dry=source('dry',{crew:null,electric_level:1,cycle:1,rate:.5});
+    const background=source('consumer',{turns:false,facility:'Other',crew:null,cycle:1,rate:.5,inputs:[['water',1]]});
+    const setup={...input,always_running:true};
+    const candidate={...plan,schedule_sources:[wet,dry,background],coin_items:[{facility:'Other',item_name:'consumer',status:'producing',facility_count:1}]};
+    assert.throws(()=>scheduleInputForPlan(setup,candidate),/phase production is not verified/);
+    assert.doesNotThrow(()=>scheduleInputForPlan({...setup,always_running:false},candidate));
+});
 test('validated schedule produces map jobs and time profiles without changing production',()=>{
     const p=scheduleInputForPlan(input,plan);
     const schedule={phases:[{duration:43200,assignments:[{building:p.buildings[0].id,job:'ore',batches:1728}]},

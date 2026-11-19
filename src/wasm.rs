@@ -8,6 +8,10 @@ use wasm_bindgen::prelude::*;
 
 use crate::models::{FacilityCounts, ModuleLevels, ProductionEfficiency, ProductionItem};
 
+/// Prevent a newly loaded worker from silently using the old throttled model.
+#[wasm_bindgen]
+pub fn supports_continuous_production() -> bool { true }
+
 /// Refine a complete feasible map without blocking the page's main thread.
 #[wasm_bindgen]
 pub fn refine_layout(input: &str) -> Result<String, JsValue> {
@@ -713,6 +717,11 @@ fn default_true() -> bool {
 /// rate and facility plan, with no goal amount (see [`JsGoalInput`] for that).
 #[derive(Debug, Clone, Deserialize)]
 pub struct JsPlanInput {
+    /// Continuous active recipes; false retains the relaxed economic upper bound.
+    #[serde(default)]
+    pub always_running: bool,
+    #[serde(default)]
+    pub always_running_recipes: Option<Vec<String>>,
     /// `"coins"` (matches `ProductionItem::sell_currency`), or a byproduct
     /// pseudo-currency target: `"wood_blocks"`/`"mineral_sand"`; see
     /// `crate::optimizer::byproduct_resource_name`.
@@ -1751,6 +1760,8 @@ fn lp_json(problem: &crate::exact::LpProblem) -> String {
     serde_json::json!({ "lp": problem.lp, "variables": problem.variables, "tiebreak": problem.tiebreak,
         "primary_objective": problem.primary_objective, "material_fixed": problem.material_fixed,
         "variable_keys": problem.variable_keys, "production_zero":problem.production_zero,
+        "recipe_variables":problem.recipe_variables,
+        "recipe_options":problem.recipe_options,
         "integer_groups":problem.integer_groups }).to_string()
 }
 
@@ -1811,6 +1822,10 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
         Err(problem) => return serde_json::to_string(&empty_production_plan(false, Some(format!("Exact plan failed its check: {problem}"))))
             .unwrap_or_default(),
     };
+    let mut reporting_items = &prepared.items[..];
+    let mut extra_electric = Vec::new();
+    // Changing a worker or site after solving changes competition for ingredients.
+    if !report_counts.always_running() {
     if let Some(candidate) = crate::exact::consolidate_reserve_workplaces(
         &exact, &roster_workload, &prepared.items, &report_counts,
     ) {
@@ -1839,8 +1854,6 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
             &report_counts, &prepared.module_levels, level_up,
         );
     }
-    let mut reporting_items = &prepared.items[..];
-    let mut extra_electric = Vec::new();
     if !result.summary_only && matches!(prepared.setup, Some(crate::models::AniimoSetup::Best(_)))
         && prepared.input.fixed_homeland.is_none()
     {
@@ -1864,6 +1877,7 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
                 reporting_items = &extra_electric;
             }
         }
+    }
     }
     let proof = (exact.proven_optimal, exact.upper_bound);
     let report_at = |target, seconds| {
@@ -2119,6 +2133,8 @@ impl PreparedInput {
             serde_json::to_string(&empty_production_plan(false, Some(format!("Invalid input: {}", e)))).unwrap_or_default()
         })?;
         let mut facility_counts = input.facility_counts();
+        facility_counts.set_always_running(input.always_running);
+        facility_counts.set_always_running_recipes(input.always_running_recipes.clone());
         facility_counts.set_recipe_switching_relaxation(input.recipe_switching_relaxation);
         facility_counts.set_recipe_switching_facilities(input.recipe_switching_facilities.clone());
         facility_counts.set_quest_income_per_day(&input.quest_income_per_day);

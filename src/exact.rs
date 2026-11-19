@@ -126,6 +126,7 @@ pub struct ExactPlan {
     pub recipe_rates: BTreeMap<String, f64>,
     /// Whole units set to each recipe that runs.
     pub units: BTreeMap<String, u32>,
+    pub continuous_sites: BTreeMap<String, u32>,
     /// Units/sec sold of each item.
     pub sold: BTreeMap<String, f64>,
     pub environment: Vec<ExactEnvironment>,
@@ -305,9 +306,13 @@ enum VarKind<'a> {
     HaulingStaff { recipe: &'a ProductionItem, member: usize, seconds: f64 },
     FixedSite { recipe: &'a ProductionItem, group: usize },
     FixedTurnUnits { group: usize, electric: bool },
+    ContinuousSite(String),
 }
 
 /// One linear constraint: `(variable, coefficient)` terms, comparison, right-hand side.
+#[path = "always_running.rs"]
+mod always_running;
+
 type Constraint = (Vec<(usize, f64)>, ComparisonOp, f64);
 
 /// The mixed-integer program, kept independent of any one `microlp` solve so every node of the
@@ -736,7 +741,8 @@ fn build_model<'a>(
     }
     for variants in dispatch_units.values() {
         let recipe = variants[0].0;
-        let reserved = model.add(0.0, (0.0, facility_counts.get_count(&recipe.facility) as f64), true, VarKind::Extra);
+        let kind = if facility_counts.always_running() { VarKind::ContinuousSite(format!("{}|{}", recipe.facility, crate::models::base_item_name(&recipe.name))) } else { VarKind::Extra };
+        let reserved = model.add(0.0, (0.0, facility_counts.get_count(&recipe.facility) as f64), true, kind);
         let mut terms: Vec<_> = variants.iter().map(|(_, unit)| (*unit, 1.0)).collect();
         terms.push((reserved, -1.0));
         model.constrain(terms, ComparisonOp::Le, 0.0);
@@ -778,6 +784,7 @@ fn build_model<'a>(
             }
         }
     }
+    let production_balance = balance.clone();
     // A floor naming a currency ("aniimo_exp", "aniipods") keeps a plan making that much of it
     // while it earns `currency`; those items need sell variables too, worth nothing here. So does
     // the season's points a level-up plan makes the most of while coins pay for the level-up.
@@ -1107,6 +1114,7 @@ fn build_model<'a>(
     // a recipe's time per batch at its rate, or at a facility it lives in, the whole day per unit.
     // Every environment building in use is staffed all day by a member with its ability.
     let mut reserve_work = Vec::new();
+    let mut worker_busy = Vec::new();
     if let Some(crew) = facility_counts.crew() {
         let mut busy: Vec<Vec<(usize, f64)>> = vec![Vec::new(); crew.members.len()];
         let mut anchored = vec![Vec::new(); crew.members.len()];
@@ -1240,6 +1248,7 @@ fn build_model<'a>(
         if let Some(first) = crew.assumed_from {
             reserve_work.extend(busy.iter().skip(first).flatten().copied());
         }
+        worker_busy = busy.clone();
         if let Some((_, limit)) = team_limit {
             let mut active = Vec::new();
             for (member, mut terms) in busy.into_iter().enumerate().filter(|(_, terms)| !terms.is_empty()) {
@@ -1265,6 +1274,9 @@ fn build_model<'a>(
                 }
             }
         }
+    }
+    if facility_counts.always_running() {
+        always_running::constrain(&mut model, &rate_of, &physical_units, &production_balance, &worker_busy, facility_counts);
     }
     match goal {
         Goal::CropVariety { seasonal_only } => {
@@ -1709,6 +1721,7 @@ pub fn solve_relaxed(
 fn plan_from(model: &Model, value: f64, upper_bound: f64, proven_optimal: bool, nodes: u32, values: &[f64], _root: f64) -> ExactPlan {
     let mut recipe_rates = BTreeMap::new();
     let mut units = BTreeMap::new();
+    let mut continuous_sites = BTreeMap::new();
     let mut sold = BTreeMap::new();
     let mut environment = Vec::new();
     let mut pairs: Vec<ExactPair> = Vec::new();
@@ -1724,6 +1737,7 @@ fn plan_from(model: &Model, value: f64, upper_bound: f64, proven_optimal: bool, 
     let mut travel = BTreeMap::<usize, f64>::new();
     for (index, (kind, &v)) in model.kinds.iter().zip(values).enumerate() {
         match kind {
+            VarKind::ContinuousSite(key) if v > 0.5 => { continuous_sites.insert(key.clone(), v.round() as u32); },
             VarKind::Pace => pace = Some(v),
             VarKind::Staff { building, member } if v > 1e-9 => staffing.push((building.clone(), *member, v)),
             VarKind::CropStaff { ability, level, member } if v > 1e-9 => crop_staffing.push((ability.clone(), *level, *member, v)),
@@ -1800,6 +1814,7 @@ fn plan_from(model: &Model, value: f64, upper_bound: f64, proven_optimal: bool, 
     let movement_staffing = travel.into_iter().filter(|(_, seconds)| *seconds > 1e-9).collect();
     ExactPlan {
         rate_per_second,
+        continuous_sites,
         objective: model.untied(value, values),
         upper_bound,
         proven_optimal,
@@ -2453,7 +2468,8 @@ pub fn check_plan_with_workload(
         }
     }
     for (recipe, time) in dispatch_units.values() {
-        let physical = (time - TOLERANCE).ceil().max(0.0);
+        let physical = plan.continuous_sites.get(&format!("{}|{}", recipe.facility, crate::models::base_item_name(&recipe.name)))
+            .map_or_else(|| (time - TOLERANCE).ceil().max(0.0), |n| *n as f64);
         units_at.entry(&recipe.facility).or_default().push((recipe.facility_level, physical));
         if let Some(environment) = recipe.environment.as_deref() {
             *plots_needing.entry((&recipe.facility, environment)).or_default() += physical as u32;
@@ -2759,6 +2775,10 @@ pub struct LpProblem {
     pub material_fixed: Vec<usize>,
     /// Stable semantic identities for optional warm starts across alternative inputs.
     pub variable_keys: Vec<String>,
+    /// Recipe rate columns, with variant suffixes removed, for lazy constraints.
+    pub recipe_variables: Vec<(usize, String)>,
+    /// Rate column, base recipe, facility, staffed source, electric variant, cycle.
+    pub recipe_options: Vec<(usize, String, String, bool, bool, f64)>,
     /// Dominated environment assignments for production-only stages without a headcount cap.
     pub production_zero: Vec<usize>,
     /// Integer sums for LP-based bound tightening: name, terms, natural upper bound.
@@ -2783,7 +2803,7 @@ fn integer_groups(model: &Model<'_>, counts: &FacilityCounts) -> Vec<(String, Ve
 fn production_staff_zeros(model: &Model<'_>, counts: &FacilityCounts) -> Vec<usize> {
     // Forced dispatch and approach time can consume the reserves that this
     // optional symmetry reduction otherwise assumes can staff every climate post.
-    if counts.has_dispatch() { return Vec::new(); }
+    if counts.has_dispatch() || counts.always_running() { return Vec::new(); }
     let Some(crew) = counts.crew() else { return Vec::new() };
     let Some(first) = crew.assumed_from else { return Vec::new() };
     if counts.power().is_some_and(|p|p.grid.max_aniimo.is_some()) { return Vec::new(); }
@@ -2854,6 +2874,7 @@ fn warm_start_keys(model: &Model<'_>, items: &[ProductionItem], counts: &Facilit
             VarKind::PoweredUnits => "powered_units".into(),
             VarKind::PowerGenerators => "generators".into(),
             VarKind::Extra => "extra".into(),
+            VarKind::ContinuousSite(key) => format!("continuous_site:{key}"),
             VarKind::Environment { building, mode, types, option } =>
                 format!("environment:{building}:{mode}:{types:?}:{:?}", option.counts),
             VarKind::EnvironmentPair { buildings, modes, types, option } =>
@@ -2946,6 +2967,15 @@ pub fn write_lp(
         (!flexible).then_some(v)
     }).collect();
     LpProblem { lp: out, variables: model.objective.len(), tiebreak: model.tiebreak.clone(), primary_objective, material_fixed,
+        recipe_options: model.kinds.iter().enumerate().filter_map(|(v,k)|match k {
+            VarKind::Rate(r)=>Some((v,crate::models::base_item_name(&r.name).to_owned(),r.facility.clone(),
+                r.raw_materials.is_none()&&r.workload.is_some(),electric_level(&r.name).is_some(),r.production_time)),_=>None,
+        }).collect(),
+        recipe_variables: model.kinds.iter().enumerate().filter_map(|(v,k)|match k {
+            VarKind::Rate(r)|VarKind::Units(r)=>Some((v,crate::models::base_item_name(&r.name).to_owned())),
+            VarKind::ContinuousSite(key)=>key.split_once('|').map(|(_,name)|(v,name.to_owned())),
+            _=>None,
+        }).collect(),
         variable_keys: warm_start_keys(&model, items, facility_counts), production_zero:production_staff_zeros(&model,facility_counts),
         integer_groups:integer_groups(&model,facility_counts) }
 }
@@ -3393,6 +3423,7 @@ fn production_plan(
             entry.2 += rate * recipe.production_time;
         }
         let dispatched_count = |base: &str, time: f64| {
+            if let Some(&count) = exact.continuous_sites.get(&format!("{facility}|{base}")) { return count; }
             let mut sites = BTreeMap::<usize, f64>::new();
             for (name, group, amount) in &exact.fixed_sites {
                 if crate::models::base_item_name(name) == base && all[name.as_str()].facility == facility {

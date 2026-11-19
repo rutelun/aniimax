@@ -215,13 +215,15 @@ function attachFlexibleGroups(layout){
     }
 }
 
-export async function productionGroupLayout(pieces,cells,{storageCount=1,poleLimit=0,recipes=[],staffing=null,onCandidate=null}={}){
+const packings=[[22,Infinity,1.5],[28,Infinity,1.5],[32,Infinity,1.5],[16,24,1.5],[24,24,1.5],[16,Infinity,2],[24,Infinity,2],[32,Infinity,2]];
+const narrowPacking=[12,Infinity,2];
+
+export function searchGroupPackings(pieces,cells,variants,{storageCount=1,poleLimit=0,recipes=[],staffing=null,onCandidate=null}={}){
     if(!pieces.length||!cells.length)return null;
     const keeps=layout=>layoutKeepsIncome(layout,staffing,recipes);
     let best=null;
     // Different row widths avoid tuning the result to one RV or inventory.
-    for(const [width,targetSize,wiringGap] of [[22,Infinity,1.5],[28,Infinity,1.5],[32,Infinity,1.5],[16,24,1.5],[24,24,1.5],[16,Infinity,2],[24,Infinity,2],[32,Infinity,2],[12,Infinity,2]]){
-        if(width===12&&best)continue; // Narrow land fallback; avoid another full search on ordinary maps.
+    for(const [width,targetSize,wiringGap] of variants){
         const blocks=buildProductionBlocks(pieces,{width,targetSize,wiringGap});
         const proxies=blocks.map(b=>({members:[{x:0,y:0,w:b.w,h:b.h,weight:b.members.reduce((s,r)=>s+(r.weight||0),0)}]}));
         const seed=layOutHomeland(proxies,cells,{w:2,h:2},Math.min(1,storageCount),{fast:true,accountForWorkers:false});
@@ -263,6 +265,14 @@ export async function productionGroupLayout(pieces,cells,{storageCount=1,poleLim
         layout.groups.forEach(g=>{g.storageIndices=layout.storages.flatMap((s,i)=>contains(g.bounds,s)?[i]:[]);});
         if(!best||layoutDeliveryCost(layout)<layoutDeliveryCost(best))best=layout;
     }
+    return best;
+}
+
+export async function productionGroupLayout(pieces,cells,options={}){
+    const {storageCount=1,staffing=null,recipes=[],searchPackings}=options;
+    const keeps=layout=>layoutKeepsIncome(layout,staffing,recipes);
+    let best=searchPackings ? await searchPackings(packings) : searchGroupPackings(pieces,cells,packings,options);
+    if(!best)best=searchGroupPackings(pieces,cells,[narrowPacking],options);
     if(!best)return null;
     // Polish the selected layout, not every discarded packing candidate.
     for(let pass=0;pass<3;pass++){

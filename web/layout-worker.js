@@ -25,16 +25,48 @@ self.onmessage = async (event) => {
     const storageCount = event.data.storageCount ?? 1;
     const poleLimit = event.data.poleLimit ?? 0;
     const { recipes, staffing } = event.data;
+    if (event.data.groupPackings) {
+        const { searchGroupPackings } = await import('./production-groups.js' + new URL(import.meta.url).search);
+        let connected = false;
+        const layout = searchGroupPackings(pieces,cells,event.data.groupPackings,{storageCount,poleLimit,recipes,staffing,
+            onCandidate: candidate => { if (candidate.disconnected === 0) connected = true; }});
+        self.postMessage({layout,connected});
+        return;
+    }
     const style = normalizeMapStyle(event.data.style);
     const grouped = style === 'groups';
     let groupFailure = 'space';
     const deliver = layout => self.postMessage(optimizePowerNetworks(parkIdleBuildings(layout,cells),cells,poleLimit));
     if (grouped && storageCount > 0) {
-        const { productionGroupLayout } = await import('./production-groups.js' + new URL(import.meta.url).search);
-        const arranged = await productionGroupLayout(pieces, cells, { storageCount, poleLimit, recipes, staffing,
-            onCandidate: candidate => {
-                if (candidate.layout && candidate.disconnected === 0) groupFailure = 'workload';
-            } });
+        const { productionGroupLayout, searchGroupPackings } = await import('./production-groups.js' + new URL(import.meta.url).search);
+        const options = {storageCount,poleLimit,recipes,staffing,onCandidate: candidate => {
+            if (candidate.disconnected === 0) groupFailure = 'workload';
+        }};
+        if (pieces.length >= 24 && typeof Worker !== 'undefined' && (self.navigator?.hardwareConcurrency || 0) >= 4) {
+            options.searchPackings = async variants => {
+                const workers = [];
+                try {
+                    const n = Math.min(4,Math.floor(self.navigator.hardwareConcurrency / 2));
+                    const results = await Promise.all(Array.from({length:n},(_,i)=>new Promise((resolve,reject)=>{
+                        const child = new Worker(import.meta.url,{type:'module'});
+                        workers.push(child);
+                        child.onmessage = ({data}) => {
+                            if (data.connected) groupFailure = 'workload';
+                            resolve(data.layout);
+                        };
+                        child.onerror = child.onmessageerror = reject;
+                        child.postMessage({...event.data,groupPackings:variants.slice(Math.floor(i*variants.length/n),Math.floor((i+1)*variants.length/n))});
+                    })));
+                    // Keep the original variant order when two packings tie.
+                    return results.reduce((best,layout)=>layout && (!best || layoutDeliveryCost(layout)<layoutDeliveryCost(best)) ? layout : best,null);
+                } catch {
+                    return searchGroupPackings(pieces,cells,variants,options);
+                } finally {
+                    workers.forEach(child=>child.terminate());
+                }
+            };
+        }
+        const arranged = await productionGroupLayout(pieces, cells, options);
         if (arranged) {
             self.postMessage(optimizePowerNetworks(arranged,cells,poleLimit));
             return;
