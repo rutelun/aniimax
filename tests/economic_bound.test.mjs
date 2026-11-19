@@ -40,4 +40,7 @@ test('unequal consumer loads identify the competing recipes and their source', (
     assert.deepEqual(new Set(suggestEconomicScope(problem,[1,1,.25,1,.75,1],['mandatory'])),
         new Set(['mandatory','crop','a','b']));
     assert.deepEqual(suggestEconomicScope(problem,[1,1,.5,1,.5,1]),[]);
+    const sellAll={...problem,variables:7,variable_keys:[...problem.variable_keys,'sold:crop#0'],
+        lp:problem.lp.replace('x4 >= 0','x4 - 1 x6 = 0')};
+    assert.deepEqual(new Set(suggestEconomicScope(sellAll,[1,1,.25,1,.75,1,0])),new Set(['crop','a','b']));
 });

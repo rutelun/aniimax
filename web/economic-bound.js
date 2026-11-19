@@ -72,7 +72,7 @@ function recipeLoads(problem, values) {
         const site = shared ?? byKey.get(key.replace(/^rate:/, 'units:'));
         if (site === undefined || values[site] <= 1e-8) continue;
         const crop = facility==='Farmland'||facility==='Woodland';
-        const load = loads.get(site) ?? {name, crop, source:staffedSource||crop, sites:values[site], work:0};
+        const load = loads.get(site) ?? {name, facility, crop, source:staffedSource||crop, sites:values[site], work:0};
         load.work += seconds * values[rate];
         loads.set(site, load);
         rateLoads.set(rate, load);
@@ -89,14 +89,15 @@ export function suggestEconomicScope(problem, values, required = [], {nearFloorO
     if (values?.length !== problem.variables || !problem.recipe_options) return [...required];
     const {loads,rateLoads} = recipeLoads(problem, values);
     const scope = new Set(required), inputs = new Map();
+    const sharedPlots = new Set([...loads.values()].filter(load=>load.crop&&scope.has(load.name)).map(load=>load.facility));
     const rowSection = problem.lp.split('\nSubject To\n')[1]?.split('\nBounds\n')[0] ?? '';
     for (const line of rowSection.split('\n')) {
-        const split = line.indexOf(' >= ');
-        if (split < 0) continue;
-        const lower = Number(line.slice(split + 4));
+        const relation=/ (>=|<=|=) (\S+)\s*$/.exec(line);
+        if (!relation) continue;
+        const split=relation.index,lower=Number(relation[2]);
         if (!Number.isFinite(lower) || lower > 1e-10) continue;
         const consumers = new Set(), producers = new Set();
-        let surplus = -lower, material = true;
+        let surplus = -lower, material = true, salable=false;
         const expr = line.slice(line.indexOf(':') + 1, split);
         for (const term of expr.matchAll(/([+-]?)\s*(?:(\d+(?:\.\d*)?(?:[eE][+-]?\d+)?)\s+)?x(\d+)/g)) {
             const v = Number(term[3]), key = problem.variable_keys[v];
@@ -105,6 +106,7 @@ export function suggestEconomicScope(problem, values, required = [], {nearFloorO
                 // Positive sale terms occur in currency/pace floors. Material
                 // balances consume sales and cannot produce them.
                 if(term[1]!=='-'){material=false;break;}
+                salable=true;
                 continue;
             }
             if (!key?.startsWith('rate:')) { material = false; break; }
@@ -113,7 +115,9 @@ export function suggestEconomicScope(problem, values, required = [], {nearFloorO
             const load = rateLoads.get(v);
             if (load && values[v] > 1e-10) (coefficient < 0 ? consumers : producers).add(load);
         }
-        if (!material || !consumers.size) continue;
+        // The native sell-all model uses equality on salable balances, and
+        // a second upper row when positive old stock can cover upgrade costs.
+        if (!material || !consumers.size || relation[1]!=='>='&&!salable) continue;
         const minimum = Math.max(...Array.from(consumers, load => load.work / load.sites));
         const resource = {consumers, producers, minimum, surplus};
         for (const load of consumers) {
@@ -123,6 +127,9 @@ export function suggestEconomicScope(problem, values, required = [], {nearFloorO
     }
     for (const load of loads.values()) {
         if (!nearFloorOnly && (load.source||!inputs.has(load)) && load.work > 1e-9 && load.work < load.sites - 1e-7) scope.add(load.name);
+        // Growing at a reserved seasonal plot and a regular plot shares
+        // facility capacity, even when only the former consumes seed tokens.
+        if (!nearFloorOnly && load.work>1e-9 && sharedPlots.has(load.facility)) scope.add(load.name);
     }
     for (const [load,resources] of inputs) {
         const usage = load.work / load.sites;

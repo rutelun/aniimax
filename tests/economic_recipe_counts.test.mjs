@@ -65,3 +65,14 @@ test('dispatch shares reserve a single physical site and retain their weighted c
     assert.ok(Math.abs(counts.upper-0.8)<1e-5);
     assert.equal(highs.solve(p.lp).ObjectiveValue,0.8);
 });
+
+test('a positive objective residual on an unmapped route is bounded by the original LP',()=>{
+    const p=sample();
+    p.variables++;
+    p.variable_keys.push('route:fruit:owned:0#0');
+    p.lp=p.lp.replace('5 x4 - 3 x0','5 x4 - 3 x0 + 0.4 x5').replace('Bounds',' travel: x5 <= 2\nBounds');
+    p.primary_objective.push([5,0.4]);
+    const counts=economicRecipeCounts(highs,p);
+    assert.ok(counts.upper>=15.8);
+    assert.ok(counts.upper<15.80001);
+});

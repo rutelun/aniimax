@@ -336,6 +336,8 @@ type Constraint = (Vec<(usize, f64)>, ComparisonOp, f64);
 /// search can rebuild its relaxation with its own bounds.
 struct Model<'a> {
     objective: Vec<f64>,
+    /// Actual production or upgrade progress before staffing preferences are applied.
+    primary_objective: Vec<(usize, f64)>,
     /// Currency per second per unit of each variable, whatever the objective is.
     earnings: Vec<f64>,
     bounds: Vec<(f64, f64)>,
@@ -361,6 +363,15 @@ const BUILDING_TIE_BREAK: f64 = 1e-5;
 const LOWER_LEVEL_PLOT_TIE_BREAK: f64 = 1e-6;
 
 impl<'a> Model<'a> {
+    fn finish_objective(mut self) -> Self {
+        self.primary_objective = self.objective.iter().copied().enumerate()
+            .filter(|(_, coefficient)| *coefficient != 0.0).collect();
+        for &(v, weight) in &self.tiebreak {
+            self.objective[v] -= weight;
+        }
+        self
+    }
+
     fn add(&mut self, objective: f64, bounds: (f64, f64), integer: bool, kind: VarKind<'a>) -> usize {
         self.objective.push(objective);
         self.bounds.push(bounds);
@@ -545,13 +556,12 @@ fn add_movement_work<'a>(model: &mut Model<'a>, rates: &[(&'a ProductionItem, us
     for (post, mut terms) in local_work { terms.push((post, -1.0)); model.constrain(terms, ComparisonOp::Le, 0.0); }
     for (facility, terms) in turn_posts { model.constrain(terms, ComparisonOp::Le, counts.get_count(&facility) as f64); }
     for &post in posts.values() {
-        model.objective[post] -= 1e-9;
         model.tiebreak.push((post, 1e-9));
     }
     for terms in busy.iter() { for &(v, time) in terms {
         if matches!(model.kinds[v], VarKind::WorkRoute { .. }) {
             let weight = 1e-8 * time;
-            model.objective[v] -= weight; model.tiebreak.push((v, weight));
+            model.tiebreak.push((v, weight));
         }
     } }
 }
@@ -728,11 +738,10 @@ fn build_model<'a>(
     }
     let all: HashMap<&str, &ProductionItem> = items.iter().map(|i| (i.name.as_str(), i)).collect();
     let fixed = facility_counts.fixed_homeland();
-    let recipes: Vec<&ProductionItem> = items
+    let eligible_recipes: Vec<&ProductionItem> = items
         .iter()
         .filter(|item| {
-            facility_counts.includes_candidate_recipe(&item.name)
-                && facility_counts.get_count(&item.facility) > 0
+            facility_counts.get_count(&item.facility) > 0
                 && facility_counts.can_produce(&item.facility, item.facility_level)
                 && item.module_requirement.as_ref().is_none_or(|(m, l)| module_levels.can_use(m, *l))
                 && item.production_time > 0.0
@@ -741,6 +750,7 @@ fn build_model<'a>(
         .collect();
     let mut model = Model {
         objective: Vec::new(),
+        primary_objective: Vec::new(),
         earnings: Vec::new(),
         bounds: Vec::new(),
         integer: Vec::new(),
@@ -758,7 +768,7 @@ fn build_model<'a>(
     // Recipe rates and units.
     let mut rate_of: Vec<(&ProductionItem, usize)> = Vec::new();
     let mut units_of: Vec<(&ProductionItem, usize)> = Vec::new();
-    for &recipe in &recipes {
+    for &recipe in eligible_recipes.iter().filter(|recipe| facility_counts.includes_candidate_recipe(&recipe.name)) {
         let rate = model.add(-seed_cost(recipe), (0.0, f64::INFINITY), false, VarKind::Rate(recipe));
         let max = facility_counts.get_count(&recipe.facility) as f64;
         let dispatched = facility_counts.dispatch_production(recipe);
@@ -999,15 +1009,21 @@ fn build_model<'a>(
     // Growing environments: plots of a crop needing environment E at facility F must be covered.
     let gated_types: Vec<&str> = ENVIRONMENT_GATED_FACILITIES.iter().map(|(f, _)| *f).collect();
     let mut needs_cover: BTreeMap<(&str, &str), Vec<usize>> = BTreeMap::new();
-    let mut demand_limit = BTreeMap::new();
     for &(recipe, units) in &physical_units {
         if let Some(environment) = recipe.environment.as_deref() {
             if gated_types.contains(&recipe.facility.as_str()) {
                 needs_cover.entry((recipe.facility.as_str(), environment)).or_default().push(units);
-                let eligible = facility_counts.capacity_at_level(&recipe.facility, recipe.facility_level);
-                let limit = demand_limit.entry((recipe.facility.as_str(),environment)).or_insert(0);
-                *limit = eligible.max(*limit);
             }
+        }
+    }
+    // Coverage geometry is catalogued by facility types. Removing a crop with
+    // zero rate must not introduce an arrangement missing from the full model.
+    let mut demand_limit = BTreeMap::new();
+    for recipe in &eligible_recipes {
+        if let Some(environment) = recipe.environment.as_deref().filter(|_| gated_types.contains(&recipe.facility.as_str())) {
+            let eligible = facility_counts.capacity_at_level(&recipe.facility, recipe.facility_level);
+            let limit = demand_limit.entry((recipe.facility.as_str(), environment)).or_insert(0);
+            *limit = eligible.max(*limit);
         }
     }
     let mut cover_terms: BTreeMap<(&str, &str), Vec<(usize, f64)>> = BTreeMap::new();
@@ -1026,7 +1042,7 @@ fn build_model<'a>(
     // `single_building_options`).
     let types_for = |modes: &[&str]| -> Vec<&str> {
         let mut types: Vec<&str> =
-            needs_cover.keys().filter(|(_, e)| modes.contains(e)).map(|(f, _)| *f).collect();
+            demand_limit.keys().filter(|(_, e)| modes.contains(e)).map(|(f, _)| *f).collect();
         types.sort_unstable();
         types.dedup();
         types.sort_by(|a, b| {
@@ -1085,7 +1101,7 @@ fn build_model<'a>(
                     if mode_a == mode_b
                         || middle == mode_a
                         || middle == mode_b
-                        || !needs_cover.keys().any(|(_, e)| *e == middle)
+                        || !demand_limit.keys().any(|(_, e)| *e == middle)
                     {
                         continue;
                     }
@@ -1364,7 +1380,7 @@ fn build_model<'a>(
     match goal {
         Goal::CropVariety { seasonal_only } => {
             add_crop_variety(&mut model, &all, facility_counts, &rate_of, &units_of, seasonal_only, None);
-            return model;
+            return model.finish_objective();
         }
         Goal::EarnWithCropVariety { minimum, seasonal_only, .. } => {
             add_crop_variety(&mut model, &all, facility_counts, &rate_of, &units_of, seasonal_only, Some(minimum));
@@ -1402,7 +1418,6 @@ fn build_model<'a>(
         // At this final stage all main priorities and the RV material pace are already
         // constrained. Keep the preference above the external solver's absolute MIP gap.
         let weight = if material_work.is_some() { 1e-4 } else { 1e-6 } * time;
-        model.objective[variable] -= weight;
         model.tiebreak.push((variable, weight));
     }
     if let Some(crew) = facility_counts.crew() {
@@ -1425,7 +1440,6 @@ fn build_model<'a>(
                 continue;
             }
             let weight = 4e-5 * seconds;
-            model.objective[variable] -= weight;
             model.tiebreak.push((variable, weight));
         }
     }
@@ -1438,11 +1452,9 @@ fn build_model<'a>(
             && electric_level(&recipe.name).is_none()
         {
             let weight = POWER_STAFF_TIE_BREAK * recipe.production_time;
-            model.objective[rate] -= weight;
             model.tiebreak.push((rate, weight));
         } else if !compare_power_staff && electric_level(&recipe.name).is_some() {
             let weight = 1e-6 * recipe.production_time;
-            model.objective[rate] += weight;
             model.tiebreak.push((rate, -weight));
         }
     }
@@ -1456,10 +1468,9 @@ fn build_model<'a>(
             VarKind::PowerGenerators => 1e-7,
             _ => continue,
         };
-        model.objective[v] -= weight;
         model.tiebreak.push((v, weight));
     }
-    model
+    model.finish_objective()
 }
 
 fn count_crop(model: &mut Model, mut harvest: Vec<(usize, f64)>) -> usize {
@@ -1551,14 +1562,6 @@ fn add_crop_variety(
         }
         Some(minimum) if minimum > 0 => model.constrain(covered, ComparisonOp::Ge, minimum as f64),
         Some(_) => {}
-    }
-}
-
-impl Model<'_> {
-    /// A solve's objective without the tie-break (see [`BUILDING_TIE_BREAK`]): what it really
-    /// made of what it maximized.
-    fn untied(&self, objective: f64, values: &[f64]) -> f64 {
-        objective + self.tiebreak.iter().map(|&(v, w)| w * values.get(v).copied().unwrap_or(0.0)).sum::<f64>()
     }
 }
 
@@ -1736,7 +1739,7 @@ pub fn solve_exact(
 
     let (value, values) = best?;
     let upper_bound = if proven { value } else { open.iter().map(|n| n.bound).fold(value, f64::max) };
-    Some(plan_from(&model, value, upper_bound.max(value), proven && open.is_empty(), nodes, &values, root_bound))
+    Some(plan_from(&model, upper_bound.max(value), proven && open.is_empty(), nodes, &values))
 }
 
 /// Bounds that fix every whole-unit variable to what `plan` (from the heuristic planner) uses, so
@@ -1801,7 +1804,7 @@ pub fn solve_relaxed(
     model.relax(&model.bounds).map(|(value, _)| value)
 }
 
-fn plan_from(model: &Model, value: f64, upper_bound: f64, proven_optimal: bool, nodes: u32, values: &[f64], _root: f64) -> ExactPlan {
+fn plan_from(model: &Model, upper_bound: f64, proven_optimal: bool, nodes: u32, values: &[f64]) -> ExactPlan {
     let mut recipe_rates = BTreeMap::new();
     let mut units = BTreeMap::new();
     let mut continuous_sites = BTreeMap::new();
@@ -1898,7 +1901,7 @@ fn plan_from(model: &Model, value: f64, upper_bound: f64, proven_optimal: bool, 
     ExactPlan {
         rate_per_second,
         continuous_sites,
-        objective: model.untied(value, values),
+        objective: model.primary_objective.iter().map(|&(v, coefficient)| coefficient * values[v]).sum(),
         upper_bound,
         proven_optimal,
         nodes,
@@ -3053,9 +3056,6 @@ pub fn write_lp(
         }
     }
     out.push_str("End\n");
-    let mut primary = model.objective.clone();
-    for &(v, weight) in &model.tiebreak { primary[v] += weight; }
-    let primary_objective = primary.into_iter().enumerate().filter(|(_, c)| *c != 0.0).collect();
     let material_fixed = model.kinds.iter().enumerate().filter_map(|(v, kind)| {
         if !model.integer[v] { return None; }
         let flexible = match kind {
@@ -3094,7 +3094,7 @@ pub fn write_lp(
             groups.entry((commitment, name)).or_default().push(v);
         }
     }
-    LpProblem { lp: out, variables: model.objective.len(), tiebreak: model.tiebreak.clone(), primary_objective, material_fixed,
+    LpProblem { lp: out, variables: model.objective.len(), tiebreak: model.tiebreak.clone(), primary_objective: model.primary_objective.clone(), material_fixed,
         staffing_groups: groups.into_values().collect(), climate_skills, staffing_pools: model.staffing_pools.clone(),
         recipe_options: model.kinds.iter().enumerate().filter_map(|(v,k)|match k {
             VarKind::Rate(r)=>Some((v,crate::models::base_item_name(&r.name).to_owned(),r.facility.clone(),
@@ -3169,9 +3169,8 @@ pub(crate) fn read_external_plan(
         }
     });
     if feasible {
-        let value: f64 = model.objective.iter().zip(&rounded).map(|(c, v)| c * v).sum();
         let earnings: f64 = model.earnings.iter().zip(&rounded).map(|(c, v)| c * v).sum();
-        return Some(plan_from(&model, value, upper_bound.max(earnings), proven_optimal, 0, &rounded, value));
+        return Some(plan_from(&model, upper_bound.max(earnings), proven_optimal, 0, &rounded));
     }
     if verify_only { return None; }
     let fixed: Vec<(f64, f64)> = model
@@ -3188,9 +3187,9 @@ pub(crate) fn read_external_plan(
             }
         })
         .collect();
-    let (value, solved) = model.relax(&fixed)?;
+    let (_, solved) = model.relax(&fixed)?;
     let earnings: f64 = model.earnings.iter().zip(&solved).map(|(c, v)| c * v).sum();
-    Some(plan_from(&model, value, upper_bound.max(earnings), proven_optimal, 0, &solved, value))
+    Some(plan_from(&model, upper_bound.max(earnings), proven_optimal, 0, &solved))
 }
 
 /// What `exact` makes per second of `currency`, at its items' sell values: the Aniimo EXP or

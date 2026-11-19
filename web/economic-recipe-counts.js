@@ -117,9 +117,12 @@ export function economicRecipeCounts(highs, problem, {input,timeLimit=1.5}={}) {
     function addRow(terms,sense,rhs) {
         if (terms.length) rows.add(expression(terms)+' '+sense+' '+rhs);
     }
-    // Removing a negative cost on a nonnegative variable only increases an
-    // upper bound. Native tie-break cancellation sometimes leaves such dust.
-    if (parsed.costs.some((c,v)=>c>0 && !mapped.has(v))) return null;
+    // Tie-break cancellation can leave a tiny signed residual on a staffing
+    // column. Price positive unmapped terms at full numerical scale in the
+    // original LP. Negative terms can be omitted for an upper bound.
+    const residual = parsed.costs.flatMap((c,v)=>c>0 && !mapped.has(v)?[[v,c]]:[]);
+    const scale = residual.reduce((largest,[,c])=>Math.max(largest,c),0);
+    const excess = scale ? {terms:residual.map(([v,c])=>[v,c/scale])} : null;
     for (const [column,variables] of original) {
         const cost = Math.max(...variables.map(v=>parsed.costs[v]));
         if (cost) objective.set(column,cost);
@@ -179,7 +182,8 @@ export function economicRecipeCounts(highs, problem, {input,timeLimit=1.5}={}) {
         // worker-days on its own as well as the shared capacity of its pool.
         pools.push({columns:[[g.rate,g.seconds]],terms:original.get(g.rate).map(v=>[v,g.seconds])});
     }
-    workerPoolBounds(highs,problem,pools);
+    workerPoolBounds(highs,problem,excess ? [...pools,excess] : pools);
+    if (excess && !Number.isFinite(excess.upper)) return null;
     for (const pool of pools) if (Number.isFinite(pool.upper)) addRow(pool.columns,'<=',pool.upper);
     for (const g of recipes) addRow([[g.rate,g.seconds],[g.site,-1]],'<=',0);
     // Dispatched worker shares are fractional. The separate native reservation
@@ -207,7 +211,8 @@ export function economicRecipeCounts(highs, problem, {input,timeLimit=1.5}={}) {
         // row and every missing row is dropped. Only the resulting dual bound
         // can certify income. Its primal solution supplies site hints.
         const dual = model.info.get('mip_dual_bound');
-        if (Number.isFinite(dual) && dual<1e25) selected.upper = Math.max(dual,model.getObjectiveValue())+1e-7;
+        if (Number.isFinite(dual) && dual<1e25)
+            selected.upper = Math.max(dual,model.getObjectiveValue())+(excess?.upper || 0)*scale+1e-7;
         return selected.size ? selected : null;
     } finally {
         model.dispose();

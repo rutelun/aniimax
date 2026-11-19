@@ -1548,6 +1548,54 @@ fn material_work_uses_spare_owned_artisans_before_slower_reserves() {
 }
 
 #[test]
+fn shortlisting_recipes_keeps_the_unrestricted_climate_layout_catalogue() {
+    use aniimax::exact::write_lp;
+    let mut fruit = walking_item("fruit", "Woodland", 10.0, "coins");
+    fruit.environment = Some("Cool".into());
+    let mut herb = walking_item("herb", "Farmland", 15.0, "coins");
+    herb.environment = Some("Cool".into());
+    let items = [fruit, herb];
+    let mut counts = FacilityCounts::only(&[("Woodland", 12, 1), ("Farmland", 20, 1), ("Cooling Unit", 1, 1)]);
+    counts.set_always_running(true);
+    counts.set_always_running_recipes(Some(vec!["fruit".into()]));
+    let build = |counts: &FacilityCounts| write_lp(&items, "coins", counts, &ModuleLevels::default(), Goal::Earn { floors: &[] });
+    let full = build(&counts);
+    counts.restrict_to_checked_recipes(true);
+    let small = build(&counts);
+    assert!(!small.variable_keys.iter().any(|key| key.starts_with("rate:herb")));
+    let layouts = |keys: &[String]| keys.iter().filter(|key| key.starts_with("environment:")).cloned().collect::<Vec<_>>();
+    assert!(!layouts(&full.variable_keys).is_empty());
+    assert_eq!(layouts(&small.variable_keys), layouts(&full.variable_keys));
+}
+
+#[test]
+fn primary_material_and_crop_objectives_exclude_staffing_tie_breaks() {
+    use aniimax::exact::write_lp;
+    use aniimax::models::{crew_variants, AniimoRequirements, GrowerSteps};
+    let mut requirements = AniimoRequirements::default();
+    requirements.insert("ore", "Earth", 1);
+    let crew = crew_of(&[(1, &[("Earth", 1)])]);
+    let items = crew_variants(vec![walking_item("ore", "Mine", 10.0, "coins")],
+        &crew, &requirements, &GrowerSteps::default());
+    let mut counts = FacilityCounts::only(&[("Mine", 1, 1)]);
+    counts.set_crew(crew);
+    counts.set_movement_seconds(5.0);
+    let modules = ModuleLevels::default();
+    let base = Goal::Earn { floors: &[] };
+    let level = LevelUp { cost: vec![("ore".into(), PACE_UNIT)], stock: vec![] };
+    let pace = write_lp(&items, "coins", &counts, &modules,
+        Goal::UpgradeMaterials { base: &base, level_up: &level, minimum: None });
+    let pace_column = pace.variable_keys.iter().position(|key| key == "material_pace#0").unwrap();
+    assert!(!pace.tiebreak.is_empty());
+    assert_eq!(pace.primary_objective, vec![(pace_column, 1.0)]);
+    for goal in [Goal::MaterialWork { base: &base, minimum: None }, Goal::CropVariety { seasonal_only: false }] {
+        let empty = write_lp(&items, "coins", &counts, &modules, goal);
+        // This mine produces neither an upgrade material at a workshop nor a crop.
+        assert!(empty.primary_objective.is_empty());
+    }
+}
+
+#[test]
 fn walking_costs_shared_jobs_but_not_a_dedicated_station() {
     use aniimax::models::{crew_variants, AniimoRequirements, GrowerSteps};
     let mut requirements = AniimoRequirements::default();
