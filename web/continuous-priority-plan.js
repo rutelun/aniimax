@@ -8,6 +8,7 @@ const {polishSolution} = await import('./highs-solve.js'+version);
 const {refineStaffing} = await import('./staffing-search.js'+version);
 const {continuousNeighborhood} = await import('./continuous-neighborhood.js'+version);
 const {economicRecipeCounts,economicCountNeighborhood} = await import('./economic-recipe-counts.js'+version);
+const {searchProductionSites} = await import('./production-site-search.js'+version);
 const {measuredProductionShift} = await import('./measured-production.js'+version);
 
 const options = seconds => ({time_limit:seconds,mip_rel_gap:0,mip_abs_gap:0,mip_feasibility_tolerance:1e-9});
@@ -183,74 +184,90 @@ export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},fi
         if(objective>best.objective+1e-8)remember(p.variable_keys,polished.values,objective);
     };
     const dispatched=Object.keys(input.roster?.dispatch??{}).length>0;
-    const masterOptions={seed:witnessSeed,scope:[],timeLimit:2};
-    let pending=evaluateBound?{model:raw,result:evaluateBound(raw,masterOptions)}:null;
-    const countOptions={input,timeLimit:2};
-    const countJob=evaluateCounts?evaluateCounts(raw,countOptions):null;
-    if(witnessSeed){
-        await checkedCandidate(witnessSeed);
-        if(!best)await checkedCandidate(witnessSeed,true,raw);
-        await repairModes(initialWitness.counts??initialWitness.continuous_site_counts);
-        if(dispatched&&(!best||oldCurrency>best.objective*1.0025)){
-            const measured=await measuredProductionShift({modelFor:scope=>priority(payloadFor(scope),currencyStage,currency),
-                counts:initialWitness.counts??initialWitness.continuous_site_counts,checked:witnessNames,seed:witnessSeed,solveModel,highs});
-            if(measured){
-                for(const name of measured.checked)names.add(name);
-                // This search already used the complete catalogue; retain its
-                // alternative even if a compact candidate provisionally wins.
-                remember(measured.keys,measured.values,measured.objective);
-            }
+    const fullPayload=JSON.stringify({...input,always_running_recipes:undefined,restrict_to_checked_recipes:false});
+    let fullIncome;
+    const scopedModel = recipes => priority(payloadFor(recipes),currencyStage,currency);
+    let siteSearch;
+    if (!input.roster && !input.season && !witnessSeed) {
+        fullIncome=priority(fullPayload,currencyStage,currency);
+        siteSearch=searchProductionSites(highs,raw,fullIncome,scopedModel);
+        if (siteSearch) {
+            const candidate=siteSearch.best;
+            remember(candidate.keys,candidate.values,candidate.objective);
+            for (const name of candidate.activeRecipes) names.add(name);
+            ceilings.push(siteSearch.upper);
+            upper=Math.min(upper,siteSearch.upper);
         }
     }
-    {
-        const counts=countJob?await countJob:economicRecipeCounts(highs,raw,countOptions);
-        if(counts?.size&&economicCountNeighborhood){
-            const allowed=new Set(counts.keys());
-            for(const name of allowed)names.add(name);
-            const compact=priority(payloadFor(allowed,true),currencyStage,currency);
-            const local=economicCountNeighborhood(highs,compact,counts,(counts.upper??0)/1.0025);
-            if(local){
-                const found=await solveModel(local,{time_limit:2,mip_rel_gap:0});
-                if(found?.values){
-                    const fit=polishSolution(highs,local,found);
-                    await checkedCandidate({keys:compact.variable_keys,values:fit.values},true,compact);
+    if (!siteSearch || siteSearch.upper > siteSearch.best.objective * 1.0025 + 1e-7) {
+        const masterOptions={seed:witnessSeed,scope:[],timeLimit:2};
+        let pending=evaluateBound?{model:raw,result:evaluateBound(raw,masterOptions)}:null;
+        const countOptions={input,timeLimit:2};
+        const countJob=evaluateCounts?evaluateCounts(raw,countOptions):null;
+        if(witnessSeed){
+            await checkedCandidate(witnessSeed);
+            if(!best)await checkedCandidate(witnessSeed,true,raw);
+            await repairModes(initialWitness.counts??initialWitness.continuous_site_counts);
+            if(dispatched&&(!best||oldCurrency>best.objective*1.0025)){
+                const measured=await measuredProductionShift({modelFor:scope=>priority(payloadFor(scope),currencyStage,currency),
+                    counts:initialWitness.counts??initialWitness.continuous_site_counts,checked:witnessNames,seed:witnessSeed,solveModel,highs});
+                if(measured){
+                    for(const name of measured.checked)names.add(name);
+                    // This search already used the complete catalogue; retain its
+                    // alternative even if a compact candidate provisionally wins.
+                    remember(measured.keys,measured.values,measured.objective);
                 }
             }
-            if(Number.isFinite(counts.upper)){ceilings.push(counts.upper);upper=Math.min(upper,counts.upper);}
         }
-    }
-    for(let round=0;round<3;round++){
-        const model=pending?.model??(round===0?raw:priority(payloadFor(scope),currencyStage,currency));
-        const settings={seed:best??witnessSeed,scope:round===0?[]:scope,timeLimit:round===0?2:5};
-        const result=pending?await pending.result:evaluateBound?await evaluateBound(model,settings):solveEconomicBound(highs,model,settings);
-        pending=null;
-        if(Number.isFinite(result?.upper)){ceilings.push(result.upper);upper=Math.min(upper,result.upper);}
-        if(result?.values){
-            for(const n of result.activeRecipes)names.add(n);
+        {
+            const counts=countJob?await countJob:economicRecipeCounts(highs,raw,countOptions);
+            if(counts?.size&&economicCountNeighborhood){
+                const allowed=new Set(counts.keys());
+                for(const name of allowed)names.add(name);
+                const compact=priority(payloadFor(allowed,true),currencyStage,currency);
+                const local=economicCountNeighborhood(highs,compact,counts,(counts.upper??0)/1.0025);
+                if(local){
+                    const found=await solveModel(local,{time_limit:2,mip_rel_gap:0});
+                    if(found?.values){
+                        const fit=polishSolution(highs,local,found);
+                        await checkedCandidate({keys:compact.variable_keys,values:fit.values},true,compact);
+                    }
+                }
+                if(Number.isFinite(counts.upper)){ceilings.push(counts.upper);upper=Math.min(upper,counts.upper);}
+            }
         }
-        const nearFloorOnly=best&&upper-best.objective<=1e-6*Math.max(1,best.objective);
-        const required=new Set(scope);
-        if(!nearFloorOnly)for(const name of Object.keys(input.season_crop_minimums??{}))required.add(name);
-        for(const name of result?.activeRecipes??[])if(priorSales.has(name))required.add(name);
-        const next=result?.values?suggestEconomicScope(model,result.values,required,{nearFloorOnly}):scope;
-        if(evaluateBound&&dispatched&&round<2&&(!best||!close(upper,best.objective))
-            &&next.length>scope.length){
-            const narrowed=priority(payloadFor(next),currencyStage,currency);
-            pending={model:narrowed,result:evaluateBound(narrowed,{seed:best??witnessSeed,scope:next,timeLimit:5})};
+        for(let round=0;round<3;round++){
+            const model=pending?.model??(round===0?raw:priority(payloadFor(scope),currencyStage,currency));
+            const settings={seed:best??witnessSeed,scope:round===0?[]:scope,timeLimit:round===0?2:5};
+            const result=pending?await pending.result:evaluateBound?await evaluateBound(model,settings):solveEconomicBound(highs,model,settings);
+            pending=null;
+            if(Number.isFinite(result?.upper)){ceilings.push(result.upper);upper=Math.min(upper,result.upper);}
+            if(result?.values){
+                for(const n of result.activeRecipes)names.add(n);
+            }
+            const nearFloorOnly=best&&upper-best.objective<=1e-6*Math.max(1,best.objective);
+            const required=new Set(scope);
+            if(!nearFloorOnly)for(const name of Object.keys(input.season_crop_minimums??{}))required.add(name);
+            for(const name of result?.activeRecipes??[])if(priorSales.has(name))required.add(name);
+            const next=result?.values?suggestEconomicScope(model,result.values,required,{nearFloorOnly}):scope;
+            if(evaluateBound&&dispatched&&round<2&&(!best||!close(upper,best.objective))
+                &&next.length>scope.length){
+                const narrowed=priority(payloadFor(next),currencyStage,currency);
+                pending={model:narrowed,result:evaluateBound(narrowed,{seed:best??witnessSeed,scope:next,timeLimit:5})};
+            }
+            if(result?.values)await checkedCandidate(result);
+            if(!witnessSeed&&!round&&best&&!close(best.objective,upper))await repairModes();
+            if((!best || upper-best.objective>(dispatched?1e-7:0.0025*best.objective))&&round===0)await checkedCandidate(best??result??witnessSeed,false);
+            if(best&&close(upper,best.objective))break;
+            if(nearFloorOnly&&next.length===scope.length)break;
+            if(!dispatched&&best&&upper<=best.objective*1.0025)break;
+            if(!result?.values)break;
+            if(round&&next.length===scope.length)break;
+            scope=next;
         }
-        if(result?.values)await checkedCandidate(result);
-        if(!witnessSeed&&!round&&best&&!close(best.objective,upper))await repairModes();
-        if((!best || upper-best.objective>(dispatched?1e-7:0.0025*best.objective))&&round===0)await checkedCandidate(best??result??witnessSeed,false);
-        if(best&&close(upper,best.objective))break;
-        if(nearFloorOnly&&next.length===scope.length)break;
-        if(!dispatched&&best&&upper<=best.objective*1.0025)break;
-        if(!result?.values)break;
-        if(round&&next.length===scope.length)break;
-        scope=next;
     }
     if(!best || !Number.isFinite(upper))return null;
-    const fullPayload=JSON.stringify({...input,always_running_recipes:undefined,restrict_to_checked_recipes:false});
-    const fullIncome=priority(fullPayload,currencyStage,currency);
+    fullIncome ??= priority(fullPayload,currencyStage,currency);
     let restored=null;
     for(const candidate of contenders.sort((a,b)=>b.objective-a.objective)){
         const actual=await restoreCatalogue(highs,solveModel,fullIncome,candidate);

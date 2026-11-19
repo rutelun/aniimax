@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import highsModule from '../web/vendor/highs/highs.mjs';
 import {solveWithIncumbent} from '../web/highs-solve.js';
 import {tryPriorityPlan} from '../web/continuous-priority-plan.js';
+import {searchProductionSites} from '../web/production-site-search.js';
 
 test('fast priority plan checks the occupied recipe and returns the actual shift',async()=>{
     const highs=await highsModule({wasmBinary:fs.readFileSync(new URL('../web/vendor/highs/highs.wasm',import.meta.url)),
@@ -33,6 +34,23 @@ test('fast priority plan checks the occupied recipe and returns the actual shift
     const implicit=await tryPriorityPlan(pkg,{...input,priorities:['tokens']},{highs,solveModel});
     assert.deepEqual(implicit.comparison_goals.floors,[['tokens',.25],['coins',.25]]);
     assert.deepEqual(implicit.continuous_upper_bounds.map(([key])=>JSON.parse(key)[0]),['tokens','coins']);
+    const generated=await tryPriorityPlan(pkg,{currency:'coins',priorities:['coins'],always_running:true},{highs,solveModel});
+    assert.equal(generated.rate_per_second,.25);
+    assert.deepEqual(generated.continuous_upper_bounds,plan.continuous_upper_bounds);
+});
+
+test('a site proposal that violates full climate coverage cannot certify its revenue',async()=>{
+    const highs=await highsModule({wasmBinary:fs.readFileSync(new URL('../web/vendor/highs/highs.wasm',import.meta.url)),
+        print(){},printErr(){}});
+    const model={variables:3,variable_keys:['rate:crop#0','units:crop#0','environment:heat#0'],
+        production_only:true,primary_objective:[[0,1]],recipe_variables:[[0,'crop'],[1,'crop']],
+        recipe_options:[[0,'crop','Farmland',false,false,1]],
+        lp:'Maximize\n obj: x0\nSubject To\n shift: x0 - x1 = 0\n heat: x1 - x2 <= 0\nBounds\n 0 <= x0 <= 1\n 0 <= x1 <= 1\n 0 <= x2 <= 0\nGeneral\n x1\n x2\nEnd'};
+    assert.equal(searchProductionSites(highs,model,model,()=>model),null);
+    const heated={...model,lp:model.lp.replace('0 <= x2 <= 0','0 <= x2 <= 1')};
+    const verified=searchProductionSites(highs,heated,heated,()=>heated);
+    assert.equal(verified.best.objective,1);
+    assert.equal(verified.upper,1);
 });
 
 test('a shift feasible only with omitted recipes cannot become the published incumbent',async()=>{
