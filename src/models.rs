@@ -1296,6 +1296,7 @@ pub struct FacilityCounts {
     recipe_switching_relaxation: bool,
     always_running: bool,
     always_running_recipes: Option<std::collections::HashSet<String>>,
+    restrict_to_checked_recipes: bool,
     recipe_switching_facilities: Vec<String>,
 }
 
@@ -1345,6 +1346,7 @@ impl Default for FacilityCounts {
             recipe_switching_relaxation: false,
             always_running: false,
             always_running_recipes: None,
+            restrict_to_checked_recipes: false,
             recipe_switching_facilities: Vec::new(),
         }
     }
@@ -1383,6 +1385,16 @@ impl FacilityCounts {
 
     pub fn checks_continuous_recipe(&self, name: &str) -> bool {
         self.always_running_recipes.as_ref().is_none_or(|names|names.contains(base_item_name(name)))
+    }
+
+    /// Limit a candidate solve to its chosen recipes, keeping the item catalog
+    /// intact for ingredient names, prices and quick production variants.
+    pub fn restrict_to_checked_recipes(&mut self, enabled: bool) {
+        self.restrict_to_checked_recipes = enabled;
+    }
+
+    pub fn includes_candidate_recipe(&self, name: &str) -> bool {
+        !self.restrict_to_checked_recipes || self.checks_continuous_recipe(name)
     }
 
     pub fn takes_turns(&self, recipe: &ProductionItem) -> bool {

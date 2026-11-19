@@ -72,8 +72,23 @@ fn coverage_relaxed() -> bool {
         || COVERAGE_RELAXED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+// Each invocation compares layouts using the same buildings, modes and crew
+// requirements. Keep the original geometry as a witness, but compare only
+// capacities that can serve plots demanded by this model.
+fn useful_coverage<T>(options: Vec<T>, capacity: impl Fn(&T) -> Vec<u32>) -> Vec<T> {
+    let mut frontier: Vec<(Vec<u32>,T)> = Vec::new();
+    let covers = |a: &[u32], b: &[u32]| a.iter().zip(b).all(|(x,y)| x>=y);
+    for option in options {
+        let counts = capacity(&option);
+        if frontier.iter().any(|(other,_)| covers(other,&counts)) { continue; }
+        frontier.retain(|(other,_)| !covers(&counts,other));
+        frontier.push((counts,option));
+    }
+    frontier.into_iter().map(|(_,option)|option).collect()
+}
+
 /// Environment buildings and the modes each can run.
-const ENVIRONMENT_BUILDINGS: &[(&str, &[&str])] = &[
+pub(crate) const ENVIRONMENT_BUILDINGS: &[(&str, &[&str])] = &[
     ("Heat Furnace", &["Warm", "Scorching"]),
     ("Cooling Unit", &["Cool", "Freeze"]),
     ("Sunlamp", &["Adequate"]),
@@ -286,8 +301,10 @@ enum VarKind<'a> {
     UnavailableCrop,
     PoweredUnits,
     PowerGenerators,
-    /// Made beyond what the level-up needs, of one of its costs.
+    /// Auxiliary model variable, including continuous-availability factors.
     Extra,
+    /// Made beyond what the level-up needs, of one of its costs.
+    ExtraStock,
     Environment { building: &'a str, mode: &'a str, types: Vec<&'a str>, option: CoverageOption },
     /// Two buildings placed to overlap, covering three zones at once.
     EnvironmentPair {
@@ -328,6 +345,9 @@ struct Model<'a> {
     priority: Vec<u8>,
     kinds: Vec<VarKind<'a>>,
     constraints: Vec<Constraint>,
+    /// (Sale column, balance row) for realizing sales in a previously saved solution.
+    sale_balances: Vec<(usize, usize)>,
+    staffing_pools: Vec<StaffingPool>,
     /// `(variable, weight)` for the tie-break in the objective (see [`BUILDING_TIE_BREAK`]),
     /// so a solve's objective can be given back without it.
     tiebreak: Vec<(usize, f64)>,
@@ -362,6 +382,24 @@ impl<'a> Model<'a> {
             *merged.entry(v).or_default() += c;
         }
         self.constraints.push((merged.into_iter().collect(), op, rhs));
+    }
+
+    /// Sell everything left by today's recipes and reservations, even when the current
+    /// objective values another priority. Existing surplus inventory is available to use,
+    /// but the shift need not sell it to account for today's output.
+    fn item_balance(&mut self, mut terms: Vec<(usize, f64)>, income: f64) {
+        let Some(&(sold, _)) = terms.iter().find(|&&(v, _)| matches!(self.kinds[v], VarKind::Sold(_))) else {
+            self.constrain(terms, ComparisonOp::Ge, -income);
+            return;
+        };
+        let mut op = ComparisonOp::Eq;
+        if let Some(stock) = terms.iter().position(|&(v, c)| matches!(self.kinds[v], VarKind::Pace) && c > 0.0) {
+            self.constrain(terms.clone(), ComparisonOp::Ge, -income);
+            terms.swap_remove(stock);
+            op = ComparisonOp::Le;
+        }
+        self.sale_balances.push((sold, self.constraints.len()));
+        self.constrain(terms, op, -income);
     }
 
     /// Solves the relaxation with `bounds`: its objective and variable values, or `None` if
@@ -693,7 +731,8 @@ fn build_model<'a>(
     let recipes: Vec<&ProductionItem> = items
         .iter()
         .filter(|item| {
-            facility_counts.get_count(&item.facility) > 0
+            facility_counts.includes_candidate_recipe(&item.name)
+                && facility_counts.get_count(&item.facility) > 0
                 && facility_counts.can_produce(&item.facility, item.facility_level)
                 && item.module_requirement.as_ref().is_none_or(|(m, l)| module_levels.can_use(m, *l))
                 && item.production_time > 0.0
@@ -708,6 +747,8 @@ fn build_model<'a>(
         priority: Vec::new(),
         kinds: Vec::new(),
         constraints: Vec::new(),
+        sale_balances: Vec::new(),
+        staffing_pools: Vec::new(),
         tiebreak: Vec::new(),
     };
 
@@ -862,7 +903,7 @@ fn build_model<'a>(
                 for (name, need) in &level_up.cost {
                     if let Some(terms) = balance.get_mut(name.as_str()).filter(|_| *need > 0.0) {
                         // Per day, as a share of the cost: comparable across costs.
-                        let extra = model.add(PACE_UNIT / need, (0.0, f64::INFINITY), false, VarKind::Extra);
+                        let extra = model.add(PACE_UNIT / need, (0.0, f64::INFINITY), false, VarKind::ExtraStock);
                         terms.push((extra, -1.0));
                     }
                 }
@@ -874,19 +915,30 @@ fn build_model<'a>(
             model.objective[pace] = 1.0;
         }
     }
-    let material_requirements: Vec<_> = material_stock.into_iter().flat_map(|(level_up, _)| {
-        level_up.cost.iter().filter_map(|(name, need)| {
-            let remaining = (need - LevelUp::amount(&level_up.stock, name)).max(0.0);
-            (name != currency && remaining > 0.0)
-                .then(|| (balance.get(name.as_str()).cloned().unwrap_or_default(), remaining,
-                    facility_counts.quest_income().get(name).copied().unwrap_or(0.0)))
-        })
-    }).collect();
+    let mut material_requirements = BTreeMap::new();
+    if let Some((level_up, _)) = material_stock.filter(|_| !matches!(goal, Goal::CropVariety { .. })) {
+        for (name, need) in &level_up.cost {
+            let remaining = need - LevelUp::amount(&level_up.stock, name);
+            if name != currency && remaining > 0.0 {
+                balance.entry(name.as_str()).or_default();
+                let required = material_requirements.entry(name.as_str()).or_insert(0.0_f64);
+                *required = required.max(remaining);
+            }
+        }
+    }
     for name in facility_counts.quest_income().keys() {
         balance.entry(name.as_str()).or_default();
     }
+    let mut material_balances = Vec::new();
     for (name, terms) in balance {
-        model.constrain(terms, ComparisonOp::Ge, -facility_counts.quest_income().get(name).copied().unwrap_or(0.0));
+        let income = facility_counts.quest_income().get(name).copied().unwrap_or(0.0);
+        if let Some(&remaining) = material_requirements.get(name) {
+            // Defer this balance until the material pace column exists, so sales are
+            // determined after reserving the upgrade's outstanding materials.
+            material_balances.push((terms, remaining, income));
+        } else {
+            model.item_balance(terms, income);
+        }
     }
 
     // Owned units per facility, by level: a recipe needing level L can only use units at L or
@@ -947,16 +999,29 @@ fn build_model<'a>(
     // Growing environments: plots of a crop needing environment E at facility F must be covered.
     let gated_types: Vec<&str> = ENVIRONMENT_GATED_FACILITIES.iter().map(|(f, _)| *f).collect();
     let mut needs_cover: BTreeMap<(&str, &str), Vec<usize>> = BTreeMap::new();
+    let mut demand_limit = BTreeMap::new();
     for &(recipe, units) in &physical_units {
         if let Some(environment) = recipe.environment.as_deref() {
             if gated_types.contains(&recipe.facility.as_str()) {
                 needs_cover.entry((recipe.facility.as_str(), environment)).or_default().push(units);
+                let eligible = facility_counts.capacity_at_level(&recipe.facility, recipe.facility_level);
+                let limit = demand_limit.entry((recipe.facility.as_str(),environment)).or_insert(0);
+                *limit = eligible.max(*limit);
             }
         }
     }
     let mut cover_terms: BTreeMap<(&str, &str), Vec<(usize, f64)>> = BTreeMap::new();
     // Every building a variable uses, so no plan sets out more than are owned.
     let mut usage: BTreeMap<&str, Vec<(usize, f64)>> = BTreeMap::new();
+    // A single selected physical layout can cover at most every eligible plot
+    // owned. Fractional arrangements in the diagnostic relaxation may use a
+    // fraction of a larger layout, so retain its original capacity there.
+    let relaxed = coverage_relaxed();
+    let useful_limit = |facility: &str, mode: &str| match demand_limit.get(&(facility,mode)) {
+        Some(_) if relaxed => u32::MAX,
+        Some(&limit) => limit,
+        None => 0,
+    };
     // The facility types wanting a given mode, largest footprint first (see
     // `single_building_options`).
     let types_for = |modes: &[&str]| -> Vec<&str> {
@@ -980,14 +1045,18 @@ fn build_model<'a>(
             if types.is_empty() {
                 continue;
             }
-            for option in single_building_options(building_size(building), &types) {
+            let limits: Vec<_> = types.iter().map(|&f| useful_limit(f,mode)).collect();
+            for option in useful_coverage(single_building_options(building_size(building), &types), |o| {
+                o.counts.iter().zip(&limits).map(|(n,cap)| (*n).min(*cap)).collect()
+            }) {
                 let counts = option.counts.clone();
                 let kind = VarKind::Environment { building, mode, types: types.clone(), option };
                 let count = model.add(0.0, (0.0, owned as f64), !coverage_relaxed(), kind);
                 usage.entry(building).or_default().push((count, 1.0));
                 for (t, &facility) in types.iter().enumerate() {
-                    if counts[t] > 0 {
-                        cover_terms.entry((facility, mode)).or_default().push((count, counts[t] as f64));
+                    let covered = counts[t].min(limits[t]);
+                    if covered > 0 {
+                        cover_terms.entry((facility, mode)).or_default().push((count, covered as f64));
                     }
                 }
             }
@@ -1024,8 +1093,12 @@ fn build_model<'a>(
                     if types.is_empty() {
                         continue;
                     }
-                    for option in pair_options_over_offsets(PairSizes::of(first, second), &types) {
-                        let zones = [(Zone::First, mode_a), (Zone::Both, middle), (Zone::Second, mode_b)];
+                    let zones = [(Zone::First, mode_a), (Zone::Both, middle), (Zone::Second, mode_b)];
+                    let limits: Vec<_> = zones.iter().flat_map(|&(_,mode)|
+                        types.iter().map(move |&f| useful_limit(f,mode))).collect();
+                    for option in useful_coverage(pair_options_over_offsets(PairSizes::of(first, second), &types), |o| {
+                        o.counts.iter().flatten().zip(&limits).map(|(n,cap)| (*n).min(*cap)).collect()
+                    }) {
                         let counts = option.counts.clone();
                         let kind = VarKind::EnvironmentPair {
                             buildings: (first, second),
@@ -1038,7 +1111,7 @@ fn build_model<'a>(
                         usage.entry(second).or_default().push((count, 1.0));
                         for (zone, mode) in zones {
                             for (t, &facility) in types.iter().enumerate() {
-                                let covered = counts[zone as usize][t];
+                                let covered = counts[zone as usize][t].min(limits[zone as usize * types.len()+t]);
                                 if covered > 0 {
                                     cover_terms.entry((facility, mode)).or_default().push((count, covered as f64));
                                 }
@@ -1249,10 +1322,20 @@ fn build_model<'a>(
             reserve_work.extend(busy.iter().skip(first).flatten().copied());
         }
         worker_busy = busy.clone();
+        if facility_counts.always_running() {
+            let owned = crew.assumed_from.unwrap_or(crew.members.len());
+            model.staffing_pools = busy.iter().zip(&anchored).enumerate().map(|(member, (work, posts))| StaffingPool {
+                crop: work.iter().filter_map(|&(v, _)| matches!(model.kinds[v],
+                    VarKind::CropStaff { .. } | VarKind::WorkRoute { crop: Some(_), .. }).then_some(v)).collect(),
+                work: work.clone(), anchors: posts.iter().map(|&(v, _)| v).collect(),
+                reserve: member >= owned, active: None,
+            }).collect();
+        }
         if let Some((_, limit)) = team_limit {
             let mut active = Vec::new();
             for (member, mut terms) in busy.into_iter().enumerate().filter(|(_, terms)| !terms.is_empty()) {
                 let count = model.add(0.0, (0.0, crew.members[member].count as f64), true, VarKind::ActiveAniimo { member });
+                if let Some(pool) = model.staffing_pools.get_mut(member) { pool.active = Some(count); }
                 terms.push((count, -1.0));
                 model.constrain(terms, ComparisonOp::Le, 0.0);
                 if !anchored[member].is_empty() {
@@ -1291,9 +1374,9 @@ fn build_model<'a>(
     if let Some((_, minimum)) = material_stock {
         // Append after all existing variables: the currency solution remains a usable prefix.
         let pace = model.add(0.0, (minimum.unwrap_or(0.0) * (1.0 - 1e-4), MAX_PACE), false, VarKind::MaterialPace);
-        for (mut terms, remaining, income) in material_requirements {
+        for (mut terms, remaining, income) in material_balances {
             terms.push((pace, -remaining / PACE_UNIT));
-            model.constrain(terms, ComparisonOp::Ge, -income);
+            model.item_balance(terms, income);
         }
         if minimum.is_none() {
             model.objective.fill(0.0);
@@ -2759,6 +2842,17 @@ pub fn check_plan_with_workload(
     Ok((earned, roster_workload))
 }
 
+/// One pool of interchangeable workers in the staffing refinement.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct StaffingPool {
+    /// All worker-days charged to this pool, including production, support, climate and travel.
+    pub work: Vec<(usize, f64)>,
+    pub anchors: Vec<usize>,
+    pub crop: Vec<usize>,
+    pub active: Option<usize>,
+    pub reserve: bool,
+}
+
 /// A model written out for an external solver.
 #[derive(Debug, Clone, Default)]
 pub struct LpProblem {
@@ -2779,6 +2873,12 @@ pub struct LpProblem {
     pub recipe_variables: Vec<(usize, String)>,
     /// Rate column, base recipe, facility, staffed source, electric variant, cycle.
     pub recipe_options: Vec<(usize, String, String, bool, bool, f64)>,
+    /// Worker-days for the final staffing solve, including crop work, travel and hauling.
+    pub staffing_pools: Vec<StaffingPool>,
+    /// Each sum is a production, physical site or stock commitment staffing must preserve.
+    pub staffing_groups: Vec<Vec<usize>>,
+    /// Skill levels committed to climate posts, used when two shifts need equal worker time.
+    pub climate_skills: Vec<(usize, f64)>,
     /// Dominated environment assignments for production-only stages without a headcount cap.
     pub production_zero: Vec<usize>,
     /// Integer sums for LP-based bound tightening: name, terms, natural upper bound.
@@ -2873,7 +2973,7 @@ fn warm_start_keys(model: &Model<'_>, items: &[ProductionItem], counts: &Facilit
             VarKind::UnavailableCrop => "unavailable_crop".into(),
             VarKind::PoweredUnits => "powered_units".into(),
             VarKind::PowerGenerators => "generators".into(),
-            VarKind::Extra => "extra".into(),
+            VarKind::Extra | VarKind::ExtraStock => "extra".into(),
             VarKind::ContinuousSite(key) => format!("continuous_site:{key}"),
             VarKind::Environment { building, mode, types, option } =>
                 format!("environment:{building}:{mode}:{types:?}:{:?}", option.counts),
@@ -2966,7 +3066,36 @@ pub fn write_lp(
         };
         (!flexible).then_some(v)
     }).collect();
+    let mut groups = BTreeMap::<(String, String), Vec<usize>>::new();
+    let mut climate_skills = Vec::new();
+    if !model.staffing_pools.is_empty() {
+        for (v, kind) in model.kinds.iter().enumerate() {
+            let (commitment, recipe) = match kind {
+                VarKind::Rate(r) => ("rate".into(), r),
+                VarKind::Units(r) if model.integer[v] => ("units".into(), r),
+                VarKind::FixedSite { recipe, group } => (format!("site:{group}"), recipe),
+                VarKind::Staff { building, member } => {
+                    if let Some(crew) = facility_counts.crew().filter(|crew| crew.environment.contains_key(building) && building != GENERATOR) {
+                        let skills: u32 = crew.members[*member].abilities.values().sum();
+                        climate_skills.push((v, f64::from(skills)));
+                    }
+                    continue;
+                }
+                VarKind::Units(_) | VarKind::Extra | VarKind::WorkRoute { crop: None, .. } | VarKind::WorkPost { .. }
+                | VarKind::HaulingStaff { .. } | VarKind::ActiveAniimo { .. } => continue,
+                _ => {
+                    groups.insert(("fixed".into(), v.to_string()), vec![v]);
+                    continue;
+                }
+            };
+            // Keep variants with distinct recipes, climate or electric modes separate.
+            let name = recipe.crew.map_or_else(|| recipe.name.clone(), |member|
+                recipe.name.replace(&format!("{}{member}", crate::models::CREW_SUFFIX), ""));
+            groups.entry((commitment, name)).or_default().push(v);
+        }
+    }
     LpProblem { lp: out, variables: model.objective.len(), tiebreak: model.tiebreak.clone(), primary_objective, material_fixed,
+        staffing_groups: groups.into_values().collect(), climate_skills, staffing_pools: model.staffing_pools.clone(),
         recipe_options: model.kinds.iter().enumerate().filter_map(|(v,k)|match k {
             VarKind::Rate(r)=>Some((v,crate::models::base_item_name(&r.name).to_owned(),r.facility.clone(),
                 r.raw_materials.is_none()&&r.workload.is_some(),electric_level(&r.name).is_some(),r.production_time)),_=>None,
@@ -2995,16 +3124,35 @@ pub fn plan_from_values(
     proven_optimal: bool,
     upper_bound: f64,
 ) -> Option<ExactPlan> {
+    read_external_plan(items, currency, facility_counts, module_levels, goal, values, proven_optimal, upper_bound, false)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn read_external_plan(
+    items: &[ProductionItem], currency: &str, facility_counts: &FacilityCounts, module_levels: &ModuleLevels,
+    goal: Goal, values: &[f64], proven_optimal: bool, upper_bound: f64, verify_only: bool,
+) -> Option<ExactPlan> {
     let model = build_model(items, currency, facility_counts, module_levels, goal);
     if values.len() != model.objective.len() {
         return None;
     }
-    let rounded: Vec<f64> = values.iter().zip(&model.integer).zip(&model.bounds).map(|((&v, &int), &(lo, hi))| {
+    let mut rounded: Vec<f64> = values.iter().zip(&model.integer).zip(&model.bounds).map(|((&v, &int), &(lo, hi))| {
         if int { v.round() }
         else if v < lo && lo - v <= 1e-9 { lo }
         else if v > hi && v - hi <= 1e-9 { hi }
         else { v }
     }).collect();
+    // An older feasible shift may have stopped selling at a priority floor. Realize
+    // its remaining sales before validation without changing any production or reserve.
+    if !verify_only {
+        for &(sold, row) in &model.sale_balances {
+            let (terms, _, rhs) = &model.constraints[row];
+            let surplus = terms.iter().filter(|&&(v, _)| v != sold).map(|&(v, c)| c * rounded[v]).sum::<f64>() - rhs;
+            if rounded[sold] >= 0.0 && rounded[sold] < surplus {
+                rounded[sold] = surplus;
+            }
+        }
+    }
     let within_bounds = values.iter().zip(&rounded).zip(&model.bounds).zip(&model.integer)
         .all(|(((&original, &value), &(lo, hi)), &int)| value.is_finite()
             && (!int || (original - value).abs() <= 1e-7) && value >= lo && value <= hi);
@@ -3025,6 +3173,7 @@ pub fn plan_from_values(
         let earnings: f64 = model.earnings.iter().zip(&rounded).map(|(c, v)| c * v).sum();
         return Some(plan_from(&model, value, upper_bound.max(earnings), proven_optimal, 0, &rounded, value));
     }
+    if verify_only { return None; }
     let fixed: Vec<(f64, f64)> = model
         .bounds
         .iter()

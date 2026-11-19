@@ -1454,6 +1454,35 @@ thread_local! {
         std::cell::RefCell::new(HashMap::new());
 }
 
+type SingleKey = (u64, Vec<String>);
+
+// Each placement records a type index and two signed quarter-tile coordinates.
+// The actual packing is kept alongside its counts so the map draws the same
+// feasible layout even when a later cosmetic rearrangement cannot fit.
+fn baked_single_coverage() -> &'static HashMap<SingleKey, Vec<CoverageOption>> {
+    static TABLE: std::sync::OnceLock<HashMap<SingleKey, Vec<CoverageOption>>> = std::sync::OnceLock::new();
+    TABLE.get_or_init(|| {
+        let mut table: HashMap<SingleKey, Vec<CoverageOption>> = HashMap::new();
+        for line in include_str!("../data/single_coverage.csv").lines().skip(1) {
+            let mut fields = line.split(',');
+            let building: f64 = fields.next().unwrap().parse().unwrap();
+            let types: Vec<String> = fields.next().unwrap().split(';').map(str::to_owned).collect();
+            let mut counts = vec![0; types.len()];
+            let layout = fields.next().unwrap().split_whitespace().map(|position| {
+                let mut parts = position.split(':');
+                let t: usize = parts.next().unwrap().parse().unwrap();
+                let coordinate = |s: &str| s.parse::<i16>().unwrap() as f64 * GRID_STEP;
+                let x = coordinate(parts.next().unwrap());
+                let y = coordinate(parts.next().unwrap());
+                counts[t] += 1;
+                Placement { facility: types[t].clone(), x, y, size: facility_footprint(&types[t]).unwrap() }
+            }).collect();
+            table.entry((building.to_bits(), types)).or_default().push(CoverageOption { counts, layout });
+        }
+        table
+    })
+}
+
 /// Every undominated way one environment building can cover a mix of `types` (e.g. "16 Farmland"
 /// or "2 Woodland and 8 Farmland"): no option covers at least as many of every type as another
 /// and more of one. The geometry never changes, so results are cached per type list.
@@ -1463,9 +1492,18 @@ thread_local! {
 /// first (the last type has the most possible counts, and is the one never enumerated).
 pub fn single_building_options(building: f64, types: &[&str]) -> Vec<CoverageOption> {
     let key = (building.to_bits(), types.iter().map(|t| t.to_string()).collect::<Vec<_>>());
+    if let Some(hit) = baked_single_coverage().get(&key) {
+        return hit.clone();
+    }
     if let Some(hit) = OPTION_CACHE.with(|cache| cache.borrow().get(&key).cloned()) {
         return hit;
     }
+    let unique = single_building_options_uncached(building, types);
+    OPTION_CACHE.with(|cache| cache.borrow_mut().insert(key, unique.clone()));
+    unique
+}
+
+fn single_building_options_uncached(building: f64, types: &[&str]) -> Vec<CoverageOption> {
     let mut found: Vec<CoverageOption> = Vec::new();
     if !types.is_empty() {
         let mut minimums = vec![0u32; types.len()];
@@ -1484,13 +1522,68 @@ pub fn single_building_options(building: f64, types: &[&str]) -> Vec<CoverageOpt
             unique.push(option);
         }
     }
-    OPTION_CACHE.with(|cache| cache.borrow_mut().insert(key, unique.clone()));
     unique
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn single_coverage_keys() -> std::collections::BTreeSet<SingleKey> {
+        let items = crate::data::load_all_data(std::path::Path::new("data")).unwrap();
+        let mut keys = std::collections::BTreeSet::new();
+        for &(building, modes) in crate::exact::ENVIRONMENT_BUILDINGS {
+            for &mode in modes {
+                let mut types: Vec<_> = ENVIRONMENT_GATED_FACILITIES.iter().filter(|(facility,_)| {
+                    items.iter().any(|r| r.facility == *facility && r.environment.as_deref() == Some(mode))
+                }).collect();
+                types.sort_by(|a,b| b.1.total_cmp(&a.1).then(a.0.cmp(b.0)));
+                for mask in 1..1 << types.len() {
+                    let subset = types.iter().enumerate().filter(|(i,_)| mask & (1 << i) != 0)
+                        .map(|(_,t)| t.0.to_owned()).collect();
+                    keys.insert((building_size(building).to_bits(),subset));
+                }
+            }
+        }
+        keys
+    }
+
+    #[test]
+    #[ignore = "regenerates the single-building geometry table"]
+    fn bake_single_coverage() {
+        let mut lines = vec!["building,types,placements".to_string()];
+        for (size, names) in single_coverage_keys() {
+            let building = f64::from_bits(size);
+            let types: Vec<_> = names.iter().map(String::as_str).collect();
+            for option in single_building_options_uncached(building,&types) {
+                let positions: Vec<_> = option.layout.iter().map(|p| {
+                    let t = types.iter().position(|&name| name == p.facility).unwrap();
+                    format!("{}:{}:{}",t,(p.x/GRID_STEP).round() as i16,(p.y/GRID_STEP).round() as i16)
+                }).collect();
+                lines.push(format!("{building},{},{}",types.join(";"),positions.join(" ")));
+            }
+        }
+        std::fs::write("data/single_coverage.csv",format!("{}\n",lines.join("\n"))).unwrap();
+    }
+
+    #[test]
+    fn baked_single_layouts_cover_every_requested_subset_without_overlap() {
+        let table = baked_single_coverage();
+        assert_eq!(table.keys().cloned().collect::<std::collections::BTreeSet<_>>(),single_coverage_keys());
+        for ((building,types),options) in table {
+            let building = f64::from_bits(*building);
+            for option in options {
+                let mut actual = vec![0;types.len()];
+                for (i,plot) in option.layout.iter().enumerate() {
+                    actual[types.iter().position(|f|f==&plot.facility).unwrap()] += 1;
+                    assert!(plot.rect().overlaps(&coverage_rect(building)));
+                    assert!(!plot.rect().overlaps(&building_rect(building)));
+                    assert!(option.layout[..i].iter().all(|other| !placements_overlap(plot,other)));
+                }
+                assert_eq!(actual,option.counts);
+            }
+        }
+    }
 
     // Every arrangement in the baked table is one that really fits: the counts it claims can be
     // laid out, on the tile grid, in the right zones, with no two plots on top of each other.

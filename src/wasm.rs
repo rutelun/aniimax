@@ -722,6 +722,8 @@ pub struct JsPlanInput {
     pub always_running: bool,
     #[serde(default)]
     pub always_running_recipes: Option<Vec<String>>,
+    #[serde(default)]
+    pub restrict_to_checked_recipes: bool,
     /// `"coins"` (matches `ProductionItem::sell_currency`), or a byproduct
     /// pseudo-currency target: `"wood_blocks"`/`"mineral_sand"`; see
     /// `crate::optimizer::byproduct_resource_name`.
@@ -1762,6 +1764,8 @@ fn lp_json(problem: &crate::exact::LpProblem) -> String {
         "variable_keys": problem.variable_keys, "production_zero":problem.production_zero,
         "recipe_variables":problem.recipe_variables,
         "recipe_options":problem.recipe_options,
+        "staffing_pools":problem.staffing_pools, "staffing_groups":problem.staffing_groups,
+        "climate_skills":problem.climate_skills,
         "integer_groups":problem.integer_groups }).to_string()
 }
 
@@ -1777,6 +1781,10 @@ struct JsSolverResult {
     /// Opportunities compare checked rates and staffing; they never draw this plan's map.
     #[serde(default)]
     summary_only: bool,
+    /// Accept this exact shift only. The caller will keep its previous solution if a
+    /// proposed staffing change needs continuous rates or assignments to be repaired.
+    #[serde(default)]
+    verify_only: bool,
 }
 
 /// Turns HiGHS's solution of [`exact_problem`]'s model into the same result [`find_plan`]
@@ -1798,7 +1806,7 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
         crate::exact::Goal::EarnWhileLevelingUp(level_up, ..) | crate::exact::Goal::StockUp(level_up, ..) => Some(level_up),
         _ => prepared.input.level_up_preview.as_ref().filter(|_| stage.pace.is_some()),
     };
-    let Some(mut exact) = crate::exact::plan_from_values(
+    let Some(mut exact) = crate::exact::read_external_plan(
         &prepared.items,
         &currency,
         &report_counts,
@@ -1807,6 +1815,7 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
         &result.values,
         result.proven,
         result.bound,
+        result.verify_only,
     ) else {
         return no_plan();
     };
@@ -2135,6 +2144,7 @@ impl PreparedInput {
         let mut facility_counts = input.facility_counts();
         facility_counts.set_always_running(input.always_running);
         facility_counts.set_always_running_recipes(input.always_running_recipes.clone());
+        facility_counts.restrict_to_checked_recipes(input.always_running && input.restrict_to_checked_recipes);
         facility_counts.set_recipe_switching_relaxation(input.recipe_switching_relaxation);
         facility_counts.set_recipe_switching_facilities(input.recipe_switching_facilities.clone());
         facility_counts.set_quest_income_per_day(&input.quest_income_per_day);

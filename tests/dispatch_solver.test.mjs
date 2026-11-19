@@ -122,6 +122,9 @@ test('crop policies conserve each ability request including two watering visits'
         && key.includes(`:owned:${member}:`) && key.includes('Water') && values[i]>0));
     assert.ok(water.every(i=>i>=0));
     values[water[1]]+=values[water[0]];values[water[0]]=0;
+    const strict=JSON.parse(pkg.exact_plan(payload,JSON.stringify({pace:result.ObjectiveValue}),
+        JSON.stringify({values,proven:false,bound:result.ObjectiveValue,verify_only:true})));
+    assert.equal(strict.success,false,'a staffing witness must satisfy the existing dispatch shares itself');
     const repaired=JSON.parse(pkg.exact_plan(payload,JSON.stringify({pace:result.ObjectiveValue}),
         JSON.stringify({values,proven:true,bound:result.ObjectiveValue})));
     assert.equal(repaired.success,true);

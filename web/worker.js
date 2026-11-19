@@ -12,6 +12,8 @@ import { autoMaximizeSeasonPoints, hasSeasonCropMinimums } from './season-planni
 import {continuousProduction} from './continuous-production.js';
 import {continuousNeighborhood, incomeRepairNeighborhood, neighborhoodResult, keepProductionWitness} from './continuous-neighborhood.js';
 import {searchRecipeSwitches} from './recipe-switch-search.js';
+import {refineStaffing} from './staffing-search.js';
+import {economicWorkers} from './economic-parallel.js';
 
 const load = new URL(import.meta.url).search;
 const incumbentSolver = import('./highs-solve.js' + load);
@@ -133,7 +135,7 @@ function tiebreakOf(problem, values) {
 // nothing before it, `{ measure, objective, proven }`: the most of its first priority, its
 // level-up pace, or its Home Coins. The page's Opportunities solve that same model for the plan
 // as it stands, so they take it from here.
-async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, comparison = null, deadline = null) {
+async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, comparison = null, deadline = null, routeWitness = null) {
     const input = JSON.parse(payload);
     if (input.always_running && !pkg.supports_continuous_production?.()) {
         throw new Error('The production solver is outdated. Reload the page to load the current version.');
@@ -142,6 +144,25 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
     if (!input.always_running || comparison) return exactPlanJsonOnce(pkg, payload, step, first, comparison, deadline);
     let top = null, seed = null;
     step('continuous_production', 'start');
+    if (deadline == null) {
+        let accelerated;
+        const workers = economicWorkers(load);
+        try {
+            const {tryPriorityPlan} = await import('./continuous-priority-plan.js'+load);
+            accelerated = await tryPriorityPlan(pkg,input,{
+                highs:await newHighs(), solveModel, step, first, initialWitness:routeWitness, ...workers.callbacks,
+            });
+            if (!accelerated && routeWitness) accelerated = await repairDispatchPlan(pkg,input,routeWitness);
+        } catch (error) {
+            console.warn('Continuing with the full production model.',error);
+        } finally {
+            workers.close();
+        }
+        if (accelerated?.success) {
+            step('continuous_production','done',accelerated.proven_optimal);
+            return JSON.stringify(accelerated);
+        }
+    }
     const plan = await continuousProduction(input, async (trial, pass) => {
         top = null;
         if (pass === 1 && seed?.goals && input.aniimo?.startsWith('roster') && !Object.keys(input.roster?.dispatch || {}).length
@@ -594,7 +615,12 @@ async function exactPlanJsonOnce(pkg, payload, step = () => {}, first = () => {}
         let stocked = await runModel(stockProblem, options);
         step('stock_up', 'done', stocked?.proven);
         step('check', 'start');
-        if (stocked) stocked = (await incumbentSolver).polishSolution(await newHighs(),stockProblem,stocked);
+        if (stocked) {
+            stocked = (await incumbentSolver).polishSolution(await newHighs(),stockProblem,stocked);
+            if (input.always_running && !discoveryPass && !comparison && deadline == null && stockProblem.staffing_pools?.length) {
+                stocked = await verifiedStaffing(pkg,payload,stockJson,stockProblem,stocked);
+            }
+        }
         const stockedPlan = stocked
             && JSON.parse(exact_plan(payload, stockJson, JSON.stringify({ values: stocked.values, proven: proven && stocked.proven, bound, summary_only:!!comparison })));
         if (stockedPlan && stockedPlan.success) {
@@ -605,6 +631,9 @@ async function exactPlanJsonOnce(pkg, payload, step = () => {}, first = () => {}
     }
     step('check', 'start');
     solved = (await incumbentSolver).polishSolution(await newHighs(),problem,solved);
+    if (input.always_running && !discoveryPass && !comparison && deadline == null && problem.staffing_pools?.length) {
+        solved = await verifiedStaffing(pkg,payload,stageJson,problem,solved);
+    }
     let json = exact_plan(payload, stageJson, JSON.stringify({ values: solved.values, proven, bound, summary_only:!!comparison }));
     let plan = JSON.parse(json);
     if (!plan.success) {
@@ -620,6 +649,17 @@ async function exactPlanJsonOnce(pkg, payload, step = () => {}, first = () => {}
     if (!plan.success) throw new Error(plan.error || 'the plan failed its check');
     step('check', 'done');
     return finish(plan);
+}
+
+// The optional secondary staffing solve keeps the original production witness
+// if rebuilding its replacement would invalidate any native constraint.
+async function verifiedStaffing(pkg,payload,stage,problem,incumbent) {
+    const refined = await refineStaffing(problem,incumbent,solveModel);
+    if (refined === incumbent) return incumbent;
+    const validation = JSON.parse(pkg.exact_plan(payload,stage,JSON.stringify({
+        values:refined.values, proven:false, bound:0, summary_only:true, verify_only:true,
+    })));
+    return validation.success ? refined : incumbent;
 }
 
 // Aim for the optimistic priority targets in a single feasible staffing plan.
@@ -657,7 +697,9 @@ async function repairProductionPriorities(pkg,input,seed) {
     const fixed = {...work,lp:work.lp.replace('\nBounds\n',`\n${rows.join('\n')}\nBounds\n`)};
     const worked = await solveModel(fixed,{...SOLVE_OPTIONS,time_limit:1},undefined,warm);
     if (!worked) return null;
-    const result = (await incumbentSolver).polishSolution(await newHighs(),fixed,worked);
+    const polished = (await incumbentSolver).polishSolution(await newHighs(),fixed,worked);
+    const result = work.staffing_pools?.length
+        ? await verifiedStaffing(pkg,payload,stageJson,work,polished) : polished;
     if (work.recipe_variables.some(([v,name])=>result.values[v]>1e-9&&!checked.has(name))) return null;
     const plan = JSON.parse(pkg.exact_plan(payload,stageJson,JSON.stringify({values:result.values,proven:false,bound:upper})));
     if (!plan.success || plan.rate_per_second < seed.currencyTarget/1.0025) return null;
@@ -698,7 +740,9 @@ async function repairDispatchPlan(pkg, input, witness) {
     const found = await solveModel(local, {...SOLVE_OPTIONS,time_limit:1}, undefined, seedFor(model));
     if (!found) return null;
     const highs = await newHighs();
-    const solved = (await incumbentSolver).polishSolution(highs,local,found);
+    const polished = (await incumbentSolver).polishSolution(highs,local,found);
+    const solved = model.staffing_pools?.length
+        ? await verifiedStaffing(pkg,payload,stage,model,polished) : polished;
     if (model.recipe_variables.some(([v,name]) => !recipes.has(name) && solved.values[v] > 1e-9)) return null;
     const work = JSON.parse(pkg.exact_problem(payload,JSON.stringify({floors,pace,crop_variety,maximize_material_work:true})));
     const byKey = new Map(model.variable_keys.map((key,i)=>[key,solved.values[i]]));
@@ -810,15 +854,7 @@ self.onmessage = async (event) => {
             const step = (key, state, proven) => self.postMessage({ id, type: 'progress', count: { step: key, state, proven } });
             try {
                 let top = null;
-                let repaired = null;
-                if (event.data.routeWitness) {
-                    try {
-                        repaired = await repairDispatchPlan(pkg,JSON.parse(payload),event.data.routeWitness);
-                    } catch (error) {
-                        console.warn('Dispatch witness could not be checked. Searching the measured model.',error);
-                    }
-                }
-                result = repaired ? JSON.stringify(repaired) : await exactPlanJson(pkg, payload, step, found => { top ||= found; });
+                result = await exactPlanJson(pkg, payload, step, found => { top ||= found; },null,null,event.data.routeWitness);
                 if (top) {
                     const plan = JSON.parse(result);
                     plan.measure_top = top;

@@ -15,6 +15,24 @@ fn competing(supply:f64)->(Vec<ProductionItem>,FacilityCounts){
  let mut counts=FacilityCounts::only(&[("Source",1,1),("Fast",1,1),("Slow",1,1)]);counts.set_always_running(true);
  (vec![water,fast,slow],counts)
 }
+#[test]
+fn candidate_recipe_scope_preserves_quick_ingredient_identity() {
+    let mut base = item("water", "Source", 1.0, "none");
+    base.yield_amount = 10;
+    let quick = item("quick_water", "Source", 2.0, "none");
+    let mut cup = item("cup", "Table", 1.0, "coins");
+    cup.raw_materials = Some(vec!["water".into()]);
+    cup.required_amount = Some(vec![1]);
+    let items = [base, quick, cup];
+    let mut counts = FacilityCounts::only(&[("Source",1,1),("Table",1,1)]);
+    counts.set_always_running(true);
+    counts.set_always_running_recipes(Some(vec!["quick_water".into(), "cup".into()]));
+    counts.restrict_to_checked_recipes(true);
+    let plan = solve_exact(&items, "coins", &counts, &ModuleLevels::default(),
+        Goal::Earn { floors:&[] }, Some(Duration::from_secs(5)), None).unwrap();
+    assert!(!plan.recipe_rates.contains_key("water"));
+    assert!((plan.rate_per_second - 0.5).abs() < 1e-6);
+}
 #[test] fn shared_water_follows_attempt_frequency_not_coin_priority(){
  let (items,counts)=competing(1.);let floors=vec![("tokens".into(),0.1)];
  let p=solve_exact(&items,"coins",&counts,&ModuleLevels::default(),Goal::Earn{floors:&floors},Some(Duration::from_secs(10)),None).unwrap();

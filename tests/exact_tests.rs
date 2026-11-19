@@ -30,6 +30,72 @@ fn external_values_are_checked_before_skipping_continuous_reoptimization() {
 }
 
 #[test]
+fn final_sales_realize_the_surplus_of_the_checked_shift() {
+    use aniimax::exact::{plan_from_values, target_rate, write_lp};
+    let mut raw = walking_item("fruit", "Mine", 1.0, "coins");
+    raw.yield_amount = 10;
+    raw.sell_value = 3.0;
+    raw.cost = Some(2.0);
+    let mut pod = walking_item("pod", "Well", 1.0, "aniipods");
+    pod.raw_materials = Some(vec!["fruit".into()]);
+    pod.required_amount = Some(vec![4]);
+    let items = [raw, pod];
+    let counts = FacilityCounts::only(&[("Mine", 1, 1), ("Well", 1, 1)]);
+    let modules = ModuleLevels::default();
+    let floors = [("aniipods".into(), 0.1), ("coins".into(), 1.0)];
+    let base = Goal::Earn { floors: &floors };
+    let level = LevelUp { cost: vec![("fruit".into(), PACE_UNIT)], stock: vec![] };
+    let materials = Goal::UpgradeMaterials { base: &base, level_up: &level, minimum: Some(1.0) };
+    let goal = Goal::MaterialWork { base: &materials, minimum: Some(0.0) };
+    let lp = write_lp(&items, "coins", &counts, &modules, goal);
+    let mut values = vec![0.0; lp.variables];
+    for (key, amount) in [("rate:fruit", 0.5), ("units:fruit", 1.0), ("rate:pod", 0.25),
+            ("units:pod", 1.0), ("sold:fruit", 1.0), ("sold:pod", 0.1), ("material_pace", 1.0)] {
+        let index = lp.variable_keys.iter().position(|k| k == &format!("{key}#0")).unwrap();
+        values[index] = amount;
+    }
+    let plan = plan_from_values(&items, "coins", &counts, &modules, goal, &values, false, 50.0).unwrap();
+    // Five fruit made, one used by the pod recipe and one reserved for the upgrade.
+    assert_eq!(plan.recipe_rates["fruit"], 0.5);
+    assert_eq!(plan.recipe_rates["pod"], 0.25);
+    assert_eq!(plan.sold["fruit"], 3.0);
+    assert_eq!(plan.rate_per_second, 8.0);
+    assert_eq!(target_rate(&plan, &items, "aniipods"), 0.25);
+    check_plan(&plan, &items, "coins", &counts, &modules, None).unwrap();
+}
+
+#[test]
+fn selling_current_output_preserves_unused_starting_stock() {
+    use aniimax::exact::{plan_from_values, write_lp};
+    let items = [walking_item("fruit", "Mine", 1.0, "coins")];
+    let counts = FacilityCounts::only(&[("Mine", 1, 1)]);
+    let modules = ModuleLevels::default();
+    let level = LevelUp { cost: vec![("coins".into(), 1.0)], stock: vec![("fruit".into(), PACE_UNIT)] };
+    let goal = Goal::EarnWhileLevelingUp(&level, 1.0, &[]);
+    let lp = write_lp(&items, "coins", &counts, &modules, goal);
+    let values: Vec<_> = lp.variable_keys.iter().map(|k| match k.as_str() {
+        "rate:fruit#0" => 0.5, "units:fruit#0" | "pace#0" => 1.0, "sold:fruit#0" => 0.1,
+        other => panic!("unexpected column {other}"),
+    }).collect();
+    let plan = plan_from_values(&items, "coins", &counts, &modules, goal, &values, false, 2.0).unwrap();
+    assert_eq!(plan.recipe_rates["fruit"], 0.5);
+    assert_eq!(plan.sold["fruit"], 0.5);
+    check_plan(&plan, &items, "coins", &counts, &modules, Some(&level)).unwrap();
+}
+
+#[test]
+fn maximizing_a_byproduct_still_sells_every_spare_item() {
+    let mut raw = walking_item("ore", "Mine", 10.0, "coins");
+    raw.yield_amount = 5;
+    raw.byproduct = Some(("Mineral Sand".into(), 2));
+    let counts = FacilityCounts::only(&[("Mine", 1, 1)]);
+    let modules = ModuleLevels::default();
+    let plan = solve_exact(&[raw], "coins", &counts, &modules, Goal::MostOf("Mineral Sand"), None, None).unwrap();
+    assert!((plan.objective - 0.2).abs() < 1e-9);
+    assert!((plan.rate_per_second - 0.5).abs() < 1e-9);
+}
+
+#[test]
 fn warm_start_keys_keep_worker_identity_when_levels_and_reserve_indices_change() {
     use aniimax::models::{crew_variants, AniimoRequirements, GrowerSteps};
     use aniimax::exact::write_lp;
@@ -1147,7 +1213,7 @@ fn crew_staffs_environment_buildings() {
     let farmer: &[(&str, u32)] = &[("Earth", 1), ("Grass", 1), ("Dark", 1)];
     let (without, _) = solve_with_crew(&counts, crew_of(&[(1, farmer)]));
     assert!(without.environment.is_empty() && without.staffing.is_empty(), "no one to staff it: {:?}", without.environment);
-    let crew = crew_of(&[(1, farmer), (1, &[("Fire", 1)])]);
+    let crew = crew_of(&[(1, farmer), (1, &[("Fire", 2)])]); // Scorching needs Fire 2.
     let (with, items) = solve_with_crew(&counts, crew.clone());
     assert_eq!(with.environment.iter().map(|e| e.count).sum::<u32>(), 1);
     assert_eq!(with.staffing.len(), 1);
@@ -1309,9 +1375,14 @@ fn leisure_work_requires_the_recipes_family_even_at_level_four() {
 
     crew.add_reserve_workers([("Leisure", 1)], 2);
     assert_eq!(crew.members.len(), 3, "no universal Leisure reserve");
-    crew.add_reserve_families(originals.iter().filter_map(|r| requirements.family(&r.name)), 2);
-    assert_eq!(crew.members.len(), 10);
+    let families: std::collections::BTreeSet<_> =
+        originals.iter().filter_map(|r| requirements.family(&r.name)).collect();
+    crew.add_reserve_families(families.iter().copied(), 2);
     assert_eq!(crew.assumed_from, Some(3));
+    let reserves = &crew.members[3..];
+    assert_eq!(reserves.len(), families.len());
+    assert_eq!(reserves.iter().filter_map(|member| member.family.as_deref()).collect::<std::collections::BTreeSet<_>>(), families);
+    assert!(reserves.iter().all(|member| member.count == 2 && member.level("Leisure") == 3));
     let assumed = crew_variants(originals, &crew, &requirements, &steps);
     for r in assumed.iter().filter(|r| r.crew.is_some()) {
         if let Some(family) = requirements.family(&r.name) {
