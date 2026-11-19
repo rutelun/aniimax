@@ -12,7 +12,7 @@ let refinementReady;
 function loadRefinement() {
     return refinementReady ??= import('./pkg/aniimax.js' + new URL(import.meta.url).search).then(async pkg => {
         if(typeof pkg.refine_layout !== 'function')return null;
-        await pkg.default({module_or_path:fetch(new URL('./pkg/aniimax_bg.wasm',import.meta.url),{cache:'no-cache'})});
+        await pkg.default({module_or_path:fetch(new URL('./pkg/aniimax_bg.wasm'+new URL(import.meta.url).search,import.meta.url))});
         return pkg.refine_layout;
     });
 }

@@ -60,6 +60,9 @@ jobs:
       - name: Setup Pages
         uses: actions/configure-pages@v4
 
+      - name: Version planner assets for browser caching
+        run: sed -i "s/app.js?v=team-support/app.js?build=${GITHUB_SHA}/" web/index.html
+
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:

@@ -49,9 +49,9 @@ let worker = null;
 let nextRequestId = 0;
 const pendingWorkerRequests = new Map();
 
-// Tags this page load's worker (and, through it, the wasm solver; see worker.js) so the browser
-// never runs a cached older solver next to newer page code.
-const WORKER_URL = `./worker.js?load=${Date.now()}`;
+// Pages supplies the commit in the app URL. Local development gets fresh workers per reload.
+const assetVersion = new URL(import.meta.url).searchParams.get('build') || Date.now();
+const WORKER_URL = `./worker.js?load=${assetVersion}`;
 
 function initWorker() {
     worker = new Worker(WORKER_URL, { type: 'module' });
@@ -110,7 +110,7 @@ function callWorker(type, payload, onProgress) {
             reject(new Error('This setup took too long. Try simplifying the priorities.'));
             restartWorker();
         }, 30_000);
-        pendingWorkerRequests.set(id, { resolve, reject, onProgress, timer });
+        pendingWorkerRequests.set(id, { type, resolve, reject, onProgress, timer });
         worker.postMessage({ id, type, payload });
     });
 }
@@ -5946,7 +5946,7 @@ async function runFindPlan() {
     renderImprovements();
     stopSetupSolve();
     stopLayout();
-    if (pendingWorkerRequests.size > 0) restartWorker();
+    if ([...pendingWorkerRequests.values()].some(request => request.type === 'find_plan')) restartWorker();
     try {
         const input = getPlanInputValues();
         const rvTarget = input.level_up ?? input.level_up_preview;

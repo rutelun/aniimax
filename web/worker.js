@@ -3,9 +3,8 @@
 // browser offer to kill the tab; every wasm call is dispatched through here instead, so the main
 // thread stays free to paint a progress indicator while a solve is in flight. See `web/app.js`'s
 // `callWorker` for the request/response contract this expects.
-// The page starts this worker as `worker.js?load=<page load time>` (see app.js), and the wasm
-// module is loaded with the same query and a revalidated fetch, so a page never pairs new page
-// code with an older cached solver.
+// The page, worker and planner WASM share a build tag so browsers can reuse the same
+// response across production and layout workers without mixing deployed versions.
 // The message handler below is installed right away and waits on this, so no request can arrive
 // before there's a handler for it.
 import { autoMaximizeSeasonPoints, hasSeasonCropMinimums } from './season-planning.js?v=optional-season-points';
@@ -21,9 +20,16 @@ const incumbentSolver = import('./highs-solve.js' + load);
 const materialSearch = import('./material-search.js' + load);
 const comparisonSearch = import('./comparison-search.js' + load);
 const prioritySearch = import('./priority-search.js' + load);
+let priorityPlanner;
+function loadPriorityPlanner() {
+    return priorityPlanner ??= import('./continuous-priority-plan.js'+load).catch(error=>{
+        priorityPlanner=null;
+        throw error;
+    });
+}
 const boundTightening = import('./bound-tightening.js' + load);
 const ready = import('./pkg/aniimax.js' + load).then(async (pkg) => {
-    await pkg.default({ module_or_path: fetch(new URL('./pkg/aniimax_bg.wasm', import.meta.url), { cache: 'no-cache' }) });
+    await pkg.default({ module_or_path: fetch(new URL('./pkg/aniimax_bg.wasm'+load, import.meta.url)) });
     return pkg;
 });
 
@@ -150,7 +156,7 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
         let accelerated;
         const workers = economicWorkers(load);
         try {
-            const {tryPriorityPlan} = await import('./continuous-priority-plan.js'+load);
+            const {tryPriorityPlan} = await loadPriorityPlanner();
             accelerated = await tryPriorityPlan(pkg,input,{
                 highs:await newHighs(), solveModel, step, first, initialWitness:routeWitness, ...workers.callbacks,
                 onIncumbent:plan=>{ checkedShift=plan; },
@@ -931,6 +937,12 @@ self.onmessage = async (event) => {
         const handler = HANDLER_NAMES.includes(type) ? pkg[type] : null;
         if (!handler) {
             throw new Error(`Unknown worker request type: ${type}`);
+        }
+        // Download and compile the shared solver while the player edits the setup.
+        // A failed warm-up is retried by the normal find_plan path.
+        if (type === 'get_version') {
+            newHighs().catch(()=>{ highsBytes=null; });
+            loadPriorityPlanner().catch(()=>{});
         }
         const result = payload === undefined ? handler() : handler(payload);
         self.postMessage({ id, ok: true, result });
