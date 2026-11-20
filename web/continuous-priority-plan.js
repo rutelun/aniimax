@@ -241,6 +241,7 @@ export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},fi
         let earned=witness ? sum(fullIncome.primary_objective,witness.values) : -Infinity;
         let proofSeed=witness?{keys:fullIncome.variable_keys,values:witness.values}:witnessSeed;
         let initialScope=true;
+        let firstProposal;
         for (;;) {
             const model=scopedModel([...proofScope]);
             // A feasible shift on the measured map is a lower bound. Leave
@@ -252,6 +253,7 @@ export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},fi
             let bound=await exactBound(competitive,proofOptions);
             if(competitive!==model && !bound?.proven)bound=await exactBound(model,proofOptions);
             if(!bound?.proven || !Number.isFinite(bound.upper) || !bound.values)break;
+            if(initialScope)firstProposal=bound;
             proofSeed={keys:bound.keys,values:bound.values};
             if(!witness || !close(earned,bound.upper)){
                 let fit=await restoreCatalogue(highs,solveModel,fullIncome,bound);
@@ -265,6 +267,31 @@ export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},fi
                         if(shifted?.values){
                             const polished=polishSolution(highs,fullIncome,shifted);
                             if(polished.polished)fit=polished;
+                        }
+                    }
+                }
+                // If successive relaxations cannot staff their proposed sites,
+                // repair the first pattern on the measured map. A nearby feasible
+                // shift lets the full model price all competing recipes at once.
+                if(!fit && !initialScope && !witness && firstProposal){
+                    for(const name of firstProposal.activeRecipes)names.add(name);
+                    await checkedCandidate(firstProposal);
+                    if(best && bound.upper>best.objective*1.0025){
+                        await repairModes(initialWitness.counts??initialWitness.continuous_site_counts);
+                    }
+                    firstProposal=null;
+                    const repaired=best && await restoreCatalogue(highs,solveModel,fullIncome,best);
+                    if(repaired){
+                        const value=sum(fullIncome.primary_objective,repaired.values);
+                        fit=repaired;
+                        if(bound.upper<=value*1.0025){
+                            const competitive=keepRawIncome(fullIncome,fullIncome,value);
+                            const seed={keys:fullIncome.variable_keys,values:repaired.values};
+                            const full=await exactBound(competitive,{exact:true,seed});
+                            if(full?.proven && full.values && full.upper>=value-1e-7 && close(full.objective,full.upper)){
+                                bound=full;
+                                fit=full;
+                            }
                         }
                     }
                 }

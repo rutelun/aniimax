@@ -98,7 +98,9 @@ function fixedProduction(pkg,highs,input,plan,dispatch,retired){
     const model=JSON.parse(pkg.exact_problem(payload,stage));
     if(!model.staffing_groups?.length)return null;
     const seed=plan.comparison_seed,prior=new Map(seed.keys.map((k,i)=>[k,seed.values[i]]));
-    const times=new Map(model.recipe_options.map(([v,,,,,seconds])=>[model.variable_keys[v],seconds]));
+    const times=new Map(model.recipe_options.filter(([,name,facility,gathering,electric])=>
+        !gathering&&!electric&&dispatch[facility+'|'+name+'|Production']?.length)
+        .map(([v,,,,,seconds])=>[model.variable_keys[v],seconds]));
     const rows=[];
     for(const group of model.staffing_groups){
         // A dispatchable fixed-site variable measures busy time. Hold the
@@ -170,7 +172,7 @@ export function compactMeasuredTeam(pkg,highs,{plan,context,input,limit}){
         let upper,top;
         for(const [key] of plan.continuous_upper_bounds||[]){
             const [target,prefix]=JSON.parse(key);
-            prefix.floors=prefix.floors.map(([name,rate])=>[name,actualFloors.get(name)??rate]);
+            prefix.floors=(prefix.floors||[]).map(([name,rate])=>[name,actualFloors.get(name)??rate]);
             if(prefix.pace!=null)prefix.pace=goals.pace;
             const model=target==='crop_variety'?JSON.parse(pkg.exact_crop_variety_problem(relaxed)):
                 productionObjective(JSON.parse(pkg.exact_priority_problem(relaxed,JSON.stringify(prefix),target)));

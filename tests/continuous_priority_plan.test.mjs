@@ -125,3 +125,43 @@ test('a measured shift with an open income gap survives as a fully checked fallb
     assert.equal(fallback?.rate_per_second,.5);
     assert.equal(fallback.continuous_production_checked,true);
 });
+
+test('a repaired measured shift seeds an exact full-catalogue income proof', async () => {
+    const highs = await highsModule({wasmBinary:fs.readFileSync(new URL('../web/vendor/highs/highs.wasm',import.meta.url)),
+        print(){},printErr(){}});
+    const keys = ['rate:crop#0','units:crop#0'];
+    const build = payload => {
+        const config = JSON.parse(payload);
+        const complete = config.always_running_recipes == null || config.restrict_to_checked_recipes;
+        const cap = complete ? .25 : .2501;
+        return JSON.stringify({variables:2,variable_keys:keys,primary_objective:[[0,1]],tiebreak:[],
+            integer_groups:[['crop',[[1,1]],1]],recipe_options:[[0,'crop','Farm',true,false,1]],
+            recipe_variables:[[0,'crop'],[1,'crop']],
+            lp:`Maximize\n obj: x0\nSubject To\n shift: x0 - x1 <= 0\nBounds\n 0 <= x0 <= ${cap}\n 0 <= x1 <= 1\nGeneral\n x1\nEnd`});
+    };
+    const pkg = {exact_priority_problem:build,exact_problem:build,exact_plan:(_payload,_stage,report)=>{
+        const {values} = JSON.parse(report);
+        assert.deepEqual(values,[.25,1]);
+        return JSON.stringify({success:true,rate_per_second:values[0]});
+    }};
+    const solveModel = (p,o,_,seed) => {
+        const r = solveWithIncumbent(highs,p,o,seed,false);
+        return r.Columns && {values:keys.map((_,i)=>r.Columns['x'+i].Primal),objective:r.ObjectiveValue};
+    };
+    const {solveEconomicBound} = await import('../web/economic-bound.js');
+    let fullProofs = 0;
+    const evaluateBound = (p,o) => {
+        if (o.exact && !o.scope) {
+            fullProofs++;
+            assert.deepEqual(o.seed.values,[.25,1]);
+            assert.match(p.lp,/retain_currency/);
+        }
+        return solveEconomicBound(highs,p,o);
+    };
+    const plan = await tryPriorityPlan(pkg,{currency:'coins',always_running:true,roster:{dispatch:{work:[1]}}},{
+        highs,solveModel,evaluateBound,initialWitness:{recipes:['crop'],counts:{crop:1},seed:{keys,values:[.2501,1]}},
+    });
+    assert.equal(fullProofs,1);
+    assert.equal(plan?.rate_per_second,.25);
+    assert.equal(plan.upper_bound ?? plan.continuous_upper_bounds[0][1],.25);
+});
