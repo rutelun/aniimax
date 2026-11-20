@@ -83,6 +83,27 @@ test('a quicker workshop worker keeps the slack needed for its existing harvest 
 });
 
 import {refineElectricStaffing} from '../web/electric-staffing.js';
+test('measured staffing uses an owned resident and keeps only the lamps required for coverage',async()=>{
+    const highs=await highsModule({wasmBinary:fs.readFileSync(new URL('../web/vendor/highs/highs.wasm',import.meta.url)),print(){},printErr(){}});
+    const original=[0,2,2,2];
+    const keys=['rate:pearl:owned','rate:pearl:reserve','environment:Sunlamp:Adequate:light','sold:pearl'];
+    for(const required of [1,2]){
+        const problem={variables:4,variable_keys:keys,
+            lp:'Maximize\n obj: x3\nSubject To\n pearl: x0 + x1 - x3 = 0\n light: x2 >= '+required+
+                '\nBounds\n 0 <= x0 <= 1\n 0 <= x1 <= 2\n 0 <= x2 <= 2\nGeneral\n x0 x1 x2\nEnd',
+            recipe_options:[0,1].map(v=>[v,'pearl','Tidewhisper Sandcastle',true,false,1]),
+            recipe_variables:[[0,'pearl'],[1,'pearl']],staffing_groups:[[0,1]],
+            staffing_pools:[0,1,2].map(v=>({work:[[v,1]],anchors:[],crop:[],reserve:v!==0,active:null})),
+            primary_objective:[[3,1]]};
+        const solve=async(model,settings)=>{
+            const solution=highs.solve(model.lp,settings);
+            assert.equal(solution.Status,'Optimal');
+            return {values:Array.from({length:model.variables},(_,i)=>solution.Columns['x'+i]?.Primal??0)};
+        };
+        const result=await refineElectricStaffing(problem,{values:original},solve,{input:{roster:{dispatch:{'Mill|flour|Production':[]}}}});
+        assert.deepEqual(result.values,[1,1,required,2]);
+    }
+});
 for(const mode of ['minimum','best']){
     test(mode+' counts the generator operator before accepting an E-mode switch',async()=>{
         const keys=['rate:ore#0','rate:ore__electric1#0','sold:ore#0','generators#0'];

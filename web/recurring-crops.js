@@ -6,7 +6,13 @@ export const REGROWTH_TARGET_SECONDS=21;
 function locationAt(origins,phase,fallback) {
     if(!origins.length)return fallback;
     const mark=phase*origins.at(-1).end;
-    return (origins.find(o=>o.end>=mark)??origins.at(-1)).point;
+    let low=0,high=origins.length-1;
+    while(low<high){
+        const mid=(low+high)>>>1;
+        if(origins[mid].end<mark)low=mid+1;
+        else high=mid;
+    }
+    return origins[low].point;
 }
 
 function originDistribution(points) {
@@ -68,6 +74,28 @@ function record(tallies,key,index) {
     row.set(index,(row.get(index)||0)+1);
 }
 
+// When several plots become ready simultaneously, keep their original order.
+function earlier(a,b) {
+    return a.release<b.release || (a.release===b.release && a.order<b.order);
+}
+
+// Only the earliest event changes. Its next operation is always at or after
+// its previous release, so restoring the heap needs a single downward pass.
+function advance(events,event,finished) {
+    if(finished){
+        event=events.pop();
+        if(!events.length)return;
+    }
+    let i=0;
+    while(2*i+1<events.length){
+        let child=2*i+1;
+        if(child+1<events.length && earlier(events[child+1],events[child]))child++;
+        if(!earlier(events[child],event))break;
+        events[i]=events[child];i=child;
+    }
+    events[i]=event;
+}
+
 // Each plot owns its next maturity timestamp. The observation window is
 // selected by maturity time, so late completions aren't silently dropped.
 export function recurringCropWork({jobs,members,counts,permanent,outside},allocation) {
@@ -86,19 +114,17 @@ export function recurringCropWork({jobs,members,counts,permanent,outside},alloca
             const fixed=permanent[id]||0, mobile=Math.max(0,n-fixed);
             return Array.from({length:mobile},(_,copy)=>prepareWorker(id,copy,sample,outside[id]||{},fixed,counts[id],mobile));
         });
-        const events=plots.map(({steps,cycle})=>{
+        const events=plots.map(({steps,cycle},order)=>{
             const stations=steps.map(job=>({job,eligible:workers.filter(w=>Number.isFinite(job.seconds[w.id])
                 && (members[w.id].abilities?.[job.ability]||0)>=job.level
                 && (!job.eligibleMembers || job.eligibleMembers.includes(w.id)))}));
             const firstPlant=steps.findIndex(j=>j.name==='Reclaiming'||j.name==='Sowing');
-            return {stations,cycle,step:Math.max(0,firstPlant),release:0,ripe:0};
+            return {stations,cycle,order,step:Math.max(0,firstPlant),release:0,ripe:0};
         });
         const uncovered=events.reduce((n,e)=>n+e.stations.filter(s=>!s.eligible.length).length,0);
         if(uncovered)return {uncovered,wait:Infinity,completion:Infinity,worstCompletion:Infinity,shares:{},copyShares:{}};
-        for(;;){
-            let event;
-            for(const e of events)if(e.ripe<end && (!event||e.release<event.release))event=e;
-            if(!event)break;
+        while(events.length){
+            const event=events[0];
             const {job,eligible}=event.stations[event.step], release=event.release;
             let worker=eligible[(sample+(job.order||0))%eligible.length],ready=availability(worker,release);
             for(const w of eligible){
@@ -115,12 +141,16 @@ export function recurringCropWork({jobs,members,counts,permanent,outside},alloca
                 record(assigned,job.key,worker.id);
                 record(copies,job.key+'|'+worker.id,worker.copy);
             }
-            if(++event.step<event.stations.length){event.release=worker.ready;continue;}
-            if(event.ripe>=HOUR){
-                observations++;const elapsed=worker.ready-event.ripe;
-                total+=elapsed;latest=Math.max(latest,elapsed);
+            if(++event.step<event.stations.length){
+                event.release=worker.ready;
+            }else{
+                if(event.ripe>=HOUR){
+                    observations++;const elapsed=worker.ready-event.ripe;
+                    total+=elapsed;latest=Math.max(latest,elapsed);
+                }
+                event.step=0;event.ripe=worker.ready+event.cycle;event.release=event.ripe;
             }
-            event.step=0;event.ripe=worker.ready+event.cycle;event.release=event.ripe;
+            advance(events,event,event.ripe>=end);
         }
     }
     return {completion:observations?total/observations:(plots.length?Infinity:0),wait:observations?totalWait/observations:0,
