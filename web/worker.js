@@ -152,18 +152,9 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
     if (!input.always_running || comparison) return exactPlanJsonOnce(pkg, payload, step, first, comparison, deadline);
     let top = null, seed = null, checkedShift = null;
     step('continuous_production', 'start');
-    // Before routes are known, the joint level-up/production solve supplies
-    // a checked starting map. Search the unrestricted income bound once its
-    // worker availability and travel costs have been measured.
-    // Pricing alternative site counts first pays off on larger processing
-    // fleets. This choice only seeds the map; both feed the same measured solve.
-    const processors=['Woodworking Bench','Chimney Kiln'].map(name =>
-        (input.facilities?.[name] ?? []).reduce((sum,tier)=>sum+tier.count,0));
-    const preparingRoutes = !routeWitness && input.level_up_preview?.cost?.length && input.aniimo?.startsWith('roster') &&
-        input.priorities?.[0] === 'level_up' && !Object.keys(input.roster?.dispatch ?? {}).length &&
-        !input.level_up_strategy && !input.prioritize_byproducts && !input.recipe_switching?.max_buildings &&
-        processors.every(count=>count>0 && count<=3);
-    if (deadline == null && !preparingRoutes) {
+    // Small fleets can also have a hard joint solve when several workers qualify
+    // for the same jobs. Price site counts for both the starting and measured maps.
+    if (deadline == null) {
         let accelerated;
         const workers = economicWorkers(load);
         try {

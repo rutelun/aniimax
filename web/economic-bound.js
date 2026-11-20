@@ -37,7 +37,15 @@ export function solveEconomicBound(highs, problem, {seed, scope = [], timeLimit 
             if (warm.indices.length) model.setSolution(warm);
         }
         runPlanModel(model,highs,!exact && (seed || discovery) ? Math.ceil(timeLimit * 4000) : undefined);
-        const status = model.getModelStatus(), statuses = highs.constants.modelStatus;
+        const statuses = highs.constants.modelStatus;
+        // Tight priority floors and measured worker shares can make presolve
+        // declare a feasible model infeasible. Verify on its original rows.
+        if(exact && model.getModelStatus()===statuses.infeasible){
+            model.clearSolver();
+            model.options.set({presolve:'off'});
+            runPlanModel(model,highs);
+        }
+        const status = model.getModelStatus();
         if (status !== statuses.optimal && !searchStopped(status,statuses)) return null;
         const optimal = status === statuses.optimal;
         const upper = optimal ? model.getObjectiveValue() : model.info.get('mip_dual_bound');

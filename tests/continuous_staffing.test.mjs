@@ -83,6 +83,46 @@ test('a quicker workshop worker keeps the slack needed for its existing harvest 
 });
 
 import {refineElectricStaffing} from '../web/electric-staffing.js';
+test('an idle owned copy can take a reserve furnace post while its sibling keeps the harvest shift',async()=>{
+    const keys=['rate:crop','staff:Heat Furnace:owned:0#0','staff:Heat Furnace:reserve#0'];
+    const p={variables:3,variable_keys:keys,lp:'Maximize\n obj: x0\nSubject To\n furnace: x1 + x2 = 1\nBounds\n 0 <= x0 <= 1\n 0 <= x1 <= 1\n 0 <= x2 <= 1\nGeneral\n x1 x2\nEnd',
+        recipe_options:[[0,'crop','Farmland',false,false,1]],recipe_variables:[[0,'crop']],
+        staffing_pools:[{work:[[0,.25],[1,1]],crop:[0],anchors:[1],reserve:false},
+            {work:[[2,1]],crop:[],anchors:[2],reserve:true}]};
+    const before={values:[1,0,1]};
+    const highs=await highsModule({wasmBinary:fs.readFileSync(new URL('../web/vendor/highs/highs.wasm',import.meta.url)),print(){},printErr(){}});
+    for(const [count,helpers,canMove] of [[1,0,false],[2,0,true],[2,1,false]]){
+        const input={roster:{dispatch:{measured:[]},members:[{count}]},crop_peak_helpers:[helpers]};
+        const solve=async model=>{
+            const result=highs.solve(model.lp);
+            assert.equal(result.Status,'Optimal');
+            return {values:model.variable_keys.map((_,v)=>result.Columns['x'+v].Primal)};
+        };
+        const chosen=await refineElectricStaffing(p,before,solve,{input});
+        assert.deepEqual(chosen.values,canMove?[1,1,0]:before.values);
+        // A neighborhood solve can return its incumbent. Check the physical
+        // post transfer independently and retain only a native-verified swap.
+        for(const loss of [0,1]){
+            const checked=await refineStaffing(p,before,async()=>null,{
+                input,
+                report:values=>({success:true,rate_per_second:100-loss*values[1]})
+            });
+            assert.deepEqual(checked.values,canMove && !loss?[1,1,0]:before.values);
+        }
+    }
+});
+test('the final My Aniimo shift keeps income, selected priorities and RV time',async()=>{
+    const before={values:[1,0]},values=[0,1];
+    const pool=(v,seconds)=>({work:[[v,seconds]],crop:[],anchors:[],reserve:false,active:null});
+    const problem={variables:2,lp:'Maximize\n obj: x0\nSubject To\nBounds\nEnd',staffing_groups:[[0,1]],
+        staffing_pools:[pool(0,1),pool(1,.5)]};
+    const baseline={success:true,rate_per_second:10,level_up_preview:{seconds:100},priorities:[{target:'wood',per_second:5}]};
+    for(const change of [{},{rate_per_second:9.99},{level_up_preview:{seconds:101}},{priorities:[{target:'wood',per_second:4}]}]){
+        const result=await refineStaffing(problem,before,async()=>({values}),{input:{roster:{dispatch:{measured:[]}}},
+            report:shift=>shift===before.values?baseline:{...baseline,...change}});
+        assert.deepEqual(result.values,Object.keys(change).length?before.values:values);
+    }
+});
 test('measured staffing uses an owned resident and keeps only the lamps required for coverage',async()=>{
     const highs=await highsModule({wasmBinary:fs.readFileSync(new URL('../web/vendor/highs/highs.wasm',import.meta.url)),print(){},printErr(){}});
     const original=[0,2,2,2];
@@ -124,6 +164,38 @@ for(const mode of ['minimum','best']){
         assert.equal(await refineElectricStaffing(problem,runningGenerator,losingIncome,options),runningGenerator);
     });
 }
+test('My Aniimo spends limited power on a contested ingredient when earnings and team size are equal',async()=>{
+    const highs=await highsModule({wasmBinary:fs.readFileSync(new URL('../web/vendor/highs/highs.wasm',import.meta.url)),print(){},printErr(){}});
+    const recipes=[{name:'flour',facility:'Carousel Mill',raw_materials:['wheat'],aniimo:['Wind',3]},
+        {name:'sugar',facility:'Simmering Pot',raw_materials:['wheat'],aniimo:['Fire',3]},
+        {name:'fabric',facility:'Joy Wheel Loom',raw_materials:['yarn'],aniimo:['Wind',3]}];
+    const pkg={get_all_items:()=>JSON.stringify(recipes)}, members=[3,4].map(Wind=>({abilities:{Wind}}));
+    const original=[.4,0,0,.4,.4,.4];
+    const keys=['rate:flour','rate:flour__electric','rate:fabric','rate:fabric__electric','rate:sugar','sold:total'];
+    const problem={variable_keys:keys,variables:6,lp:'Maximize\n obj: x5\nSubject To\n power: x1 + x3 <= 0.4\nBounds\nGeneral\nEnd',
+        primary_objective:[[5,1]],recipe_options:[[0,'flour','Carousel Mill',false,false,1],[1,'flour','Carousel Mill',false,true,1],
+            [2,'fabric','Joy Wheel Loom',false,false,1],[3,'fabric','Joy Wheel Loom',false,true,1],[4,'sugar','Simmering Pot',false,false,1]],
+        staffing_pools:[{work:[[0,.25],[2,1],[4,.5]],anchors:[],crop:[],reserve:false,active:null}]};
+    const report=()=>({success:true,rate_per_second:1,roster_workload:[.4,.2],coin_items:recipes.map(r=>({item_name:r.name,status:'producing',busy_units:.4,facility_count:1,cycle_time:1}))});
+    // The original dispatch sent every batch to Wind 3. The other active
+    // worker can still take a request, so that nominal share cannot hide risk.
+    const dispatch={'Carousel Mill|flour|Production':[{member:0,share:1}]};
+    const solve=async(model,options)=>{
+        const r=highs.solve(model.lp,options);
+        assert.equal(r.Status,'Optimal');
+        return {values:Array.from({length:model.variables},(_,i)=>r.Columns['x'+i]?.Primal??0)};
+    };
+    const settings={input:{always_running:true,roster:{members,dispatch}},pkg,report};
+    const result=await refineElectricStaffing(problem,{values:original},solve,settings);
+    assert.ok(Math.abs(result.values[1]-.4)<1e-9);
+    assert.equal(result.values[5],.4);
+    const loss=values=>({...report(),rate_per_second:values[1] > .01 ? .999 : 1});
+    assert.deepEqual((await refineElectricStaffing(problem,{values:original},solve,{...settings,report:loss})).values,original);
+    const idle=()=>({...report(),roster_workload:[.4,0]});
+    assert.deepEqual((await refineElectricStaffing(problem,{values:original},solve,{...settings,report:idle})).values,original);
+    const surplus=()=>({...report(),income_streams:[{item_name:'wheat',units_per_second:1}]});
+    assert.deepEqual((await refineElectricStaffing(problem,{values:original},solve,{...settings,report:surplus})).values,original);
+});
 test('fixed-output E-mode saves a whole Fire worker before relieving a larger shared Earth shift',async()=>{
     const highs=await highsModule({wasmBinary:fs.readFileSync(new URL('../web/vendor/highs/highs.wasm',import.meta.url)),print(){},printErr(){}});
     const keys=['rate:a#0','rate:a__electric1#0','rate:b#0','rate:b__electric1#0','rate:c#0','sold:a#0','generators#0'];

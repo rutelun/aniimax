@@ -17,7 +17,11 @@ function loadRefinement() {
     });
 }
 
-self.onmessage = async (event) => {
+self.onmessage = event => buildLayout(event).catch(error => {
+    self.postMessage({error:error?.message || String(error)});
+});
+
+async function buildLayout(event) {
     const { centralDeliverySeed, createInsideTest, improveFixedStorage, layOutHomeland, layoutDeliveryCost, layoutTravelCost,
         refineDistrictClimate, refineDistrictDeliveries, refineStorageNeighborhood, refineSuppliedLayout, seededStorageLayouts } = await ready;
     const { connectPower, repackPower, updatePowerConnections } = await powerReady;
@@ -51,6 +55,7 @@ self.onmessage = async (event) => {
                         const child = new Worker(import.meta.url,{type:'module'});
                         workers.push(child);
                         child.onmessage = ({data}) => {
+                            if (data.error) return reject(new Error(data.error));
                             if (data.connected) groupFailure = 'workload';
                             resolve(data.layout);
                         };
@@ -208,4 +213,4 @@ self.onmessage = async (event) => {
     }
     const fallback = storageCount === 0 ? 'storage' : groupFailure;
     deliver(grouped ? { ...best, groupFallback: fallback } : best);
-};
+}

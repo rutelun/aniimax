@@ -12,8 +12,9 @@ export function continuousNeighborhood(problem, recipes, seed) {
     const variants = new Set(seed.keys.filter((key,i) => /^(rate|units):/.test(key) && seed.values[i] > 1e-9)
         .map(key => key.replace(/^(rate|units):/,'')));
     if (!variants.size) return problem;
+    const shared=sharedSites(problem);
     for (const [v,name,,,electric] of problem.recipe_options) {
-        if (electric && allowed.has(name)) variants.add(problem.variable_keys[v].replace(/^rate:/,''));
+        if ((electric||shared.has(name)) && allowed.has(name)) variants.add(problem.variable_keys[v].replace(/^rate:/,''));
     }
     const zero = new Set(problem.recipe_variables.filter(([v,name]) => !allowed.has(name)
         || (/^(rate|units):/.test(problem.variable_keys[v]) && !variants.has(problem.variable_keys[v].replace(/^(rate|units):/,''))))
@@ -21,6 +22,12 @@ export function continuousNeighborhood(problem, recipes, seed) {
     if (!zero.size) return problem;
     const fixed = [...zero].map(v => ` continuous_neighborhood_${v}: x${v} = 0`).join('\n');
     return {...problem, continuousRestricted:true, lp:problem.lp.replace('\nBounds\n',`\n${fixed}\nBounds\n`)};
+}
+
+// These sites have a single physical commitment across multiple worker rates.
+// Dropping a crew column required by a measured share forces all its peers to zero.
+function sharedSites(problem){
+    return new Set(problem.recipe_variables.filter(([v])=>problem.variable_keys[v].startsWith('continuous_site:')).map(([,name])=>name));
 }
 
 export function neighborhoodResult(result, restricted) {
@@ -47,9 +54,10 @@ export function incomeRepairNeighborhood(problem, recipes, seed, target) {
             crews.get(facility).add(worker);
         }
     }
+    const shared=sharedSites(problem);
     for (const [v,name,facility,source,electric] of problem.recipe_options) {
         const key = problem.variable_keys[v];
-        if (allowed.has(name) && (electric || (!source && (key.includes('__byreserve:') || crews.get(facility)?.has(key.split('__by')[1])))))
+        if (allowed.has(name) && (electric || shared.has(name) || (!source && (key.includes('__byreserve:') || crews.get(facility)?.has(key.split('__by')[1])))))
             variants.add(key.slice(5));
     }
     const rows = [];

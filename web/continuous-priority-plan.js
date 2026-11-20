@@ -239,17 +239,35 @@ export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},fi
         const exactBound=evaluateBound ?? ((p,o)=>solveEconomicBound(highs,p,o));
         let witness=await restoreCatalogue(highs,solveModel,fullIncome,witnessSeed);
         let earned=witness ? sum(fullIncome.primary_objective,witness.values) : -Infinity;
+        let proofSeed=witness?{keys:fullIncome.variable_keys,values:witness.values}:witnessSeed;
+        let initialScope=true;
         for (;;) {
             const model=scopedModel([...proofScope]);
             // A feasible shift on the measured map is a lower bound. Leave
             // it in the search and discard branches earning strictly less.
             const competitive=witness ? keepRawIncome(model,model,earned) : model;
-            const proofOptions={scope:[...proofScope],exact:true};
+            // Keep the physical layout as a partial integer start. Its old
+            // rates need to be refitted to the newly measured pickup shares.
+            const proofOptions={scope:[...proofScope],exact:true,seed:proofSeed};
             let bound=await exactBound(competitive,proofOptions);
             if(competitive!==model && !bound?.proven)bound=await exactBound(model,proofOptions);
             if(!bound?.proven || !Number.isFinite(bound.upper) || !bound.values)break;
+            proofSeed={keys:bound.keys,values:bound.values};
             if(!witness || !close(earned,bound.upper)){
-                const fit=await restoreCatalogue(highs,solveModel,fullIncome,bound);
+                let fit=await restoreCatalogue(highs,solveModel,fullIncome,bound);
+                if(!fit&&!initialScope&&bound.upper>0){
+                    // Try to attain the relaxed ceiling with those building
+                    // counts while refitting all crew shares and power modes.
+                    const counts=new Map(Object.entries(siteCounts(model,bound.values)).filter(([,n])=>n>0));
+                    const fixed=economicCountNeighborhood(highs,fullIncome,counts,bound.upper-1e-8);
+                    if(fixed){
+                        const shifted=await solveModel(fixed,options(2),undefined,align(fullIncome,bound));
+                        if(shifted?.values){
+                            const polished=polishSolution(highs,fullIncome,shifted);
+                            if(polished.polished)fit=polished;
+                        }
+                    }
+                }
                 const value=fit && sum(fullIncome.primary_objective,fit.values);
                 if(fit && value>earned){witness=fit;earned=value;}
             }
@@ -262,7 +280,11 @@ export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},fi
                 siteSearch={best,upper};
                 break;
             }
-            const next=[...new Set([...bound.occupiedRecipes,...bound.activeRecipes])].filter(n=>!proofScope.has(n));
+            // A first cut on competing consumers can establish the same bound
+            // without introducing every occupied site's availability binaries.
+            let next=initialScope?suggestEconomicScope(model,bound.values,proofScope).filter(n=>!proofScope.has(n)):[];
+            initialScope=false;
+            if(!next.length)next=[...new Set([...bound.occupiedRecipes,...bound.activeRecipes])].filter(n=>!proofScope.has(n));
             if(!next.length)break;
             for(const name of next)proofScope.add(name);
         }

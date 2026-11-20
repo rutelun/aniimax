@@ -226,8 +226,10 @@ export function economicCountNeighborhood(highs,problem,counts,minimumIncome) {
     if (!counts?.size || !(minimumIncome>0) || !problem.production_only ||
         !Array.isArray(problem.integer_groups) || !problem.recipe_options?.length) return null;
     const sites = new Map(problem.integer_groups.map(([name,terms])=>[name,terms.map(([v])=>v)]));
+    const shared=new Set();
     for (const [v,name] of problem.recipe_variables) {
         if (!problem.variable_keys[v].startsWith('continuous_site:')) continue;
+        shared.add(name);
         if (!sites.has(name)) sites.set(name,[]);
         sites.get(name).push(v);
     }
@@ -240,9 +242,9 @@ export function economicCountNeighborhood(highs,problem,counts,minimumIncome) {
     const relaxation = highs.solve(restrict().replace(/\nGeneral\n[\s\S]*?\nEnd/,'\nEnd'));
     if (relaxation.Status!=='Optimal' || !relaxation.Columns) return null;
     const index = new Map(problem.variable_keys.map((k,i)=>[k,i]));
-    for (const [rate,,,source,electric] of problem.recipe_options) {
+    for (const [rate,name,,source,electric] of problem.recipe_options) {
         const key = problem.variable_keys[rate];
-        if (source || electric || !key.includes('__byowned:') || relaxation.Columns['x'+rate]?.Primal>1e-10) continue;
+        if (source || electric || shared.has(name) || !key.includes('__byowned:') || relaxation.Columns['x'+rate]?.Primal>1e-10) continue;
         const site = index.get('units:'+key.slice(5));
         if (site!=null) rows.push(` local_worker_${site}: x${site} = 0`);
     }

@@ -17,6 +17,15 @@ test('missing seed or model metadata leaves unrestricted fallback available',()=
  assert.equal(continuousNeighborhood(problem,['a'],null),problem);
  assert.equal(continuousNeighborhood({...problem,recipe_options:undefined},['a'],seed).continuousRestricted,undefined);
 });
+test('a measured processor keeps worker variants that its provisional income plan did not use',()=>{
+    const model={...problem,variable_keys:[...problem.variable_keys,'continuous_site:Mill|a#0'],
+        recipe_variables:[...problem.recipe_variables,[8,'a']],production_only:true,
+        integer_groups:[],primary_objective:[[0,1]]};
+    for(const local of [continuousNeighborhood(model,['a'],seed),incomeRepairNeighborhood(model,['a'],seed,1)]){
+        assert.doesNotMatch(local.lp,/(?:income_off|continuous_neighborhood)_[23]:/);
+        assert.match(local.lp,/(?:income_off|continuous_neighborhood)_6:/);
+    }
+});
 test('neighborhood optimum is never reported as global proof or global bound',()=>{
  const result=neighborhoodResult({values:[1],objective:5,proven:true,upper:5},true);
  assert.equal(result.proven,false);assert.equal(result.searchProven,true);assert.equal(result.upper,undefined);

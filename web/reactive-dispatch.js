@@ -2,11 +2,38 @@ import { dispatchLocations } from './task-switching.js';
 import { haulingBatchTrips, pickupStockLimit } from './hauling.js';
 import { workerTravelSeconds } from './worker-travel.js';
 import { deliveryRouting, deliveryApproach } from './delivery-routing.js';
-import { FACILITY_CATEGORY_BY_NAME } from './facility-config.js';
+import { FACILITIES, FACILITY_CATEGORY_BY_NAME } from './facility-config.js';
 
 const center=r=>[r.x+r.w/2,r.y+r.h/2];
 const distance=(a,b)=>Math.hypot(a[0]-b[0],a[1]-b[1]);
 export const dispatchKey=(facility,item,ability)=>`${facility}|${item}|${ability}`;
+const productionTraits=new Map(FACILITIES.map(f=>[f.name,f.personality]));
+
+// When a processor can start another batch, its previous batch has finished.
+// Other work (including hauling) still occupies the worker. Weight only copies
+// actually in the team; the rest of an owned or assumed pool is not on site.
+function productionPickup(recipe,eligible,ownRoutes,members,busy,permanent){
+    const ownWork=new Map(),trait=productionTraits.get(recipe.facility);
+    for(const r of ownRoutes){
+        const load=r.jobs.reduce((sum,[,work])=>sum+work,0);
+        ownWork.set(r.member,(ownWork.get(r.member)||0)+load);
+    }
+    const available=[],onShift=[],speeds=new Set();
+    for(const {member} of eligible){
+        const m=members[member],load=busy[member]||0;
+        speeds.add(m.abilities[recipe.aniimo[0]]+'|'+Boolean(trait&&m.personalities?.includes(trait)));
+        const copies=Math.min(m.count,Math.ceil(load-1e-6));
+        const fixed=permanent[member]||0;
+        if(copies<=fixed)continue;
+        onShift.push({member,share:copies-fixed});
+        const away=Math.max(fixed,load-(ownWork.get(member)||0));
+        const free=copies-away;
+        if(free<=1e-9)continue;
+        available.push({member,share:free});
+    }
+    if(speeds.size<2)return null;
+    return available.length ? available : onShift;
+}
 
 // Identical recipes do not imply one worker visits every physical building.
 // Bind only unambiguous single-copy, single-task workers. Mobile workers and
@@ -109,6 +136,9 @@ export function buildReactiveDispatch({layout,recipes,members,busy=[],permanent=
             if(total<=1e-9){for(const e of eligible)e.weight=e.mobile;total=eligible.reduce((s,e)=>s+e.weight,0);}
             const valid=new Set(eligible.map(e=>e.member));
             let entries=previous?.[key]?.filter(e=>valid.has(e.member)&&Number.isFinite(e.share)&&e.share>0);
+            if(!entries?.length&&keyAbility==='Production'&&recipe.ingredients?.length){
+                entries=productionPickup(recipe,eligible,planned.get(key)||[],members,busy,permanent);
+            }
             if(!entries?.length&&planned.has(key)){
                 const own=planned.get(key).filter(r=>valid.has(r.member));
                 const rate=own.reduce((s,r)=>s+r.job_rate,0);

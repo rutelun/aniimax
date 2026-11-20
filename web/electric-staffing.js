@@ -1,10 +1,41 @@
 import {FACILITIES, opposedPersonality} from './facility-config.js';
 import {recommendBestTeam} from './best-team.js';
+import {permanentWorkers} from './reactive-dispatch.js';
 
 const sum=(terms,values)=>terms.reduce((n,[v,c])=>n+c*values[v],0);
 const expression=terms=>terms.map(([v,c])=>(c<0?'- ':'+ ')+Math.abs(c)+' x'+v).join(' ');
 const facilities=new Map(FACILITIES.map(f=>[f.name,f]));
 const catalogs=new WeakMap();
+
+function contestedShifts(plan,catalog,roster){
+    const members=roster.members.slice();
+    for(const [i,ability,level,count] of plan.assumed_aniimo??[])members[i]={abilities:{[ability]:level},count};
+    const posts=permanentWorkers(plan,members,new Set(roster.residents));
+    const active=new Map();
+    for(const step of plan.coin_items??[]){
+        if(step.status!=='producing'||!(step.busy_units>0&&step.cycle_time>0))continue;
+        const spareBatches=Math.max(0,step.facility_count-step.busy_units)/step.cycle_time;
+        active.set(step.item_name,(active.get(step.item_name)||0)+spareBatches);
+    }
+    const recipes=[...active.keys()].map(name=>catalog.get(name)).filter(Boolean);
+    const demand=new Map();
+    for(const recipe of recipes)for(const ingredient of new Set(recipe.raw_materials))demand.set(ingredient,(demand.get(ingredient)||0)+1);
+    const sold=new Map();
+    for(const stream of plan.income_streams??[])sold.set(stream.item_name,(sold.get(stream.item_name)||0)+stream.units_per_second);
+    return recipes.filter(r=>{
+        const spare=active.get(r.name);
+        if(!r.aniimo||!r.raw_materials?.some((ingredient,i)=>demand.get(ingredient)>1&&
+            spare*(r.required_amount?.[i]??1)>(sold.get(ingredient)||0)+1e-10))return false;
+        const [ability,minimum]=r.aniimo,trait=facilities.get(r.facility)?.personality;
+        const speeds=new Set();
+        members.forEach((m,i)=>{
+            const busy=plan.roster_workload?.[i]??0;
+            if(busy<=(posts[i]||0)+1e-7||(m.abilities[ability]||0)<minimum)return;
+            speeds.add(m.abilities[ability]+'|'+Boolean(trait&&m.personalities?.includes(trait)));
+        });
+        return speeds.size>1;
+    }).map(r=>r.name);
+}
 
 function minimumWorkers(jobs){
     const groups=new Map();
@@ -60,9 +91,10 @@ export async function refineElectricStaffing(problem,incumbent,solve,{pkg,input,
     const options=problem.recipe_options??[], keys=problem.variable_keys;
     if(!keys || incumbent?.values?.length!==keys.length || !options.length || input?.fixed_homeland || input?.recipe_switching_relaxation)return incumbent;
     const original=incumbent.values, groups=new Map(), pools=problem.staffing_pools??[];
-    // The first roster draft supplies dispatch weights to the income search.
-    // Change its support posts only after those rates have been measured.
+    // The income solve already chose staffed and powered recipes. For a map
+    // draft, optimize secondary power assignments once pickup shares exist.
     const provisional=input?.roster && !Object.keys(input.roster.dispatch??{}).length;
+    if(provisional && input.map_dispatch_pending && input.always_running && !input.recipe_switching?.max_buildings)return incumbent;
     for(const option of options){
         const list=groups.get(option[1])??[];
         list.push(option);groups.set(option[1],list);
@@ -115,11 +147,23 @@ export async function refineElectricStaffing(problem,incumbent,solve,{pkg,input,
     let score,baseline,definitions;
     if(pools.length){
         const reserveWork=[];
-        for(const p of pools){
+        for(const [member,p] of pools.entries()){
             if(!p.work.length&&!p.anchors.length)continue;
-            const count=countFor(p.work,scorePool(p,original),p.anchors,p.active);
+            const deployed=scorePool(p,original);
+            const count=countFor(p.work,deployed,p.anchors,p.active);
             if(p.reserve){reserveCounts.push([count,1]);reserveWork.push(...p.work);}
-            if(p.crop.some(v=>original[v]>1e-9))row(p.work,'<=',sum(p.work,original)+1e-9);
+            const helpers=input?.crop_peak_helpers?.[member]??0;
+            if(helpers>0 || p.crop.some(v=>original[v]>1e-9)){
+                const spare=(input?.roster?.members?.[member]?.count??0)-deployed-helpers;
+                const posts=p.work.filter(([v])=>keys[v].startsWith('staff:'));
+                if(!provisional && !p.reserve && spare>0 && posts.length){
+                    // A previously idle copy can take a permanent climate or
+                    // generator post without occupying the copy harvesting.
+                    const mobile=p.work.filter(([v])=>!keys[v].startsWith('staff:'));
+                    row(mobile,'<=',sum(mobile,original)+1e-9);
+                    row(posts,'<=',sum(posts,original)+spare);
+                }else row(p.work,'<=',sum(p.work,original)+1e-9);
+            }
         }
         if(reserveCounts.length){
             row(reserveCounts,'<=',pools.filter(p=>p.reserve).reduce((n,p)=>n+scorePool(p,original),0));
@@ -164,6 +208,27 @@ export async function refineElectricStaffing(problem,incumbent,solve,{pkg,input,
     const headWeight=weight*(1+(provisional?0:baseline.reserves||0));
     for(const [v] of counts)costs.set(v,(costs.get(v)||0)-headWeight);
     if(!provisional)for(const [v] of reserveCounts)costs.set(v,(costs.get(v)||0)-weight);
+    const exposed=[];
+    let reference;
+    if(input?.always_running&&!provisional&&input.roster&&switches.size&&report&&pkg?.get_all_items){
+        reference=report(original);
+        if(reference?.success){
+            if(!catalogs.has(pkg))catalogs.set(pkg,new Map(JSON.parse(pkg.get_all_items()).map(r=>[r.name,r])));
+            for(const name of contestedShifts(reference,catalogs.get(pkg),input.roster)){
+                if(!switches.has(name))continue;
+                const group=groups.get(name),manual=group.filter(o=>!o[4]).map(o=>[o[0],1]);
+                const flag=warm.length, flow=sum(group.map(o=>[o[0],1]),original);
+                warm.push(Number(sum(manual,original)>1e-10));
+                added.push(' 0 <= x'+flag+' <= 1');integer.push(' x'+flag);
+                row([...manual,[flag,-flow]],'<=',0);
+                // Removing one exposed recipe takes precedence over lower staffing
+                // costs, within the current headcount and exact production totals.
+                costs.set(flag,-(1+headWeight*baseline.people+weight*baseline.reserves+baseline.work));
+                exposed.push(manual);
+            }
+            if(exposed.length)row(counts,'<=',baseline.people);
+        }
+    }
     const objective=[...costs];
     const lp=problem.lp.replace(/^Maximize\n[^\n]+/,'Maximize\n obj: '+expression(objective))
         .replace('\nBounds\n','\n'+rows.join('\n')+'\nBounds\n'+(added.length?added.join('\n')+'\n':''))
@@ -182,7 +247,17 @@ export async function refineElectricStaffing(problem,incumbent,solve,{pkg,input,
         if(Math.abs(g.reduce((n,[v])=>n+values[v]-original[v],0))>1e-9)return incumbent;
     }
     const after=score(values);
-    if(!after || !(after.people<baseline.people || (after.people===baseline.people &&
-        ((!provisional && after.reserves<baseline.reserves) || ((provisional || after.reserves===baseline.reserves) && after.work<baseline.work-1e-8)))))return incumbent;
+    if(!after||after.people>baseline.people)return incumbent;
+    const manualRecipes=vals=>exposed.filter(terms=>sum(terms,vals)>1e-10).length;
+    const riskChange=manualRecipes(values)-manualRecipes(original);
+    const staffingImproved=after.people<baseline.people || (after.people===baseline.people &&
+        ((!provisional && after.reserves<baseline.reserves) || ((provisional || after.reserves===baseline.reserves) && after.work<baseline.work-1e-8)));
+    if(riskChange>0 || (riskChange===0 && !staffingImproved))return incumbent;
+    if(exposed.length){
+        const checked=report(values);
+        if(!checked?.success||!Number.isFinite(checked.rate_per_second)||!Number.isFinite(reference.rate_per_second)
+            ||checked.rate_per_second<reference.rate_per_second-1e-9)
+            return incumbent;
+    }
     return {...incumbent,values};
 }

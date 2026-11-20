@@ -54,8 +54,9 @@ const assetVersion = new URL(import.meta.url).searchParams.get('build') || Date.
 const WORKER_URL = `./worker.js?load=${assetVersion}`;
 
 function initWorker() {
-    worker = new Worker(WORKER_URL, { type: 'module' });
-    worker.onmessage = (event) => {
+    const solver = new Worker(WORKER_URL, { type: 'module' });
+    worker = solver;
+    solver.onmessage = (event) => {
         const { id, type, ok, result, error, count } = event.data;
         const pending = pendingWorkerRequests.get(id);
         if (!pending) return;
@@ -74,7 +75,10 @@ function initWorker() {
             pending.reject(new Error(error));
         }
     };
-    worker.onerror = (event) => {
+    solver.onerror = (event) => {
+        if (worker !== solver) return;
+        solver.terminate();
+        worker = null;
         console.error('Worker error:', event.message || event);
         pendingWorkerRequests.forEach(pending => {
             clearTimeout(pending.timer);
@@ -82,13 +86,13 @@ function initWorker() {
         });
         pendingWorkerRequests.clear();
     };
-    worker.onmessageerror = () => worker.onerror({message:'The planner returned an unreadable response.'});
+    solver.onmessageerror = () => solver.onerror({message:'The planner returned an unreadable response.'});
 }
 
 // Throws away the worker and anything still running in it, e.g. a Minimum-setup solve from an
 // older Calculate click that would otherwise hold up the new one, and starts a fresh worker.
 function restartWorker() {
-    worker.terminate();
+    worker?.terminate();
     pendingWorkerRequests.forEach(pending => {
         clearTimeout(pending.timer);
         pending.reject(new Error('Cancelled by a newer calculation'));
@@ -104,14 +108,21 @@ function restartWorker() {
 // sends every solve step and, from the backup planner, its trial count; see worker.js.
 function callWorker(type, payload, onProgress) {
     return new Promise((resolve, reject) => {
+        if (!worker) initWorker();
         const id = ++nextRequestId;
         const timer = type === 'find_plan' ? null : setTimeout(() => {
             pendingWorkerRequests.delete(id);
             reject(new Error('This setup took too long. Try simplifying the priorities.'));
-            restartWorker();
+            if (!pendingWorkerRequests.size) restartWorker();
         }, 30_000);
         pendingWorkerRequests.set(id, { type, resolve, reject, onProgress, timer });
-        worker.postMessage({ id, type, payload });
+        try {
+            worker.postMessage({ id, type, payload });
+        } catch (error) {
+            pendingWorkerRequests.delete(id);
+            clearTimeout(timer);
+            reject(error);
+        }
     });
 }
 
@@ -235,7 +246,10 @@ function ensurePlanFor(setup, refining = false, previousPlan = null) {
     const routeWitness = previousPlan?.continuous_production_checked && !previousPlan.recipe_schedule
         ? {recipes:previousPlan.active_continuous_recipes, counts:previousPlan.continuous_site_counts, seed:previousPlan.comparison_seed,
             goals:previousPlan.comparison_goals, scores:previousPlan.comparison_scores} : null;
-    solver.postMessage({ id: 1, type: 'find_plan', routeWitness, payload: JSON.stringify({ ...lastPlanInput, ...aniimoInput(setup) }) });
+    const peak=previousPlan?.crop_peaks;
+    const peakHelpers=peak?.counts?.map((count,i)=>Math.max(0,count-peak.baseCounts[i]));
+    solver.postMessage({ id: 1, type: 'find_plan', routeWitness, payload: JSON.stringify({ ...lastPlanInput, ...aniimoInput(setup),
+        crop_peak_helpers:peakHelpers, map_dispatch_pending:setup.startsWith('roster') && !previousPlan }) });
 }
 
 function stopSetupSolve() {
@@ -1916,11 +1930,12 @@ function renderHomelandLayout(plan, keepLayout = false) {
     const solver = new Worker(WORKER_URL.replace('worker.js', 'layout-worker.js'), { type: 'module' });
     layoutWorker = solver;
     solver.onmessage = (event) => {
+        if (event.data?.error) return solver.onerror({message:event.data.error});
         solver.terminate();
         if (layoutWorker === solver) layoutWorker = null;
         applyLayout(event.data);
     };
-    solver.onerror = (event) => {
+    solver.onerror = solver.onmessageerror = (event) => {
         console.error('Homeland layout failed:', event.message || event);
         if (runId !== layoutRunId) return;
         stopLayout();
@@ -3132,8 +3147,8 @@ async function sourceTeamLayout(plan, input, setup) {
                 if (error) reject(error);
                 else resolve(result);
             };
-            solver.onerror = event => finish(new Error(event.message || 'The layout worker stopped'));
-            solver.onmessage = event => finish(null, event.data);
+            solver.onerror = solver.onmessageerror = event => finish(new Error(event.message || 'The layout worker stopped'));
+            solver.onmessage = ({data}) => finish(data?.error ? new Error(data.error) : null, data);
             solver.postMessage({ pieces, ...options });
         });
         rememberLayout(plan, key, layout);
@@ -5980,7 +5995,8 @@ async function runFindPlan() {
         requestedSetup = bestSetup;
         mainSolve = { setup: bestSetup, runId };
         Object.assign(input, aniimoInput(bestSetup));
-        const bestJson = await callWorker('find_plan', JSON.stringify({ ...input, aniimo: bestSetup }), (count) => {
+        const bestJson = await callWorker('find_plan', JSON.stringify({ ...input, aniimo: bestSetup,
+            map_dispatch_pending:bestSetup.startsWith('roster') }), (count) => {
             // The exact planner reports each solve; the backup planner counts its trials.
             if (typeof count === 'object') {
                 setStep(count.step, count.state, undefined, count.proven);

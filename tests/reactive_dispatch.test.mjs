@@ -23,6 +23,22 @@ test('a fully occupied specialist retains its own work instead of becoming ineli
     assert.deepEqual(p['Chimney Kiln|ore|Production'].map(e=>[e.member,e.share]),[[0,1]]);
 });
 
+test('a processor uses the expected batch time of the workers available when the next batch can start',()=>{
+    const recipe={name:'flour',facility:'Carousel Mill',ingredients:['wheat'],aniimo:['Wind',3]};
+    const members=[{count:1,abilities:{Wind:3}},{count:3,abilities:{Wind:4}},
+        {count:1,abilities:{Wind:4}},{count:1,abilities:{Wind:3}}];
+    const routes=[{member:0,facility:recipe.facility,item:recipe.name,job_rate:.006,jobs:[['',.486]]}];
+    const context={layout:{pieces:[{members:[{x:0,y:0,w:2,h:2,facility:recipe.facility,crop:recipe.name,weight:1}]}],storages:[]},
+        recipes:[recipe],members,routes,busy:[.486,.5,1,0],permanent:[0,0,1,0]};
+    const key='Carousel Mill|flour|Production', entries=buildReactiveDispatch(context)[key];
+    // One deployed Wind 4 spends half its time elsewhere. Its other copies, a
+    // permanent operator, and an undeployed worker cannot claim this wheat.
+    assert.deepEqual(entries.map(e=>[e.member,e.share]),[[0,2/3],[1,1/3]]);
+    assert.equal(entries.reduce((total,e)=>total+e.share*[81,27][e.member],0),63);
+    context.busy[1]=1;
+    assert.deepEqual(buildReactiveDispatch(context)[key].map(e=>[e.member,e.share]),[[0,1]]);
+});
+
 test('only the fraction blocked by other work can be captured, conserving task demand',()=>{
     const team=[{count:1,abilities:{Fire:4}},{count:1,abilities:{Fire:2}}];
     const actual=[{member:0,facility:'Chimney Kiln',item:'ore',job_rate:.1,jobs:[['',.6]],walking:0}];

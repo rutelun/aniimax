@@ -8,6 +8,62 @@ const expression = terms => terms.map(([v, c]) => `${c < 0 ? '-' : '+'} ${Math.a
 // production rate and physical recipe choice. A faster worker can still change how long
 // a kiln runs, provided its input availability and every competing job remain feasible.
 export async function refineStaffing(problem, incumbent, solve, context) {
+    if(!context?.report||!Object.keys(context.input?.roster?.dispatch??{}).length)
+        return refineShift(problem,incumbent,solve,context);
+    const reports=new Map();
+    const report=values=>{
+        if(!reports.has(values))reports.set(values,context.report(values));
+        return reports.get(values);
+    };
+    let candidate=await refineShift(problem,incumbent,solve,{...context,report});
+    if(candidate!==incumbent && !keepsProduction(report(incumbent.values),report(candidate.values)))candidate=incumbent;
+    return fillReservePosts(problem,candidate,context.input,report);
+}
+
+function keepsProduction(before,after){
+    if(!before?.success||!after?.success||!Number.isFinite(before.rate_per_second)||!Number.isFinite(after.rate_per_second)
+        ||after.rate_per_second<before.rate_per_second-1e-9)return false;
+    for(const key of ['level_up','level_up_preview']){
+        if(Number.isFinite(before[key]?.seconds)&&(!Number.isFinite(after[key]?.seconds)||after[key].seconds>before[key].seconds+1e-5))
+            return false;
+    }
+    const achieved=new Map((after.priorities??[]).map(p=>[p.target,p.per_second]));
+    return (before.priorities??[]).every(p=>achieved.get(p.target)>=p.per_second-1e-9);
+}
+
+// An owned pool can have a grower in the field and a second, completely idle
+// copy. Swap only full-time posts. The mobile crew and its routes stay intact.
+function fillReservePosts(problem,shift,input,report){
+    const members=input.roster.members;
+    if(!members?.length || !problem.variable_keys || !problem.staffing_pools)return shift;
+    const pools=problem.staffing_pools,posts=new Map();
+    for(const [member,pool] of pools.entries())for(const v of pool.anchors){
+        const key=problem.variable_keys[v];
+        if(!key.startsWith('staff:'))continue;
+        const building=key.split(':')[1];
+        if(!posts.has(building))posts.set(building,[]);
+        posts.get(building).push({member,pool,v});
+    }
+    const deployed=(pool,values)=>Math.max(Math.ceil(total(pool.work,values)-1e-6),
+        Math.round(pool.anchors.reduce((n,v)=>n+values[v],0)));
+    for(const options of posts.values())for(const source of options){
+        if(!source.pool.reserve || shift.values[source.v]<0.5)continue;
+        for(const dest of options){
+            if(dest.pool.reserve || !members[dest.member])continue;
+            const capacity=members[dest.member].count-(input.crop_peak_helpers?.[dest.member]??0);
+            while(shift.values[source.v]>0.5 && deployed(dest.pool,shift.values)<capacity){
+                const values=shift.values.slice();
+                values[source.v]--;values[dest.v]++;
+                for(const p of [source.pool,dest.pool])if(p.active!=null)values[p.active]=deployed(p,values);
+                if(!keepsProduction(report(shift.values),report(values)))break;
+                shift={...shift,values};
+            }
+        }
+    }
+    return shift;
+}
+
+async function refineShift(problem, incumbent, solve, context) {
     try {
         incumbent=await refineElectricStaffing(problem,incumbent,solve,context);
     } catch (error) {
