@@ -397,8 +397,20 @@ async function exactPlanJsonOnce(pkg, payload, step = () => {}, first = () => {}
         return result;
     };
     const solve = async (problem, goal, rebuild) => {
+        // A relaxed candidate may use a new recipe. Keep the previous priority's
+        // physical shift until the newly occupied recipes pass their full constraints.
+        const previous = incumbent?.values && incumbentKeys ? {keys:incumbentKeys, values:incumbent.values} : null;
         for(let pass=0;;pass++) {
             let result=await solveOnce(problem,goal);
+            if (!result && pass > 0 && previous && !comparison && deadline == null) {
+                const {restoreCatalogue} = await loadPriorityPlanner();
+                const recovered = await restoreCatalogue(await newHighs(), runModel, problem, previous);
+                if (recovered) {
+                    result = {...recovered, proven:false, upper:undefined};
+                    incumbent = result;
+                    incumbentKeys = problem.variable_keys;
+                }
+            }
             if(!result?.values || !input.always_running || discoveryPass || !Array.isArray(input.always_running_recipes) || !rebuild)return result;
             if(!Array.isArray(problem.recipe_variables))throw new Error('Missing recipe variables for continuous production');
             const checked=new Set(input.always_running_recipes);
@@ -886,6 +898,12 @@ self.onmessage = async (event) => {
     const { id, type, payload } = event.data;
     try {
         const pkg = await ready;
+        if (type === 'compact_team') {
+            const {compactMeasuredTeam} = await import('./measured-team.js'+load);
+            const plan = compactMeasuredTeam(pkg,await newHighs(),payload);
+            self.postMessage({id,ok:true,result:plan});
+            return;
+        }
         if (type === 'rank_improvements') {
             await rankImprovements(pkg, payload, result => self.postMessage({ id, type: 'progress', count: result }), comparisonMemo);
             self.postMessage({ id, ok: true, result: null });

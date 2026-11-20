@@ -50,6 +50,16 @@ test('unsupported time-sharing and mismatched native cycle metadata decline the 
     assert.equal(economicCountNeighborhood(highs,p,new Map([['missing',1]]),1),null);
 });
 
+test('a building pattern can earn less than a global ceiling and still supply a feasible plan',()=>{
+    const p=sample(), counts=new Map([['fruit',1]]);
+    assert.equal(economicCountNeighborhood(highs,p,counts,15),null);
+    const local=economicCountNeighborhood(highs,p,counts);
+    const result=highs.solve(local.lp);
+    assert.equal(result.Status,'Optimal');
+    assert.equal(result.ObjectiveValue,5);
+    assert.equal(local.continuousRestricted,true);
+});
+
 test('dispatch shares reserve a single physical site and retain their weighted cycle time',()=>{
     const p=sample();
     p.variables=6;

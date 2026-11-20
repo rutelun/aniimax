@@ -1483,6 +1483,27 @@ const initialsOf = name => name.split(/[\s-]+/).map(w => w[0]).join('').toUpperC
 let layoutRunId = 0;
 let layoutWorker = null;
 const layoutsByPlan = new WeakMap();
+const compactedLayouts = new WeakSet();
+
+function updateLayoutStaffing(layout,plan) {
+    const planned = homelandPieces(plan,lastPlanInput).pieces.flatMap(piece=>
+        piece.cluster ? [...piece.buildings,...piece.plots] : piece.members);
+    const signature = site=>JSON.stringify([site.facility, site.crop, site.mode, site.electric_level,
+        site.jobs?.map(job=>[job.item,job.electric_level])]);
+    const remaining = new Map();
+    for(const site of planned){
+        const key=signature(site);
+        if(!remaining.has(key))remaining.set(key,[]);
+        remaining.get(key).push(site);
+    }
+    const updated=structuredClone(layout);
+    for(const site of updated.pieces.flatMap(piece=>piece.members)){
+        const current=remaining.get(signature(site))?.shift();
+        if(!current)return null;
+        for(const key of ['crew','workers','jobs','cycle','load'])site[key]=current[key];
+    }
+    return updated;
+}
 let layoutStorageTimer = null;
 
 // Every plot of the homeland, `{ number, x, y, w, h }` in tiles, with the top left at the origin.
@@ -1838,7 +1859,7 @@ function renderHomelandLayout(plan, keepLayout = false) {
         .replace('{level}', homeLevel).replace('{n}', storageLimit);
     if (layoutWorker) layoutWorker.terminate();
     layoutWorker = null;
-    const applyLayout = layout => {
+    const applyLayout = async layout => {
         if (runId !== layoutRunId) return;
         rememberLayout(plan, layoutKey, layout);
         const storages = layout.storages;
@@ -1910,6 +1931,44 @@ function renderHomelandLayout(plan, keepLayout = false) {
         setStep(layoutStep, 'done');
         if (selectedSetupTab() === 'custom') {
             if (refineReactiveDispatch(layout, plan)) return;
+            if (plan.continuous_production_checked && plan.comparison_seed && !plan.recipe_schedule
+                && plan.reactive_dispatch && !compactedLayouts.has(layout)) {
+                compactedLayouts.add(layout);
+                const {members} = rosterWorkload(plan);
+                const context = {layout, members, recipes:recipeIndex, busy:plan.roster_workload,
+                    permanent:permanentWorkers(plan,members,RESIDENT_FACILITIES), routes:plan.roster_routes};
+                const setup = selectedAniimoSetup();
+                const calculation = planRunId;
+                let compact;
+                try {
+                    compact = await callWorker('compact_team',{plan,context,limit:ANIIMO_MAX[homeLevel-1],
+                        input:{...lastPlanInput,...aniimoInput(setup)}});
+                } catch (error) {
+                    console.warn('Keeping the measured team after a staffing check failed.',error);
+                }
+                if(runId !== layoutRunId || calculation !== planRunId || selectedAniimoSetup() !== setup)return;
+                if(compact) {
+                    // The audit holds each physical recipe, plot, mode and post.
+                    // Keep its measured coordinates when updating worker routes.
+                    const updated = updateLayoutStaffing(layout,compact);
+                    if(updated) {
+                        attachDeliveryFlows(updated,compact.roster_dispatch,recipeIndex,members,compact.roster_routes);
+                        const projected=buildReactiveDispatch({...context,layout:updated,busy:compact.roster_workload,
+                            routes:compact.roster_routes,previous:compact.roster_dispatch});
+                        const charged=measuredDispatchWork(compact,projected,recipeIndex);
+                        const hauling=new Map(compact.delivery_assignments);
+                        if(charged.walking.every(([,delta])=>Math.abs(delta)<1e-7)
+                            && charged.delivery.every(([id,load])=>Math.abs(load-(hauling.get(id)||0))<1e-7)) {
+                            compactedLayouts.add(updated);
+                            rememberLayout(compact,layoutKey,updated);
+                            reactiveDispatch = compact.roster_dispatch;
+                            plansBySetup[selectedAniimoSetup()] = compact;
+                            showSelectedPlan(true);
+                            return;
+                        }
+                    }
+                }
+            }
         } else {
             if (refineWorkerMovement(layout, plan)) return;
             plan.layout_walking = layoutWalkingAdjustments(layout.pieces.flatMap(piece => piece.members), plan);

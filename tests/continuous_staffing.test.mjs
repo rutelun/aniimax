@@ -216,3 +216,45 @@ test('fixed-output E-mode saves a whole Fire worker before relieving a larger sh
     assert.equal(r.values[5],original[5]);
     assert.equal(r.values[6],1);
 });
+
+import {compactMeasuredTeam} from '../web/measured-team.js';
+
+test('a measured kiln shift releases either Fire worker only when the deployed team can finish every batch',
+    {skip:!fs.existsSync(wasm)}, async()=>{
+    const pkg=await import('../web/pkg/aniimax.js');
+    pkg.initSync({module:fs.readFileSync(wasm)});
+    const highs=await highsModule({wasmBinary:fs.readFileSync(new URL('../web/vendor/highs/highs.wasm',import.meta.url)),
+        print(){},printErr(){}});
+    const ore='coarse_sifted_ore',facility='Chimney Kiln',key=facility+'|'+ore+'|Production';
+    const members=[{count:1,abilities:{Fire:4}},{count:1,abilities:{Fire:3}},{count:1,abilities:{Earth:1}}];
+    const dispatch={[key]:[0,1].map(member=>({member,share:.5,travel_seconds:0}))};
+    for(const [sand,expected] of [[8000,[0,1,1]],[80000,[1,0,1]],[120000,null]]){
+        const input={currency:'coins',always_running:true,always_running_recipes:[ore],aniimo:'roster',priorities:['coins'],
+            quest_income_per_day:{mineral_sand:sand},roster:{members,environment:{},residents:[],dispatch,movement_seconds:0},
+            fixed_homeland:{groups:[{facility,count:2,level:1,lit:false,powered:false},
+                {facility:'Mine',count:1,level:1,lit:false,powered:false}],climate:{},generators:0}};
+        const payload=JSON.stringify(input),stage=JSON.stringify({maximize_material_work:true});
+        const model=JSON.parse(pkg.exact_problem(payload,stage)),solution=highs.solve(model.lp);
+        assert.equal(solution.Status,'Optimal');
+        const values=model.variable_keys.map((_,v)=>solution.Columns['x'+v]?.Primal??0);
+        const plan=JSON.parse(pkg.exact_plan(payload,stage,JSON.stringify({values,proven:false,bound:0,verify_only:true})));
+        assert.equal(plan.success,true,plan.error);
+        Object.assign(plan,{continuous_production_checked:true,continuous_checked_recipes:[ore],
+            comparison_seed:{keys:model.variable_keys,values},comparison_goals:{floors:[],currency:'coins'},
+            comparison_scores:{material_work:model.primary_objective.reduce((n,[v,c])=>n+values[v]*c,0)},
+            continuous_upper_bounds:[[JSON.stringify(['coins',{floors:[]}]),plan.rate_per_second]],
+            crop_peaks:{counts:[1,1,1],completion:0,targetSeconds:21},reactive_dispatch:dispatch,delivery_assignments:[]});
+        const rate=p=>p.roster_routes.filter(r=>r.item===ore).reduce((sum,r)=>sum+r.job_rate,0);
+        const context={members,busy:plan.roster_workload,permanent:[0,0,0],routes:plan.roster_routes,
+            recipes:[{name:ore,facility,ingredients:['mineral_sand'],workload:34,aniimo:['Fire',2]}],
+            layout:{storages:[],pieces:[{members:[{facility,crop:ore,x:0,y:0,w:4,h:4,batchWeight:rate(plan)*3600}]}]}};
+        const result=compactMeasuredTeam(pkg,highs,{input,plan,context,limit:3});
+        if(expected){
+            assert.deepEqual(result.crop_peaks.counts,expected);
+            assert.ok(Math.abs(rate(result)-rate(plan))<1e-9);
+            assert.ok(Math.abs(result.rate_per_second-plan.rate_per_second)<1e-9);
+            assert.equal(result.roster_dispatch[key].length,1);
+            assert.equal(result.roster_dispatch[key][0].share,1);
+        }else assert.equal(result,null);
+    }
+});

@@ -69,7 +69,7 @@ function siteCounts(problem,values) {
 // Lift the production shift. Recompute sales from its material balances:
 // a prior stage can reserve a rounded amount of an output, while the full
 // model accounts for every remaining unit. Its priority floors still apply.
-async function restoreCatalogue(highs,solveModel,problem,seed) {
+export async function restoreCatalogue(highs,solveModel,problem,seed) {
     const previous=new Map(seed.keys.map((key,v)=>[key,seed.values[v]]));
     const rows=[];
     for(let v=0;v<problem.variables;v++){
@@ -354,13 +354,17 @@ export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},fi
                 const allowed=new Set(counts.keys());
                 for(const name of allowed)names.add(name);
                 const compact=priority(payloadFor(allowed,true),currencyStage,currency);
-                const local=economicCountNeighborhood(highs,compact,counts,(counts.upper??0)/1.0025);
-                if(local){
+                // This dual bound prices all building patterns. When this
+                // particular pattern falls short, still test its feasible income.
+                const target=(counts.upper??0)/1.0025;
+                for(const floor of target>0 ? [target,0] : [0]){
+                    const local=economicCountNeighborhood(highs,compact,counts,floor);
+                    if(!local)continue;
                     const found=await solveModel(local,{time_limit:2,mip_rel_gap:0});
-                    if(found?.values){
-                        const fit=polishSolution(highs,local,found);
-                        await checkedCandidate({keys:compact.variable_keys,values:fit.values},true,compact);
-                    }
+                    if(!found?.values)continue;
+                    const fit=polishSolution(highs,local,found);
+                    await checkedCandidate({keys:compact.variable_keys,values:fit.values},true,compact);
+                    break;
                 }
                 if(Number.isFinite(counts.upper)){ceilings.push(counts.upper);upper=Math.min(upper,counts.upper);}
             }
@@ -368,10 +372,15 @@ export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},fi
         // An independently priced building pattern may already meet the
         // preliminary income tolerance. The full catalogue and measured map
         // are still checked below and in the dispatch pass.
+        const preparingMap=priceSitesFirst && input.map_dispatch_pending && best;
+        if(preparingMap && upper>best.objective*1.0025){
+            await repairModes();
+            await checkedCandidate(best,false);
+        }
         const pricedWithinGap = priceSitesFirst && best && upper >= best.objective-1e-7
             && upper <= best.objective*1.0025;
-        if (pricedWithinGap && !close(upper,best.objective)) await repairModes();
-        for(let round=0;!measuredClosed && !pricedWithinGap && round<3;round++){
+        if ((preparingMap || pricedWithinGap) && !close(upper,best.objective)) await repairModes();
+        for(let round=0;!measuredClosed && !preparingMap && !pricedWithinGap && round<3;round++){
             const model=pending?.model??(round===0?initialModel:priority(payloadFor(scope),currencyStage,currency));
             const settings=round===0?masterOptions:{seed:best??witnessSeed,scope,timeLimit:5};
             const result=pending?await pending.result:evaluateBound?await evaluateBound(model,settings):solveEconomicBound(highs,model,settings);
@@ -428,8 +437,13 @@ export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},fi
     // against the previous shift and its global ceiling warrants the full
     // search, while a small measured change retains its explicit proof gap.
     const transferred = witnessSeed&&Number.isFinite(oldCurrency)&&best.objective*1.01>=oldCurrency;
-    const needsWiderSearch=!transferred && upper>best.objective*1.0025;
-    if(needsWiderSearch && !(dispatched && onIncumbent))return null;
+    // A draft can retain its actual gap: the next solve prices the routes
+    // measured on that map. The final solve still checks its income ceiling.
+    const routeDraft=input.map_dispatch_pending && input.roster && !dispatched && !initialWitness;
+    const needsWiderSearch=!routeDraft && !transferred && upper>best.objective*1.0025;
+    // The wider search can start with this shift once all remaining
+    // priorities and the full catalogue have been checked below.
+    if(needsWiderSearch && !onIncumbent)return null;
     const income=best.objective;
     bounds.push([stageKey(currency,currencyStage),upper]);
     stage.floors.push([currency,income]);

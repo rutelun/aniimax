@@ -1,0 +1,95 @@
+{
+  "currency": "coins",
+  "always_running": true,
+  "priorities": [
+    "level_up",
+    "Wood Blocks",
+    "aniipods",
+    "coins",
+    "Mineral Sand"
+  ],
+  "prioritize_byproducts": false,
+  "level_up_preview": {
+    "cost": [
+      [
+        "coins",
+        8630000
+      ],
+      [
+        "laminated_beams",
+        630
+      ],
+      [
+        "refined_ore",
+        380
+      ]
+    ],
+    "stock": []
+  },
+  "quest_income_per_day": {
+    "wood_block": 800
+  },
+  "crop_variety": false,
+  "exclude": [
+    "harvest_platter",
+    "umbral_pickle",
+    "umbral_hot_pot",
+    "umbral_sweet_and_spicy_sauce",
+    "aniipod",
+    "aniipod_pro"
+  ],
+  "season": "magical_wonder_night",
+  "season_currency_per_day": 2000,
+  "season_crop_minimums": {
+    "magic_pumpkin": 4,
+    "memory_lanternfruit": 4
+  },
+  "e_mode_rv": 16,
+  "facilities": {
+    "Farmland": [{"count":34,"level":7}],
+    "Woodland": [{"count":17,"level":5}],
+    "Mine": [{"count":8,"level":5}],
+    "Well": [{"count":3,"level":4}],
+    "Tidewhisper Sandcastle": [{"count":2,"level":3}],
+    "Dewy House": [{"count":1,"level":2}],
+    "Nimbus Bed": [{"count":2,"level":3}],
+    "Starfall Hammock": [{"count":1,"level":1}],
+    "Floral Windmill": [{"count":0,"level":1}],
+    "Heat Furnace": [{"count":2,"level":1}],
+    "Cooling Unit": [{"count":2,"level":1}],
+    "Sunlamp": [{"count":2,"level":1}],
+    "Carousel Mill": [{"count":2,"level":5}],
+    "Crafting Table": [{"count":2,"level":6}],
+    "Claw Game Cooker": [{"count":2,"level":6}],
+    "Jukebox Dryer": [{"count":2,"level":6}],
+    "Simmering Pot": [{"count":2,"level":5}],
+    "Phonolfactory Table": [{"count":2,"level":4}],
+    "Bouncy Brew Keg": [{"count":2,"level":3}],
+    "Blazing Stove": [{"count":2,"level":4}],
+    "Pickling Jar": [{"count":2,"level":4}],
+    "Joy Wheel Loom": [{"count":2,"level":3}],
+    "Dance Pad Polisher": [{"count":1,"level":3}],
+    "Aniipod Maker": [{"count":1,"level":3}],
+    "Woodworking Bench": [{"count":3,"level":3}],
+    "Chimney Kiln": [{"count":3,"level":3}]
+  },
+  "modules": {
+    "ecological_module": 6,
+    "kitchen_module": 6,
+    "resource_detector": 6,
+    "crafting_module": 4
+  },
+  "aniimo": "best:Fire4,Water4,Earth4,Lightning4,Wind4,Dark4,Artisanship4,Leisure4,Perfumery3",
+  "aniimo_levels": {
+    "Fire": 4,
+    "Water": 4,
+    "Earth": 4,
+    "Lightning": 4,
+    "Wind": 4,
+    "Dark": 4,
+    "Artisanship": 4,
+    "Leisure": 4,
+    "Perfumery": 3
+  },
+  "map_dispatch_pending": false
+}

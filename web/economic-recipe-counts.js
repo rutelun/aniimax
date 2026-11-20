@@ -222,8 +222,8 @@ export function economicRecipeCounts(highs, problem, {input,timeLimit=1.5}={}) {
 // Condition the executable model on the proposed site counts, then select
 // worker alternatives using its continuous relaxation. These additional rows
 // make a local search. They supply no global income bound.
-export function economicCountNeighborhood(highs,problem,counts,minimumIncome) {
-    if (!counts?.size || !(minimumIncome>0) || !problem.production_only ||
+export function economicCountNeighborhood(highs,problem,counts,minimumIncome=0) {
+    if (!counts?.size || !Number.isFinite(minimumIncome) || minimumIncome<0 || !problem.production_only ||
         !Array.isArray(problem.integer_groups) || !problem.recipe_options?.length) return null;
     const sites = new Map(problem.integer_groups.map(([name,terms])=>[name,terms.map(([v])=>v)]));
     const shared=new Set();
@@ -237,7 +237,7 @@ export function economicCountNeighborhood(highs,problem,counts,minimumIncome) {
     const rows = [...sites].map(([name,columns],i)=>
         ` local_sites_${i}: ${columns.map(v=>'x'+v).join(' + ')} = ${counts.get(name) || 0}`);
     const earnings = expression(problem.primary_objective.map(([v,c])=>['x'+v,c]));
-    rows.push(` local_income: ${earnings} >= ${minimumIncome}`);
+    if(minimumIncome>0)rows.push(` local_income: ${earnings} >= ${minimumIncome}`);
     const restrict = () => problem.lp.replace('\nBounds\n','\n'+rows.join('\n')+'\nBounds\n');
     const relaxation = highs.solve(restrict().replace(/\nGeneral\n[\s\S]*?\nEnd/,'\nEnd'));
     if (relaxation.Status!=='Optimal' || !relaxation.Columns) return null;
