@@ -81,3 +81,45 @@ test('a quicker workshop worker keeps the slack needed for its existing harvest 
     });
     assert.deepEqual(after.values,original.values);
 });
+
+import {refineElectricStaffing} from '../web/electric-staffing.js';
+for(const mode of ['minimum','best']){
+    test(mode+' counts the generator operator before accepting an E-mode switch',async()=>{
+        const keys=['rate:ore#0','rate:ore__electric1#0','sold:ore#0','generators#0'];
+        const problem={variable_keys:keys,variables:4,
+            lp:'Maximize\n obj: x2\nSubject To\n power: x1 - x3 <= 0\nBounds\nGeneral\n x3\nEnd',
+            recipe_options:[[0,'ore','Mine',true,false,1],[1,'ore','Mine',true,true,1]],primary_objective:[[2,1]]};
+        const pkg={get_all_items:()=>JSON.stringify([{name:'ore',aniimo:['Earth',1]}])};
+        const report=([manual,,sale,generators])=>({success:true,rate_per_second:sale,power_generators:generators,
+            coin_items:manual?[{status:'producing',facility:'Mine',item_name:'ore',facility_count:1,
+                aniimo_tasks:[{ability:'Earth',level:1,busy:manual}]}]:[]});
+        const candidate={values:[0,.4,.4,1]},solve=async()=>candidate;
+        const options={pkg,input:{aniimo:mode},report};
+        const staffed={values:[.4,0,.4,0]};
+        assert.equal(await refineElectricStaffing(problem,staffed,solve,options),staffed);
+        const runningGenerator={values:[.4,0,.4,1]};
+        assert.deepEqual((await refineElectricStaffing(problem,runningGenerator,solve,options)).values,candidate.values);
+        const losingIncome=async()=>({values:[0,.4,.39,1]});
+        assert.equal(await refineElectricStaffing(problem,runningGenerator,losingIncome,options),runningGenerator);
+    });
+}
+test('fixed-output E-mode saves a whole Fire worker before relieving a larger shared Earth shift',async()=>{
+    const highs=await highsModule({wasmBinary:fs.readFileSync(new URL('../web/vendor/highs/highs.wasm',import.meta.url)),print(){},printErr(){}});
+    const keys=['rate:a#0','rate:a__electric1#0','rate:b#0','rate:b__electric1#0','rate:c#0','sold:a#0','generators#0'];
+    const original=[.84,0,.15,0,.06,.84,1];
+    const p={lp:'Maximize\n obj: x5\nSubject To\n power: x1 + 6 x3 <= 1\n sale: x0 + x1 - x5 = 0\nBounds\n'+
+        keys.map((k,i)=>' 0 <= x'+i+' <= 1').join('\n')+'\nGeneral\n x6\nEnd',
+        variables:keys.length,variable_keys:keys,recipe_options:[[0,'a','Mine',true,false,1],[1,'a','Mine',true,true,1],
+            [2,'b','Stove',false,false,1],[3,'b','Stove',false,true,1],[4,'c','Mine',true,false,1]],
+        primary_objective:[[5,1]],staffing_pools:[[[0,1],[4,1]],[[2,1]],[[6,1]]].map(work=>({work,crop:[],anchors:[],active:null}))};
+    p.lp=p.lp.replace(' power:', ' keep_generator: x6 = 1\n power:');
+    const solve=async model=>{
+        const r=highs.solve(model.lp,{mip_rel_gap:0});
+        assert.equal(r.Status,'Optimal');
+        return {values:Array.from({length:model.variables},(_,i)=>r.Columns['x'+i]?.Primal??0)};
+    };
+    const r=await refineElectricStaffing(p,{values:original},solve);
+    assert.ok(Math.abs(r.values[3]-.15)<1e-9);
+    assert.equal(r.values[5],original[5]);
+    assert.equal(r.values[6],1);
+});

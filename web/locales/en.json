@@ -1,4 +1,9 @@
 [
+  "Average time from ripening to resowing",
+  "Target <{seconds} s",
+  "After the first hour. Each plot regrows from its own sowing time. Includes travel, deliveries and other ongoing jobs.",
+  "Average without this copy: {s} s",
+  "Crop support",
   "Plan results",
   "Show rates",
   "Seed cost",

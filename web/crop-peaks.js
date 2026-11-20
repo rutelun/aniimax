@@ -1,5 +1,6 @@
 import { workerTravelSeconds } from './worker-travel.js';
 import { dispatchLocations } from './task-switching.js';
+import { recurringCropWork, REGROWTH_TARGET_SECONDS } from './recurring-crops.js';
 
 const EPS=1e-8;
 export const CROP_PEAK_TARGET_SECONDS=100;
@@ -36,6 +37,8 @@ export function cropPeakInput({layout,recipes,members,busy,permanent=[],routes=[
     outside.forEach((o,i)=>{
         const measured=o.busy;
         const hauling=delivery.find(([id])=>id===i)?.[1]||0;
+        o.otherSeconds=measured>0?o.seconds/measured:0;
+        o.hauling=hauling;
         if(hauling>0&&stores.length&&sources.length){
             // A courier can finish at any storage then take any new pickup.
             // Use complete trips, never workload-per-production-batch as duration.
@@ -46,6 +49,8 @@ export function cropPeakInput({layout,recipes,members,busy,permanent=[],routes=[
                 total+=source.rate;
             }
             const duration=total>0?trip/total:0;
+            o.tripSeconds=duration;
+            o.storageOrigins=stores.map(store=>({point:point(store),weight:1}));
             o.seconds+=hauling*duration;
             for(const store of stores)o.origins.push({point:point(store),weight:duration>0?hauling/duration/stores.length:0});
         }
@@ -66,7 +71,7 @@ export function cropPeakInput({layout,recipes,members,busy,permanent=[],routes=[
                 const work=reference.get(`${key}|${name}`);
                 if(!(work>0))continue;
                 const id=`${key}|${plot}|${name}`;
-                jobs.push({id,previous,key:`${key}|${ability}`,name,ability,level,point:site.point,order:plot,
+                jobs.push({id,previous,key:`${key}|${ability}`,name,ability,level,point:site.point,order:plot,cycle:site.cycle||1/site.rate,
                     eligibleMembers:[...(assigned.get(`${key}|${ability}`)||[])],
                     weight:site.rate,seconds:members.map(m=>(m.abilities?.[ability]||0)>=level
                         ?work/(1+.25*(level-1)+.5*(m.abilities[ability]-level)):Infinity)});
@@ -85,10 +90,13 @@ export function cropPeakInput({layout,recipes,members,busy,permanent=[],routes=[
 // All plots release critical work together. Watering remains average demand.
 // Workers finish an already-started job before approaching a new request. Equal
 // availability rotates across samples; proximity is never a dispatch priority.
-export function selectCropPeakTeam({members,counts,permanent=[],jobs,outside=[],limit=Infinity,targetSeconds=CROP_PEAK_TARGET_SECONDS,recommend=true}) {
+export function selectCropPeakTeam({members,counts,permanent=[],jobs,outside=[],limit=Infinity,targetSeconds,recommend=true}) {
     jobs=jobs.filter(j=>j.ability!=='Water' && j.name!=='Watering');
+    const recurring=jobs.every(j=>Number.isFinite(j.cycle)&&j.cycle>0);
+    targetSeconds??=recurring?REGROWTH_TARGET_SECONDS:CROP_PEAK_TARGET_SECONDS;
+    const meetsTarget=seconds=>recurring ? seconds<targetSeconds : seconds<=targetSeconds+EPS;
     const active=members.map((m,i)=>Math.max(counts[i]||0,permanent[i]||0));
-    const evaluate=allocation=>{
+    const simulate=allocation=>{
         if(!jobs.length)return {wait:0,completion:0,worstCompletion:0,shares:{},copyShares:{}};
         let totalWait=0,weight=0;
         const completions=[];
@@ -157,18 +165,29 @@ export function selectCropPeakTeam({members,counts,permanent=[],jobs,outside=[],
         }
         return {wait:totalWait/weight,completion:completions.reduce((a,b)=>a+b,0)/8,worstCompletion:Math.max(...completions),shares,copyShares};
     };
+    // Candidate selection, pruning and the removal tooltip revisit the same
+    // team. All eight scenarios share fixed inputs throughout this search.
+    const scenariosByTeam=new Map();
+    const evaluate=allocation=>{
+        const key=allocation.join(',');
+        if(!scenariosByTeam.has(key))scenariosByTeam.set(key,recurring?
+            recurringCropWork({jobs,members,counts,permanent,outside},allocation):simulate(allocation));
+        return scenariosByTeam.get(key);
+    };
     let result=evaluate(active);const beforeWait=result.wait,beforeCompletion=result.completion;
+    const better=(a,b)=>(a.uncovered||0)<(b.uncovered||0) || a.completion<b.completion-EPS
+        || (Math.abs(a.completion-b.completion)<=EPS && a.wait<b.wait-EPS);
     const improve=(allocation,initial,available,floor=counts,cap=limit)=>{
         let current=initial;
         // Each pass adds one copy. Stop at the deadline, not at the smallest wait.
         // The finite safety bound also covers callers without an RV limit.
         const ceiling=Number.isFinite(cap)?cap:allocation.reduce((a,b)=>a+b,0)+jobs.length;
-        while(current.completion>targetSeconds+EPS && allocation.reduce((a,b)=>a+b,0)<ceiling){
+        while(!meetsTarget(current.completion) && allocation.reduce((a,b)=>a+b,0)<ceiling){
             let best=null;
             for(let id=0;id<members.length;id++){
                 if(!available(id,allocation) || !jobs.some(j=>(!j.eligibleMembers||j.eligibleMembers.includes(id)) && Number.isFinite(j.seconds[id])))continue;
                 allocation[id]++;const candidate=evaluate(allocation);allocation[id]--;
-                if((candidate.completion<current.completion-EPS || (Math.abs(candidate.completion-current.completion)<=EPS && candidate.wait<current.wait-EPS)) && (!best || candidate.completion<best.result.completion-EPS || (Math.abs(candidate.completion-best.result.completion)<=EPS && candidate.wait<best.result.wait-EPS)))best={id,result:candidate};
+                if(better(candidate,current)&&(!best||better(candidate,best.result)))best={id,result:candidate};
             }
             if(!best)break;
             allocation[best.id]++;current=best.result;
@@ -176,24 +195,32 @@ export function selectCropPeakTeam({members,counts,permanent=[],jobs,outside=[],
         // Remove any now-redundant additions, without touching mean-production staff.
         for(let id=0;id<members.length;id++)while(allocation[id]>(floor[id]||0)){
             allocation[id]--;const candidate=evaluate(allocation);
-            if(candidate.completion<=targetSeconds+EPS)current=candidate;
+            if(meetsTarget(candidate.completion))current=candidate;
             else {allocation[id]++;break;}
         }
         return current;
     };
     result=improve(active,result,(id,allocation)=>!members[id].assumed&&allocation[id]<members[id].count);
+    // Measure a single removal with the final team and the same eight arrival
+    // scenarios. Copies of a pool are interchangeable for this comparison.
+    const withoutHelper=active.map((n,id)=>{
+        if(n<=counts[id])return null;
+        const remaining=[...active];
+        remaining[id]--;
+        return evaluate(remaining).completion;
+    });
     const proposed=[...active];
-    const recommendation=recommend&&result.completion>targetSeconds+EPS
+    const recommendation=recommend&&!meetsTarget(result.completion)
         ?improve(proposed,result,(id)=>true,active):result;
     const required=[...proposed];
-    const shortfall = recommend && recommendation.completion>targetSeconds+EPS
+    const shortfall = recommend && !meetsTarget(recommendation.completion)
         ? improve(required,recommendation,()=>true,proposed,required.reduce((a,b)=>a+b,0)+8) : recommendation;
-    return {...result,counts:active,baseCounts:[...counts],beforeWait,beforeCompletion,targetSeconds,
-        targetMet:result.completion<=targetSeconds+EPS,
+    return {...result,recurring,counts:active,baseCounts:[...counts],withoutHelper,beforeWait,beforeCompletion,targetSeconds,
+        targetMet:meetsTarget(result.completion),
         additions:proposed.flatMap((n,member)=>n>active[member]?[{member,count:n-active[member]}]:[]),
         shortfall:required.flatMap((n,member)=>n>proposed[member]?[{member,count:n-proposed[member],abilities:members[member].abilities}]:[]),
         shortfallCompletion:shortfall.completion,
-        recommendedCompletion:recommendation.completion,recommendedTargetMet:recommendation.completion<=targetSeconds+EPS};
+        recommendedCompletion:recommendation.completion,recommendedTargetMet:meetsTarget(recommendation.completion)};
 }
 
 // Generated teams retain each shift's real production allocation. Peak helpers
@@ -234,7 +261,10 @@ export function plannedCropPeakTeam({layout,recipes,pools,limit=Infinity}) {
             }
             busy+=switching;weighted+=switching*(total?duration/total:0);
         }
-        return {busy,seconds:busy>0?weighted/busy:0,origins};
+        const hauling=(p.allocations||[]).filter(a=>!a.fixed&&!a.critical&&a.ability==='Hauling').reduce((sum,a)=>sum+a.busy,0);
+        const storageOrigins=stores.map(s=>({point:[s.x+s.w/2,s.y+s.h/2],weight:1}));
+        return {busy,seconds:busy>0?weighted/busy:0,hauling,tripSeconds:courierSeconds,storageOrigins,
+            otherSeconds:busy>hauling?(weighted-hauling*courierSeconds)/(busy-hauling):0,origins};
     });
     const jobs=[];
     for(const recipe of recipes){
@@ -250,7 +280,7 @@ export function plannedCropPeakTeam({layout,recipes,pools,limit=Infinity}) {
                 if(!(duration>0))throw new Error(`Missing crop workload: ${recipe.name}/${name}`);
                 const id=`${key}|${plot}|${name}`;
                 const eligibleMembers=pools.flatMap((p,i)=>(p.abilities[ability]||0)>=level && (p.count>permanent[i] || (p.count===0 && !permanent[i]))?[i]:[]);
-                jobs.push({id,previous,key:`${key}|${ability}`,name,ability,level,point:site.point,order:plot,weight:site.rate,eligibleMembers,
+                jobs.push({id,previous,key:`${key}|${ability}`,name,ability,level,point:site.point,order:plot,cycle:site.cycle||1/site.rate,weight:site.rate,eligibleMembers,
                     seconds:members.map(m=>(m.abilities[ability]||0)>=level?duration/(1+.25*(level-1)+.5*(m.abilities[ability]-level)):Infinity)});
                 previous=id;
             }

@@ -1,4 +1,9 @@
 {
+  "Average time from ripening to resowing": "成熟至重新播種的平均時間",
+  "Target <{seconds} s": "目標 <{seconds} 秒",
+  "After the first hour. Each plot regrows from its own sowing time. Includes travel, deliveries and other ongoing jobs.": "略過首小時。每塊田從播種時開始生長，並計入移動、運送與其他工作。",
+  "Average without this copy: {s} s": "少一隻時的平均處理時間：{s} 秒",
+  "Crop support": "協助農務",
   "Plan results": "規劃結果",
   "Show rates": "顯示速率",
   "Seed cost": "種子成本",

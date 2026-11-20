@@ -152,7 +152,18 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
     if (!input.always_running || comparison) return exactPlanJsonOnce(pkg, payload, step, first, comparison, deadline);
     let top = null, seed = null, checkedShift = null;
     step('continuous_production', 'start');
-    if (deadline == null) {
+    // Before routes are known, the joint level-up/production solve supplies
+    // a checked starting map. Search the unrestricted income bound once its
+    // worker availability and travel costs have been measured.
+    // Pricing alternative site counts first pays off on larger processing
+    // fleets. This choice only seeds the map; both feed the same measured solve.
+    const processors=['Woodworking Bench','Chimney Kiln'].map(name =>
+        (input.facilities?.[name] ?? []).reduce((sum,tier)=>sum+tier.count,0));
+    const preparingRoutes = !routeWitness && input.level_up_preview?.cost?.length && input.aniimo?.startsWith('roster') &&
+        input.priorities?.[0] === 'level_up' && !Object.keys(input.roster?.dispatch ?? {}).length &&
+        !input.level_up_strategy && !input.prioritize_byproducts && !input.recipe_switching?.max_buildings &&
+        processors.every(count=>count>0 && count<=3);
+    if (deadline == null && !preparingRoutes) {
         let accelerated;
         const workers = economicWorkers(load);
         try {
@@ -643,7 +654,7 @@ async function exactPlanJsonOnce(pkg, payload, step = () => {}, first = () => {}
         step('check', 'start');
         if (stocked) {
             stocked = (await incumbentSolver).polishSolution(await newHighs(),stockProblem,stocked);
-            if (input.always_running && !discoveryPass && !comparison && deadline == null && stockProblem.staffing_pools?.length) {
+            if (input.always_running && !discoveryPass && !comparison && deadline == null) {
                 stocked = await verifiedStaffing(pkg,payload,stockJson,stockProblem,stocked);
             }
         }
@@ -657,7 +668,7 @@ async function exactPlanJsonOnce(pkg, payload, step = () => {}, first = () => {}
     }
     step('check', 'start');
     solved = (await incumbentSolver).polishSolution(await newHighs(),problem,solved);
-    if (input.always_running && !discoveryPass && !comparison && deadline == null && problem.staffing_pools?.length) {
+    if (input.always_running && !discoveryPass && !comparison && deadline == null) {
         solved = await verifiedStaffing(pkg,payload,stageJson,problem,solved);
     }
     let json = exact_plan(payload, stageJson, JSON.stringify({ values: solved.values, proven, bound, summary_only:!!comparison }));
@@ -680,11 +691,12 @@ async function exactPlanJsonOnce(pkg, payload, step = () => {}, first = () => {}
 // The optional secondary staffing solve keeps the original production witness
 // if rebuilding its replacement would invalidate any native constraint.
 async function verifiedStaffing(pkg,payload,stage,problem,incumbent) {
-    const refined = await refineStaffing(problem,incumbent,solveModel);
-    if (refined === incumbent) return incumbent;
-    const validation = JSON.parse(pkg.exact_plan(payload,stage,JSON.stringify({
-        values:refined.values, proven:false, bound:0, summary_only:true, verify_only:true,
+    const report=values=>JSON.parse(pkg.exact_plan(payload,stage,JSON.stringify({
+        values,proven:false,bound:0,summary_only:true,verify_only:true,
     })));
+    const refined = await refineStaffing(problem,incumbent,solveModel,{pkg,input:JSON.parse(payload),report});
+    if (refined === incumbent) return incumbent;
+    const validation = report(refined.values);
     return validation.success ? refined : incumbent;
 }
 

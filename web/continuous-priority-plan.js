@@ -229,7 +229,44 @@ export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},fi
     const fullPayload=JSON.stringify({...input,always_running_recipes:undefined,restrict_to_checked_recipes:false});
     let fullIncome;
     const scopedModel = recipes => priority(payloadFor(recipes),currencyStage,currency);
-    let siteSearch;
+    let siteSearch, verifiedIncomeValues;
+    if (dispatched && witnessSeed) {
+        // A route measurement changes the feasible shifts. Keep every recipe
+        // and worker in the catalogue, adding operating rules only as needed.
+        // The relaxed optimum bounds every executable shift on this dispatch.
+        fullIncome=priority(fullPayload,currencyStage,currency);
+        const proofScope=new Set(scope);
+        const exactBound=evaluateBound ?? ((p,o)=>solveEconomicBound(highs,p,o));
+        let witness=await restoreCatalogue(highs,solveModel,fullIncome,witnessSeed);
+        let earned=witness ? sum(fullIncome.primary_objective,witness.values) : -Infinity;
+        for (;;) {
+            const model=scopedModel([...proofScope]);
+            // A feasible shift on the measured map is a lower bound. Leave
+            // it in the search and discard branches earning strictly less.
+            const competitive=witness ? keepRawIncome(model,model,earned) : model;
+            const proofOptions={scope:[...proofScope],exact:true};
+            let bound=await exactBound(competitive,proofOptions);
+            if(competitive!==model && !bound?.proven)bound=await exactBound(model,proofOptions);
+            if(!bound?.proven || !Number.isFinite(bound.upper) || !bound.values)break;
+            if(!witness || !close(earned,bound.upper)){
+                const fit=await restoreCatalogue(highs,solveModel,fullIncome,bound);
+                const value=fit && sum(fullIncome.primary_objective,fit.values);
+                if(fit && value>earned){witness=fit;earned=value;}
+            }
+            if(witness && close(earned,bound.upper)){
+                for(const name of active(fullIncome,witness.values))names.add(name);
+                remember(fullIncome.variable_keys,witness.values,earned);
+                verifiedIncomeValues=witness.values;
+                upper=Math.max(earned,bound.upper);
+                ceilings.push(upper);
+                siteSearch={best,upper};
+                break;
+            }
+            const next=[...new Set([...bound.occupiedRecipes,...bound.activeRecipes])].filter(n=>!proofScope.has(n));
+            if(!next.length)break;
+            for(const name of next)proofScope.add(name);
+        }
+    }
     if (!input.roster && !input.season && !witnessSeed) {
         fullIncome=priority(fullPayload,currencyStage,currency);
         siteSearch=searchProductionSites(highs,raw,fullIncome,scopedModel);
@@ -351,7 +388,8 @@ export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},fi
     fullIncome ??= priority(fullPayload,currencyStage,currency);
     let restored=null;
     for(const candidate of contenders.sort((a,b)=>b.objective-a.objective)){
-        const actual=await restoreCatalogue(highs,solveModel,fullIncome,candidate);
+        const actual=verifiedIncomeValues && candidate.values===verifiedIncomeValues ? candidate :
+            await restoreCatalogue(highs,solveModel,fullIncome,candidate);
         if(!actual?.values)continue;
         const objective=sum(fullIncome.primary_objective,actual.values);
         const compatible=ceilings.filter(ceiling=>ceiling>=objective-1e-7);
@@ -463,8 +501,8 @@ export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},fi
         r=polishSolution(highs,local,r);
     }
     if(request.maximize_material_work)materialWork=sum(p.primary_objective,r.values);
-    const refined=await refineStaffing(local,r,solveModel);
     const audit=answer=>JSON.parse(pkg.exact_plan(fullPayload,JSON.stringify(request),JSON.stringify({values:answer.values,proven:false,bound:upper,verify_only:true})));
+    const refined=await refineStaffing(local,r,solveModel,{pkg,input,report:values=>audit({values})});
     let final=refined,plan=audit(final);
     if(!plan.success&&refined!==r){final=r;plan=audit(final);}
     if(!plan.success||!Number.isFinite(plan.rate_per_second)||plan.rate_per_second+1e-7<minRate||plan.rate_per_second>upper+1e-7)return null;

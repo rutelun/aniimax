@@ -3547,8 +3547,11 @@ function renderRosterSummary(plan) {
             ? translate('Copy {copy} of {total} · {assigned} assigned').replace('{copy}', copy + 1)
                 .replace('{total}', count).replace('{assigned}', assigned[i])
             : '';
-        if(work.active&&copy>=(plan.crop_peaks?.baseCounts?.[i]??Infinity))
-            context += `${context?' · ':''}${translate('Crop peak support')}`;
+        if(work.active&&copy>=(plan.crop_peaks?.baseCounts?.[i]??Infinity)&&copy<plan.crop_peaks.counts[i]){
+            context += `${context?' · ':''}${translate('Crop support')}`;
+            const without=plan.crop_peaks.withoutHelper?.[i];
+            if(Number.isFinite(without))context+=' · '+translate('Average without this copy: {s} s').replace('{s}',formatNumber(without));
+        }
         return assignmentTile(member, label, work.tasks, work.summary, work.active, context, i);
     };
     const additional = members.flatMap((member, i) => member.assumed && assigned[i] > 0 ? Array(assigned[i]).fill(i) : []);
@@ -3578,8 +3581,9 @@ function cropPeakNote(peak, members, generated = false) {
         const m=members[member];
         return `${count} x ${escapeText(m.name || Object.entries(m.abilities).map(([a,l])=>`${a} Lv.${l}`).join(' / '))}`;
     }).join(', ')}: ${formatNumber(peak.recommendedCompletion)} s with additions.` : '';
-    const shortfall = peak.shortfall?.length ? ` Beyond the RV limit: ${peak.shortfall.map(a=>`${a.count} x ${Object.entries(a.abilities).map(([name,level])=>`${escapeText(name)} Lv.${level}`).join(' / ')}`).join(', ')} would give ${formatNumber(peak.shortfallCompletion)} s${peak.shortfallCompletion > peak.targetSeconds ? "; still above the target" : ""}.` : '';
-    return `<p class="hint small">Crop peak: <strong>${time}</strong> average; target &le;${peak.targetSeconds} s.${additions}${!met&&(!additions||!peak.recommendedTargetMet)?' Target not met within the available team/RV limit.':''}${shortfall}<br>Harvest, reclaim and sow; includes approach and ongoing work. Watering uses average demand.</p>`;
+    const shortfall = peak.shortfall?.length ? ` Beyond the RV limit: ${peak.shortfall.map(a=>`${a.count} x ${Object.entries(a.abilities).map(([name,level])=>`${escapeText(name)} Lv.${level}`).join(' / ')}`).join(', ')} would give ${formatNumber(peak.shortfallCompletion)} s${(peak.recurring ? peak.shortfallCompletion >= peak.targetSeconds : peak.shortfallCompletion > peak.targetSeconds) ? "; still above the target" : ""}.` : '';
+    const target=translate('Target <{seconds} s').replace('{seconds}',formatNumber(peak.targetSeconds));
+    return `<p class="hint small">${translate('Average time from ripening to resowing')} · <strong>${time}</strong> · ${target}.${additions}${!met&&(!additions||!peak.recommendedTargetMet)?' Target not met within the available team/RV limit.':''}${shortfall}<br>${translate('After the first hour. Each plot regrows from its own sowing time. Includes travel, deliveries and other ongoing jobs.')}</p>`;
 }
 
 function assignmentTile(member, label, detail, status, active = true, context = '', memberIndex = null) {
@@ -5047,14 +5051,14 @@ function renderBestTeam(plan, routeStatus = translate('Calculating…')) {
             ]);
             if (shift.peakSupport) {
                 const jobs = [...new Set(recipeIndex.flatMap(r => (r.jobs || []).filter(([name,ability,level]) => criticalCropJob(name) && (shift.abilities[ability] || 0) >= level).map(([name]) => translate(name))))];
-                tasks.push([jobs.join(' / '), translate('Crop peak support')]);
+                tasks.push([jobs.join(' / '), translate('Crop support')]);
             }
             if (shift.tasks.has(TASK_SWITCHING)) tasks.push([translate(TASK_SWITCHING), percent(shift.tasks.get(TASK_SWITCHING))]);
             for (const [job, share] of [...shift.tasks].sort((a, b) => b[1] - a[1])) {
                 if (!routeLabels.includes(job) && job !== TASK_SWITCHING) tasks.push([translate(job), percent(share)]);
             }
             if(shift.phaseBusy?.length)tasks.unshift(['Peak during recipe schedule',percent(Math.max(...shift.phaseBusy))]);
-            const status = shift.peakSupport ? translate('Crop peak support') : translate('{load} busy').replace('{load}', percent(shift.busy));
+            const status = shift.peakSupport ? translate('Crop support') : translate('{load} busy').replace('{load}', percent(shift.busy));
             const traits = [...shift.personalities].map(translate).join(' · ');
             return assignmentTile(member, label, tasks, status, true, traits);
         })}</div>`
@@ -5166,7 +5170,7 @@ function aniimoTeam(plan) {
             else {
                 const source=support.pools[member];
                 const [ability,level]=Object.entries(source.abilities)[0];
-                team.kept.push({...source,count,ability,level,busy:0,spare:count,label:rosterFormName(source.entry),where:new Map(),jobs:new Map([['Crop peak support',new Set(['Farmland','Woodland'])]])});
+                team.kept.push({...source,count,ability,level,busy:0,spare:count,label:rosterFormName(source.entry),where:new Map(),jobs:new Map([['Crop support',new Set(['Farmland','Woodland'])]])});
             }
             team.total+=count;
         }
@@ -5276,7 +5280,7 @@ function renderAniimoSummary(plan) {
     container.innerHTML = `${capNote}${cropPeakNote(cropPeaks, [], true)}<div class="roster-cards">${rosterBoard(tiles, i => {
         if (i == null) return emptyRosterCell();
         const member = groups[i];
-        return assignmentTile(member.entry ? {...member,catalogId:member.entry.id} : member, member.label, member.detail, member.peakSupport ? translate('Crop peak support') : `${formatNumber(member.busy / member.count * 100)}%`);
+        return assignmentTile(member.entry ? {...member,catalogId:member.entry.id} : member, member.label, member.detail, member.peakSupport ? translate('Crop support') : `${formatNumber(member.busy / member.count * 100)}%`);
     })}</div>`;
 }
 

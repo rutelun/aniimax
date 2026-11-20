@@ -15,6 +15,9 @@ test('unrestricted relaxation returns its bound and a keyed primal for auditing'
     };
     const result = solveEconomicBound(highs, problem, {scope:[], timeLimit:1});
     assert.equal(result.upper,.25);
+    const exact = solveEconomicBound(highs, problem, {exact:true});
+    assert.equal(exact.proven,true);
+    assert.equal(exact.upper,result.upper);
     assert.equal(result.objective,.25);
     assert.deepEqual(result.keys,problem.variable_keys);
     assert.deepEqual(result.values,[.25,1]);

@@ -1,3 +1,5 @@
+import {refineElectricStaffing} from './electric-staffing.js';
+
 const total = (terms, values) => terms.reduce((sum, [v, coefficient]) => sum + coefficient * values[v], 0);
 const expression = terms => terms.map(([v, c]) => `${c < 0 ? '-' : '+'} ${Math.abs(c)} x${v}`).join(' ');
 
@@ -5,7 +7,12 @@ const expression = terms => terms.map(([v, c]) => `${c < 0 ? '-' : '+'} ${Math.a
 // Holding the totals across worker variants preserves every harvest, sale, RV reserve,
 // production rate and physical recipe choice. A faster worker can still change how long
 // a kiln runs, provided its input availability and every competing job remain feasible.
-export async function refineStaffing(problem, incumbent, solve) {
+export async function refineStaffing(problem, incumbent, solve, context) {
+    try {
+        incumbent=await refineElectricStaffing(problem,incumbent,solve,context);
+    } catch (error) {
+        console.warn('Keeping the checked power settings after a staffing solve error.',error);
+    }
     const pools = problem.staffing_pools, groups = problem.staffing_groups;
     if (!pools?.length || !groups?.length || incumbent?.values?.length !== problem.variables) return incumbent;
     const work = pools.flatMap(pool => pool.work);
