@@ -158,6 +158,12 @@ async function run(rv,profile,season,origin,reportName) {
         await wait("window.plannerQa && (plannerQa.errors.length || document.querySelector('#optimize-btn:enabled'))",30000);
         assert.deepEqual(await evaluate('plannerQa.errors'),[]);
         assert.equal(await evaluate("document.querySelector('#home-level').value"),String(rv));
+        // Event crop fields are populated after the recipe index finishes loading.
+        if(season!=='off'){
+            const expected=JSON.stringify(config.seasonCropMinimums);
+            await wait(`Object.entries(${expected}).every(([crop,count]) =>
+                Number(document.getElementById('season-minimum-'+crop)?.value)===count)`,30000);
+        }
         await evaluate(`{
             const button=document.querySelector('#optimize-btn');
             new MutationObserver(()=>{if(!button.disabled)plannerQa.ready=performance.now()})
