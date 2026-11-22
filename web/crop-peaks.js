@@ -260,7 +260,7 @@ export function plannedCropPeakTeam({layout,recipes,pools,limit=Infinity}) {
             for(const recipe of recipes){
                 const requirements=recipe.aniimo?[recipe.aniimo]:(recipe.jobs||[]).map(([,ability,level])=>[ability,level]);
                 if(!requirements.some(([ability,level])=>(p.abilities[ability]||0)>=level))continue;
-                for(const site of locations.get(`${recipe.facility}|${recipe.name}`)||[])for(const origin of origins){
+                for(const site of (locations.get(`${recipe.facility}|${recipe.name}`)||[]).filter(s=>!s.occupied))for(const origin of origins){
                     const weight=site.rate*origin.weight;
                     duration+=weight*2*workerTravelSeconds(Math.hypot(site.point[0]-origin.point[0],site.point[1]-origin.point[1]));total+=weight;
                 }

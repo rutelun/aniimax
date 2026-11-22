@@ -1,6 +1,6 @@
 import {createInsideTest} from './layout.js';
 import {analyzePowerNetworks} from './power-islands.js';
-import {powerLinked} from './power-layout.js';
+import {powerCoverage,powerLinked} from './power-layout.js';
 import {isIdlePiece} from './idle-layout.js';
 import {rectangleMask} from './rectangle-mask.js';
 
@@ -149,6 +149,48 @@ function wire(layout,gens,consumers,inside,blocked,maximum) {
     }
 }
 
+// Recover an ungrouped layout when a newly powered workshop has no route.
+// Stay on legal ground and only keep moves that improve the actual network.
+function reconnectWorkshops(layout,inside,blocked,relays) {
+    const workshops=layout.pieces.filter(p=>!p.cluster && !isIdlePiece(p)).map(p=>p.members[0])
+        .filter(m=>!m.generator && !m.building && !m.sensitive);
+    let missing=analyzePowerNetworks(layout).power.disconnected;
+    while (missing) {
+        const targets=workshops.filter(m=>m.electric_level!=null && !m.power_connected);
+        const improves=()=>analyzePowerNetworks(layout).power.disconnected<missing;
+        const moved=targets.some(m=>{
+            const original={x:m.x,y:m.y};
+            for (const peer of workshops) {
+                if (peer.electric_level!=null || peer.w!==m.w || peer.h!==m.h) continue;
+                const slot={x:peer.x,y:peer.y};
+                Object.assign(m,slot);
+                Object.assign(peer,original);
+                if (improves()) return true;
+                Object.assign(m,original);
+                Object.assign(peer,slot);
+            }
+            const obstacles=blocked.filter(r=>r!==m).concat(layout.power.poles);
+            if (layout.idleArea?.bounds) obstacles.push(layout.idleArea.bounds);
+            for (const relay of relays) {
+                const reach=powerCoverage(relay);
+                for (let y=Math.ceil((reach.y-m.h)*2)/2;y<=reach.y+reach.h;y+=.5) {
+                    for (let x=Math.ceil((reach.x-m.w)*2)/2;x<=reach.x+reach.w;x+=.5) {
+                        const spot={x,y,w:m.w,h:m.h};
+                        if (!powerLinked(relay,spot)||!inside(spot)||obstacles.some(r=>overlaps(spot,r))) continue;
+                        Object.assign(m,{x,y});
+                        if (improves()) return true;
+                        Object.assign(m,original);
+                    }
+                }
+            }
+            return false;
+        });
+        if (!moved) return false;
+        missing=layout.power.disconnected;
+    }
+    return true;
+}
+
 // A candidate can inherit the map only when its inventory and climate
 // assignments still describe the same occupied land. Generator count may vary.
 export function reusePowerTeamLayout(incumbent,pieces,cells,poleLimit) {
@@ -252,6 +294,9 @@ export function reusePowerTeamLayout(incumbent,pieces,cells,poleLimit) {
             [m.x,peer.x]=[peer.x,m.x];[m.y,peer.y]=[peer.y,m.y];
         }
         if(swapped.size)result=tryWiring();
+    }
+    if (!result && !incumbent.groups && reconnectWorkshops(layout,inside,blocked,[...placed,...poles])) {
+        result=tryWiring();
     }
     if(!result)return null;
     if(incumbent.groups) {

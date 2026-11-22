@@ -1,18 +1,19 @@
-import {recommendBestTeam, protectedShift, generatorDistractions} from './best-team.js';
+import {recommendBestTeam, protectedShift, generatorDistractions, cropWorkshopDistractions} from './best-team.js';
 import {productionTeamJobs} from './production-team-jobs.js';
-import {powerTeamCandidates} from './power-team-candidates.js';
+import {powerTeamCandidates,singleWorkshopUpgrades} from './power-team-candidates.js';
 import {createPowerTeamValidator} from './power-team-validation.js';
 
-const byEstimate = (a,b) => a.people-b.people || a.distractions-b.distractions || a.work-b.work ||
+const byEstimate = (a,b) => a.cropWorkshopDistractions-b.cropWorkshopDistractions || a.people-b.people || a.distractions-b.distractions || a.work-b.work ||
     b.plan.power_generated-a.plan.power_generated || a.plan.power_used-b.plan.power_used;
 const ordinaryModes = p => p.schedule_sources.filter(s=>!s.turns && s.electric_level!=null).map(s=>s.id).sort().join('|');
 
 function estimate(plan,recipes) {
     const jobs=productionTeamJobs(plan,recipes);
-    const {shifts}=recommendBestTeam(jobs,plan.hauling_busy??0,[],{
+    const team=recommendBestTeam(jobs,plan.hauling_busy??0,[],{
         phaseDurations:plan.recipe_schedule?.phases.map(p=>p.duration),
     });
-    const open=jobs.filter(j=>!j.fixed && j.busy>1e-6);
+    const {shifts}=team;
+    const open=jobs.filter(j=>!j.fixed && !j.occupied && j.busy>1e-6);
     if (plan.hauling_busy>1e-6) open.push({ability:'Hauling',level:1});
     const riskByLevel=new Map();
     const powerRisk=level=>{
@@ -20,7 +21,7 @@ function estimate(plan,recipes) {
         return riskByLevel.get(level);
     };
     const cropRisk=shifts.filter(protectedShift).reduce((sum,s)=>sum+s.distractions,0);
-    return {powerRisk,cropRisk,people:shifts.length,work:shifts.reduce((v,s)=>v+s.busy,0)};
+    return {powerRisk,cropRisk,cropWorkshopDistractions:cropWorkshopDistractions(team),people:shifts.length,work:shifts.reduce((v,s)=>v+s.busy,0)};
 }
 
 // Keep backups for native verification while streaming the candidates. Identical
@@ -90,7 +91,18 @@ export async function shortlistPowerTeams(pkg,highs,plan,input) {
         }
         verified.push(...chosen);
     }
-    return verified.sort(byEstimate).map(x=>x.plan);
+    return verified.sort(byEstimate).map(({plan})=>{
+        const upgrades=[];
+        for (const candidate of singleWorkshopUpgrades(plan,input,validator.problem,recipes)) {
+            try {
+                const upgraded=validator.validate(candidate);
+                if (upgraded) upgrades.push(upgraded);
+            } catch {
+                // Keep the certified base schedule when an upgrade fails verification.
+            }
+        }
+        return {plan,upgrades};
+    });
 }
 
 const validScore = score => Number.isSafeInteger(score?.people) && score.people>=0 &&
@@ -98,6 +110,9 @@ const validScore = score => Number.isSafeInteger(score?.people) && score.people>
 
 export function improvesMeasuredTeam(candidate, incumbent) {
     if (!incumbent) return true;
+    const cropDifference=(candidate.cropWorkshopDistractions ?? 0)-(incumbent.cropWorkshopDistractions ?? 0);
+    if (cropDifference) return cropDifference<0;
+    if (Math.abs(candidate.income-incumbent.income)>1e-7) return candidate.income>incumbent.income;
     if (candidate.people !== incumbent.people) return candidate.people < incumbent.people;
     if (candidate.generators !== incumbent.generators) return candidate.generators > incumbent.generators;
     if ((candidate.networks ?? 0) !== (incumbent.networks ?? 0)) return (candidate.networks ?? 0) > (incumbent.networks ?? 0);

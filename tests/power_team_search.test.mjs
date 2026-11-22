@@ -50,7 +50,7 @@ test('shortlist measures ordinary powered modes and keeps only native-checked ge
         exact_plan:()=>JSON.stringify({success:true,rate_per_second:1,priorities:[]})};
     const highs={solve:lp=>lp.includes('hold_2: x2 = 2')?{Status:'Infeasible'}:{Status:'Optimal',Columns:{}}};
     const shortlist=await shortlistPowerTeams(pkg,highs,incumbent,input);
-    assert.deepEqual(shortlist.map(p=>[p.power_generators,p.power_used]).sort(),[[0,0],[1,18]]);
+    assert.deepEqual(shortlist.map(({plan:p})=>[p.power_generators,p.power_used]).sort(),[[0,0],[1,18]]);
 });
 test('separate working grids break a tie after workers and active generators',async()=>{
     const split={id:'split'},combined={id:'combined'};
@@ -63,7 +63,7 @@ test('equal mapped teams electrify the workshop that can divert the generator op
         {name:'parts',facility:'Crafting Table',aniimo:['Artisanship',1]}];
     const makePlan=electricItem=>({coin_items:recipes.map(r=>({
         facility:r.facility,item_name:r.name,status:'producing',facility_count:1,
-        electric_level:r.name===electricItem?1:null,aniimo_tasks:[{ability:r.aniimo[0],level:4,busy:1}],
+        electric_level:r.name===electricItem?1:null,aniimo_tasks:[{ability:r.aniimo[0],level:4,busy:.5}],
     }))});
     const kiln=makePlan('brick'),bench=makePlan('parts');
     const measure=p=>{
@@ -71,7 +71,58 @@ test('equal mapped teams electrify the workshop that can divert the generator op
         jobs.push({ability:'Lightning',level:4,busy:1,label:'Generator',facility:'Crackle Generator',fixed:true});
         return mappedTeamScore(recommendBestTeam(jobs),{networks:[{consumers:1,generated:18,generators:1}]},2);
     };
-    assert.deepEqual(measure(kiln),{people:2,generators:1,networks:1,distractions:1});
-    assert.deepEqual(measure(bench),{people:2,generators:1,networks:1,distractions:0});
+    assert.deepEqual(measure(kiln),{people:2,generators:1,networks:1,cropWorkshopDistractions:0,distractions:1});
+    assert.deepEqual(measure(bench),{people:2,generators:1,networks:1,cropWorkshopDistractions:0,distractions:0});
     assert.equal(await selectPowerTeam(kiln,[bench],measure),bench);
+});
+
+test('protects crop workers and harvest helpers from eligible manual workshops before comparing generator layouts',async()=>{
+    const mine=level=>({facility:'Mine',ability:'Earth',level:4,minimumLevel:level,busy:.2,
+        workstation:true,label:'Ore',siteCount:2});
+    const farmer={entry:{abilities:{Grass:3,Earth:2}},busy:.5,allocations:[{growing:true}]};
+    const helper={entry:{abilities:{Earth:4}},busy:0,allocations:[],peakSupport:true};
+    const measure=(jobs,generators)=>mappedTeamScore({...recommendBestTeam(jobs),shifts:[farmer,helper]},
+        {networks:[{consumers:1,generated:600,generators}]},4);
+    assert.equal(measure([mine(3)],2).cropWorkshopDistractions,2);
+    assert.equal(measure([mine(2)],2).cropWorkshopDistractions,4);
+    const safe={},risky={};
+    assert.equal(await selectPowerTeam(risky,[safe],p=>p===safe?measure([],1):measure([mine(3)],2)),safe);
+});
+
+test('crop protection accepts at most half a percent of original income and preserves upgrade time',async()=>{
+    const {cropProtectionPlans}=await import('../web/power-team-validation.js');
+    const keys=['rate:drink#0','units:drink#0','rate:drink__electric5#0','units:drink__electric5#0','generators#0'];
+    const model={variable_keys:keys,lp:'Maximize\n obj: x0\nBounds\n',
+        recipe_options:[[0,'drink','Bouncy Brew Keg',false,false,67.5],[2,'drink','Bouncy Brew Keg',false,true,135]]};
+    const manual={facility:'Bouncy Brew Keg',item_name:'drink',status:'producing',facility_count:2};
+    const base={currency:'coins',rate_per_second:99.7,power_generators:1,power_generated:1500,schedule_sources:[{item:'drink',id:'drink',rate:.002}],
+        coin_items:[manual],comparison_seed:{keys,values:[.002,2,0,0,1]},level_up_preview:{seconds:100},
+        comparison_goals:{floors:[['coins',99.7],['wood',1]]},priorities:[{target:'wood',per_second:1}]};
+    const earned={success:true,rate_per_second:99.5,level_up_preview:{seconds:100},priorities:[{target:'wood',per_second:1}],
+        schedule_sources:[{id:'drink__electric5',item:'drink',electric_level:5}],coin_items:[{...manual,electric_level:5}]};
+    const pkg={exact_problem:(_input,stage)=>{
+        assert.deepEqual(JSON.parse(stage).floors,[['wood',1],['coins',99.5]]);
+        return JSON.stringify(model);
+    },exact_plan:()=>JSON.stringify(earned)};
+    const highs={solve:lp=>lp.includes('x1 <= 0')?{Status:'Optimal',Columns:{}}:{Status:'Infeasible'}};
+    const solve=()=>cropProtectionPlans(pkg,highs,{plan:base,input:{e_mode_rv:21},targets:['drink'],referenceIncome:100});
+    const [protectedPlan]=solve();
+    assert.equal(protectedPlan.rate_per_second,99.5);
+    assert.equal(protectedPlan.power_used,180);
+    assert.equal(protectedPlan.crop_protection_reference_income,100);
+    earned.rate_per_second=99.499;
+    assert.deepEqual(solve(),[]);
+    earned.rate_per_second=99.6;
+    earned.level_up_preview.seconds=101;
+    assert.deepEqual(solve(),[]);
+    earned.level_up_preview.seconds=100;
+    earned.priorities=[];
+    assert.deepEqual(solve(),[]);
+});
+
+test('at equal measured crop protection Best keeps the higher income before saving a worker',async()=>{
+    const options=[{risk:1,coins:100,crew:4},{risk:0,coins:99.55,crew:4},{risk:0,coins:99.8,crew:5}];
+    const best=await selectPowerTeam(options[0],options.slice(1),p=>({people:p.crew,generators:2,
+        cropWorkshopDistractions:p.risk,income:p.coins}));
+    assert.equal(best,options[2]);
 });

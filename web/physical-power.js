@@ -1,6 +1,7 @@
 const heavy=new Set(['Mine','Well','Aniipod Maker','Dance Pad Polisher']);
 const light=new Set(['Carousel Mill','Crafting Table','Jukebox Dryer','Claw Game Cooker','Joy Wheel Loom',
     'Phonolfactory Table','Bouncy Brew Keg','Simmering Pot','Blazing Stove','Woodworking Bench','Chimney Kiln','Pickling Jar']);
+export const canElectrify=facility=>heavy.has(facility)||light.has(facility);
 export const ratedSiteWatts=m=>(heavy.has(m.facility)?30:light.has(m.facility)?15:NaN)*m.electric_level;
 
 // Every occupied powered building draws its full rating while configured in

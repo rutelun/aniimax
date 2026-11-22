@@ -51,3 +51,30 @@ test('preserves rotated climate plots, group geometry and revised piece indices'
     assert.deepEqual([updated.x,updated.y,updated.w,updated.h,updated.weight,updated.sourcePiece,updated.sourceMember],[12,4,2,3,3,1,1]);
     assert.equal(reusePowerTeamLayout(original,[pieces[0],{...cluster,plots:[{...plot,crop:'melon'}]}],cells,0),null);
 });
+
+test('powers a mill outside pole reach by exchanging positions with a manual workshop',()=>{
+    const mill={...mine(28,'powder'),facility:'Carousel Mill'};
+    const keg={...mine(0,'drink'),facility:'Bouncy Brew Keg'};
+    const original=layout([mill,keg,gen()]);
+    const out=reusePowerTeamLayout(original,[piece({...mill,electric_level:1}),piece(keg),piece(gen())],cells,0);
+    assert.ok(out);
+    assert.equal(out.power.disconnected,0);
+    assert.equal(out.pieces[0].members[0].x,keg.x);
+    assert.equal(original.pieces[0].members[0].x,28);
+});
+
+test('moves a single differently sized mill onto clear powered land while keeping storage and fields in place',()=>{
+    const mill={...mine(28,'powder'),w:5.5,h:5.5,facility:'Carousel Mill'};
+    const field={...mine(0,'agave'),facility:'Farmland',sensitive:true};
+    const original=layout([mill,field,gen()]);
+    const powered={...mill,electric_level:7};
+    const out=reusePowerTeamLayout(original,[piece(powered),piece(field),piece(gen())],cells,0);
+    assert.ok(out);
+    const placed=out.pieces[0].members[0];
+    assert.equal(placed.power_connected,true);
+    assert.equal(out.power.poles.length,0);
+    assert.equal(out.pieces[1].members[0].x,field.x);
+    for (const other of [field,storage,gen()]) assert.ok(placed.x+placed.w<=other.x ||
+        placed.y+placed.h<=other.y || placed.x>=other.x+other.w || placed.y>=other.y+other.h);
+    assert.equal(original.pieces[0].members[0].x,28);
+});

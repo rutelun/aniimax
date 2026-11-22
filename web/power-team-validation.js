@@ -25,19 +25,34 @@ function physicalRowsWithCheckedStaff(candidate, checked) {
     });
 }
 
-// Keep the original shift's sales and climate assignments while checking its
-// new electric modes against the native resource, crop and staffing constraints.
-export function createPowerTeamValidator(pkg, highs, plan, input) {
-    const seed = plan.comparison_seed, goals = plan.comparison_goals;
-    if (!seed?.keys || !goals || !plan.schedule_sources?.length) return null;
+function continuousSiteCounts(problem, keys, values) {
+    const counts = new Map();
+    for (const [item, terms] of problem.integer_groups ?? []) {
+        counts.set(item, (counts.get(item) ?? 0) + terms.reduce((sum, [v, w]) => sum + values[v] * w, 0));
+    }
+    for (const [v, item] of problem.recipe_variables) {
+        if (keys[v].startsWith('continuous_site:')) counts.set(item, (counts.get(item) ?? 0) + values[v]);
+    }
+    return Object.fromEntries([...counts].map(([item, count]) => [item, Math.round(count)]));
+}
+
+function powerTeamPayload(plan,input) {
     const facilities = [...new Set(plan.schedule_sources.filter(s => s.turns).map(s => s.facility))];
     const switching = plan.recipe_schedule ? {
         recipe_switching_relaxation: true, recipe_switching_normal_only: false,
         recipe_switching_facilities: facilities, maximize_material_work: false,
     } : {};
-    const payload = JSON.stringify({...input, ...switching,
+    return JSON.stringify({...input, ...switching,
         always_running_recipes: plan.continuous_checked_recipes,
         restrict_to_checked_recipes: !!plan.continuous_checked_recipes});
+}
+
+// Keep the original shift's sales and climate assignments while checking its
+// new electric modes against the native resource, crop and staffing constraints.
+export function createPowerTeamValidator(pkg, highs, plan, input) {
+    const seed = plan.comparison_seed, goals = plan.comparison_goals;
+    if (!seed?.keys || !goals || !plan.schedule_sources?.length) return null;
+    const payload=powerTeamPayload(plan,input);
     const materialWork = plan.comparison_scores?.material_work;
     const stage = JSON.stringify({floors: goals.floors, pace: goals.pace, crop_variety: goals.crop_variety,
         material_pace: plan.comparison_scores?.material_pace, maximize_material_work: materialWork != null});
@@ -104,17 +119,90 @@ export function createPowerTeamValidator(pkg, highs, plan, input) {
         }
         verified.active_continuous_recipes = [...new Set(problem.recipe_options.filter(([v]) => values[v] > 1e-9).map(([, item]) => item))];
         if (plan.continuous_site_counts) {
-            const counts = new Map();
-            for (const [item, terms] of problem.integer_groups ?? []) {
-                counts.set(item, (counts.get(item) ?? 0) + terms.reduce((sum, [v, w]) => sum + values[v] * w, 0));
-            }
-            for (const [v, item] of problem.recipe_variables) {
-                if (keys[v].startsWith('continuous_site:')) counts.set(item, (counts.get(item) ?? 0) + values[v]);
-            }
-            verified.continuous_site_counts = Object.fromEntries([...counts].map(([item, count]) => [item, Math.round(count)]));
+            verified.continuous_site_counts=continuousSiteCounts(problem,keys,values);
         }
         delete verified.recipe_switching_candidate;
         return verified;
     }
     return {problem, validate};
+}
+
+// Re-solve sales and competing ingredient flows when an occupied crop team
+// can be pulled into a manual workshop. Keep the executable shift's material
+// rates and its installed grid while comparing full and partial electrification.
+export function cropProtectionPlans(pkg,highs,{plan,input,targets,referenceIncome}) {
+    if (!targets?.length || input.roster || input.fixed_homeland || !input.e_mode_rv ||
+        plan.currency!=='coins' || !(referenceIncome>0) || !plan.comparison_goals) return [];
+    const goals=plan.comparison_goals;
+    const minimumIncome=referenceIncome*0.995;
+    const floors=(goals.floors??[]).filter(([key])=>key!=='coins');
+    const payload=powerTeamPayload(plan,input);
+    const stage=JSON.stringify({floors:[...floors,['coins',minimumIncome]],crop_variety:goals.crop_variety,
+        pace:goals.pace, material_pace:plan.comparison_scores?.material_pace,material_work:plan.comparison_scores?.material_work});
+    const model=JSON.parse(pkg.exact_problem(payload,stage));
+    const keys=model.variable_keys, indices=new Map(keys.map((key,i)=>[key,i]));
+    const sources=plan.schedule_sources;
+    const scheduled=new Set(plan.recipe_schedule?.sites.map(s=>s.facility));
+    const active=new Map(sources.map(s=>[s.id,s.rate]));
+    const prior=new Map(plan.comparison_seed.keys.map((key,i)=>[key,plan.comparison_seed.values[i]]));
+    const changes=new Map();
+    const fixed=keys.flatMap((key,v)=>/^(environment:|pair:)/.test(key)?['x'+v+' = '+(prior.get(key)??0)]:[]);
+    for (const [v,item,facility,,electric] of model.recipe_options) {
+        const id=keys[v].slice(5,-2),unit=indices.get('units:'+id+'#0');
+        if (scheduled.has(facility)) {
+            fixed.push('x'+v+' = '+(active.get(id)??0));
+        } else if (targets.includes(item) && unit!=null) {
+            if (!changes.has(item)) changes.set(item,{manual:[],electric:[]});
+            changes.get(item)[electric?'electric':'manual'].push('x'+unit);
+        } else if (electric && unit!=null) {
+            // Keep the incumbent's other E-mode assignments, including those
+            // selected to free a specialist with an otherwise tiny shift.
+            fixed.push('x'+unit+' = '+Math.round(prior.get(keys[unit])??0));
+        }
+    }
+    const manual=[];
+    let totalManual=0;
+    for (const [item,columns] of changes) {
+        if (!columns.manual.length || !columns.electric.length) continue;
+        const rows=plan.coin_items.filter(r=>r.status==='producing' && r.item_name===item);
+        const count=rows.reduce((n,r)=>n+r.facility_count,0);
+        totalManual+=rows.filter(r=>r.electric_level==null).reduce((n,r)=>n+r.facility_count,0);
+        manual.push(...columns.manual);
+        fixed.push([...columns.manual,...columns.electric].join(' + ')+' = '+count);
+    }
+    if (!manual.length || !totalManual) return [];
+    const generator=indices.get('generators#0');
+    if (generator==null) return [];
+    fixed.push('x'+generator+' = '+plan.power_generators);
+    const candidates=[];
+    for (let remaining=0;remaining<totalManual;remaining++) {
+        const conditions=[...fixed,manual.join(' + ')+' <= '+remaining];
+        const rows=conditions.map((line,i)=>' crop_guard_'+i+': '+line).join('\n');
+        const lp=model.lp.replace('\nBounds\n','\n'+rows+'\nBounds\n');
+        const solved=highs.solve(lp,{mip_feasibility_tolerance:1e-9,primal_feasibility_tolerance:1e-9});
+        if (solved.Status!=='Optimal' || !solved.Columns) continue;
+        const values=keys.map((_,i)=>solved.Columns['x'+i]?.Primal??0);
+        const checked=JSON.parse(pkg.exact_plan(payload,stage,JSON.stringify({values,verify_only:true,proven:false,
+            bound:plan.upper_bound??referenceIncome})));
+        if (!checked.success || !(checked.rate_per_second>=minimumIncome*(1-1e-12))) continue;
+        if (['level_up','level_up_preview'].some(k=>plan[k]?.seconds!=null && !(checked[k]?.seconds<=plan[k].seconds+1e-5))) continue;
+        if (plan.priorities?.some(p=>p.target!=='coins' && !(checked.priorities.find(q=>q.target===p.target)?.per_second>=p.per_second-1e-7))) continue;
+        const coin_items=[...checked.coin_items.filter(r=>!scheduled.has(r.facility)),...plan.coin_items.filter(r=>scheduled.has(r.facility))];
+        let candidate={...plan,...checked,coin_items,power_generators:plan.power_generators,
+            power_generator_levels:plan.power_generator_levels,power_generated:plan.power_generated,proven_optimal:false,
+            comparison_goals:{...goals,floors:[...floors,['coins',checked.rate_per_second]],currency_value:checked.rate_per_second},
+            comparison_seed:{keys,values},active_continuous_recipes:[...new Set(checked.schedule_sources.map(s=>s.item))]};
+        if (plan.recipe_schedule) {
+            try {
+                candidate=attachRecipeSchedule(candidate,{...scheduleInputForPlan(input,candidate),buildings:plan.recipe_schedule.buildings},plan.recipe_schedule);
+            } catch { continue; }
+        }
+        candidate.power_used=physicalPlanPower(candidate);
+        if (!(candidate.power_used<=candidate.power_generated+1e-7)) continue;
+        delete candidate.recipe_switching_candidate;
+        candidate.crop_protection_reference_income=referenceIncome;
+        if (plan.continuous_site_counts) candidate.continuous_site_counts=continuousSiteCounts(model,keys,values);
+        candidates.push(candidate);
+    }
+    return candidates;
 }

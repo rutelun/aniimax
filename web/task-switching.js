@@ -1,5 +1,7 @@
 import { workerTravelSeconds } from './worker-travel.js?v=logic-audit';
 
+import {fullyStaffed} from './physical-production.js';
+
 export const TASK_SWITCHING = 'Switching between available jobs';
 const pointOf = site => [site.x + site.w / 2, site.y + site.h / 2];
 const locationKey = (facility, item) => `${facility}|${item}`;
@@ -11,10 +13,10 @@ export function dispatchLocations(layout) {
         const outputs = site.jobs ?? [{ item: site.crop, rate: (site.batchWeight ?? site.weight) / 3600,
             electric_level: site.electric_level }];
         for (const output of outputs) {
-            if (!output.item || output.electric_level != null || !(output.rate > 0)) continue;
+            if (!output.item || (output.electric_level ?? site.electric_level) != null || !(output.rate > 0)) continue;
             const key = locationKey(site.facility, output.item);
             if (!locations.has(key)) locations.set(key, []);
-            locations.get(key).push({ point, rate: output.rate, cycle:output.cycle??site.cycle, scheduleId:site.scheduleId, facility: site.facility, item: output.item });
+            locations.get(key).push({ point, crew:output.crew ?? site.crew, occupied:fullyStaffed(site,output.item), rate: output.rate, cycle:output.cycle??site.cycle, scheduleId:site.scheduleId, facility: site.facility, item: output.item });
         }
     }
     return locations;
@@ -28,7 +30,7 @@ export function buildDispatch(layout, recipes, hauling, residentFacilities) {
         const recipe = byItem.get(key);
         if (!recipe || residentFacilities.has(recipe.facility)) continue;
         const requirements = recipe.aniimo ? [recipe.aniimo] : (recipe.jobs || []).map(([, ability, level]) => [ability, level]);
-        for (const site of sites) for (const [ability, level] of requirements) {
+        for (const site of sites.filter(s=>!s.occupied)) for (const [ability, level] of requirements) {
             opportunities.push({ ...site, ability, level, family: ability === 'Leisure' ? recipe.family : null });
         }
     }

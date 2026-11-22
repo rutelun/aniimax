@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {powerTeamCandidates} from '../web/power-team-candidates.js';
+import {powerTeamCandidates,singleWorkshopUpgrades} from '../web/power-team-candidates.js';
 import {physicalPlanPower} from '../web/physical-power.js';
 import {validateRecipeSchedule} from '../web/recipe-schedule.js';
 import {materialChains, materialFlowSchedule} from '../web/material-flow-schedule.js';
@@ -121,4 +121,25 @@ test('RV21 powers even a small load only with max-tier generators and Lightning 
             assert.ok(pairs.every(([tier,skill])=>tier===5 && skill===4));
         }
     }
+});
+
+test('spare generator capacity can remove an individual specialist without changing the other workshop',()=>{
+    const jobs=[['pearl_powder','Carousel Mill','Wind',7],['brick','Chimney Kiln','Fire',5]];
+    const input={facilities:{}}, recipes=[], problem={variable_keys:[],recipe_options:[]};
+    const plan={power_generated:1500,power_used:0,schedule_sources:[],coin_items:[]};
+    for (const [item,facility,ability,level] of jobs) {
+        input.facilities[facility]=[{level,count:1}];
+        recipes.push({name:item,facility_level:1,aniimo:[ability,3]});
+        plan.schedule_sources.push({item,id:item,facility,rate:.08,cycle:1,turns:false,inputs:[],outputs:[[item,1]]});
+        plan.coin_items.push({facility,item_name:item,status:'producing',facility_count:1,busy_units:.08,
+            aniimo:{ability,level:4},aniimo_tasks:[{ability,level:4,busy:.08}]});
+        for (const electric of [false,true]) {
+            problem.recipe_options.push([problem.variable_keys.length,item,facility,false,electric,electric?2:1]);
+            problem.variable_keys.push('rate:'+item+(electric?'__electric'+level:'')+'#0');
+        }
+    }
+    const upgrades=[...singleWorkshopUpgrades(plan,input,problem,recipes)];
+    assert.deepEqual(upgrades.map(p=>p.power_used),[126,90]);
+    assert.deepEqual(upgrades.map(p=>p.schedule_sources.filter(s=>s.electric_level!=null).map(s=>s.item)),[['pearl_powder'],['brick']]);
+    assert.deepEqual([...singleWorkshopUpgrades({...plan,power_generated:89},input,problem,recipes)],[]);
 });

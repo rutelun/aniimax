@@ -2,6 +2,7 @@ import catalog from './aniimo-catalog.json' with { type: 'json' };
 import { opposedPersonality } from './facility-config.js?v=leisure-families';
 import { workerTravelSeconds } from './worker-travel.js?v=logic-audit';
 import { dispatchLocations, estimateJobSwitching, TASK_SWITCHING } from './task-switching.js?v=base-travel';
+import {canElectrify} from './physical-power.js';
 import {splitPhaseTasks} from './phase-work.js';
 
 const EPSILON = 1e-6;
@@ -28,11 +29,38 @@ function indexCatalog(entries) {
 const catalogIndex = indexCatalog(catalog.entries);
 const noMatches = new Set();
 
+const canTakeJob=(entry,job)=>entry?.abilities[job.ability]>=(job.minimumLevel ?? job.level) &&
+    (!job.family || entry.family===job.family);
+
 export function distractionCount(entry, jobs) {
     let count = 0;
     for (const job of jobs) {
-        if (entry?.abilities[job.ability] >= (job.minimumLevel ?? job.level) &&
-            (!job.family || entry.family === job.family)) count += job.siteCount ?? 1;
+        if (canTakeJob(entry,job)) count += job.siteCount ?? 1;
+    }
+    return count;
+}
+
+// A bench rotating through two eligible recipes is still one physical diversion.
+function cropWorkers(team) {
+    return team.shifts.filter(s=>s.peakSupport || s.allocations.some(a=>a.growing));
+}
+
+export function cropWorkshopItems(team) {
+    const workers=cropWorkers(team);
+    return [...new Set(team.manualWorkshops.filter(j=>j.item && workers.some(s=>canTakeJob(s.entry,j))).map(j=>j.item))];
+}
+
+export function cropWorkshopDistractions(team) {
+    let count=0;
+    for (const shift of cropWorkers(team)) {
+        const sites=new Map();
+        for (const job of team.manualWorkshops) {
+            if (!canTakeJob(shift.entry,job)) continue;
+            const site=job.scheduleId ?? job.point?.join(',') ?? job.siteKey ?? job.label;
+            const key=JSON.stringify([job.facility,site]);
+            sites.set(key,Math.max(sites.get(key) ?? 0,job.siteCount ?? 1));
+        }
+        for (const n of sites.values()) count+=n;
     }
     return count;
 }
@@ -73,10 +101,10 @@ export function placeBestJobs(jobs, layout, sites) {
         if (!locations) return [job];
         if (job.scheduleId) {
             const site = locations.find(s => s.scheduleId === job.scheduleId);
-            return [site ? {...job, point:site.point} : job];
+            return [site ? {...job, point:site.point,occupied:site.occupied ?? job.occupied} : job];
         }
         const total = locations.reduce((sum, site) => sum + site.rate, 0);
-        return locations.map(({ point, rate }) => ({ ...job, point, siteCount: 1, busy: job.busy * rate / total }));
+        return locations.map(({ point, rate, occupied }) => ({ ...job, point, occupied:occupied ?? job.occupied, siteCount: 1, busy: job.busy * rate / total }));
     });
 }
 
@@ -90,7 +118,7 @@ export function recommendBestTeam(jobs, haulingBusy = 0, dispatch = [], options 
     const available = [];
     const haul = { ability: 'Hauling', level: options.haulingLevel||4, label: 'Hauling to Storage Units', profile:options.haulingProfile };
     const matches = job => catalogIndex.get(roleKey(job)) ?? noMatches;
-    const open = jobs.filter(job => !job.fixed && job.busy > EPSILON);
+    const open = jobs.filter(job => !job.fixed && !job.occupied && job.busy > EPSILON);
     if (haulingBusy > EPSILON) open.push({...haul, minimumLevel:1});
     const competing = shift => open.filter(job => !(job.growing && shift.growing) &&
         !shift.allocations.some(own => own.ability === job.ability && own.label === job.label &&
@@ -265,6 +293,7 @@ export function recommendBestTeam(jobs, haulingBusy = 0, dispatch = [], options 
 
     return {
         haulingSpare,
+        manualWorkshops:open.filter(j=>j.workstation && canElectrify(j.facility)),
         shifts: shifts.flatMap(pool => {
             const { candidates, roles, growing, homes, ...shift } = pool;
             const requirements = [...roles.values()];

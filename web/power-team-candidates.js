@@ -1,6 +1,6 @@
 import {recommendBestTeam, protectedShift, distractionCount} from './best-team.js';
 import {productionTeamJobs} from './production-team-jobs.js';
-import {ratedSiteWatts} from './physical-power.js';
+import {ratedSiteWatts, physicalPlanPower} from './physical-power.js';
 import {FACILITIES, generatorLimit} from './facility-config.js';
 import {materialChains, processStage} from './material-flow-schedule.js';
 import {scheduleInputForPlan, attachRecipeSchedule} from './recipe-schedule-plan.js';
@@ -66,7 +66,7 @@ function facilityStates(menus, tiers, definitions, maximum, protectedWorkers) {
     const options = menus.map(menu => menu.map((pick, i) => {
         const {row} = pick, electric = row.electric_level != null;
         const recipe = definitions.get(row.item_name), required = recipe?.facility_level ?? 1;
-        const risk = !electric && recipe?.aniimo && facilities.get(row.facility)?.category !== 'Aniimo Materials'
+        const risk = !electric && !(row.busy_units>=row.facility_count-EPS) && recipe?.aniimo && facilities.get(row.facility)?.category !== 'Aniimo Materials'
             ? protectedWorkers.reduce((sum,entry) => sum + distractionCount(entry,[{
                 ability:recipe.aniimo[0],level:recipe.aniimo[1],family:recipe.family,siteCount:row.facility_count,
             }]),0) : 0;
@@ -114,7 +114,7 @@ function facilityStates(menus, tiers, definitions, maximum, protectedWorkers) {
     return [baseline, ...states.filter(s => s.changes.length)];
 }
 
-function ordinaryStates(plan, input, modes, definitions, maximum, protectedWorkers) {
+function ordinaryMenus(plan, input, modes, definitions) {
     const modeKey = (name, level) => name + '|' + (level ?? '');
     const rows = new Map(plan.coin_items.filter(r => r.status === 'producing').map(r => [modeKey(r.item_name, r.electric_level), r]));
     const counts = new Map();
@@ -138,7 +138,7 @@ function ordinaryStates(plan, input, modes, definitions, maximum, protectedWorke
     }
     for (const source of plan.schedule_sources.filter(s => !scheduled.has(s.item))) {
         const row = rows.get(modeKey(source.item, source.electric_level));
-        if (!row) return [];
+        if (!row) return null;
         const choices = [{source, row}];
         // Keep every always-running site required by the native solution. An
         // extra active site can affect competition for a shared ingredient.
@@ -154,6 +154,33 @@ function ordinaryStates(plan, input, modes, definitions, maximum, protectedWorke
         if (!groups.has(source.facility)) groups.set(source.facility, []);
         groups.get(source.facility).push(choices);
     }
+    return groups;
+}
+
+// A small manual job can occupy a whole specialist. Check individual switches
+// on the shortlisted physical schedules even when aggregate work estimates tie.
+export function* singleWorkshopUpgrades(plan,input,problem,recipes) {
+    if (!(plan.power_generated>plan.power_used)) return;
+    const definitions=new Map(recipes.map(r=>[r.name,r]));
+    const groups=ordinaryMenus(plan,input,nativeModes(problem,definitions),definitions);
+    for (const [facility,menus] of groups ?? []) {
+        for (const menu of menus) {
+            if (menu.length<2 || menu[0].row.electric_level!=null) continue;
+            const choices=menus.map(other=>other===menu?menu:[other[0]]);
+            const states=facilityStates(choices,input.facilities[facility] ?? [],definitions,plan.power_generated,[]);
+            for (const state of states) {
+                if (!state.changes.length) continue;
+                const candidate=substituteOrdinary(plan,state.changes,input);
+                const used=physicalPlanPower(candidate);
+                if (used<=plan.power_generated+EPS) yield {...candidate,power_used:used};
+            }
+        }
+    }
+}
+
+function ordinaryStates(plan, input, modes, definitions, maximum, protectedWorkers) {
+    const groups=ordinaryMenus(plan,input,modes,definitions);
+    if (!groups) return [];
     // Combine one facility at a time. At a given draw, retain the allocation
     // with the least manual work as well as the unmodified native allocation.
     let states = [{watts: 0, work: 0, risk: 0, changes: []}];

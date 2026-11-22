@@ -35,6 +35,27 @@ function productionPickup(recipe,eligible,ownRoutes,members,busy,permanent){
     return available.length ? available : onShift;
 }
 
+// A dispatch policy covers every copy of a recipe. Reserve the actual output
+// of continuously staffed copies before distributing requests from open ones.
+function keepStaffedSites(entries,sites,eligible) {
+    if (!sites?.some(s=>s.occupied && eligible.has(s.crew))) return entries;
+    const rate=sites.reduce((sum,s)=>sum+s.rate,0);
+    const reserved=new Map();
+    for (const site of sites) {
+        if (site.occupied && eligible.has(site.crew)) {
+            reserved.set(site.crew,(reserved.get(site.crew)??0)+site.rate/rate);
+        }
+    }
+    const free=1-[...reserved.values()].reduce((sum,n)=>sum+n,0);
+    const total=entries.reduce((sum,e)=>sum+e.share,0);
+    const remainder=entries.map(e=>({...e,share:Math.max(0,e.share/total-(reserved.get(e.member)??0))}));
+    const available=remainder.reduce((sum,e)=>sum+e.share,0);
+    if (free>1e-12 && available>0) for (const e of remainder) {
+        if (e.share>0) reserved.set(e.member,(reserved.get(e.member)??0)+free*e.share/available);
+    }
+    return [...reserved].map(([member,share])=>({member,share}));
+}
+
 // Identical recipes do not imply one worker visits every physical building.
 // Bind only unambiguous single-copy, single-task workers. Mobile workers and
 // couriers retain the full set of possible origins/destinations.
@@ -166,6 +187,7 @@ export function buildReactiveDispatch({layout,recipes,members,busy=[],permanent=
                 }
             }
             if(!entries?.length)entries=eligible.filter(e=>e.weight>0).map(e=>({member:e.member,share:e.weight/total}));
+            if (keyAbility==='Production') entries=keepStaffedSites(entries,locations.get(`${recipe.facility}|${recipe.name}`),valid);
             const shares=entries.reduce((s,e)=>s+e.share,0);
             // Shares determine delivery origins. Price each route once, after
             // those origins and the destinations of loaded trips are known.

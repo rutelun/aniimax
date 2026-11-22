@@ -177,15 +177,15 @@ const GATHERING_RATE_PER_LEVEL: f64 = 0.5;
 /// ```
 pub fn efficiency(level: u32, required: u32, gathering: bool) -> f64 {
     let required = required.max(1);
-    // Processing loses 15 workload/minute per level below the recommendation.
-    if !gathering && level < required {
-        return 1.0 - 0.25 * f64::from(required - level.max(1));
-    }
-    let level = level.max(required);
-    let above = level - required;
-    match gathering {
-        false => processor_speed(above),
-        true => 1.0 + GATHERING_RATE_PER_LEVEL * above as f64 / base_work_rate(required),
+    let difference = f64::from(level.max(1)) - f64::from(required);
+    if gathering {
+        // Each worker level changes output by 30 workload/minute, on either side
+        // of the recipe recommendation (game formula 3013).
+        1.0 + GATHERING_RATE_PER_LEVEL * difference / base_work_rate(required)
+    } else if difference < 0.0 {
+        1.0 + 0.25 * difference
+    } else {
+        processor_speed(level.max(1) - required)
     }
 }
 
@@ -248,7 +248,10 @@ pub fn base_item_name(name: &str) -> &str {
 }
 
 pub(crate) fn minimum_worker_level(ability: &str, recommended: u32) -> u32 {
-    if ability == "Perfumery" { 1 } else { recommended }
+    match ability {
+        "Water" | "Perfumery" => 1,
+        _ => recommended,
+    }
 }
 
 // The standard Best recipe already represents the fastest available matching worker.
@@ -684,7 +687,7 @@ pub enum AniimoSetup {
     Best(AniimoLevels),
 }
 
-/// The Aniimo ability and minimum ability level each workload-based recipe needs (see
+/// The Aniimo ability and reference level for timing each workload-based recipe (see
 /// `data/aniimo_requirements.csv`). Crops and trees aren't listed; their grow time is fixed.
 ///
 /// ```
@@ -721,7 +724,7 @@ impl AniimoRequirements {
         self
     }
 
-    /// The ability and minimum ability level `item` needs, if it's worked by an Aniimo.
+    /// The ability and recommended level used to time a manual batch of `item`.
     pub fn get(&self, item: &str) -> Option<(&str, u32)> {
         self.by_item.get(item).map(|(ability, level)| (ability.as_str(), *level))
     }

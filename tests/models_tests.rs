@@ -305,3 +305,30 @@ fn dewy_can_process_above_its_perfumery_level_at_its_own_speed() {
     let items = crew_variants(vec![recipe], &crew, &reqs, &GrowerSteps::default());
     assert!(items.iter().any(|item| item.crew == Some(0) && item.production_time == 324.0));
 }
+
+#[test]
+fn water_workers_below_the_recipe_recommendation_use_their_own_rate() {
+    use aniimax::models::{crew_variants, AniimoLevels, AniimoSetup, Crew, GrowerSteps, RosterAniimo};
+    let data = std::path::Path::new("data");
+    let reqs = aniimax::data::load_aniimo_requirements(data).unwrap();
+    let recipes = aniimax::data::load_all_data(data).unwrap();
+    let crew = Crew {
+        members: vec![
+            RosterAniimo { count: 1, abilities: [("Water".into(), 2)].into(), ..Default::default() },
+            RosterAniimo { count: 1, abilities: [("Grass".into(), 3)].into(), ..Default::default() },
+        ],
+        ..Default::default()
+    };
+    for (name, seconds) in [("agave_drink", 324.0), ("quick_fresh_water", 2700.0), ("quick_natural_mineral_spring_water", 2700.0)] {
+        let recipe = recipes.iter().find(|r| r.name == name).unwrap();
+        assert_eq!(reqs.get(name), Some(("Water", 3)));
+        let variants = crew_variants(vec![recipe.clone()], &crew, &reqs, &GrowerSteps::default());
+        let worker = variants.iter().find(|v| v.crew == Some(0)).expect(name);
+        assert_eq!(worker.production_time, seconds);
+        assert!(variants.iter().all(|v| v.crew != Some(1)));
+        let mut best = vec![recipe.clone()];
+        reqs.apply(&AniimoSetup::Best(AniimoLevels::all(2)), &mut best);
+        assert_eq!(best[0].facility_level, recipe.facility_level);
+        assert!((best[0].production_time - seconds / 1.2).abs() < 1e-6);
+    }
+}

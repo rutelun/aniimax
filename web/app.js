@@ -37,7 +37,7 @@ import { placeRosterCopy, ROSTER_ROW_SIZE, rosterSlotsFor, swapRosterSlots } fro
 import { scheduleRosterCopies } from './roster-work.js?v=measured-walking';
 import { buildDispatch, rosterJobSwitching, TASK_SWITCHING } from './task-switching.js?v=base-travel';
 import { buildReactiveDispatch, permanentWorkers, measuredDispatchWork, routeDispatchKey, attachDeliveryFlows } from './reactive-dispatch.js';
-import { recommendBestTeam } from './best-team.js?v=team-support';
+import { recommendBestTeam, cropWorkshopItems } from './best-team.js?v=team-support';
 import { groupAniimoAssignments } from './aniimo-assignment-groups.js?v=generator-assignments';
 import facilityIcons from './facility-icons.json' with { type: 'json' };
 import { abilityGlyph, gameAbilityIcon } from './ability-icons.js?v=game-heads';
@@ -1795,7 +1795,7 @@ function measurePowerTeam(plan,layout,input,recipes=recipeIndex) {
     const placed=bestTeamLayouts.get(plan);
     const hauling=placed?.layout===layout ? placed.hauling :
         haulingWorkload(layout,plan.coin_items,haulingRouteBound(true),recipes,input.facilities,true,4);
-    return mappedTeamScore(bestPlanTeam(plan,hauling.busy,layout,hauling),grid,ANIIMO_MAX[layoutHomeLevel()-1]);
+    return mappedTeamScore(bestPlanTeam(plan,hauling.busy,layout,hauling),grid,ANIIMO_MAX[layoutHomeLevel()-1],plan.rate_per_second);
 }
 
 function runMapWorker(url,message,signal) {
@@ -1816,24 +1816,48 @@ function runMapWorker(url,message,signal) {
 
 async function refineMappedPowerTeam(plan,layout,input,signal,onMeasured,isCurrent=()=>true) {
     const seed=powerTeamSeeds.get(plan)??plan;
-    const [{selectPowerTeam},{result}]=await Promise.all([
-        import('./power-team-search.js'),
-        runMapWorker(WORKER_URL,{id:1,type:'power_teams',payload:{plan:seed,input}},signal),
-    ]);
-    const candidates=seed===plan?result:[seed,...result];
-    if(!candidates.length || !isCurrent())return plan;
+    const {result}=await runMapWorker(WORKER_URL,{id:1,type:'power_teams',payload:{plan:seed,input}},signal);
+    const families=seed===plan?result:[{plan:seed,upgrades:[]},...result];
+    const measure=(base,map,choices)=>measureMappedPowerTeams(base,map,input,choices,seed,signal,onMeasured,isCurrent);
+    const best=await measure(plan,layout,families);
+    if (!isCurrent() || signal?.aborted || !input.e_mode_rv || input.roster || input.fixed_homeland || best.currency!=='coins') return best;
+    const bestMap=bestTeamLayouts.get(best)?.layout ?? layout;
+    const hauling=bestTeamLayouts.get(best)?.hauling ??
+        haulingWorkload(bestMap,best.coin_items,haulingRouteBound(true),recipeIndex,input.facilities,true,4);
+    const targets=cropWorkshopItems(bestPlanTeam(best,hauling.busy,bestMap,hauling));
+    if (!targets.length) return best;
+    const referenceIncome=Math.max(seed.rate_per_second,best.rate_per_second,plan.crop_protection_reference_income??0);
+    try {
+        const {result:protectedPlans}=await runMapWorker(WORKER_URL,{id:1,type:'protect_crops',
+            payload:{plan:best,input,targets,referenceIncome}},signal);
+        return await measure(best,bestMap,protectedPlans.map(p=>({plan:p,upgrades:[]})));
+    } catch (error) {
+        if (signal?.aborted) throw error;
+        console.warn('Could not verify a crop protection alternative.',error);
+        return best;
+    }
+}
+
+async function measureMappedPowerTeams(plan,layout,input,families,seed,signal,onMeasured,isCurrent) {
+    if(!families.length || !isCurrent() || signal?.aborted)return plan;
+    const {selectPowerTeam}=await import('./power-team-search.js');
     const baselineScore=measurePowerTeam(plan,layout,input);
     const homeLevel=layoutHomeLevel();
     const {key,cells,poleLimit}=layoutOptionsFor(plan,homeLevel,'best');
-    const entries=candidates.flatMap((candidate,index)=>{
-        const {pieces,unplaced}=homelandPieces(candidate,input);
-        if(unplaced.length)return [];
-        const {coin_items,recipe_schedule,power_generators}=candidate;
-        return [{index,plan:{coin_items,recipe_schedule,power_generators},pieces,jobs:jobsForBestPlan(candidate)}];
-    });
-    const lanes=comparisonConcurrency(globalThis.navigator,entries.length);
+    const candidates=[];
+    const lanes=comparisonConcurrency(globalThis.navigator,families.length);
     const batches=Array.from({length:lanes},()=>[]);
-    entries.forEach((entry,i)=>batches[i%lanes].push(entry));
+    families.forEach(({plan:base,upgrades},i)=>{
+        const parentIndex=candidates.length;
+        for (const candidate of [base,...upgrades]) {
+            const index=candidates.push(candidate)-1;
+            const {pieces,unplaced}=homelandPieces(candidate,input);
+            if(unplaced.length) continue;
+            const {coin_items,recipe_schedule,power_generators,rate_per_second}=candidate;
+            batches[i%lanes].push({index,parentIndex,plan:{coin_items,recipe_schedule,power_generators,rate_per_second},pieces,jobs:jobsForBestPlan(candidate)});
+        }
+    });
+    const total=batches.reduce((n,batch)=>n+batch.length,0);
     let completed=0;
     const outcomes=await Promise.allSettled(batches.map(async batch=>{
         const {winner}=await runMapWorker(WORKER_URL.replace('worker.js','power-team-map-worker.js'),{
@@ -1841,7 +1865,7 @@ async function refineMappedPowerTeam(plan,layout,input,signal,onMeasured,isCurre
             recipes:recipeIndex,limit:ANIIMO_MAX[homeLevel-1],haulingBound:haulingRouteBound(true),baselineScore,
         },signal);
         completed+=batch.length;
-        if(isCurrent() && !signal?.aborted)onMeasured?.(completed,entries.length);
+        if(isCurrent() && !signal?.aborted)onMeasured?.(completed,total);
         return winner;
     }));
     if(!isCurrent() || signal?.aborted)return plan;
@@ -5986,6 +6010,12 @@ function displayPlan(plan, keepLayout = false) {
     } else {
         const reason = plan.fallback_reason ? ` (${plan.fallback_reason})` : '';
         explored.textContent = `The exact planner couldn't run${reason}, so this plan comes from the backup planner and may not be the very best. Reloading the page usually fixes this.`;
+    }
+
+    if (plan.crop_protection_reference_income>plan.rate_per_second+1e-7) {
+        const loss=100*(1-plan.rate_per_second/plan.crop_protection_reference_income);
+        explored.textContent=translate('Best protects field workers at a cost of {loss}% of Home Coin income.')
+            .replace('{loss}',formatNumber(loss));
     }
 
     const unverifiedEl = document.getElementById('plan-unverified');

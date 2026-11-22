@@ -1,4 +1,4 @@
-import {recommendBestTeam, placeBestJobs, protectedShift} from './best-team.js';
+import {recommendBestTeam, placeBestJobs, protectedShift, cropWorkshopDistractions} from './best-team.js';
 import {buildDispatch} from './task-switching.js';
 import {haulingScheduleProfile} from './recipe-schedule-plan.js';
 import {FACILITIES} from './facility-config.js';
@@ -31,10 +31,10 @@ export function addHarvestHelpers(team, layout, recipes, limit) {
 
 // Harvest helpers only add shifts. Before adding them, this same score is an
 // optimistic bound for this particular placement, including all generator posts.
-export function mappedTeamScore(team, grid, limit) {
+export function mappedTeamScore(team, grid, limit, income) {
     if (grid.disconnected || team.shifts.length>limit || team.cropPeaks?.recommendedTargetMet===false ||
         team.shifts.some(s => !s.entry || s.busy>1+1e-6 || s.phaseBusy?.some(n=>n>1+1e-6))) return null;
     const active=grid.networks.filter(n=>n.consumers && n.generated>0);
     const distractions = team.shifts.filter(protectedShift).reduce((n,s) => n + (s.distractions ?? 0), 0);
-    return {distractions,people:team.shifts.length,generators:active.reduce((sum,n)=>sum+n.generators,0),networks:active.length};
+    return {...(Number.isFinite(income) ? {income} : {}),distractions,cropWorkshopDistractions:cropWorkshopDistractions(team),people:team.shifts.length,generators:active.reduce((sum,n)=>sum+n.generators,0),networks:active.length};
 }

@@ -13,7 +13,7 @@ export function withCropSupport({pools,layout,recipes,limit,haulingBusy=pools.so
     const active=recipes.filter(r=>sites.has(`${r.facility}|${r.name}`));
     const skills=[...new Set(active.flatMap(r=>(r.jobs||[]).filter(([name])=>criticalCropJob(name)).map(([,ability])=>ability)))].sort();
     const outside=active.filter(r=>r.aniimo && !residents.has(r.facility)).map(r=>({
-        ability:r.aniimo[0],level:r.aniimo[1],family:r.family,siteCount:sites.get(`${r.facility}|${r.name}`).length,
+        ability:r.aniimo[0],level:r.aniimo[1],family:r.family,siteCount:sites.get(`${r.facility}|${r.name}`).filter(s=>!s.occupied).length,
     }));
     if (haulingBusy>1e-6) outside.push({ability:'Hauling',level:1});
     const profiles=new Map();
