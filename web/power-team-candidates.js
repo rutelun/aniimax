@@ -300,20 +300,20 @@ function substituteOrdinary(plan, changes, input) {
     return {...plan, coin_items: rows, schedule_sources: plan.schedule_sources.map(s => changed.get(s.item)?.source ?? s)};
 }
 
-function* generatorTeams(count, used, outputs, tiers) {
+function* generatorTeams(count, used, operators) {
     if (!count) { if (!used) yield []; return; }
-    if (!used || outputs.at(-1) * count < used - EPS) return;
-    // A strong first generator can feed an island while a low-level worker
-    // supplies a smaller island. Also test maximum output at the same count.
+    const strongest = operators.at(-1);
+    if (!used || strongest.watts * count < used - EPS) return;
+    // Compare eligible operators at the same building tier, including a mixed team.
     const seen = new Set();
     for (const strong of [count - 1, 0, count]) {
         let remaining = used;
         const team = [];
         for (let i = 0; i < count; i++) {
-            const level = i < strong ? outputs.length : 1 + outputs.findIndex(w =>
-                w + (count - i - 1) * outputs.at(-1) >= remaining - EPS);
-            remaining -= outputs[level - 1];
-            team.push([tiers[level - 1], level]);
+            const operator = i < strong ? strongest : operators.find(o =>
+                o.watts + (count - i - 1) * strongest.watts >= remaining - EPS);
+            remaining -= operator.watts;
+            team.push([operator.tier, operator.level]);
         }
         team.sort((a, b) => b[1] - a[1]);
         const key = team.map(pair => pair[1]).join(',');
@@ -328,15 +328,19 @@ export function* powerTeamCandidates(plan, input, problem, recipes) {
     const modes = nativeModes(problem, definitions), rv = input.e_mode_rv;
     const limit = generatorLimit(rv), lightning = input.aniimo_levels?.Lightning ?? (input.aniimo?.startsWith('best3') ? 3 : 4);
     const outputs = plan.generator_watts_by_lightning?.slice(0, lightning);
-    const tiers = plan.generator_tiers_by_lightning?.slice(0, lightning);
-    if (!limit || !outputs?.length || tiers?.length !== outputs.length ||
-        !outputs.every(w => w > 0) || !tiers.every(t => Number.isInteger(t) && t > 0)) return;
+    const tiers = plan.generator_tiers_by_lightning;
+    if (!limit || !outputs?.length || !tiers?.length) return;
+    const maxTier = Math.max(...tiers);
+    const operators = outputs.flatMap((watts,i) => watts > 0 && tiers[i] === maxTier && maxTier > 0
+        ? [{tier:maxTier,level:i+1,watts}] : []);
+    if (!operators.length) return;
+    const strongest = operators.at(-1);
     const jobs = productionTeamJobs(plan,[...definitions.values()]);
-    for (const [,level] of plan.power_generator_levels?.length ? plan.power_generator_levels : [[null,outputs.length]]) {
+    for (const [,level] of plan.power_generator_levels?.length ? plan.power_generator_levels : [[null,strongest.level]]) {
         jobs.push({ability:'Lightning',level,busy:1,fixed:true,facility:'Crackle Generator',label:'Generator'});
     }
     const crew = recommendBestTeam(jobs,plan.hauling_busy ?? 0).shifts.filter(protectedShift).map(s=>s.entry);
-    const ordinary = ordinaryStates(plan, input, modes, definitions, limit * outputs.at(-1),crew);
+    const ordinary = ordinaryStates(plan, input, modes, definitions, limit * strongest.watts,crew);
     if (!ordinary.length) return;
     const lowestDraw = ordinary.reduce((a, b) => a.watts < b.watts ? a : b);
     const menus = [];
@@ -374,17 +378,17 @@ export function* powerTeamCandidates(plan, input, problem, recipes) {
         if (menus.length) yield* combinations(menus);
     }
     for (const chains of configurations()) {
-        const base = chains.length ? certifiedSchedule(plan, input, chains, definitions, lowestDraw, limit * outputs.at(-1)) : plan;
+        const base = chains.length ? certifiedSchedule(plan, input, chains, definitions, lowestDraw, limit * strongest.watts) : plan;
         if (!base) continue;
         const chainWatts = chains.length ? chains.reduce((n, c) => n + c.watts, 0)
             : (plan.recipe_schedule?.sites ?? []).reduce((sum, site) => sum + (site.jobs.length ? siteWatts(site) : 0), 0);
         const candidates = new Map();
         for (let count = 0; count <= limit; count++) {
-            const budget = count * outputs.at(-1) - chainWatts;
+            const budget = count * strongest.watts - chainWatts;
             for (const state of ordinaryWithin(budget)) {
                 if (!candidates.has(state)) candidates.set(state, substituteOrdinary(base, state.changes, input));
                 const candidate = candidates.get(state), used = chainWatts + state.watts;
-                for (const levels of generatorTeams(count, used, outputs, tiers))
+                for (const levels of generatorTeams(count, used, operators))
                     yield {...candidate, power_used: used, power_generators: count, power_generator_levels: levels,
                         power_generated: levels.reduce((n, [, l]) => n + outputs[l - 1], 0)};
             }

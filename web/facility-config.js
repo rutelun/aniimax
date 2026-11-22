@@ -431,7 +431,7 @@ export function storageUnitLimit(homeLevel) {
 // Everything a player at `homeLevel` could have: each facility at its highest unlocked level, as
 // many as that RV level allows (see `counts`), and every module at its cap for that RV level. Returns the same shapes simple
 // mode sends to the solver: `{ facilities: { name: [{count, level}] }, modules }`.
-export function simpleSetup(homeLevel) {
+export function simpleSetup(homeLevel, ownedFacilities) {
     const facilities = {};
     FACILITIES.forEach(f => {
         const unlocked = Object.entries(f.unlocks || {})
@@ -441,7 +441,10 @@ export function simpleSetup(homeLevel) {
             facilities[f.name] = [{ count: 0, level: 1 }];
             return;
         }
-        facilities[f.name] = [{ count: atHomeLevel(f.counts, homeLevel), level: Math.max(...unlocked) }];
+        const count = ownedFacilities
+            ? (ownedFacilities[f.name] ?? []).reduce((sum,tier) => sum + tier.count,0)
+            : atHomeLevel(f.counts, homeLevel);
+        facilities[f.name] = [{ count, level: Math.max(...unlocked) }];
     });
     const modules = Object.fromEntries(
         Object.entries(MODULE_MAX_LEVELS).map(([module, caps]) => [module, atHomeLevel(caps, homeLevel)])

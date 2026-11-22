@@ -31,7 +31,6 @@ pub struct PowerPlan {
 pub struct GeneratorLimits {
     pub count: u32,
     tier: usize,
-    placed: bool,
     lightning: u32,
 }
 
@@ -45,28 +44,22 @@ impl GeneratorLimits {
     pub fn for_rv(rv: u32, lightning: u32) -> Option<Self> {
         let tier = GENERATOR_TIERS.iter().rposition(|&(unlock, ..)| unlock <= rv)?;
         let count = if rv >= 18 { 3 } else if rv >= 15 { 2 } else { 1 };
-        Some(Self { count, tier, placed: false, lightning: lightning.clamp(1, 4) })
+        Some(Self { count, tier, lightning: lightning.clamp(1, 4) })
     }
 
-    pub fn with_placed(self, count: u32, level: u32) -> Option<Self> {
-        if count == 0 || level == 0 {
-            return None;
-        }
-        Some(Self { count: count.min(self.count), tier: self.tier.min(level as usize - 1), placed: true, ..self })
+    /// A fixed layout supplies the number of buildings. Budget each at the RV's upgrade cap.
+    pub fn with_placed(self, count: u32, _reported_level: u32) -> Option<Self> {
+        (count > 0).then_some(Self { count: count.min(self.count), ..self })
     }
 
-    /// Choose the strongest available generator recipe supported by this worker.
     pub fn generator(self, lightning: u32) -> (u32, u32) {
-        let Some(tier) = GENERATOR_TIERS[..=self.tier].iter().rposition(|&(_, required, ..)| required <= lightning) else {
-            return (0, 0);
-        };
-        if self.placed && tier != self.tier {
+        let (_, required, watts, workload) = GENERATOR_TIERS[self.tier];
+        if lightning < required {
             return (0, 0);
         }
-        let (_, _, watts, workload) = GENERATOR_TIERS[tier];
         let work_rate = 45 + 15 * lightning.min(4);
         // Round down so the planner never budgets more power than is generated.
-        (tier as u32 + 1, watts * work_rate.min(workload) / workload)
+        (self.tier as u32 + 1, watts * work_rate.min(workload) / workload)
     }
 
     pub fn max_output(self) -> u32 { self.generator(self.lightning).1 }
