@@ -23,6 +23,47 @@ export function improvesPlan(candidate,baseline) {
     return candidate.rate_per_second>baseline.rate_per_second+1e-5*Math.max(1,Math.abs(baseline.rate_per_second));
 }
 
+const materialWorkshops = ['Woodworking Bench','Chimney Kiln'];
+const materialChoice = input => ({normal:true, facilities:materialWorkshops.filter(f=>input.facilities?.[f]?.some(t=>t.count>0))});
+const switchTrial = (input, choice) => ({...input, recipe_switching_relaxation:true,
+    recipe_switching_facilities:choice.facilities, recipe_switching_normal_only:!!choice.normal, maximize_material_work:false});
+
+export async function proveFirstSwitch(input, boundsFor, candidate, progress=()=>{}) {
+    if (!input.always_running || !input.recipe_switching?.max_buildings || !input.recipe_switching.max_switches
+        || input.fixed_homeland || input.level_up || input.level_up_strategy || input.prioritize_byproducts
+        || input.priorities?.[0] !== 'level_up' || !input.level_up_preview) return null;
+    const choice = materialChoice(input);
+    // The direct material-flow proof assigns a distinct site to each of
+    // four tiers in at least one chain. Smaller workshops still use the
+    // ordinary schedule search, which also considers other switch patterns.
+    if (!choice.facilities.some(facility =>
+        input.facilities[facility].reduce((n,tier)=>n+tier.count,0) >= 4)) return null;
+    const trial = switchTrial(input,choice);
+    let proposed, started = false;
+    try {
+        const bound = await boundsFor(trial);
+        if (!bound || !Number.isFinite(bound.seconds) || bound.seconds <= 0) return null;
+        started = true;
+        progress('recipe_switching','start');
+        proposed = await candidate(trial);
+        const seconds = proposed?.level_up_preview?.seconds;
+        // Require the same checked first candidate the ordered search would
+        // select, strictly beyond its comparison tolerance even at the bound.
+        if (proposed?.success && proposed.continuous_production_checked && seconds > 0
+            && seconds < bound.seconds - 2e-5 * Math.max(1,bound.seconds)
+            && (bound.crop == null || proposed.comparison_scores?.crop_variety === bound.crop)) {
+            const data = scheduleInputForPlan(input,proposed);
+            const schedule = materialFlowSchedule(data);
+            if (schedule) return {winner:attachRecipeSchedule(proposed,data,schedule)};
+        }
+    } catch {
+        // A missing proof or a rejected schedule still permits the ordinary search.
+    } finally {
+        if (started) progress('recipe_switching','done',false);
+    }
+    return proposed?.success ? {proposed} : null;
+}
+
 // Each speculative worker owns one solver. A failed start or reply leaves the
 // original candidate available to solve inline when its turn comes.
 function speculate(trial,createWorker,active) {
@@ -45,7 +86,7 @@ function speculate(trial,createWorker,active) {
     });
 }
 
-export async function searchRecipeSwitches(input,baseline,{candidate,solve,progress=()=>{},createWorker,parallel=1}) {
+export async function searchRecipeSwitches(input,baseline,{candidate,solve,progress=()=>{},createWorker,parallel=1,firstProposal}) {
     const limits=input.recipe_switching;
     if(!limits?.max_buildings||!limits.max_switches )return baseline;
     if(input.fixed_homeland)return {...baseline,recipe_switching_note:'Recipe switching requires an automatically generated layout.'};
@@ -62,9 +103,8 @@ export async function searchRecipeSwitches(input,baseline,{candidate,solve,progr
         const eligible=[...new Set([...preferred,...groups.keys()])].filter(f=>baseline.success?groups.get(f)?.size>1:input.facilities?.[f]?.some(t=>t.count>0));
         const facilities=eligible.slice(0,Math.max(1,limits.max_buildings));
         let detail=null;
-        const choices=[...(materialFirst?[{facilities:preferred.slice(0,2).filter(f=>input.facilities?.[f]?.some(t=>t.count>0)),normal:true}]:[]),{facilities},...facilities.slice(0,2).map(f=>({facilities:[f]}))].filter((v,i,a)=>a.findIndex(x=>JSON.stringify(x)===JSON.stringify(v))===i);
-        const trials=choices.map(chosen=>({...input,recipe_switching_relaxation:true,
-            recipe_switching_facilities:chosen.facilities,recipe_switching_normal_only:!!chosen.normal,maximize_material_work:false}));
+        const choices=[...(materialFirst?[materialChoice(input)]:[]),{facilities},...facilities.slice(0,2).map(f=>({facilities:[f]}))].filter((v,i,a)=>a.findIndex(x=>JSON.stringify(x)===JSON.stringify(v))===i);
+        const trials=choices.map(choice=>switchTrial(input,choice));
         const width=createWorker?Math.min(choices.length,Math.max(1,parallel)):1;
         const pending=new Map();
         for(const [index,chosen] of choices.entries()){
@@ -72,11 +112,12 @@ export async function searchRecipeSwitches(input,baseline,{candidate,solve,progr
                 // Keep the parent responsive: nested workers need its event
                 // loop during startup. Accept replies in the original order.
                 for(let j=index;j<Math.min(index+width,trials.length);j++){
+                    if(j===0 && firstProposal)continue;
                     pending.set(j,speculate(trials[j],createWorker,active));
                 }
             }
             try{
-                const proposed=(await pending.get(index))??await candidate(trials[index]);
+                const proposed=(index===0 ? firstProposal : null) ?? (await pending.get(index)) ?? await candidate(trials[index]);
                 if(!improvesPlan(proposed,baseline))continue;
                 const scheduleInput=scheduleInputForPlan(input,proposed);
                 if(chosen.normal){

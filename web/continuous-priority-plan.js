@@ -113,8 +113,10 @@ export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},fi
     const currency=input.currency||'coins', priorities=[...(input.priorities??[])];
     if(!priorities.includes(currency))priorities.push(currency);
     const pos=priorities.indexOf(currency);
+    // Switching first needs an ordinary fixed-recipe plan for comparison.
+    // Shared-site trials have different capacity rules and use the full solver.
     if (!input.always_running || input.level_up_strategy || input.prioritize_byproducts
-        || input.recipe_switching?.max_buildings || input.level_up || !highs || !solveModel) return null;
+        || input.recipe_switching_relaxation || input.level_up || !highs || !solveModel) return null;
     const witnessSeed=initialWitness?.seed??initialWitness?.comparison_seed;
     const oldGoals=initialWitness?.goals??initialWitness?.comparison_goals;
     const oldScores=initialWitness?.scores??initialWitness?.comparison_scores;

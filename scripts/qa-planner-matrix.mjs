@@ -2,6 +2,7 @@
 // E.g. node scripts/qa-planner-matrix.mjs --rv=3,12 --profile=best,my-small --plan-only
 // For a batch, use --rv=all --season=both --reference-origin=<published build>
 // --origin=<candidate> and optionally --variant=label=<another build>.
+// --switch-upgrade compares level-up then coins with five switching buildings.
 import assert from 'node:assert/strict';
 import {mkdir, readFile, writeFile} from 'node:fs/promises';
 import {parseArgs} from 'node:util';
@@ -14,7 +15,7 @@ const {values:args} = parseArgs({options:{
     timeout:{type:'string',default:'600'}, out:{type:'string',default:'target/qa-planner-matrix'},
     season:{type:'string',default:'off'}, 'reference-origin':{type:'string'}, repeats:{type:'string',default:'1'},
     variant:{type:'string',multiple:true,default:[]},
-    'plan-only':{type:'boolean',default:false}, 'save-inputs':{type:'boolean',default:false},
+    'switch-upgrade':{type:'boolean',default:false}, 'plan-only':{type:'boolean',default:false}, 'save-inputs':{type:'boolean',default:false},
 }});
 const catalog = JSON.parse(await readFile(new URL('../web/aniimo-catalog.json',import.meta.url))).entries;
 const rosters = {
@@ -71,7 +72,10 @@ function configuration(profile,rv,season) {
         'aniimo-minimum':profile==='minimum','aniimo-custom':ids.length>0, 'season-on':season!=='off',
         ...(season==='off'?{}:{'season-event':season,seasonBudgets:{[season]:2000},
             seasonCropMinimums:{magic_pumpkin:2,memory_lanternfruit:2}}),
-        'electricity-on':rv>=12,'layout-sim-on':false, priorities:[
+        'electricity-on':rv>=12,'layout-sim-on':false,
+        ...(args['switch-upgrade']?{'recipe-switching-buildings':'5','recipe-switching-switches':'2'}:{}),
+        priorities:[
+            ...(args['switch-upgrade']?[{target:'level_up',on:true}]:[]),
             {target:'coins',on:true},{target:'Wood Blocks',on:profile==='my-mixed'},
         ]};
 }
@@ -96,7 +100,7 @@ const observe = config => {
                 const p=JSON.parse(data.result);
                 qa.plans.push({at:performance.now(),success:p.success,error:p.error,rate:p.rate_per_second,
                     upper:p.upper_bound,goals:p.comparison_goals,scores:p.comparison_scores,eta:p.level_up_preview?.seconds,
-                    checked:p.continuous_production_checked,priorities:p.priorities,
+                    checked:p.continuous_production_checked,priorities:p.priorities,scheduled:!!p.recipe_schedule,
                     climate:p.staffing, unverified:p.unverified,fallback:p.fallback_reason,
                     crops:p.coin_items?.filter(r=>r.is_grower&&r.status==='producing').length,
                     producing:p.coin_items?.filter(r=>r.status==='producing').length});
@@ -218,7 +222,18 @@ try {
         const metric=args['plan-only']?'firstSeconds':'readySeconds';
         const reference=reports.get('reference');
         if(reference)for(const [label,report] of reports){
-            if(label!=='reference')console.log(name,label,metric,'speedup',reference[metric]/report[metric]);
+            if(label==='reference')continue;
+            console.log(name,label,metric,'speedup',reference[metric]/report[metric]);
+            if(args['switch-upgrade']){
+                const before=reference.plans.at(-1),after=report.plans.at(-1);
+                const incomeLost=after.rate < before.rate-1e-8*Math.max(1,Math.abs(before.rate));
+                const slowerUpgrade=Number.isFinite(before.eta)
+                    && (!Number.isFinite(after.eta) || after.eta > before.eta+1e-8*Math.max(1,before.eta));
+                if(incomeLost || slowerUpgrade){
+                    process.exitCode=1;
+                    console.error(name,label,'income',before.rate,after.rate,'upgrade seconds',before.eta,after.eta);
+                }
+            }
         }
     }
 } finally {
