@@ -1,0 +1,97 @@
+name: Compare duplicate-search removal with the published planner
+on:
+  push:
+    branches: [codex/bench-priority-witnesses]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        include:
+          - {rv: "6,7,8,9", profile: "best", season: "both"}
+          - {rv: "6,7,8,9", profile: "minimum", season: "both"}
+          - {rv: "7", profile: "my-small", season: "off"}
+          - {rv: "9", profile: "my-small", season: "off"}
+          - {rv: "6,8", profile: "my-small", season: "off"}
+          - {rv: "21", profile: "best", season: "both"}
+          - {rv: "21", profile: "minimum", season: "both"}
+          - {rv: "21", profile: "my-small", season: "off"}
+          - {rv: "21", profile: "my-small", season: "magical_wonder_night"}
+          - {rv: "22", profile: "best", season: "both"}
+          - {rv: "22", profile: "minimum", season: "both"}
+          - {rv: "22", profile: "my-small", season: "off"}
+          - {rv: "22", profile: "my-small", season: "magical_wonder_night"}
+          - {rv: "20", profile: "best", season: "both"}
+          - {rv: "20", profile: "minimum", season: "both"}
+          - {rv: "20", profile: "my-small", season: "off"}
+          - {rv: "20", profile: "my-small", season: "magical_wonder_night"}
+          - {rv: "19", profile: "best", season: "both"}
+          - {rv: "19", profile: "minimum", season: "both"}
+          - {rv: "19", profile: "my-small", season: "off"}
+          - {rv: "19", profile: "my-small", season: "magical_wonder_night"}
+          - {rv: "18", profile: "best", season: "both"}
+          - {rv: "18", profile: "minimum", season: "both"}
+          - {rv: "18", profile: "my-small", season: "off"}
+          - {rv: "18", profile: "my-small", season: "magical_wonder_night"}
+          - {rv: "1,2,3,4,5", profile: "best", season: "both"}
+          - {rv: "1,2,3,4,5", profile: "minimum", season: "both"}
+          - {rv: "1,2,3,4,5", profile: "my-small", season: "both"}
+          - {rv: "10,11,12", profile: "best", season: "both"}
+          - {rv: "10,11,12", profile: "minimum", season: "both"}
+          - {rv: "10", profile: "my-small", season: "both"}
+          - {rv: "11,12", profile: "my-small", season: "both"}
+          - {rv: "13,14,15", profile: "best", season: "both"}
+          - {rv: "13,14,15", profile: "minimum", season: "both"}
+          - {rv: "13,14,15", profile: "my-small", season: "both"}
+          - {rv: "16,17", profile: "best", season: "both"}
+          - {rv: "16,17", profile: "minimum", season: "both"}
+          - {rv: "16,17", profile: "my-small", season: "both"}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Download the reference deployment
+        uses: actions/download-artifact@v4
+        with:
+          name: github-pages
+          run-id: 45037188076
+          github-token: ${{ github.token }}
+          path: pages
+      - name: Prepare both versions
+        run: |
+          mkdir reference
+          mkdir -p reference/web
+          tar -xf pages/artifact.tar -C reference/web
+          cp -r reference/web/pkg web/
+          mkdir original
+          git archive 787c6bca0fe67c585ffc5858ef6cd554067fe4e2 web | tar -x -C original
+          cp -r reference/web/pkg original/web/
+      - name: Compare final plans in Chrome
+        env:
+          RV: ${{ matrix.rv }}
+          PROFILE: ${{ matrix.profile }}
+          SEASON: ${{ matrix.season }}
+        run: |
+          python3 -m http.server --bind 127.0.0.1 --directory web 8082 > "$RUNNER_TEMP/candidate.log" 2>&1 &
+          python3 -m http.server --bind 127.0.0.1 --directory reference/web 8083 > "$RUNNER_TEMP/reference.log" 2>&1 &
+          google-chrome --headless --no-sandbox --disable-dev-shm-usage --disable-background-networking --no-first-run --remote-debugging-port=9231 --user-data-dir="$RUNNER_TEMP/chrome" > "$RUNNER_TEMP/chrome.log" 2>&1 &
+          curl --retry 20 --retry-all-errors --retry-delay 1 -fsS http://127.0.0.1:9231/json/version
+          extra=()
+          if [[ "$RV" == 7 && "$PROFILE" == my-small ]]; then
+            python3 -m http.server --bind 127.0.0.1 --directory original/web 8084 > "$RUNNER_TEMP/original.log" 2>&1 &
+            extra+=(--variant=original=http://127.0.0.1:8084/)
+          fi
+          node scripts/qa-planner-matrix.mjs "${extra[@]}" --rv="$RV" --profile="$PROFILE" --season="$SEASON" --switch-upgrade --reference-origin=http://127.0.0.1:8083/ --timeout=7200
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: comparison-${{ matrix.rv }}-${{ matrix.profile }}-${{ matrix.season }}
+          path: target/qa-planner-matrix
