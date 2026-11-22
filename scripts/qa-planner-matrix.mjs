@@ -223,7 +223,15 @@ try {
     for(let repetition=1;repetition<=repeats;repetition++)for(const rv of levels)for(const profile of profiles)for(const season of seasons){
         if(season!=='off'&&rv<event.minHomeLevel)continue;
         const name=profile+'-rv'+rv+(season==='off'?'':'-'+season)+(repeats>1?'-run'+repetition:'');
-        if(builds.size===1){await run(rv,profile,season,args.origin,name);continue;}
+        if(builds.size===1){
+            try{await run(rv,profile,season,args.origin,name+'-candidate');}
+            catch(error){
+                process.exitCode=1;
+                await writeFile(args.out+'/'+name+'-candidate-error.json',JSON.stringify({rv,profile,season,message:String(error?.message??error)}));
+                console.error(name,error);
+            }
+            continue;
+        }
         const order=[...builds], offset=sequence++%order.length;
         const reports=new Map();
         for(const [label,origin] of [...order.slice(offset),...order.slice(0,offset)]){

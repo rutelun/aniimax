@@ -10,10 +10,44 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      max-parallel: 12
+      max-parallel: 16
       matrix:
-        rv: ['21', '22', '20', '18', '19', '16,17', '13,14,15', '10,11,12', '6,7,8,9', '1,2,3,4,5']
-        profile: [best, minimum, my-small]
+        include:
+          - {rv: "21", profile: "best", season: "both"}
+          - {rv: "21", profile: "minimum", season: "both"}
+          - {rv: "21", profile: "my-small", season: "off"}
+          - {rv: "21", profile: "my-small", season: "magical_wonder_night"}
+          - {rv: "1,2,3,4,5", profile: "best", season: "both"}
+          - {rv: "1,2,3,4,5", profile: "minimum", season: "both"}
+          - {rv: "1,2,3,4,5", profile: "my-small", season: "both"}
+          - {rv: "6,7,8,9", profile: "best", season: "both"}
+          - {rv: "6,7,8,9", profile: "minimum", season: "both"}
+          - {rv: "6,7,8,9", profile: "my-small", season: "both"}
+          - {rv: "10,11,12", profile: "best", season: "both"}
+          - {rv: "10,11,12", profile: "minimum", season: "both"}
+          - {rv: "10,11,12", profile: "my-small", season: "both"}
+          - {rv: "13,14,15", profile: "best", season: "both"}
+          - {rv: "13,14,15", profile: "minimum", season: "both"}
+          - {rv: "13,14,15", profile: "my-small", season: "both"}
+          - {rv: "16,17", profile: "best", season: "both"}
+          - {rv: "16,17", profile: "minimum", season: "both"}
+          - {rv: "16,17", profile: "my-small", season: "both"}
+          - {rv: "22", profile: "best", season: "both"}
+          - {rv: "22", profile: "minimum", season: "both"}
+          - {rv: "22", profile: "my-small", season: "off"}
+          - {rv: "22", profile: "my-small", season: "magical_wonder_night"}
+          - {rv: "20", profile: "best", season: "both"}
+          - {rv: "20", profile: "minimum", season: "both"}
+          - {rv: "20", profile: "my-small", season: "off"}
+          - {rv: "20", profile: "my-small", season: "magical_wonder_night"}
+          - {rv: "19", profile: "best", season: "both"}
+          - {rv: "19", profile: "minimum", season: "both"}
+          - {rv: "19", profile: "my-small", season: "off"}
+          - {rv: "19", profile: "my-small", season: "magical_wonder_night"}
+          - {rv: "18", profile: "best", season: "both"}
+          - {rv: "18", profile: "minimum", season: "both"}
+          - {rv: "18", profile: "my-small", season: "off"}
+          - {rv: "18", profile: "my-small", season: "magical_wonder_night"}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -30,25 +64,19 @@ jobs:
           path: pages
       - name: Prepare both versions
         run: |
-          mkdir reference
-          git archive c60e736 web | tar -x -C reference
-          tar -xf pages/artifact.tar -C reference/web ./pkg
-          cp -r reference/web/pkg web/
+          tar -xf pages/artifact.tar -C web ./pkg
       - name: Compare final plans in Chrome
         env:
           RV: ${{ matrix.rv }}
           PROFILE: ${{ matrix.profile }}
-          GH_TOKEN: ${{ github.token }}
-          REFERENCE_REPORTS: ${{ runner.temp }}/reference-reports
+          SEASON: ${{ matrix.season }}
         run: |
           python3 -m http.server --bind 127.0.0.1 --directory web 8082 > "$RUNNER_TEMP/candidate.log" 2>&1 &
-          python3 -m http.server --bind 127.0.0.1 --directory reference/web 8083 > "$RUNNER_TEMP/reference.log" 2>&1 &
-          gh run download 45028448622 -n "comparison-$RV-$PROFILE" -D "$REFERENCE_REPORTS" || true
           google-chrome --headless --no-sandbox --disable-dev-shm-usage --disable-background-networking --no-first-run --remote-debugging-port=9231 --user-data-dir="$RUNNER_TEMP/chrome" > "$RUNNER_TEMP/chrome.log" 2>&1 &
           curl --retry 20 --retry-all-errors --retry-delay 1 -fsS http://127.0.0.1:9231/json/version
-          node scripts/qa-planner-matrix.mjs --rv="$RV" --profile="$PROFILE" --season=both --switch-upgrade --reference-origin=http://127.0.0.1:8083/ --timeout=7200
+          node scripts/qa-planner-matrix.mjs --rv="$RV" --profile="$PROFILE" --season="$SEASON" --switch-upgrade --timeout=7200
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: comparison-${{ matrix.rv }}-${{ matrix.profile }}
+          name: comparison-${{ matrix.rv }}-${{ matrix.profile }}-${{ matrix.season }}
           path: target/qa-planner-matrix
