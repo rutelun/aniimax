@@ -22,6 +22,7 @@ gemstone_dust, gem;scales, 2;8, 4600, coins, 162, 7,
 flowers_in_a_bottle, dried_flowers;porcelain, 1;1, 7700, coins, 243, 7,
 advanced_gemstone_dust, gem;scales, 2;8, 5210, coins, 162, 7, crafting_module:6
 doll, dyed_cotton_fabric;wool_fabric, 1;1, 11110, coins, 324, 8,
+pearl_face_cream, pearl_powder;lotion, 1;1, 11130, coins, 243, 8,
 quicksilver_springstone, silver_ore;snowmelt_cold_spring, 2;6, 6430, coins, 162, 9,
 glitter_powder, gold_dust;bright_silver_powder;scales, 1;1;12, 11560, coins, 243, 9,
 orange_flower_scented_mat, dried_orange_flower;sisal_plush_mat, 1;1, 10050, coins, 243, 9,

@@ -20,6 +20,34 @@ fn test_load_all_data() {
 }
 
 #[test]
+fn test_pearl_face_cream_production_chain() {
+    let data = Path::new("data");
+    let items = load_all_data(data).expect("Failed to load recipes");
+    let requirements =
+        aniimax::data::load_aniimo_requirements(data).expect("Failed to load worker requirements");
+    let recipe = |name: &str| {
+        items
+            .iter()
+            .find(|item| item.name == name)
+            .unwrap_or_else(|| panic!("Missing {name} recipe"))
+    };
+
+    let powder = recipe("pearl_powder");
+    assert_eq!((powder.facility.as_str(), powder.facility_level), ("Carousel Mill", 6));
+    assert_eq!(powder.raw_materials.as_deref().unwrap(), ["pearl"]);
+    assert_eq!(powder.required_amount.as_deref(), Some(&[2][..]));
+    assert_eq!((powder.yield_amount, powder.sell_value, powder.workload), (1, 1810.0, Some(81.0)));
+    assert_eq!(requirements.get("pearl_powder"), Some(("Wind", 3)));
+
+    let cream = recipe("pearl_face_cream");
+    assert_eq!((cream.facility.as_str(), cream.facility_level), ("Crafting Table", 8));
+    assert_eq!(cream.raw_materials.as_deref().unwrap(), ["pearl_powder", "lotion"]);
+    assert_eq!(cream.required_amount.as_deref(), Some(&[1, 1][..]));
+    assert_eq!((cream.yield_amount, cream.sell_value, cream.workload), (1, 11130.0, Some(243.0)));
+    assert_eq!(requirements.get("pearl_face_cream"), Some(("Artisanship", 3)));
+}
+
+#[test]
 fn test_loaded_items_have_valid_data() {
     let data_dir = Path::new("data");
     if !data_dir.exists() {
