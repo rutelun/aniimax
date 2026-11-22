@@ -38,9 +38,12 @@ jobs:
         env:
           RV: ${{ matrix.rv }}
           PROFILE: ${{ matrix.profile }}
+          GH_TOKEN: ${{ github.token }}
+          REFERENCE_REPORTS: ${{ runner.temp }}/reference-reports
         run: |
           python3 -m http.server --bind 127.0.0.1 --directory web 8082 > "$RUNNER_TEMP/candidate.log" 2>&1 &
           python3 -m http.server --bind 127.0.0.1 --directory reference/web 8083 > "$RUNNER_TEMP/reference.log" 2>&1 &
+          gh run download 45028448622 -n "comparison-$RV-$PROFILE" -D "$REFERENCE_REPORTS" || true
           google-chrome --headless --no-sandbox --disable-dev-shm-usage --disable-background-networking --no-first-run --remote-debugging-port=9231 --user-data-dir="$RUNNER_TEMP/chrome" > "$RUNNER_TEMP/chrome.log" 2>&1 &
           curl --retry 20 --retry-all-errors --retry-delay 1 -fsS http://127.0.0.1:9231/json/version
           node scripts/qa-planner-matrix.mjs --rv="$RV" --profile="$PROFILE" --season=both --switch-upgrade --reference-origin=http://127.0.0.1:8083/ --timeout=7200

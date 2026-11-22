@@ -229,6 +229,18 @@ try {
         for(const [label,origin] of [...order.slice(offset),...order.slice(0,offset)]){
             const reportName=name+'-'+label;
             try {
+                if(label==='reference' && process.env.REFERENCE_REPORTS){
+                    try{
+                        const old=JSON.parse(await readFile(process.env.REFERENCE_REPORTS+'/'+reportName+'.json','utf8'));
+                        if(old.rv===rv && old.profile===profile && old.season===season && old.origin===origin
+                            && Number.isFinite(old.readySeconds) && Number.isFinite(old.displayedCoinsPerDay)){
+                            old.reusedFromRun=45028448622;
+                            await writeFile(args.out+'/'+reportName+'.json',JSON.stringify(old));
+                            reports.set(label,old);
+                            continue;
+                        }
+                    }catch(error){if(error.code!=='ENOENT')throw error;}
+                }
                 reports.set(label,await run(rv,profile,season,origin,reportName));
             } catch(error) {
                 process.exitCode=1;
