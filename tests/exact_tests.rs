@@ -476,7 +476,7 @@ fn test_electricity_in_best_can_run_a_recipe_above_its_workers_level() {
     let goal = Goal::Earn { floors: &[] };
     let off = solve_exact(&items, "coins", &counts, &modules, goal, None, None).unwrap();
     assert!(!off.units.contains_key("copper_ore"));
-    let limits = GeneratorLimits::for_rv(14, 1).unwrap();
+    let limits = GeneratorLimits::for_rv(12, 1).unwrap();
     let grid = Electricity { watts: limits.max_output(), percent: 120, max_aniimo: None };
     add_electric_variants(&mut items, originals, &counts, &requirements, &grid);
     counts.set_power(PowerPlan { grid, grower_steps: GrowerSteps::default(), automatic: Some(limits) });
@@ -635,14 +635,15 @@ fn test_automatic_electricity_uses_rv_limits_and_assigned_lightning_output() {
         assert_eq!(limits.generator(4), (tier, output));
     }
     let automatic = GeneratorLimits::for_rv(20, 4).unwrap();
-    assert_eq!(automatic.generator(3), (4, 1200));
-    assert_eq!(automatic.staffing(1200.0), vec![3]);
+    assert_eq!(automatic.generator(3), (0, 0));
+    assert_eq!(GeneratorLimits::for_rv(21, 3).unwrap().max_output(), 0);
+    assert_eq!(automatic.staffing(1200.0), vec![4]);
     assert_eq!(automatic.staffing(1201.0), vec![4]);
-    let placed = automatic.with_placed(1, 5).unwrap();
+    let placed = automatic.with_placed(1, 1).unwrap();
     assert_eq!(placed.generator(3), (0, 0));
     assert_eq!(placed.generator(4), (5, 1500));
     assert_eq!(automatic.staffing(1400.0), vec![4]);
-    assert_eq!(automatic.staffing(2100.0), vec![1, 4]);
+    assert_eq!(automatic.staffing(2100.0), vec![4, 4]);
 
     let Some(mut originals) = load_items() else { return };
     originals.retain(|item| item.name == "rock");
@@ -651,8 +652,8 @@ fn test_automatic_electricity_uses_rv_limits_and_assigned_lightning_output() {
     let steps = GrowerSteps::default();
     let grid = Electricity { watts: 800, percent: 120, max_aniimo: None };
     let modules = ModuleLevels::default();
-    // 600 W supports 16 of these mines at 120%. The stronger worker supports 20.
-    for (lightning, mines) in [(1, 16), (2, 20)] {
+    // At RV 14 the level-2 generator needs Lightning 2. An ineligible crew runs mines manually.
+    for (lightning, mines) in [(1, 0), (2, 20)] {
         let crew = crew_of(&[(2, &[("Lightning", lightning)])]);
         let mut counts = FacilityCounts::only(&[("Mine", 20, 1)]);
         counts.set_crew(crew.clone());
@@ -660,7 +661,8 @@ fn test_automatic_electricity_uses_rv_limits_and_assigned_lightning_output() {
         let mut items = crew_variants(originals.clone(), &crew, &requirements, &steps);
         add_electric_variants(&mut items, originals.clone(), &counts, &requirements, &grid);
         let plan = solve_exact(&items, "coins", &counts, &modules, Goal::Earn { floors: &[] }, None, None).unwrap();
-        assert_eq!(plan.units.get("rock__electric1"), Some(&mines));
+        assert_eq!(plan.units.get("rock__electric1").copied().unwrap_or(0), mines);
+        if mines == 0 { assert!(plan.staffing.is_empty()); continue; }
         assert_eq!(plan.staffing, vec![(GENERATOR.into(), 0, 1.0)]);
         check_plan(&plan, &items, "coins", &counts, &modules, None).unwrap();
         let mut invalid = plan.clone();

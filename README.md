@@ -13,7 +13,7 @@ Updated for the full release, with a joint LP-based facility-allocation engine f
 ## Features
 
 **Web app**
-- **Simple or Advanced Setup**: Simple mode only asks for your RV level and assumes everything that level allows is built and upgraded; advanced mode sets every facility's count and level (and can start from the simple-mode setup)
+- **Simple or Advanced Setup** uses the highest building levels unlocked at your RV. Simple mode includes every available building. Advanced mode lets you enter your own building counts and module levels.
 - **Live Production Plan**: Set your facilities to get the best achievable rate and what every facility should produce; no target amount needed
 - **Goal Timing**: Add a target amount afterward to see how long it'll take; updates instantly as you type, no re-solving
 - **Proven Best Plans**: The web app solves the whole problem exactly (every recipe, whole plots and machines, and environment building layouts together) with the [HiGHS](https://highs.dev) solver, and proves each plan is the best possible for your facilities

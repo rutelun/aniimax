@@ -350,31 +350,24 @@ function defaultFacilityTiers() {
     return tiers;
 }
 
-// Renders one facility's tier rows (Count + Level inputs, a remove button once there's more than
-// one tier, and, only for facilities that level up, an "Add level" button) into its
-// `.facility-tiers` container. Called on initial render and again, for just that one facility,
-// whenever a tier is added or removed, so editing one facility never disturbs another's inputs.
 function renderTierRows(name) {
     const f = FACILITIES.find(fac => fac.name === name);
     const container = document.querySelector(`.facility-tiers[data-facility="${name}"]`);
     if (!f || !container) return;
-    const tiers = facilityTiers[name];
-    const showRemove = tiers.length > 1;
-    container.innerHTML = tiers.map((tier, i) => `
-        <div class="facility-inputs tier-row" data-tier-index="${i}">
-            <div class="input-field">
-                <label>Count</label>
-                <input type="number" class="tier-count" value="${tier.count}" min="0" max="999">
-            </div>
-            ${f.hasLevels === false ? '' : `
-            <div class="input-field">
-                <label>Level</label>
-                <input type="number" class="tier-level" value="${tier.level}" min="1" max="10">
-            </div>
-            `}
-            ${showRemove ? '<button type="button" class="tier-remove-btn" title="Remove this level">&times;</button>' : ''}
+    container.innerHTML = `<div class="facility-inputs tier-row">
+        <div class="input-field"><label>Count</label>
+            <input type="number" class="tier-count" value="${tierCount(facilityTiers[name])}" min="0" max="999">
         </div>
-    `).join('');
+        ${f.hasLevels === false ? '' : '<div class="input-field"><label>Level</label><output class="rv-tier-level"></output></div>'}
+    </div>`;
+}
+
+function refreshFacilityLevels() {
+    const caps = simpleSetup(layoutHomeLevel(null)).facilities;
+    for (const element of document.querySelectorAll('.rv-tier-level')) {
+        const [tier] = caps[element.closest('.facility-tiers').dataset.facility];
+        element.textContent = tier.count ? String(tier.level) : '—';
+    }
 }
 
 // Build the facility-card inputs, grouped into a labeled section per category. Runs before other
@@ -388,7 +381,6 @@ function renderFacilityCards() {
             <div class="facility-card" data-facility-name="${f.name}">
                 <h4>${f.name} <span class="info-icon" data-tooltip="${f.tooltip}">?</span></h4>
                 <div class="facility-tiers" data-facility="${f.name}"></div>
-                ${f.hasLevels === false ? '' : '<button type="button" class="add-tier-btn" data-facility="' + f.name + '">+ Add level</button>'}
             </div>
         `).join('');
         return `
@@ -401,49 +393,17 @@ function renderFacilityCards() {
     FACILITIES.forEach(f => renderTierRows(f.name));
 }
 
-// Delegated handlers for the facility grid, covering tier rows added/removed after initial
-// render: editing a Count/Level input updates `facilityTiers` and persists it; "+ Add level"
-// appends a new tier (guessing the next level up from the highest owned, capped at 10); "×"
-// removes a tier. Attach once, on the grid container, rather than per-row.
 function attachFacilityTierHandlers() {
     const grid = document.getElementById('facilities-grid');
-
-    grid.addEventListener('input', (e) => {
-        const row = e.target.closest('.tier-row');
-        if (!row) return;
-        const container = e.target.closest('.facility-tiers');
-        const name = container.dataset.facility;
-        const idx = parseInt(row.dataset.tierIndex, 10);
-        const tier = facilityTiers[name][idx];
-        if (e.target.classList.contains('tier-count')) {
-            tier.count = numberOrDefault(e.target.value, 0);
-        } else if (e.target.classList.contains('tier-level')) {
-            tier.level = numberOrDefault(e.target.value, 1);
-        }
+    grid.addEventListener('input', event => {
+        if (!event.target.matches('.tier-count')) return;
+        const name = event.target.closest('.facility-tiers').dataset.facility;
+        const count = Math.max(0,numberOrDefault(event.target.value,0));
+        // Old saves may contain mixed levels. Retain their evidence for Auto RV.
+        const level = tierLevel(facilityTiers[name]) || 1;
+        facilityTiers[name] = [{count,level}];
+        refreshFacilityLevels();
         saveInputsToStorage();
-    });
-
-    grid.addEventListener('click', (e) => {
-        const addBtn = e.target.closest('.add-tier-btn');
-        if (addBtn) {
-            const name = addBtn.dataset.facility;
-            const tiers = facilityTiers[name];
-            const nextLevel = Math.min(10, Math.max(...tiers.map(t => t.level)) + 1);
-            tiers.push({ count: 1, level: nextLevel });
-            renderTierRows(name);
-            saveInputsToStorage();
-            return;
-        }
-        const removeBtn = e.target.closest('.tier-remove-btn');
-        if (removeBtn) {
-            const row = removeBtn.closest('.tier-row');
-            const container = removeBtn.closest('.facility-tiers');
-            const name = container.dataset.facility;
-            const idx = parseInt(row.dataset.tierIndex, 10);
-            facilityTiers[name].splice(idx, 1);
-            renderTierRows(name);
-            saveInputsToStorage();
-        }
     });
 
     // Enter key inside a tier input triggers a full plan recalculation, same as every other
@@ -782,7 +742,7 @@ function renderBuildingSettings() {
     document.getElementById('home-level').options[0].hidden = !customBuildings;
     document.getElementById('reset-buildings').hidden = !customBuildings;
     document.getElementById('building-setup-note').textContent = customBuildings
-        ? 'Uses your building counts and upgrade levels.'
+        ? 'Uses your building counts at the maximum level available for your RV.'
         : 'Uses all buildings and upgrades available at your RV level.';
 }
 
@@ -802,6 +762,7 @@ function attachModeHandlers() {
     const rv = document.getElementById('home-level');
     rv.addEventListener('change', () => {
         if (isSimpleMode()) fillBuildingInputs(selectedHomeLevel());
+        refreshFacilityLevels();
         if (lastPlanInput) clearPlanResults();
         renderStrategy();
     });
@@ -814,14 +775,15 @@ function attachModeHandlers() {
     document.getElementById('advanced-config').addEventListener('input', event => {
         if (event.target.matches('input[type="number"]')) markCustom();
     }, true);
-    document.getElementById('facilities-grid').addEventListener('click', event => {
-        if (event.target.closest('.add-tier-btn, .tier-remove-btn')) markCustom();
-    }, true);
+    document.getElementById('advanced-config').addEventListener('input', event => {
+        if (event.target.id.endsWith('-level')) refreshFacilityLevels();
+    });
     document.getElementById('reset-buildings').addEventListener('click', () => {
         if (!rv.value) rv.value = String(layoutHomeLevel(null));
         customBuildings = false;
         document.getElementById('level-up-target').value = '';
         fillBuildingInputs(selectedHomeLevel());
+        refreshFacilityLevels();
         renderBuildingSettings();
         if (lastPlanInput) clearPlanResults();
         renderStrategy();
@@ -971,11 +933,10 @@ function improvementCandidates(base, setup, plan) {
         }
     }
 
-    // Advanced mode: a module at a higher level, one more facility, or one facility at a higher
-    // level, within what the RV level covering the rest allows.
+    // Advanced inventories can add an available building at the RV cap or upgrade a module.
     const levelsAbove = (from, to) => Array.from({ length: Math.max(0, to - from) }, (_, i) => from + 1 + i);
     if (planContext && !planContext.simple) {
-        const allowed = simpleSetup(homeLevelCovering(base));
+        const allowed = simpleSetup(planContext.homeLevel ?? homeLevelCovering(base));
         for (const [module, level] of Object.entries(base.modules)) {
             for (const next of levelsAbove(level, allowed.modules[module] ?? 0)) {
                 candidates.push({
@@ -990,25 +951,10 @@ function improvementCandidates(base, setup, plan) {
             const cap = allowed.facilities[f.name];
             const capLevel = f.hasLevels === false ? 1 : tierLevel(cap);
             if (tierCount(tiers) < tierCount(cap)) {
-                for (const level of levelsAbove(0, capLevel)) {
-                    candidates.push({
-                        kind: 'Buildings',
-                        label: f.hasLevels === false || capLevel === 1 ? `+1 ${f.name}` : `+1 ${f.name} (Lv.${level})`,
-                        input: { ...base, facilities: { ...base.facilities, [f.name]: [...tiers, { count: 1, level }] } },
-                    });
-                }
-            }
-            if (f.hasLevels === false || tiers.length === 0) continue;
-            const lowest = tiers.reduce((a, b) => (b.level < a.level ? b : a));
-            for (const level of levelsAbove(lowest.level, capLevel)) {
-                const raised = tiers
-                    .map(t => (t === lowest ? { ...t, count: t.count - 1 } : t))
-                    .filter(t => t.count > 0)
-                    .concat({ count: 1, level });
                 candidates.push({
                     kind: 'Buildings',
-                    label: tierCount(tiers) > 1 ? `1 ${f.name} to Lv.${level}` : `${f.name} to Lv.${level}`,
-                    input: { ...base, facilities: { ...base.facilities, [f.name]: raised } },
+                    label: capLevel === 1 ? `+1 ${f.name}` : `+1 ${f.name} (Lv.${capLevel})`,
+                    input: { ...base, facilities: { ...base.facilities, [f.name]: [{count:tierCount(tiers)+1,level:capLevel}] } },
                 });
             }
         }
@@ -1534,9 +1480,8 @@ function homelandPlots() {
 // everything entered (see `homeLevelCovering`).
 function layoutHomeLevel(input = lastPlanInput) {
     if (isSimpleMode()) return selectedHomeLevel();
-    const minimum = homeLevelCovering(input ?? buildingInventory());
-    return Math.min(MAX_HOME_LEVEL, Math.max(minimum,
-        Math.floor(numberOrDefault(document.getElementById('home-level').value, minimum))));
+    if (document.getElementById('home-level').value) return selectedHomeLevel();
+    return homeLevelCovering(input ?? enteredInventory());
 }
 
 function layoutStyle() {
@@ -4405,9 +4350,7 @@ function attachPriorityHandlers() {
 // The best Aniipod the owned Aniipod Maker can make, or null without one. A better Aniipod
 // catches better, so the strategy makes only this one.
 function bestAniipod() {
-    const tiers = isSimpleMode()
-        ? simpleSetup(selectedHomeLevel()).facilities['Aniipod Maker']
-        : facilityTiers['Aniipod Maker'];
+    const tiers = buildingInventory().facilities['Aniipod Maker'];
     const level = Math.max(0, ...(tiers || []).filter(t => t.count > 0).map(t => t.level));
     return level > 0 ? ANIIPOD_TIERS[Math.min(level, ANIIPOD_TIERS.length) - 1] : null;
 }
@@ -4666,21 +4609,14 @@ function renderProfitBreakdown(plan) {
 // goal-related, since find_plan doesn't need a target). Currency is always coins: the full
 // release removed Bud Tickets, the only other sellable currency.
 function buildingInventory() {
-    // `facilityTiers` is the live source of truth for owned counts (kept in sync with the DOM by
-    // `attachFacilityTierHandlers`), sent straight through as a list of tiers per facility; see
-    // `JsPlanInput::facilities` in wasm.rs for the shape (`[{count, level}, ...]` per facility).
-    if (isSimpleMode()) {
-        return simpleSetup(selectedHomeLevel());
-    }
+    if (isSimpleMode()) return simpleSetup(selectedHomeLevel());
+    const entered = enteredInventory();
+    const rv = layoutHomeLevel(entered);
+    return { facilities:simpleSetup(rv,entered.facilities).facilities, modules:entered.modules };
+}
 
-    const facilities = {};
-    FACILITIES.forEach(f => {
-        facilities[f.name] = facilityTiers[f.name].map(t => ({
-            count: t.count,
-            level: f.hasLevels === false ? 1 : t.level
-        }));
-    });
-
+function enteredInventory() {
+    const facilities = facilityTiers;
     const modules = {
         ecological_module: numberOrDefault(document.getElementById('ecological-module-level').value, 0),
         kitchen_module: numberOrDefault(document.getElementById('kitchen-module-level').value, 0),
@@ -6159,6 +6095,7 @@ async function runFindPlan() {
             // Only what the player skipped; locked special recipes are the default, not news.
             skipped: [...skippedRecipes].sort((a, b) => prettyItem(a).localeCompare(prettyItem(b))),
             simple: isSimpleMode(),
+            homeLevel: layoutHomeLevel(input),
             // The season the plan used, if any, so its currency and points keep their names.
             season: input.season,
         };
@@ -6561,6 +6498,7 @@ async function initApp() {
     attachLayoutHandlers();
     attachPriorityHandlers();
     if (isSimpleMode()) fillBuildingInputs(selectedHomeLevel());
+    refreshFacilityLevels();
     renderBuildingSettings();
     renderStrategy();
     showAniimoSetup();

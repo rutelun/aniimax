@@ -1332,7 +1332,7 @@ pub struct JsProductionPlan {
     pub power_generators: u32,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub power_generator_levels: Vec<(u32, u32)>,
-    /// Strongest eligible generator tier for each Lightning level on an automatic grid.
+    /// RV's maximum generator tier for each eligible Lightning level, zero for ineligible operators.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub generator_tiers_by_lightning: Vec<u32>,
     /// Wattage of a generator on this plan's grid for Lightning levels 1 through 4.
