@@ -191,8 +191,9 @@ async function run(rv,profile,season,origin,reportName) {
             assert.deepEqual(actual.facilities.Farmland,config.facilityTiers.Farmland);
             if(rosters[profile])assert.equal(actual.members,config.roster.length);
         }
-        for(const plan of qa.plans){
-            assert.ok(plan.success,plan.error);
+        for(const [index,plan] of qa.plans.entries()){
+            const phase=qa.inputs[index]?.dispatch ? 'measured delivery routes' : 'initial production';
+            assert.ok(plan.success,phase+' — '+(plan.error || 'no plan'));
             assert.equal(plan.checked,true);
             assert.ok(plan.rate>0 && Number.isFinite(plan.rate) && plan.producing>0);
             assert.ok(!plan.fallback,plan.fallback);
@@ -223,11 +224,10 @@ try {
     for(let repetition=1;repetition<=repeats;repetition++)for(const rv of levels)for(const profile of profiles)for(const season of seasons){
         if(season!=='off'&&rv<event.minHomeLevel)continue;
         const name=profile+'-rv'+rv+(season==='off'?'':'-'+season)+(repeats>1?'-run'+repetition:'');
-        if(builds.size===1){await run(rv,profile,season,args.origin,name);continue;}
         const order=[...builds], offset=sequence++%order.length;
         const reports=new Map();
         for(const [label,origin] of [...order.slice(offset),...order.slice(0,offset)]){
-            const reportName=name+'-'+label;
+            const reportName=builds.size===1 ? name : name+'-'+label;
             try {
                 reports.set(label,await run(rv,profile,season,origin,reportName));
             } catch(error) {

@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import highsModule from '../web/vendor/highs/highs.mjs';
-import {solveWithIncumbent,polishSolution,planSearchOptions,runPlanModel,searchStopped} from '../web/highs-solve.js';
+import {solveWithIncumbent,polishSolution,attainablePriority,planSearchOptions,runPlanModel,searchStopped} from '../web/highs-solve.js';
 
 test('incumbent values follow variable names despite a different native LP column order', async () => {
     const highs = await highsModule({wasmBinary:await readFile(new URL('../web/vendor/highs/highs.wasm',import.meta.url)),print(){},printErr(){}});
@@ -50,4 +50,18 @@ test('production search uses repeatable work limits and keeps early exits distin
     assert.equal(interruptedAt,1000n);
     assert.ok(searchStopped(statuses.interrupted,statuses));
     assert.equal(searchStopped(statuses.optimal,statuses),false);
+});
+
+test('later priorities inherit a pace attainable within the worker capacity', async () => {
+    const highs=await highsModule({wasmBinary:await readFile(new URL('../web/vendor/highs/highs.wasm',import.meta.url)),print(){},printErr(){}});
+    const problem={variables:2,tiebreak:[],lp:'Maximize\n obj: x0\nSubject To\n capacity: x0 - x1 <= 0\nBounds\n 0 <= x0 <= 2\n 0 <= x1 <= 1\nGeneral\n x1\nEnd'};
+    const noisy={objective:1.000000809,values:[1.000000809,1],proven:true,searchProven:true,upper:1.000000809};
+    const pace=attainablePriority(highs,problem,noisy);
+    assert.equal(pace.objective,1);
+    assert.deepEqual(pace.values,[1,1]);
+    assert.equal(pace.proven,false);
+    assert.equal(pace.searchProven,false);
+    assert.equal(pace.upper,noisy.upper);
+    const exact={...noisy,objective:1,values:[1,1]};
+    assert.equal(attainablePriority(highs,problem,exact),exact);
 });
