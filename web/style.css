@@ -1618,6 +1618,65 @@ details.explain p {
     margin-top: 1rem;
 }
 
+.aniimo-assignment-group {
+    margin-top: 0.4rem;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+}
+
+.aniimo-assignment-group > summary {
+    display: flex;
+    align-items: center;
+    gap: 0.7rem;
+    padding: 0.45rem 0.65rem;
+    border-radius: 7px;
+    background: var(--surface-2);
+    font-size: 0.875rem;
+    font-weight: 600;
+    list-style: none;
+    cursor: pointer;
+}
+
+.aniimo-assignment-group > summary::-webkit-details-marker { display: none; }
+.aniimo-assignment-group > summary:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+}
+
+.aniimo-assignment-group[open] > summary {
+    border-bottom: 1px solid var(--border);
+    border-radius: 7px 7px 0 0;
+}
+
+.aniimo-assignment-count {
+    margin-inline-start: auto;
+    color: var(--text-muted);
+    font-weight: 400;
+}
+
+.aniimo-assignment-chevron {
+    flex: 0 0 auto;
+    width: 0.42rem;
+    height: 0.42rem;
+    margin-inline: 0.12rem;
+    border-right: 2px solid var(--text-muted);
+    border-bottom: 2px solid var(--text-muted);
+    transform: rotate(-45deg);
+}
+
+.aniimo-assignment-group[open] .aniimo-assignment-chevron { transform: translateY(-0.1rem) rotate(45deg); }
+
+.aniimo-assignment-portraits {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.15rem 0.24rem;
+    padding: 0.18rem 0.45rem;
+}
+
+.aniimo-assignment-portraits > .roster-slot {
+    flex: 0 1 clamp(2.75rem, 9.5vw, 4.15rem);
+}
+
 /* Aniimo abilities in their in-game colors. */
 .ability {
     display: inline-block;
@@ -3028,6 +3087,19 @@ details.explain p {
     padding: 2px;
     border-radius: 0.7rem;
     background: #27303f;
+}
+.roster-card-tags:has(> .roster-skill:nth-child(4)) {
+    --badge-size: calc(var(--skill-size) * 0.92);
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    width: calc(4 * var(--badge-size) + 5px);
+    max-width: 100%;
+    box-sizing: border-box;
+}
+.roster-card-tags:has(> .roster-skill:nth-child(4)) > .roster-skill {
+    width: 100%;
+    height: auto;
+    aspect-ratio: 1;
 }
 .roster-card-tags:empty { display: none; }
 .roster-skill {

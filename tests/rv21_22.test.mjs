@@ -1,8 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import {distractionCount} from '../web/best-team.js';
+import {productionTeamJobs} from '../web/production-team-jobs.js';
 import {facilityStockLimit} from '../web/hauling.js';
-import {simpleSetup,MAX_HOME_LEVEL,ANIIMO_MAX,LEVEL_UP_COSTS,LEISURE_FAMILIES,storageUnitLimit,generatorLimit,SPECIAL_RECIPES} from '../web/facility-config.js';
+import {FACILITIES,simpleSetup,MAX_HOME_LEVEL,ANIIMO_MAX,LEVEL_UP_COSTS,LEISURE_FAMILIES,storageUnitLimit,generatorLimit,SPECIAL_RECIPES} from '../web/facility-config.js';
 const csv=name=>{const [header,...rows]=fs.readFileSync(new URL(`../data/${name}.csv`,import.meta.url),'utf8').trim().split(/\r?\n/);const keys=header.split(',').map(x=>x.trim());return rows.map(row=>Object.fromEntries(row.split(',').map((v,i)=>[keys[i],v.trim()])));};
 test('RV 21 and 22 unlock exact tiers and retain infrastructure limits',()=>{
  assert.equal(MAX_HOME_LEVEL,22);assert.deepEqual(ANIIMO_MAX.slice(-2),[46,47]);
@@ -28,6 +30,14 @@ test('compiled recipes respect RV/module gates and include complete ingredient a
  assert.ok(a.has('quick_pearl'));
  const all=JSON.parse(pkg.get_all_items()),names=new Set([...all.map(r=>r.name),'wood_block','mineral_sand']);
  for(const recipe of all)for(const ingredient of recipe.raw_materials||[])assert.ok(names.has(ingredient),`${recipe.name}: missing ${ingredient}`);
+ const waterRows=['agave_drink','quick_fresh_water','quick_natural_mineral_spring_water'].map(item_name=>({
+     item_name,facility:all.find(r=>r.name===item_name).facility,status:'producing',facility_count:2,
+     aniimo_tasks:[{ability:'Water',level:4,busy:.5}],
+ }));
+ const open=rows=>productionTeamJobs({coin_items:rows},all);
+ assert.equal(distractionCount({abilities:{Grass:3,Water:2}},open(waterRows)),6);
+ assert.equal(distractionCount({abilities:{Grass:3}},open(waterRows)),0);
+ assert.equal(distractionCount({abilities:{Water:1}},open(waterRows.map(r=>({...r,electric_level:5})))),0);
  assert.equal(all.find(r=>r.name==='sorghum').production_time,1800,'watering adjustment applied exactly once');
  assert.ok(all.find(r=>r.name==='sorghum').jobs.some(j=>j[0]==='Watering'));
  assert.equal(all.find(r=>r.name==='gold_speck_cap').family,'1063');
@@ -48,4 +58,15 @@ test('new crops, variants and family-restricted gathering retain their real cons
  const entries=catalog.entries;
  for(const family of ['1063','1059']){assert.ok(LEISURE_FAMILIES.some(f=>f.id===family));assert.ok(entries.some(a=>a.family===family&&a.abilities.Leisure===4));}
  assert.ok(SPECIAL_RECIPES.some(r=>r.name==='orange_flower_rice_drink'));
+});
+
+test('custom counts from mixed-tier saves use the selected RV cap for every owned facility',()=>{
+ const owned=Object.fromEntries(FACILITIES.map(f=>[f.name,[{count:2,level:1},{count:1,level:2}]]));
+ owned.Well=[{count:0,level:1}];
+ for (const rv of [1,12,21,22]) {
+  const caps=simpleSetup(rv).facilities, effective=simpleSetup(rv,owned).facilities;
+  for(const f of FACILITIES) assert.deepEqual(effective[f.name],[{level:caps[f.name][0].level,
+   count:caps[f.name][0].count && f.name!=='Well'?3:0}],f.name);
+ }
+ assert.deepEqual(owned.Mine,[{count:2,level:1},{count:1,level:2}]);
 });

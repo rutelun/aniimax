@@ -195,7 +195,7 @@ export function layOut(pieces, options = {}) {
     const hasWorkerRoutes = accountForWorkers && pieces.some(p => membersOf(p).some(m => m.workers?.length));
     const squares = new Map();
     const sensitive = new Map();
-    let packingMask = rectangleMask(cells);
+    const packingMask = rectangleMask(cells, {removable:true});
     const occupy = (key, spot) => {
         for (const r of spot.rects) packingMask?.add(r);
         placedRects.set(key, spot.rects);
@@ -208,7 +208,7 @@ export function layOut(pieces, options = {}) {
     };
     const vacate = key => {
         // During relocation the piece being tested can overlap its old position.
-        packingMask = null;
+        for (const rect of placedRects.get(key) || []) packingMask?.remove(rect);
         (placedRects.get(key) || []).forEach(r => spatialCells(r).forEach(c => grid.get(c)?.delete(key)));
         placedRects.delete(key);
         squares.delete(key);
@@ -261,6 +261,11 @@ export function layOut(pieces, options = {}) {
                 const member=shape.members[0],rectangle={x:0,y:0,w:member.w,h:member.h},rectangles=[rectangle];
                 const monotone=initialPacking&&fast&&!options.canPlace&&options.monotonePacking!==false;
                 const footprint=`${member.w}:${member.h}:${!!member.sensitive}`;
+                // With a grid-aligned center and no worker walk the lattice is
+                // already in exact cost order, including preferred storage profiles.
+                const nearestWins = shape.spread === 0 && Number.isInteger(shape.cx / STEP)
+                    && Number.isInteger(shape.cy / STEP) && member.weight >= 0
+                    && (!hasWorkerRoutes || !member.workers?.some(([worker]) => activeWorkerHubs.has(worker)));
                 let offsetIndex=monotone?(firstAvailableOffset.get(footprint)||0):0;
                 for(;offsetIndex<offsets.length;offsetIndex++){
                     const [ox,oy,distance]=offsets[offsetIndex];
@@ -285,6 +290,7 @@ export function layOut(pieces, options = {}) {
                         const placed={...rectangle};
                         best={cost,x,y,shape,rects:[placed],sensitive:member.sensitive?[placed]:[]};
                     }
+                    if (nearestWins) break;
                 }
                 if(monotone&&firstFit===null)firstAvailableOffset.set(footprint,offsets.length);
                 continue;

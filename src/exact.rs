@@ -1258,7 +1258,9 @@ fn build_model<'a>(
             let needs_strong = !strong_staffed.is_empty();
             let mut staffed: Vec<(usize, f64)> = used.into_iter().map(|(v, n)| (v, -n)).collect();
             let mut eligible = crew.members.iter().enumerate()
-                .filter(|(member, _)| crew.can_work(*member, ability, 1)).peekable();
+                .filter(|(member, aniimo)| crew.can_work(*member, ability, 1) &&
+                    (building != GENERATOR || facility_counts.power().is_some_and(|p| p.generator_output(aniimo.level(ability)) > 0.0)))
+                .peekable();
             while let Some((member, aniimo)) = eligible.next() {
                 let maximum = if building == GENERATOR {
                     aniimo.count.min(facility_counts.power().unwrap().generator_limit())
@@ -2711,7 +2713,11 @@ pub fn check_plan_with_workload(
             if crew.can_work(*member, ability, 2) { *strong_staffed.entry(building.as_str()).or_default() += share; }
             if building == GENERATOR {
                 let power = facility_counts.power().ok_or("Crackle Generator staffed without a power grid")?;
-                generated += share * power.generator_output(crew.members[*member].level("Lightning"));
+                let output = power.generator_output(crew.members[*member].level("Lightning"));
+                if *share > 0.0 && output == 0.0 {
+                    return Err(format!("Roster member {member} lacks the Lightning level for this generator"));
+                }
+                generated += share * output;
             }
         }
         for (&building, &used) in &buildings_used {
@@ -3567,6 +3573,7 @@ fn production_plan(
                 environment: None,
                 busy_units: None,
                 crew: None,
+                worker: None,
                 electric_level: None,
             });
             continue;
@@ -3603,7 +3610,7 @@ fn production_plan(
                 item_name: Some((*base).into()), facility: facility.into(),
                 facility_count: dispatched_count(base, *time), status: PlanStepStatus::Producing,
                 reason: uses_of(recipe), is_grower: grower, cycle_time: Some(time / rate),
-                environment: None, busy_units: Some(*time), crew: None, electric_level: None,
+                environment: None, busy_units: Some(*time), crew: None, worker: None, electric_level: None,
             });
         }
         for (recipe, units, rate) in rows {
@@ -3634,6 +3641,7 @@ fn production_plan(
                 environment: if grower { recipe.environment.clone() } else { None },
                 busy_units: Some((rate * recipe.production_time).min(units as f64)),
                 crew: recipe.crew,
+                worker: crate::models::perfumer_variant(&recipe.name).map(|(_, worker)| worker),
                 electric_level: electric_level(&recipe.name),
             });
         }
@@ -3649,6 +3657,7 @@ fn production_plan(
                 environment: None,
                 busy_units: None,
                 crew: None,
+                worker: None,
                 electric_level: None,
             });
         }

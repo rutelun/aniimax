@@ -1,6 +1,6 @@
 import {siteSchedule,scheduledRate} from './recipe-timeline.js';
 import {renderRecipeSchedule} from './recipe-schedule-view.js';
-import {scheduleProfiles,haulingScheduleProfile} from './recipe-schedule-plan.js';
+import {scheduleProfiles} from './recipe-schedule-plan.js';
 import {splitPhaseTasks} from './phase-work.js';
 // Aniimax Web Application
 
@@ -9,7 +9,9 @@ import './math-translation.js?v=results-columns';
 import { autoMaximizeSeasonPoints } from './season-planning.js?v=optional-season-points';
 import { normalizeMapStyle } from './map-style.js?v=production-groups';
 import { productionGroupOutline } from './group-outline.js?v=compact-groups';
-import { powerJobDetails } from './power-islands.js?v=independent-grids';
+import {packMappedTeam,addHarvestHelpers,mappedTeamScore} from './mapped-power-team.js';
+import {productionTeamJobs} from './production-team-jobs.js';
+import { analyzePowerNetworks, powerJobDetails } from './power-islands.js?v=independent-grids';
 import { questIncome } from './quest-income.js';
 import { splitProductionSites } from './physical-production.js';
 import { cropPeakInput, selectCropPeakTeam, criticalCropJob } from './crop-peaks.js?v=team-support';
@@ -24,7 +26,7 @@ import { allocateTurnFacilities, redistributeTurnFacilityRows } from './turn-job
 import { createShareUrl, readShareHash, urlWithoutShare } from './share-config.js?v=compact-roster';
 import { nearestStorage } from './layout.js?v=logic-audit';
 import { projectLayoutWork, layoutWalkingAdjustments, workerTravelDistances, workerTravelSeconds, measuredMovementEstimates } from './worker-travel.js?v=finite-movement';
-import { assignFacilityStock, bufferedBatches, haulingWorkload, allocateHauling, haulingBatchTrips,
+import { assignFacilityStock, bufferedBatches, haulingLevelFor, haulingWorkload, allocateHauling, haulingBatchTrips,
     haulingTravelSeconds, haulingWorkSeconds, pickupStockLimit } from './hauling.js?v=base-travel';
 import { personalityInput, replacementCandidates, compareRecommendations, usefulUpgrade, keepBetterComparison, workerUsage } from './opportunity-comparison.js?v=logic-audit';
 import { comparisonConcurrency, startComparisonQueue } from './comparison-queue.js?v=parallel-comparisons';
@@ -35,7 +37,8 @@ import { placeRosterCopy, ROSTER_ROW_SIZE, rosterSlotsFor, swapRosterSlots } fro
 import { scheduleRosterCopies } from './roster-work.js?v=measured-walking';
 import { buildDispatch, rosterJobSwitching, TASK_SWITCHING } from './task-switching.js?v=base-travel';
 import { buildReactiveDispatch, permanentWorkers, measuredDispatchWork, routeDispatchKey, attachDeliveryFlows } from './reactive-dispatch.js';
-import { placeBestJobs, recommendBestTeam } from './best-team.js?v=team-support';
+import { recommendBestTeam, cropWorkshopItems } from './best-team.js?v=team-support';
+import { groupAniimoAssignments } from './aniimo-assignment-groups.js?v=generator-assignments';
 import facilityIcons from './facility-icons.json' with { type: 'json' };
 import { abilityGlyph, gameAbilityIcon } from './ability-icons.js?v=game-heads';
 
@@ -347,31 +350,24 @@ function defaultFacilityTiers() {
     return tiers;
 }
 
-// Renders one facility's tier rows (Count + Level inputs, a remove button once there's more than
-// one tier, and, only for facilities that level up, an "Add level" button) into its
-// `.facility-tiers` container. Called on initial render and again, for just that one facility,
-// whenever a tier is added or removed, so editing one facility never disturbs another's inputs.
 function renderTierRows(name) {
     const f = FACILITIES.find(fac => fac.name === name);
     const container = document.querySelector(`.facility-tiers[data-facility="${name}"]`);
     if (!f || !container) return;
-    const tiers = facilityTiers[name];
-    const showRemove = tiers.length > 1;
-    container.innerHTML = tiers.map((tier, i) => `
-        <div class="facility-inputs tier-row" data-tier-index="${i}">
-            <div class="input-field">
-                <label>Count</label>
-                <input type="number" class="tier-count" value="${tier.count}" min="0" max="999">
-            </div>
-            ${f.hasLevels === false ? '' : `
-            <div class="input-field">
-                <label>Level</label>
-                <input type="number" class="tier-level" value="${tier.level}" min="1" max="10">
-            </div>
-            `}
-            ${showRemove ? '<button type="button" class="tier-remove-btn" title="Remove this level">&times;</button>' : ''}
+    container.innerHTML = `<div class="facility-inputs tier-row">
+        <div class="input-field"><label>Count</label>
+            <input type="number" class="tier-count" value="${tierCount(facilityTiers[name])}" min="0" max="999">
         </div>
-    `).join('');
+        ${f.hasLevels === false ? '' : '<div class="input-field"><label>Level</label><output class="rv-tier-level"></output></div>'}
+    </div>`;
+}
+
+function refreshFacilityLevels() {
+    const caps = simpleSetup(layoutHomeLevel(null)).facilities;
+    for (const element of document.querySelectorAll('.rv-tier-level')) {
+        const [tier] = caps[element.closest('.facility-tiers').dataset.facility];
+        element.textContent = tier.count ? String(tier.level) : '—';
+    }
 }
 
 // Build the facility-card inputs, grouped into a labeled section per category. Runs before other
@@ -385,7 +381,6 @@ function renderFacilityCards() {
             <div class="facility-card" data-facility-name="${f.name}">
                 <h4>${f.name} <span class="info-icon" data-tooltip="${f.tooltip}">?</span></h4>
                 <div class="facility-tiers" data-facility="${f.name}"></div>
-                ${f.hasLevels === false ? '' : '<button type="button" class="add-tier-btn" data-facility="' + f.name + '">+ Add level</button>'}
             </div>
         `).join('');
         return `
@@ -398,49 +393,17 @@ function renderFacilityCards() {
     FACILITIES.forEach(f => renderTierRows(f.name));
 }
 
-// Delegated handlers for the facility grid, covering tier rows added/removed after initial
-// render: editing a Count/Level input updates `facilityTiers` and persists it; "+ Add level"
-// appends a new tier (guessing the next level up from the highest owned, capped at 10); "×"
-// removes a tier. Attach once, on the grid container, rather than per-row.
 function attachFacilityTierHandlers() {
     const grid = document.getElementById('facilities-grid');
-
-    grid.addEventListener('input', (e) => {
-        const row = e.target.closest('.tier-row');
-        if (!row) return;
-        const container = e.target.closest('.facility-tiers');
-        const name = container.dataset.facility;
-        const idx = parseInt(row.dataset.tierIndex, 10);
-        const tier = facilityTiers[name][idx];
-        if (e.target.classList.contains('tier-count')) {
-            tier.count = numberOrDefault(e.target.value, 0);
-        } else if (e.target.classList.contains('tier-level')) {
-            tier.level = numberOrDefault(e.target.value, 1);
-        }
+    grid.addEventListener('input', event => {
+        if (!event.target.matches('.tier-count')) return;
+        const name = event.target.closest('.facility-tiers').dataset.facility;
+        const count = Math.max(0,numberOrDefault(event.target.value,0));
+        // Old saves may contain mixed levels. Retain their evidence for Auto RV.
+        const level = tierLevel(facilityTiers[name]) || 1;
+        facilityTiers[name] = [{count,level}];
+        refreshFacilityLevels();
         saveInputsToStorage();
-    });
-
-    grid.addEventListener('click', (e) => {
-        const addBtn = e.target.closest('.add-tier-btn');
-        if (addBtn) {
-            const name = addBtn.dataset.facility;
-            const tiers = facilityTiers[name];
-            const nextLevel = Math.min(10, Math.max(...tiers.map(t => t.level)) + 1);
-            tiers.push({ count: 1, level: nextLevel });
-            renderTierRows(name);
-            saveInputsToStorage();
-            return;
-        }
-        const removeBtn = e.target.closest('.tier-remove-btn');
-        if (removeBtn) {
-            const row = removeBtn.closest('.tier-row');
-            const container = removeBtn.closest('.facility-tiers');
-            const name = container.dataset.facility;
-            const idx = parseInt(row.dataset.tierIndex, 10);
-            facilityTiers[name].splice(idx, 1);
-            renderTierRows(name);
-            saveInputsToStorage();
-        }
     });
 
     // Enter key inside a tier input triggers a full plan recalculation, same as every other
@@ -779,7 +742,7 @@ function renderBuildingSettings() {
     document.getElementById('home-level').options[0].hidden = !customBuildings;
     document.getElementById('reset-buildings').hidden = !customBuildings;
     document.getElementById('building-setup-note').textContent = customBuildings
-        ? 'Uses your building counts and upgrade levels.'
+        ? 'Uses your building counts at the maximum level available for your RV.'
         : 'Uses all buildings and upgrades available at your RV level.';
 }
 
@@ -799,6 +762,7 @@ function attachModeHandlers() {
     const rv = document.getElementById('home-level');
     rv.addEventListener('change', () => {
         if (isSimpleMode()) fillBuildingInputs(selectedHomeLevel());
+        refreshFacilityLevels();
         if (lastPlanInput) clearPlanResults();
         renderStrategy();
     });
@@ -811,14 +775,15 @@ function attachModeHandlers() {
     document.getElementById('advanced-config').addEventListener('input', event => {
         if (event.target.matches('input[type="number"]')) markCustom();
     }, true);
-    document.getElementById('facilities-grid').addEventListener('click', event => {
-        if (event.target.closest('.add-tier-btn, .tier-remove-btn')) markCustom();
-    }, true);
+    document.getElementById('advanced-config').addEventListener('input', event => {
+        if (event.target.id.endsWith('-level')) refreshFacilityLevels();
+    });
     document.getElementById('reset-buildings').addEventListener('click', () => {
         if (!rv.value) rv.value = String(layoutHomeLevel(null));
         customBuildings = false;
         document.getElementById('level-up-target').value = '';
         fillBuildingInputs(selectedHomeLevel());
+        refreshFacilityLevels();
         renderBuildingSettings();
         if (lastPlanInput) clearPlanResults();
         renderStrategy();
@@ -968,11 +933,10 @@ function improvementCandidates(base, setup, plan) {
         }
     }
 
-    // Advanced mode: a module at a higher level, one more facility, or one facility at a higher
-    // level, within what the RV level covering the rest allows.
+    // Advanced inventories can add an available building at the RV cap or upgrade a module.
     const levelsAbove = (from, to) => Array.from({ length: Math.max(0, to - from) }, (_, i) => from + 1 + i);
     if (planContext && !planContext.simple) {
-        const allowed = simpleSetup(homeLevelCovering(base));
+        const allowed = simpleSetup(planContext.homeLevel ?? homeLevelCovering(base));
         for (const [module, level] of Object.entries(base.modules)) {
             for (const next of levelsAbove(level, allowed.modules[module] ?? 0)) {
                 candidates.push({
@@ -987,25 +951,10 @@ function improvementCandidates(base, setup, plan) {
             const cap = allowed.facilities[f.name];
             const capLevel = f.hasLevels === false ? 1 : tierLevel(cap);
             if (tierCount(tiers) < tierCount(cap)) {
-                for (const level of levelsAbove(0, capLevel)) {
-                    candidates.push({
-                        kind: 'Buildings',
-                        label: f.hasLevels === false || capLevel === 1 ? `+1 ${f.name}` : `+1 ${f.name} (Lv.${level})`,
-                        input: { ...base, facilities: { ...base.facilities, [f.name]: [...tiers, { count: 1, level }] } },
-                    });
-                }
-            }
-            if (f.hasLevels === false || tiers.length === 0) continue;
-            const lowest = tiers.reduce((a, b) => (b.level < a.level ? b : a));
-            for (const level of levelsAbove(lowest.level, capLevel)) {
-                const raised = tiers
-                    .map(t => (t === lowest ? { ...t, count: t.count - 1 } : t))
-                    .filter(t => t.count > 0)
-                    .concat({ count: 1, level });
                 candidates.push({
                     kind: 'Buildings',
-                    label: tierCount(tiers) > 1 ? `1 ${f.name} to Lv.${level}` : `${f.name} to Lv.${level}`,
-                    input: { ...base, facilities: { ...base.facilities, [f.name]: raised } },
+                    label: capLevel === 1 ? `+1 ${f.name}` : `+1 ${f.name} (Lv.${capLevel})`,
+                    input: { ...base, facilities: { ...base.facilities, [f.name]: [{count:tierCount(tiers)+1,level:capLevel}] } },
                 });
             }
         }
@@ -1016,7 +965,7 @@ function improvementCandidates(base, setup, plan) {
 // Prepare suggestions after planning. Full comparisons run only when the player requests
 // a row or the batch, in a small cancellable pool; the current plan stays intact.
 function rankImprovementsFor(setup, requested = null, detailed = false) {
-    if (requested != null && (mainSolve || setupSolve || layoutWorker)) return;
+    if (requested != null && (mainSolve || setupSolve || layoutWorker || powerTeamController)) return;
     stopRanking();
     const plan = plansBySetup[setup] || lastPlan;
     if (!lastPlanInput || !plan?.success) { ranking = null; renderImprovements(); return; }
@@ -1463,13 +1412,14 @@ function homelandPieces(plan, input) {
     }
     const recipesByName = new Map(recipeIndex.map(recipe => [recipe.name, recipe]));
     assignFacilityStock(physical, input.facilities, recipesByName);
+    const courierLevel = haulingLevelFor(input.aniimo);
     for (const member of physical) {
         if (!(member.weight > 0)) continue;
         member.batchWeight = member.weight;
         const limit = pickupStockLimit(member);
         member.weight = member.jobs ? member.jobs.reduce((sum, job) => sum + job.rate * 3600
-            * haulingBatchTrips(recipesByName.get(job.item), 3, limit, member.facility), 0)
-            : member.weight * haulingBatchTrips(recipesByName.get(member.crop), 3, limit, member.facility);
+            * haulingBatchTrips(recipesByName.get(job.item), courierLevel, limit, member.facility), 0)
+            : member.weight * haulingBatchTrips(recipesByName.get(member.crop), courierLevel, limit, member.facility);
     }
     if(selectedSetupTab()==='custom'&&Object.keys(reactiveDispatch).length){
         attachDeliveryFlows({pieces:[{members:physical}]},reactiveDispatch,recipeIndex,rosterWorkload(plan).members,plan.roster_routes||[]);
@@ -1492,6 +1442,9 @@ const initialsOf = name => name.split(/[\s-]+/).map(w => w[0]).join('').toUpperC
 
 let layoutRunId = 0;
 let layoutWorker = null;
+let powerTeamController = null;
+const measuredPowerPlans = new WeakMap();
+const powerTeamSeeds = new WeakMap();
 const layoutsByPlan = new WeakMap();
 const compactedLayouts = new WeakSet();
 
@@ -1527,9 +1480,8 @@ function homelandPlots() {
 // everything entered (see `homeLevelCovering`).
 function layoutHomeLevel(input = lastPlanInput) {
     if (isSimpleMode()) return selectedHomeLevel();
-    const minimum = homeLevelCovering(input ?? buildingInventory());
-    return Math.min(MAX_HOME_LEVEL, Math.max(minimum,
-        Math.floor(numberOrDefault(document.getElementById('home-level').value, minimum))));
+    if (document.getElementById('home-level').value) return selectedHomeLevel();
+    return homeLevelCovering(input ?? enteredInventory());
 }
 
 function layoutStyle() {
@@ -1811,7 +1763,7 @@ function layoutOptionsFor(plan, homeLevel, setup = selectedSetupTab()) {
             haulingSpare: bestTeam?.haulingSpare ?? 0,
             movement: ownedPlan && plan.mobile_work?.length
                 ? { defaultDistance: movementDefaultDistance, byMember: movementDistances, visits } : null,
-            haulingLevel: setup === 'minimum' ? 1 : 3,
+            haulingLevel: haulingLevelFor(setup),
             haulingBound: haulingRouteBound(accountForTravel),
             accountForTravel,
             facilities: lastPlanInput?.facilities,
@@ -1835,12 +1787,116 @@ function rememberLayout(plan, key, layout) {
     cached.set(key, layout);
 }
 
+// Ranking includes dedicated generator operators, delivery routes and peak harvest help.
+function measurePowerTeam(plan,layout,input,recipes=recipeIndex) {
+    if (layout.unplaced?.length || homelandPieces(plan,input).unplaced.length) return null;
+    const grid=analyzePowerNetworks(layout).power;
+    if (grid.disconnected || grid.generators !== (plan.power_generators || 0)) return null;
+    const placed=bestTeamLayouts.get(plan);
+    const hauling=placed?.layout===layout ? placed.hauling :
+        haulingWorkload(layout,plan.coin_items,haulingRouteBound(true),recipes,input.facilities,true,4);
+    return mappedTeamScore(bestPlanTeam(plan,hauling.busy,layout,hauling),grid,ANIIMO_MAX[layoutHomeLevel()-1],plan.rate_per_second);
+}
+
+function runMapWorker(url,message,signal) {
+    return new Promise((resolve,reject)=>{
+        signal?.throwIfAborted();
+        const solver=new Worker(url,{type:'module'});
+        const close=()=>{
+            solver.terminate();
+            signal?.removeEventListener('abort',cancel);
+        };
+        const cancel=()=>{ close(); reject(signal.reason); };
+        signal?.addEventListener('abort',cancel,{once:true});
+        solver.onmessage=({data})=>{close(); if(data.error)reject(new Error(data.error));else resolve(data);};
+        solver.onerror=solver.onmessageerror=event=>{close();reject(new Error(event.message||'The planner worker stopped'));};
+        try {solver.postMessage(message);} catch(error){close();reject(error);}
+    });
+}
+
+async function refineMappedPowerTeam(plan,layout,input,signal,onMeasured,isCurrent=()=>true) {
+    const seed=powerTeamSeeds.get(plan)??plan;
+    const {result}=await runMapWorker(WORKER_URL,{id:1,type:'power_teams',payload:{plan:seed,input}},signal);
+    const families=seed===plan?result:[{plan:seed,upgrades:[]},...result];
+    const measure=(base,map,choices)=>measureMappedPowerTeams(base,map,input,choices,seed,signal,onMeasured,isCurrent);
+    const best=await measure(plan,layout,families);
+    if (!isCurrent() || signal?.aborted || !input.e_mode_rv || input.roster || input.fixed_homeland || best.currency!=='coins') return best;
+    const bestMap=bestTeamLayouts.get(best)?.layout ?? layout;
+    const hauling=bestTeamLayouts.get(best)?.hauling ??
+        haulingWorkload(bestMap,best.coin_items,haulingRouteBound(true),recipeIndex,input.facilities,true,4);
+    const targets=cropWorkshopItems(bestPlanTeam(best,hauling.busy,bestMap,hauling));
+    if (!targets.length) return best;
+    const referenceIncome=Math.max(seed.rate_per_second,best.rate_per_second,plan.crop_protection_reference_income??0);
+    try {
+        const {result:protectedPlans}=await runMapWorker(WORKER_URL,{id:1,type:'protect_crops',
+            payload:{plan:best,input,targets,referenceIncome}},signal);
+        return await measure(best,bestMap,protectedPlans.map(p=>({plan:p,upgrades:[]})));
+    } catch (error) {
+        if (signal?.aborted) throw error;
+        console.warn('Could not verify a crop protection alternative.',error);
+        return best;
+    }
+}
+
+async function measureMappedPowerTeams(plan,layout,input,families,seed,signal,onMeasured,isCurrent) {
+    if(!families.length || !isCurrent() || signal?.aborted)return plan;
+    const {selectPowerTeam}=await import('./power-team-search.js');
+    const baselineScore=measurePowerTeam(plan,layout,input);
+    const homeLevel=layoutHomeLevel();
+    const {key,cells,poleLimit}=layoutOptionsFor(plan,homeLevel,'best');
+    const candidates=[];
+    const lanes=comparisonConcurrency(globalThis.navigator,families.length);
+    const batches=Array.from({length:lanes},()=>[]);
+    families.forEach(({plan:base,upgrades},i)=>{
+        const parentIndex=candidates.length;
+        for (const candidate of [base,...upgrades]) {
+            const index=candidates.push(candidate)-1;
+            const {pieces,unplaced}=homelandPieces(candidate,input);
+            if(unplaced.length) continue;
+            const {coin_items,recipe_schedule,power_generators,rate_per_second}=candidate;
+            batches[i%lanes].push({index,parentIndex,plan:{coin_items,recipe_schedule,power_generators,rate_per_second},pieces,jobs:jobsForBestPlan(candidate)});
+        }
+    });
+    const total=batches.reduce((n,batch)=>n+batch.length,0);
+    let completed=0;
+    const outcomes=await Promise.allSettled(batches.map(async batch=>{
+        const {winner}=await runMapWorker(WORKER_URL.replace('worker.js','power-team-map-worker.js'),{
+            candidates:batch,baseLayout:layout,cells,poleLimit,facilities:input.facilities,
+            recipes:recipeIndex,limit:ANIIMO_MAX[homeLevel-1],haulingBound:haulingRouteBound(true),baselineScore,
+        },signal);
+        completed+=batch.length;
+        if(isCurrent() && !signal?.aborted)onMeasured?.(completed,total);
+        return winner;
+    }));
+    if(!isCurrent() || signal?.aborted)return plan;
+    const winners=[];
+    for(const outcome of outcomes){
+        if(outcome.status==='fulfilled')winners.push(outcome.value);
+        else console.warn('A generator layout search stopped.',outcome.reason);
+    }
+    if(outcomes.length && !winners.length)throw outcomes[0].reason;
+    // The candidate order breaks exact ties regardless of which worker finished first.
+    const mapped=new Map(winners.filter(Boolean).sort((a,b)=>a.index-b.index)
+        .map(measured=>[candidates[measured.index],measured]));
+    const selected=await selectPowerTeam(plan,[...mapped.keys()],
+        p=>p===plan?baselineScore:mapped.get(p).score,()=>isCurrent() && !signal?.aborted);
+    if(selected===plan)return plan;
+    const best=mapped.get(selected);
+    selected.hauling_busy=best.hauling.busy;
+    rememberLayout(selected,key,best.layout);
+    bestTeamLayouts.set(selected,{layout:best.layout,hauling:best.hauling});
+    Object.assign(bestTeamCache.get(selected),{layout:best.layout,hauling:best.hauling,haulingBusy:best.hauling.busy,result:best.team});
+    if(selected!==seed)powerTeamSeeds.set(selected,seed);
+    return selected;
+}
+
 function renderHomelandLayout(plan, keepLayout = false) {
     const card = document.getElementById('layout-card');
     if (!plan?.success || !lastPlanInput) {
         card.style.display = 'none';
         return;
     }
+    powerTeamController?.abort();
     const runId = ++layoutRunId;
     lastLayout = null;
     layoutZoom = null;
@@ -1886,9 +1942,10 @@ function renderHomelandLayout(plan, keepLayout = false) {
             return piece.cluster ? `${piece.buildings[0].facility} and its plots` : piece.members[0].facility;
         }))];
         const missingGenerators = Math.max(0, (plan.power_generators || 0) - generatorLimit(homeLevel));
+        const gridDraw = layout.power.networks?.reduce((total,net)=>total+net.rated*net.percent/100,0);
         const powerSummary = layout.power.consumers ? translate('Power grid: {n} generators, {p} / {max} poles, {w} W.')
             .replace('{n}', layout.power.generators).replace('{p}', layout.power.poles.length)
-            .replace('{max}', layout.power.maximum).replace('{w}', formatNumber(plan.power_used || 0)) : '';
+            .replace('{max}', layout.power.maximum).replace('{w}', formatNumber(gridDraw ?? plan.power_used ?? 0)) : '';
         const notes = [
             powerSummary,
             ...(layout.power.networks??[]).filter(n=>n.generators).map(powerNetworkLabel),
@@ -1984,7 +2041,37 @@ function renderHomelandLayout(plan, keepLayout = false) {
             plan.layout_walking = layoutWalkingAdjustments(layout.pieces.flatMap(piece => piece.members), plan);
             if (assignLayoutHauling(layout, plan)) return;
         }
-        renderAniimoSummary(plan);
+        const setup=selectedAniimoSetup();
+        if (setup.startsWith('best') && lastPlanInput.e_mode_rv>=12 && !lastPlanInput.fixed_homeland
+            && plan.schedule_sources?.length && plan.comparison_seed && measuredPowerPlans.get(plan)!==layoutKey) {
+            const controller=new AbortController();
+            powerTeamController=controller;
+            const input={...lastPlanInput,...aniimoInput(setup)};
+            setStep('power_team','start');
+            try {
+                const search=refineMappedPowerTeam(plan,layout,input,controller.signal,
+                    (count,total)=>setStep('power_team','start',`${count} / ${total}`));
+                renderAniimoSummary(plan);
+                const winner=await search;
+                if (controller.signal.aborted||runId!==layoutRunId) return;
+                measuredPowerPlans.set(winner,layoutKey);
+                setStep('power_team','done');
+                if (winner!==plan) {
+                    plansBySetup[setup]=winner;
+                    showSelectedPlan();
+                    return;
+                }
+            } catch(error) {
+                if (controller.signal.aborted) return;
+                setStep('power_team','fail');
+                console.warn('Keeping the current team after the power search failed.',error);
+            } finally {
+                if(powerTeamController===controller)powerTeamController=null;
+            }
+        } else {
+            setStep('power_team',measuredPowerPlans.get(plan)===layoutKey?'done':'skip');
+            renderAniimoSummary(plan);
+        }
         if (!setupSolve && !mainSolve) {
             resetPlanButton();
             rankImprovementsFor(selectedAniimoSetup());
@@ -2019,6 +2106,8 @@ function renderHomelandLayout(plan, keepLayout = false) {
 
 // Stops a layout still being worked out, so it can't land over a newer plan.
 function stopLayout() {
+    powerTeamController?.abort();
+    powerTeamController=null;
     clearTimeout(layoutStorageTimer);
     stopLayoutSim();
     layoutRunId++;
@@ -2142,7 +2231,7 @@ function powerNetworkLabel(network){
     return translate('Grid {n} ({generators}): {percent}% · {draw} / {output} W')
         .replace('{n}',network.id+1).replace('{percent}',formatNumber(network.percent))
         .replace('{generators}',network.generator_ids.map(id=>`G${id}`).join(' + '))
-        .replace('{draw}',formatNumber(network.rated)).replace('{output}',formatNumber(network.generated));
+        .replace('{draw}',formatNumber(network.rated*network.percent/100)).replace('{output}',formatNumber(network.generated));
 }
 
 function layoutWorkerBadges(site, work, electric) {
@@ -2598,6 +2687,7 @@ function startProgress(input, runId) {
         ...(input.always_running ? [{key:'continuous_production',label:'Continuous resource allocation'}] : []),
         ...(input.recipe_switching?.max_buildings?[{key:'recipe_switching',label:'Daily recipe schedule'}]:[]),
         { key: 'layout', label: 'Homeland Layout' },
+        ...(input.aniimo?.startsWith('best')&&input.e_mode_rv>=12?[{key:'power_team',label:'E-mode and generator teams'}]:[]),
     ];
     progress = { runId, steps: steps.map(step => ({ ...step, state: 'pending' })) };
     renderProgress();
@@ -2795,9 +2885,11 @@ function assignLayoutHauling(layout, plan) {
     const setup = selectedSetupTab();
     const accountForTravel = true;
     const bound = haulingRouteBound(accountForTravel);
-    const work = haulingWorkload(layout, plan.coin_items || [], bound, recipeIndex, lastPlanInput?.facilities, accountForTravel);
+    const placed=setup==='custom' ? null : bestTeamLayouts.get(plan);
+    const work = placed?.layout===layout ? placed.hauling :
+        haulingWorkload(layout, plan.coin_items || [], bound, recipeIndex, lastPlanInput?.facilities, accountForTravel,haulingLevelFor(setup));
     plan.hauling_estimates = work.seconds;
-    plan.hauling_busy = work.busyByLevel[setup === 'minimum' ? 1 : 3];
+    plan.hauling_busy = work.busyByLevel[haulingLevelFor(setup)];
     if (setup !== 'custom') bestTeamLayouts.set(plan, { layout, hauling: work });
     if (setup !== 'custom') return false;
     if(plan.recipe_schedule){plan.delivery_assignments=[...(plan.hauling_staffing||[])];return false;}
@@ -3141,18 +3233,31 @@ async function fillRosterFrom(setup) {
     status.textContent = 'Working out the source team…';
     try {
         const sourceInput = { ...lastPlanInput, ...aniimoInput(setup) };
-        const plan = plansBySetup[setup] || JSON.parse(await callWorker('find_plan', JSON.stringify(sourceInput)));
+        let plan = plansBySetup[setup] || JSON.parse(await callWorker('find_plan', JSON.stringify(sourceInput)));
         if (runId !== planRunId || version !== rosterFillVersion) return;
         if (!plan.success) {
             status.textContent = 'No working team to copy from this plan.';
             return;
         }
-        const haulingLevel = setup === 'minimum' ? 1 : 3;
-        const layout = await sourceTeamLayout(plan, sourceInput, setup.split(':')[0]);
-        if (runId !== planRunId || version !== rosterFillVersion) return;
+        const haulingLevel = haulingLevelFor(setup);
+        const current=()=>runId===planRunId && version===rosterFillVersion;
+        let layout = await sourceTeamLayout(plan, sourceInput, setup.split(':')[0]);
+        if (!current()) return;
+        if (sourceInput.e_mode_rv>=12 && setup.startsWith('best') && !sourceInput.fixed_homeland
+            && plan.comparison_seed && plan.schedule_sources?.length) {
+            const {key}=layoutOptionsFor(plan,layoutHomeLevel(),'best');
+            if (measuredPowerPlans.get(plan)!==key) {
+                const selected=await refineMappedPowerTeam(plan,layout,sourceInput,undefined,undefined,current);
+                if (!current()) return;
+                if (selected!==plan) layout=await sourceTeamLayout(selected,sourceInput,'best');
+                if (!current()) return;
+                plan=selected;
+                measuredPowerPlans.set(plan,key);
+            }
+        }
         const accountForTravel = true;
         const hauling = haulingWorkload(layout, plan.coin_items || [], haulingRouteBound(accountForTravel),
-            recipeIndex, sourceInput.facilities, accountForTravel);
+            recipeIndex, sourceInput.facilities, accountForTravel,haulingLevel);
         const haulingBusy = hauling.busyByLevel[haulingLevel];
         if (setup.startsWith('best:') || setup === 'best' || plan.recipe_schedule) {
             const { shifts } = bestPlanTeam(plan, haulingBusy, layout, hauling);
@@ -3204,22 +3309,12 @@ async function fillRosterFrom(setup) {
     }
 }
 
-async function sourceTeamLayout(plan, input, setup) {
+async function sourceTeamLayout(plan, input, setup, signal) {
     const { key, ...options } = layoutOptionsFor(plan, layoutHomeLevel(), setup);
     let layout = layoutsByPlan.get(plan)?.get(key);
     if (!layout) {
         const { pieces } = homelandPieces(plan, input);
-        layout = await new Promise((resolve, reject) => {
-            const solver = new Worker(WORKER_URL.replace('worker.js', 'layout-worker.js'), { type: 'module' });
-            const finish = (error, result) => {
-                solver.terminate();
-                if (error) reject(error);
-                else resolve(result);
-            };
-            solver.onerror = solver.onmessageerror = event => finish(new Error(event.message || 'The layout worker stopped'));
-            solver.onmessage = ({data}) => finish(data?.error ? new Error(data.error) : null, data);
-            solver.postMessage({ pieces, ...options });
-        });
+        layout = await runMapWorker(WORKER_URL.replace('worker.js', 'layout-worker.js'),{pieces,...options},signal);
         rememberLayout(plan, key, layout);
     }
     return layout;
@@ -4278,9 +4373,7 @@ function attachPriorityHandlers() {
 // The best Aniipod the owned Aniipod Maker can make, or null without one. A better Aniipod
 // catches better, so the strategy makes only this one.
 function bestAniipod() {
-    const tiers = isSimpleMode()
-        ? simpleSetup(selectedHomeLevel()).facilities['Aniipod Maker']
-        : facilityTiers['Aniipod Maker'];
+    const tiers = buildingInventory().facilities['Aniipod Maker'];
     const level = Math.max(0, ...(tiers || []).filter(t => t.count > 0).map(t => t.level));
     return level > 0 ? ANIIPOD_TIERS[Math.min(level, ANIIPOD_TIERS.length) - 1] : null;
 }
@@ -4539,21 +4632,14 @@ function renderProfitBreakdown(plan) {
 // goal-related, since find_plan doesn't need a target). Currency is always coins: the full
 // release removed Bud Tickets, the only other sellable currency.
 function buildingInventory() {
-    // `facilityTiers` is the live source of truth for owned counts (kept in sync with the DOM by
-    // `attachFacilityTierHandlers`), sent straight through as a list of tiers per facility; see
-    // `JsPlanInput::facilities` in wasm.rs for the shape (`[{count, level}, ...]` per facility).
-    if (isSimpleMode()) {
-        return simpleSetup(selectedHomeLevel());
-    }
+    if (isSimpleMode()) return simpleSetup(selectedHomeLevel());
+    const entered = enteredInventory();
+    const rv = layoutHomeLevel(entered);
+    return { facilities:simpleSetup(rv,entered.facilities).facilities, modules:entered.modules };
+}
 
-    const facilities = {};
-    FACILITIES.forEach(f => {
-        facilities[f.name] = facilityTiers[f.name].map(t => ({
-            count: t.count,
-            level: f.hasLevels === false ? 1 : t.level
-        }));
-    });
-
+function enteredInventory() {
+    const facilities = facilityTiers;
     const modules = {
         ecological_module: numberOrDefault(document.getElementById('ecological-module-level').value, 0),
         kitchen_module: numberOrDefault(document.getElementById('kitchen-module-level').value, 0),
@@ -5012,7 +5098,7 @@ function environmentTeamJobs(plan) {
     const jobs = [];
     const add = (building, busy, label, level) => {
         const ability = ENVIRONMENT_BUILDING_ABILITY[building];
-        if (ability && busy) jobs.push({ ability, level: level || 1, anyLevel: !level, busy, label, fixed: true });
+        if (ability && busy) jobs.push({ ability, level: level || 1, anyLevel: !level, busy, label, facility: building, fixed: true });
     };
     const pairs = new Map();
     for (const a of plan.environment_assignments || []) {
@@ -5039,58 +5125,33 @@ const bestTeamCache = new WeakMap();
 const bestTeamLayouts = new WeakMap();
 const minimumTeamCache = new WeakMap();
 
-function bestPlanTeam(plan, haulingBusy = plan.hauling_busy || 0,
-    layout = bestTeamLayouts.get(plan)?.layout ?? null, hauling = bestTeamLayouts.get(plan)?.hauling) {
+function jobsForBestPlan(plan) {
     let cached = bestTeamCache.get(plan);
     if (!cached) {
         const jobs = environmentTeamJobs(plan);
-        const profiles=scheduleProfiles(plan);
-        const families = new Map(recipeIndex.filter(recipe => recipe.family).map(recipe => [recipe.name, recipe.family]));
-        const personalities = new Map(FACILITIES.map(facility => [facility.name, facility.personality]));
-        for (const step of plan.coin_items || []) {
-            if (step.status !== 'producing' || step.electric_level != null) continue;
-            for (const task of step.aniimo_tasks || []) {
-                const item = prettyItem(step.item_name);
-                const label = task.jobs?.length
-                    ? `${task.jobs.map(translate).join(' / ')} · ${item}`
-                    : `${translate(step.facility)} (${item})`;
-                const resident = RESIDENT_FACILITIES.has(step.facility);
-                const batches = step.cycle_time > 0 ? (step.busy_units ?? step.facility_count) / step.cycle_time : 0;
-                jobs.push({
-                    ability: task.ability, level: task.level, label,
-                    profile:profiles.get(`${step.facility}|${step.item_name}`),
-                    busy: resident ? step.facility_count : task.busy,
-                    siteKey: resident ? null : `${step.facility}|${step.item_name}`,
-                    visitsPerShare: !resident && task.busy > 0 ? batches * (task.jobs?.length || 1) / task.busy : 0,
-                    growing: task.jobs?.length > 0, fixed: resident,
-                    critical: (task.jobs || []).some(criticalCropJob),
-                    duration: batches > 0 ? task.busy / batches / (task.jobs?.length || 1) : 0,
-                    personality: task.personality_bonus ? personalities.get(step.facility) : null,
-                    family: task.ability === 'Leisure' ? families.get(step.item_name) : null,
-                });
-            }
-        }
+        jobs.push(...productionTeamJobs(plan,recipeIndex,(step,task)=>{
+            const item=prettyItem(step.item_name);
+            return task.jobs?.length ? `${task.jobs.map(translate).join(' / ')} · ${item}` : `${translate(step.facility)} (${item})`;
+        }));
         cached = { jobs };
         bestTeamCache.set(plan, cached);
     }
-    const scheduleOptions={phaseDurations:plan.recipe_schedule?.phases.map(p=>p.duration),haulingProfile:haulingScheduleProfile(plan,hauling)};
-    if (!layout && !haulingBusy) return cached.baseline ??= recommendBestTeam(cached.jobs,0,[],scheduleOptions);
+    return cached.jobs;
+}
+
+function bestPlanTeam(plan, haulingBusy = plan.hauling_busy || 0,
+    layout = bestTeamLayouts.get(plan)?.layout ?? null, hauling = bestTeamLayouts.get(plan)?.hauling) {
+    const jobs=jobsForBestPlan(plan);
+    const cached=bestTeamCache.get(plan);
+    if (!layout && !haulingBusy) return cached.baseline ??= recommendBestTeam(jobs,0,[],{
+        phaseDurations:plan.recipe_schedule?.phases.map(p=>p.duration),
+    });
     if (cached.layout !== layout || cached.haulingBusy !== haulingBusy || cached.hauling !== hauling) {
         cached.layout = layout;
         cached.haulingBusy = haulingBusy;
         cached.hauling = hauling;
-        const dispatch = layout && buildDispatch(layout, recipeIndex, hauling, RESIDENT_FACILITIES);
-        cached.result = recommendBestTeam(placeBestJobs(cached.jobs, layout, dispatch?.locations), haulingBusy, dispatch?.opportunities||[],scheduleOptions);
-        if (layout) {
-            const pools = cached.result.shifts.map(shift => ({ ...shift, busy:Math.max(shift.busy,...(shift.phaseBusy||[])), count: 1 }));
-            const support = withCropSupport({ layout, recipes: recipeIndex, pools, limit: ANIIMO_MAX[layoutHomeLevel()-1] });
-            const peak = support.peak;
-            cached.result.cropPeaks = peak;
-            for (const { member, count } of peak.additions) for (let i=0;i<count;i++) {
-                const source = support.pools[member];
-                cached.result.shifts.push({ ...source, busy: 0, tasks: new Map(), allocations: [], peakSupport: true });
-            }
-        }
+        cached.result = packMappedTeam(plan,jobs,layout,hauling,haulingBusy,recipeIndex);
+        if(layout)addHarvestHelpers(cached.result,layout,recipeIndex,ANIIMO_MAX[layoutHomeLevel()-1]);
     }
     return cached.result;
 }
@@ -5124,29 +5185,37 @@ function renderBestTeam(plan, routeStatus = translate('Calculating…')) {
     const routesReady = bestTeamLayouts.has(plan);
     const routeLabels = ['Walking between jobs', 'Hauling to Storage Units'];
     const percent = share => share > 0 && share < .0001 ? '<0.01%' : `${formatNumber(share * 100)}%`;
-    container.innerHTML = total
-        ? `${capNote}${cropPeakNote(cropPeaks, [], true)}<div class="roster-cards">${rosterBoard(shifts.map((_, index) => index), index => {
-            if (index == null) return emptyRosterCell();
-            const shift = shifts[index];
-            const member = bestRosterMember(shift);
-            const label = member.name || translate('Assumed Aniimo');
-            const tasks = routeLabels.filter(label => !shift.peakSupport && (!routesReady || shift.tasks.has(label))).map(label => [
-                translate(label), routesReady ? percent(shift.tasks.get(label)) : routeStatus,
-            ]);
-            if (shift.peakSupport) {
-                const jobs = [...new Set(recipeIndex.flatMap(r => (r.jobs || []).filter(([name,ability,level]) => criticalCropJob(name) && (shift.abilities[ability] || 0) >= level).map(([name]) => translate(name))))];
-                tasks.push([jobs.join(' / '), translate('Crop support')]);
-            }
-            if (shift.tasks.has(TASK_SWITCHING)) tasks.push([translate(TASK_SWITCHING), percent(shift.tasks.get(TASK_SWITCHING))]);
-            for (const [job, share] of [...shift.tasks].sort((a, b) => b[1] - a[1])) {
-                if (!routeLabels.includes(job) && job !== TASK_SWITCHING) tasks.push([translate(job), percent(share)]);
-            }
-            if(shift.phaseBusy?.length)tasks.unshift(['Peak during recipe schedule',percent(Math.max(...shift.phaseBusy))]);
-            const status = shift.peakSupport ? translate('Crop support') : translate('{load} busy').replace('{load}', percent(shift.busy));
-            const traits = [...shift.personalities].map(translate).join(' · ');
-            return assignmentTile(member, label, tasks, status, true, traits);
-        })}</div>`
-        : '';
+    const renderShift = shift => {
+        const member = bestRosterMember(shift);
+        const label = member.name || translate('Assumed Aniimo');
+        const tasks = routeLabels.filter(label => !shift.peakSupport && (!routesReady || shift.tasks.has(label))).map(label => [
+            translate(label), routesReady ? percent(shift.tasks.get(label)) : routeStatus,
+        ]);
+        if (shift.peakSupport) {
+            const jobs = [...new Set(recipeIndex.flatMap(r => (r.jobs || []).filter(([name,ability,level]) => criticalCropJob(name) && (shift.abilities[ability] || 0) >= level).map(([name]) => translate(name))))];
+            tasks.push([jobs.join(' / '), translate('Crop support')]);
+        }
+        if (shift.tasks.has(TASK_SWITCHING)) tasks.push([translate(TASK_SWITCHING), percent(shift.tasks.get(TASK_SWITCHING))]);
+        for (const [job, share] of [...shift.tasks].sort((a, b) => b[1] - a[1])) {
+            if (!routeLabels.includes(job) && job !== TASK_SWITCHING) tasks.push([translate(job), percent(share)]);
+        }
+        if(shift.phaseBusy?.length)tasks.unshift(['Peak during recipe schedule',percent(Math.max(...shift.phaseBusy))]);
+        const status = shift.peakSupport ? translate('Crop support') : translate('{load} busy').replace('{load}', percent(shift.busy));
+        const traits = [...shift.personalities].map(translate).join(' · ');
+        return `<div class="roster-slot">${assignmentTile(member, label, tasks, status, true, traits)}</div>`;
+    };
+    const closedGroups = new Set([...container.querySelectorAll('details[data-assignment-group]:not([open])')]
+        .map(group => group.dataset.assignmentGroup));
+    const groups = groupAniimoAssignments(shifts).map(([label, members]) => `
+        <details class="aniimo-assignment-group" data-assignment-group="${escapeText(label)}"${closedGroups.has(label) ? '' : ' open'}>
+            <summary>
+                <span>${escapeText(translate(label))}</span>
+                <span class="aniimo-assignment-count">${formatNumber(members.length)}</span>
+                <span class="aniimo-assignment-chevron" aria-hidden="true"></span>
+            </summary>
+            <div class="aniimo-assignment-portraits">${members.map(renderShift).join('')}</div>
+        </details>`).join('');
+    container.innerHTML = total ? `${capNote}${cropPeakNote(cropPeaks, [], true)}${groups}` : '';
     if (!aniimoExpansionChosen) setAniimoExpanded(true);
 }
 
@@ -5246,7 +5315,7 @@ function aniimoTeam(plan) {
         const pools = team.kept.map(g => ({ count: g.count, abilities: { [g.ability]: g.level },
             allocations: g.environment ? [{fixed:true,busy:g.count}] : g.allocations }));
         const couriers = Math.max(0, Math.ceil((plan.hauling_busy || 0)-1e-6));
-        const support = withCropSupport({layout:placed.layout,recipes:recipeIndex,pools,limit:ANIIMO_MAX[layoutHomeLevel()-1]-couriers});
+        const support = withCropSupport({layout:placed.layout,recipes:recipeIndex,pools,haulingBusy:plan.hauling_busy,limit:ANIIMO_MAX[layoutHomeLevel()-1]-couriers});
         const peak = support.peak;
         team.cropPeaks = peak;
         for (const {member,count} of peak.additions) {
@@ -5942,6 +6011,12 @@ function displayPlan(plan, keepLayout = false) {
         explored.textContent = `The exact planner couldn't run${reason}, so this plan comes from the backup planner and may not be the very best. Reloading the page usually fixes this.`;
     }
 
+    if (plan.crop_protection_reference_income>plan.rate_per_second+1e-7) {
+        const loss=100*(1-plan.rate_per_second/plan.crop_protection_reference_income);
+        explored.textContent=translate('Best protects field workers at a cost of {loss}% of Home Coin income.')
+            .replace('{loss}',formatNumber(loss));
+    }
+
     const unverifiedEl = document.getElementById('plan-unverified');
     const unverified = plan.unverified || [];
     unverifiedRowKeys = new Set(unverified.map(u => `${u.facility}|${u.item_name}`));
@@ -6049,11 +6124,10 @@ async function runFindPlan() {
             // Only what the player skipped; locked special recipes are the default, not news.
             skipped: [...skippedRecipes].sort((a, b) => prettyItem(a).localeCompare(prettyItem(b))),
             simple: isSimpleMode(),
+            homeLevel: layoutHomeLevel(input),
             // The season the plan used, if any, so its currency and points keep their names.
             season: input.season,
         };
-        startProgress(input, runId);
-
         // Runs in the worker (see worker.js); the main thread stays free to paint the progress
         // bar above for however long this takes, instead of freezing. `onTrialProgress` receives
         // the solver's own real, running trial-solve count after every trial solve; converted to
@@ -6064,6 +6138,7 @@ async function runFindPlan() {
         requestedSetup = bestSetup;
         mainSolve = { setup: bestSetup, runId };
         Object.assign(input, aniimoInput(bestSetup));
+        startProgress(input, runId);
         const bestJson = await callWorker('find_plan', JSON.stringify({ ...input, aniimo: bestSetup,
             map_dispatch_pending:bestSetup.startsWith('roster') }), (count) => {
             // The exact planner reports each solve; the backup planner counts its trials.
@@ -6083,7 +6158,7 @@ async function runFindPlan() {
         showSelectedPlan();
         // With no plan there's nothing to lay out or improve on.
         if (!plansBySetup[bestSetup].success && progress) {
-            progress.steps.forEach(s => { if ((s.key === 'layout' || s.key === 'improve') && s.state === 'pending') s.state = 'skipped'; });
+            progress.steps.forEach(s => { if (['layout','power_team','improve'].includes(s.key) && s.state === 'pending') s.state = 'skipped'; });
             renderProgress();
         }
 
@@ -6452,6 +6527,7 @@ async function initApp() {
     attachLayoutHandlers();
     attachPriorityHandlers();
     if (isSimpleMode()) fillBuildingInputs(selectedHomeLevel());
+    refreshFacilityLevels();
     renderBuildingSettings();
     renderStrategy();
     showAniimoSetup();

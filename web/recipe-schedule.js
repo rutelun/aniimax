@@ -142,7 +142,7 @@ export function validateRecipeSchedule(input,schedule) {
     const phases=schedule.phases||[];
     // Within a continuous material chain, an empty buffer changes production
     // rates without requiring the player to change any recipe.
-    const flow=schedule.materialFlow===true&&!!independentMaterialChains(input);
+    const flow=schedule.materialFlow===true&&!!independentMaterialChains(input,true);
     if(schedule.materialFlow&&!flow)errors.push('Unsupported material flow schedule');
     if(!phases.length||(!flow&&phases.length>input.maxSwitches+1))errors.push('Too many phases');
     if(phases.some(p=>!Number.isFinite(p.duration)||p.duration<0)||Math.abs(sum(phases.map(p=>p.duration))-input.daySeconds)>EPS)errors.push('Invalid phase durations');
@@ -158,6 +158,8 @@ export function validateRecipeSchedule(input,schedule) {
         for(const a of phase.assignments||[]) {
             const j=jobs.get(a.job),b=buildings.get(a.building);
             if(!j||!b||!b.recipes.includes(j.recipe)||(b.jobs&&!b.jobs.includes(j.id))||!(input.approximate?Number.isFinite(a.batches):Number.isSafeInteger(a.batches))||(flow?a.batches<0:a.batches<=0)) {errors.push('Invalid assignment');continue;}
+            if((j.electric_level??null)!==(b.electric_level??null)||j.facility_level>b.level||
+                (b.electric_level!=null&&b.electric_level!==b.level))errors.push('Incompatible building level or power mode');
             if(b.phaseRecipes?.[phaseIndex]&&!b.phaseRecipes[phaseIndex].includes(j.recipe))errors.push('Recipe violates prescribed phase');
             if(recipes.has(b.id)&&recipes.get(b.id)!==j.recipe)errors.push('Two recipes in one building phase');
             recipes.set(b.id,j.recipe);

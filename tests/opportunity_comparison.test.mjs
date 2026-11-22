@@ -68,7 +68,7 @@ test('climate staffing and equal-watt generator swaps do not reach the solver', 
         { id: 'fenmane', abilities: { Lightning: 4, Earth: 4 } }];
     const check = plan => new Set(replacementCandidates(original, plan, recipes, catalog, []).map(row => row.index));
     assert.deepEqual(check(baseline), new Set([2]), 'higher skill and extra abilities do not improve a full fixed post');
-    assert.deepEqual(check({ ...baseline, generator_watts_by_lightning: [600, 800, 1285, 1500] }), new Set([1,2]),
+    assert.deepEqual(check({ ...baseline, generator_watts_by_lightning: [600, 800, 1200, 1500] }), new Set([1,2]),
         'Lightning only matters when it increases actual power');
     assert.deepEqual(check({ ...baseline, coin_items: [...baseline.coin_items,
         { facility: 'Stove', item_name: 'soup', status: 'producing', crew: 0, busy_units: .5 }] }), new Set([0,2]));
@@ -246,7 +246,7 @@ test('preparing suggestions does not launch searches, and a check stays in its c
     }
     const api=new Function('Worker','setTimeout','clearTimeout','baseline','base','keepBetterComparison','startComparisonQueue','comparisonConcurrency',`
         let rankRunId=0,rankWorkers=[],rankCleanups=[],ranking=null,rankingsBySetup={};
-        const mainSolve=null,setupSolve=null,layoutWorker=null,lastLayout=null,lastPlan=baseline,lastPlanInput=base;
+        const mainSolve=null,setupSolve=null,layoutWorker=null,powerTeamController=null,lastLayout=null,lastPlan=baseline,lastPlanInput=base;
         const plansBySetup={roster:baseline},WORKER_URL='worker',SETUP_TIMEOUT=100;
         const aniimoInput=()=>({}),haulingRouteBound=()=>0,renderImprovements=()=>{};
         const improvementCandidates=()=>({candidates:[0,1,2].map(i=>({kind:i===2?'Recipes':'Aniimo',input:{...base,change:i}}))});

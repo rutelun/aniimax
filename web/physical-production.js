@@ -19,3 +19,16 @@ export function splitProductionSites(step,routes=[]){
     }
     return result.length===step.facility_count?result:null;
 }
+
+// An active recipe can divert other workers only while its physical station
+// has room for work. Peak load alone does not describe a whole shift.
+export function fullyStaffed(site,item,phases=site.schedulePhases) {
+    if (site.facility==='Farmland' || site.facility==='Woodland') return false;
+    if (!site.jobs?.length) return site.load>=1-1e-6;
+    const manual=site.jobs.filter(j=>j.electric_level==null);
+    const active=phases?.filter(p=>p.duration>0 && p.rates[item]>0);
+    if (active?.length) {
+        return active.every(p=>manual.reduce((load,j)=>load+(p.rates[j.item]??0)*j.cycle,0)>=1-1e-6);
+    }
+    return manual.reduce((load,j)=>load+(j.load??j.rate*j.cycle),0)>=1-1e-6;
+}

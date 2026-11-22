@@ -17,3 +17,18 @@ test('quarter-tile occupancy agrees with rectangle intersections across word and
     mask.add({x:.1,y:0,w:1,h:1});
     assert.equal(mask.overlaps({x:0,y:0,w:1,h:1}),undefined);
 });
+
+test('lifting a piece frees only its own quarter tiles, including across word boundaries', () => {
+    const mask = rectangleMask([{x:-2,y:-2,w:40,h:9}], {removable:true});
+    const first = {x:-1.5,y:1,w:18,h:1.5};
+    const second = {x:16.5,y:1,w:2,h:1.5};
+    mask.add(first);
+    mask.add(second);
+    mask.remove(first);
+    assert.equal(mask.overlaps(first), false);
+    assert.equal(mask.overlaps(second), true);
+    mask.add(first);
+    mask.add(first);
+    mask.remove(first);
+    assert.equal(mask.overlaps(first), undefined);
+});

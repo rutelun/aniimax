@@ -100,3 +100,25 @@ test('scheduled peak load prevents using a slow island despite spare daily capac
  const l=layout([generator(0,150),c]);analyzePowerNetworks(l);
  assert.equal(l.power.disconnected,1);
 });
+
+test('one generator reports an overloaded physical network even when every site is linked',()=>{
+    const out=optimizePowerNetworks(layout([generator(0,150),consumer(0,1)]),[{x:0,y:0,w:40,h:20}],10);
+    assert.equal(out.power.disconnected,1);
+    assert.equal(out.power.networks[0].rated,150);
+});
+
+test('two generators retain separate feasible grids when merging would only shorten links',()=>{
+    const l=layout([generator(0),generator(9),consumer(0,.8,3),consumer(3,.8,3),consumer(10,.8,3)]);
+    const out=optimizePowerNetworks(l,[{x:0,y:0,w:40,h:20}],10);
+    assert.equal(out.power.disconnected,0);
+    assert.equal(out.power.poles.length,0);
+    assert.equal(out.power.networks.filter(n=>n.generated>0&&n.consumers>0).length,2);
+});
+
+test('grid label shows the watts delivered at the displayed supply percentage',()=>{
+    const source=fs.readFileSync(new URL('../web/app.js',import.meta.url),'utf8');
+    const label=vm.runInNewContext(source.slice(source.indexOf('function powerNetworkLabel('),
+        source.indexOf('function layoutWorkerBadges('))+'\npowerNetworkLabel',{translate:s=>s,formatNumber:String});
+    assert.equal(label({id:0,percent:120,rated:735,generated:1500,generator_ids:[1]}),
+        'Grid 1 (G1): 120% · 882 / 1500 W');
+});

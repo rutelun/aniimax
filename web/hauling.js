@@ -5,6 +5,7 @@ import { deliveryRouting } from './delivery-routing.js';
 
 // Hauling capacity from Skippy, Fenrier, Glacy and Prismana Glacy's Homeland profiles.
 export const HAULING_CAPACITY = Object.freeze({1:60, 2:80, 3:100, 4:120});
+export const haulingLevelFor = setup => setup?.startsWith('best') ? 4 : setup === 'minimum' ? 1 : 3;
 export const HAULING_PICKUP_FILL = .4;
 const levels = [1, 2, 3, 4];
 const headcount = n => Math.max(0, Math.ceil(n - 1e-6));
@@ -64,7 +65,7 @@ function fallbackTrips(step, recipe, level, facilities) {
 // pickup over carrying capacity. An oversized harvest still needs all its trips. After storage
 // comes the next pickup, weighted by its delivery frequency across all storage groups.
 // Pickup thresholds are estimates. Each leg uses base speed; fallback seconds cover the full route.
-export function haulingWorkload(layout, steps, fallbackSeconds = 0, recipes = [], facilities = null, accountForTravel = false) {
+export function haulingWorkload(layout, steps, fallbackSeconds = 0, recipes = [], facilities = null, accountForTravel = false, courierLevel = 3) {
     const recipeOf = new Map(recipes.map(recipe => [recipe.name, recipe]));
     const seconds = {}, tripsPerBatch = {}, jobs = new Map(), tripSites = [];
     for (const level of levels) {
@@ -80,7 +81,7 @@ export function haulingWorkload(layout, steps, fallbackSeconds = 0, recipes = []
             for (const [item, batches] of cargo) {
                 const trips = batches * haulingBatchTrips(recipeOf.get(item), level, pickupStockLimit(member), member.facility);
                 pickups.push({key:`${member.facility}|${item}`, member, storage, loaded, trips, batches});
-                if (level === 3) tripSites.push({
+                if (level === courierLevel) tripSites.push({
                     point: [member.x + member.w / 2, member.y + member.h / 2],
                     returnFrom: [storage.x + storage.w / 2, storage.y + storage.h / 2],
                     rate: trips / 3600,
@@ -98,7 +99,7 @@ export function haulingWorkload(layout, steps, fallbackSeconds = 0, recipes = []
         }
         for (const [key, route] of routes) {
             seconds[`${key}|${level}`] = route.seconds / route.batches;
-            if (level === 3) tripsPerBatch[key] = route.trips / route.batches;
+            if (level === courierLevel) tripsPerBatch[key] = route.trips / route.batches;
         }
     }
     for (const step of steps) {
@@ -107,8 +108,8 @@ export function haulingWorkload(layout, steps, fallbackSeconds = 0, recipes = []
         const costs = Object.fromEntries(levels.map(level => [level,
             seconds[`${key}|${level}`] ?? fallbackSeconds * fallbackTrips(step, recipeOf.get(step.item_name), level, facilities)]));
         for (const level of levels) seconds[`${key}|${level}`] = costs[level];
-        seconds[key] = costs[3];
-        const trips = tripsPerBatch[key] ?? fallbackTrips(step, recipeOf.get(step.item_name), 3, facilities);
+        seconds[key] = costs[courierLevel];
+        const trips = tripsPerBatch[key] ?? fallbackTrips(step, recipeOf.get(step.item_name), courierLevel, facilities);
         const job = jobs.get(key) || { key, rate: 0, seconds: costs, trips };
         job.rate += (step.busy_units ?? step.facility_count) / step.cycle_time;
         jobs.set(key, job);
@@ -116,7 +117,7 @@ export function haulingWorkload(layout, steps, fallbackSeconds = 0, recipes = []
     const busyByLevel = Object.fromEntries(levels.map(level => [level,
         [...jobs.values()].reduce((sum, job) => sum + job.rate * job.seconds[level], 0)]));
     const trips = [...jobs.values()].reduce((sum, job) => sum + job.rate * job.trips, 0);
-    return { seconds, busy: busyByLevel[3], busyByLevel, trips, tripSites, jobs: [...jobs.values()] };
+    return { seconds, courierLevel, busy: busyByLevel[courierLevel], busyByLevel, trips, tripSites, jobs: [...jobs.values()] };
 }
 
 // Use couriers' spare hours, then idle copies and neutral Lv.3 reserves. A headcount shortage

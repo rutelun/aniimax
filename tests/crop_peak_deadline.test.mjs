@@ -97,3 +97,14 @@ test('recurring couriers finish trips after warmup and approach from storage',()
  assert.ok(hauling.completion>idle.completion+10);
  assert.deepEqual(hauling.counts,[1]);
 });
+
+test('recurring helper selection returns the accepted copy’s full dispatch shares',()=>{
+ const input={members:[{abilities:{Dark:1},count:2}],counts:[1],outside:[{busy:1,seconds:100}],limit:2,
+    jobs:[{id:'a',ability:'Dark',level:1,key:'crop',name:'Reaping',cycle:1801,order:0,seconds:[5],point:[0,0]}]};
+ const result=selectCropPeakTeam(input);
+ assert.deepEqual(result.counts,[2]);
+ assert.deepEqual(result.withoutHelper,[104]);
+ assert.equal(result.observations,368);
+ assert.deepEqual(result.shares,{crop:[{member:0,share:1}]});
+ assert.deepEqual(result.copyShares,{'crop|0':[[1,1]]});
+});

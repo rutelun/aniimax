@@ -1,15 +1,12 @@
 // Compare physical networks at the solved output. A lower supply percentage
 // consumes spare machine time, never silently lowers the promised production.
 import { powerLinked, powerCoverage, connectPower } from './power-layout.js';
+import { ratedSiteWatts } from './physical-power.js';
 import { createInsideTest } from './layout.js';
 
 const EPS=1e-6;
 const center=r=>({x:r.x+r.w/2,y:r.y+r.h/2});
 const overlap=(a,b)=>a.x<b.x+b.w-EPS&&b.x<a.x+a.w-EPS&&a.y<b.y+b.h-EPS&&b.y<a.y+a.h-EPS;
-const heavy=new Set(['Mine','Well','Aniipod Maker','Dance Pad Polisher']);
-const light=new Set(['Carousel Mill','Crafting Table','Jukebox Dryer','Claw Game Cooker','Joy Wheel Loom',
-    'Phonolfactory Table','Bouncy Brew Keg','Simmering Pot','Blazing Stove','Woodworking Bench','Chimney Kiln','Pickling Jar']);
-const rated=m=>(heavy.has(m.facility)?30:light.has(m.facility)?15:NaN)*m.electric_level;
 const minimum=m=>120*(m.schedulePeak??(m.jobs?.length?m.jobs.reduce((s,j)=>s+(j.rate!=null&&j.cycle>0?j.rate*j.cycle:j.load??1),0):m.load??1));
 
 export function analyzePowerNetworks(layout){
@@ -32,7 +29,7 @@ export function analyzePowerNetworks(layout){
     }
     const networks=components.map((c,id)=>{
         const gens=c.relays.filter(m=>m.generator),generated=gens.reduce((s,g)=>s+(g.generatedWatts??NaN),0);
-        const draw=c.consumers.reduce((s,m)=>s+rated(m),0);
+        const draw=c.consumers.reduce((s,m)=>s+ratedSiteWatts(m),0);
         const percent=Number.isFinite(generated)&&Number.isFinite(draw)&&generated>0?Math.min(120,draw>0?generated/draw*100:120):0;
         for(const g of gens){g.power_generator_id=generators.indexOf(g)+1;g.power_networks=[id];}
         return {id,generated,rated:draw,percent,generators:gens.length,generator_ids:gens.map(g=>g.power_generator_id),consumers:c.consumers.length,
@@ -65,9 +62,10 @@ export function powerJobDetails(layout,step){
 
 export function optimizePowerNetworks(input,cells,maximum){
     const members=input.pieces.flatMap(p=>p.members),generators=members.filter(m=>m.generator);
-    if(generators.length<2||generators.some(g=>!(g.generatedWatts>0))||!members.some(m=>m.electric_level!=null))return input;
+    if(generators.some(g=>!(g.generatedWatts>0))||!members.some(m=>m.electric_level!=null))return input;
     let best=analyzePowerNetworks(structuredClone(input));
-    const score=l=>[l.power.disconnected,l.power.poles.length,l.power.links.reduce((s,e)=>s+Math.hypot(e.from.x-e.to.x,e.from.y-e.to.y),0)];
+    if(generators.length<2)return best;
+    const score=l=>[l.power.disconnected,-l.power.networks.filter(n=>n.generated>0&&n.consumers>0).length,l.power.poles.length,l.power.links.reduce((s,e)=>s+Math.hypot(e.from.x-e.to.x,e.from.y-e.to.y),0)];
     const better=(a,b)=>{const x=score(a),y=score(b);for(let i=0;i<x.length;i++)if(Math.abs(x[i]-y[i])>EPS)return x[i]<y[i];return false;};
     const consider=trial=>{analyzePowerNetworks(trial);if(!trial.power.disconnected&&better(trial,best))best=trial;};
     // Cutting unnecessary bridges is cheap and keeps the production layout intact.
@@ -97,5 +95,5 @@ export function optimizePowerNetworks(input,cells,maximum){
         connectPower(trial,cells,maximum,false,()=>false,null,true,true);
         consider(trial);
     }
-    return best.power.disconnected?input:best;
+    return best;
 }

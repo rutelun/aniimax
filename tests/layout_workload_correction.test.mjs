@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {runInNewContext} from 'node:vm';
 import {workerTravelDistances} from '../web/worker-travel.js';
-import {haulingWorkSeconds} from '../web/hauling.js';
+import {haulingLevelFor,haulingWorkSeconds} from '../web/hauling.js';
 
 const source = await readFile(new URL('../web/app.js',import.meta.url),'utf8');
 const movementCode = source.slice(source.indexOf('function refineWorkerMovement('),source.indexOf('let rosterFillVersion'));
@@ -13,7 +13,7 @@ const layout = (distance, worker = 0) => ({pieces:[{members:[site(0,worker),site
 
 function page() {
     let updates = 0;
-    const context = {workerTravelDistances,haulingWorkSeconds,selectedSetupTab:()=> 'custom',
+    const context = {haulingLevelFor,workerTravelDistances,haulingWorkSeconds,selectedSetupTab:()=> 'custom',
         homelandPlots:()=>[{number:1,x:0,y:0,w:100,h:60}],layoutHomeLevel:()=>1,
         stopRanking(){},switchAniimoSetup:()=>updates++,showError:message=>assert.fail(message),
         recipeIndex:[],rosterWorkload:()=>({members:[],busy:[]}),

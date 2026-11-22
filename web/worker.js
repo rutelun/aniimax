@@ -907,6 +907,18 @@ self.onmessage = async (event) => {
             self.postMessage({id,ok:true,result:await exactPlanJson(pkg,payload)});
             return;
         }
+        if (type === 'protect_crops') {
+            const {cropProtectionPlans}=await import('./power-team-validation.js'+load);
+            const result=cropProtectionPlans(pkg,await newHighs(),payload);
+            self.postMessage({id,ok:true,result});
+            return;
+        }
+        if (type === 'power_teams') {
+            const {shortlistPowerTeams}=await import('./power-team-search.js'+load);
+            const result=await shortlistPowerTeams(pkg,await newHighs(),payload.plan,payload.input);
+            self.postMessage({id,ok:true,result});
+            return;
+        }
         if (type === 'compact_team') {
             const {compactMeasuredTeam} = await import('./measured-team.js'+load);
             const plan = compactMeasuredTeam(pkg,await newHighs(),payload);

@@ -1,5 +1,7 @@
 import {materialChains} from './material-flow-schedule.js';
 import {validateRecipeSchedule} from './recipe-schedule.js';
+import {physicalPlanPower} from './physical-power.js';
+export {physicalPlanPower};
 const DAY=86400, EPS=1e-7;
 const add=(map,key,value)=>{map[key]=(map[key]||0)+value;};
 
@@ -119,7 +121,7 @@ export function scheduleInputForPlan(input,plan) {
             }
         }
     }
-    return {alwaysRunning:!!input.always_running,daySeconds:DAY,approximate:true,maxBuildings:settings.max_buildings||0,maxSwitches:settings.max_switches||0,
+    return {powerPercent:input.e_mode_rv>=12?120:Math.min(120,Math.max(1,input.electricity?.percent??120)),alwaysRunning:!!input.always_running,daySeconds:DAY,approximate:true,maxBuildings:settings.max_buildings||0,maxSwitches:settings.max_switches||0,
         buildings,jobs,workerCapacity,backgroundWorkers,backgroundInputs,backgroundOutputs,haulingLoads:Object.fromEntries(plan.hauling_staffing||[])};
 }
 
@@ -140,18 +142,21 @@ export function attachRecipeSchedule(plan,input,schedule) {
     }));
     const result={...plan,proven_optimal:false,recipe_schedule:{...schedule,approximate:true,sites,
         jobs:input.jobs,buildings:input.buildings,workerProfiles,haulingProfiles,switchedBuildings:checked.switchedBuildings,switches:checked.switches}};
+    const draw=physicalPlanPower(plan,sites,input.powerPercent);
+    if(!Number.isFinite(draw)||draw>(plan.power_generated??0)+EPS)throw new Error('Scheduled E-mode demand exceeds available generation');
+    if(draw>0||plan.power_used!=null)result.power_used=draw;
     delete result.recipe_switching_candidate;
     return result;
 }
 
-export function scheduleProfiles(plan) {
+export function scheduleProfiles(plan, manualOnly = false) {
     const schedule=plan.recipe_schedule, profiles=new Map();
     if(!schedule)return profiles;
     const jobs=new Map(schedule.jobs.map(j=>[j.id,j]));
     const totals=new Map();
-    for(const j of jobs.values())addTo(totals,`${j.facility}|${j.item}`,j.batches);
+    for(const j of jobs.values())if(!manualOnly||j.electric_level==null)addTo(totals,`${j.facility}|${j.item}`,j.batches);
     for(const key of totals.keys())profiles.set(key,schedule.phases.map(p=>p.assignments.reduce((v,a)=>{
-        const j=jobs.get(a.job);return v+(`${j.facility}|${j.item}`===key?a.batches:0);
+        const j=jobs.get(a.job);return v+((!manualOnly||j.electric_level==null)&&`${j.facility}|${j.item}`===key?a.batches:0);
     },0)/Math.max(p.duration,EPS)*DAY/totals.get(key)));
     return profiles;
 }

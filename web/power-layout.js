@@ -193,6 +193,11 @@ export function repackPower(layout, cells, maximum, { canRelocate = null, canPla
     const my = electricMembers.reduce((sum, m) => sum + center(m).y, 0) / electricMembers.length;
     const anchors = cells.map(c => ({ x: c.x + c.w / 2, y: c.y + c.h / 2 }))
         .sort((a, b) => Math.hypot(a.x - mx, a.y - my) - Math.hypot(b.x - mx, b.y - my)).slice(0, attempts);
+    // Every anchor moves the same electric buildings. Exclude immutable
+    // obstacles once before ordering sites for any of those trials.
+    const stationary = [...layout.storages, ...layout.pieces.flatMap(p => p.members)
+        .filter(m => !m.generator && m.electric_level == null)];
+    const fixed = obstacleTest(cells, stationary);
     const positions = new Map();
     const sitesFor = ({ w, h }) => {
         const key = `${w}|${h}`;
@@ -200,7 +205,7 @@ export function repackPower(layout, cells, maximum, { canRelocate = null, canPla
             const sites = [];
             for (const cell of cells) for (let y = cell.y; y < cell.y + cell.h; y += .5) for (let x = cell.x; x < cell.x + cell.w; x += .5) {
                 const site = { x, y, w, h };
-                if (inside(site)) sites.push(site);
+                if (inside(site) && !fixed.blocked(site)) sites.push(site);
             }
             positions.set(key, sites);
         }
@@ -212,7 +217,7 @@ export function repackPower(layout, cells, maximum, { canRelocate = null, canPla
         const all = trial.pieces.flatMap(p => p.members);
         const movable = all.filter(m => m.generator || m.electric_level != null)
             .sort((a, b) => Number(!!b.generator) - Number(!!a.generator) || b.w * b.h - a.w * a.h);
-        const occupied=obstacleTest(cells,[...trial.storages, ...all.filter(m => !movable.includes(m))]);
+        const occupied = obstacleTest(cells, []);
         const byDistance = new Map();
         const near = member => {
             const sites = sitesFor(member);
@@ -222,9 +227,19 @@ export function repackPower(layout, cells, maximum, { canRelocate = null, canPla
             }
             return byDistance.get(sites);
         };
+        const cursor = new Map();
         let fits = true;
         for (const m of movable) {
-            const spot = near(m).find(r => (!canRelocate || canRelocate(m, r)) && !occupied.blocked(r));
+            const sites = near(m);
+            let index = cursor.get(sites) ?? 0;
+            // Occupancy only grows in this trial. A blocked prefix stays
+            // blocked for every later building with this footprint.
+            while (index < sites.length && occupied.blocked(sites[index])) index++;
+            cursor.set(sites, index);
+            if (canRelocate) {
+                while (index < sites.length && (occupied.blocked(sites[index]) || !canRelocate(m, sites[index]))) index++;
+            }
+            const spot = sites[index];
             if (!spot) { fits = false; break; }
             m.x = spot.x; m.y = spot.y; occupied.add(m);
         }

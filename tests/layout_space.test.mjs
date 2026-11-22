@@ -49,7 +49,10 @@ test('single-building probes produce exactly the reference arrangement with work
     const options={cells:[{x:-20,y:-10,w:20,h:20},{x:0,y:-10,w:20,h:20}],
         storages:[{x:-5,y:-1,w:2,h:2},{x:5,y:1,w:2,h:2}],passes:2,
         canPlace:(i,metadata,rectangles)=>i%4!==1||rectangles[0].y>=-5};
-    assert.deepEqual(layOut(pieces,options),layOut(pieces,{...options,singleBuildingFastPath:false}));
+    const {tried, ...fast}=layOut(pieces,options);
+    const {tried:referenceProbes, ...reference}=layOut(pieces,{...options,singleBuildingFastPath:false});
+    assert.deepEqual(fast,reference);
+    assert.ok(tried<=referenceProbes);
 });
 
 test('monotone packing skips only previously blocked probes across repeated footprints',()=>{
