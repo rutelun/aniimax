@@ -112,7 +112,7 @@ const observe = config => {
                 const p=JSON.parse(msg.payload);
                 window.plannerPayloads.push({input:p,routeWitness:msg.routeWitness});
                 qa.inputs.push({at:performance.now(),setup:p.aniimo.split(':')[0],facilities:p.facilities,
-                    season:p.season,seasonMinimums:p.season_crop_minimums,
+                    season:p.season,seasonMinimums:p.season_crop_minimums,switching:p.recipe_switching,
                     members:p.roster?.members?.length,continuous:p.always_running,
                     dispatch:Object.keys(p.roster?.dispatch||{}).length,priorities:p.priorities});
                 this.requests.set(msg.id,true);
@@ -176,6 +176,10 @@ async function run(rv,profile,season,origin,reportName) {
         for(const actual of qa.inputs) {
             assert.equal(actual.setup,expected);
             assert.equal(actual.continuous,true);
+            if(args['switch-upgrade']){
+                assert.deepEqual(actual.switching,{max_buildings:5,max_switches:2});
+                if(rv<22)assert.equal(actual.priorities[0],'level_up');
+            }
             assert.equal(actual.season??null,season==='off'?null:season);
             if(season!=='off')assert.deepEqual(actual.seasonMinimums,config.seasonCropMinimums);
             assert.deepEqual(actual.facilities.Farmland,config.facilityTiers.Farmland);
@@ -188,7 +192,15 @@ async function run(rv,profile,season,origin,reportName) {
             assert.ok(!plan.fallback,plan.fallback);
         }
         const final=qa.plans.at(-1),first=qa.clicked;
-        const report={rv,profile,season,origin,firstSeconds:(qa.plans[0].at-first)/1000,finalSeconds:(final.at-first)/1000,
+        const displayedCoinsPerDay=args['plan-only']?null:await evaluate(`(() => {
+            const unit=document.querySelector('#rate-unit');
+            unit.value='day';
+            unit.dispatchEvent(new Event('change'));
+            const digits=document.querySelector('#plan-rate').textContent.replace(/[^0-9.-]/g,'');
+            return digits ? Number(digits) : null;
+        })()`);
+        if(!args['plan-only'])assert.ok(Number.isFinite(displayedCoinsPerDay));
+        const report={rv,profile,season,origin,displayedCoinsPerDay,firstSeconds:(qa.plans[0].at-first)/1000,finalSeconds:(final.at-first)/1000,
             visibleMap:await evaluate("!!document.querySelector('#layout-diagram .layout-svg')"),
             readySeconds:args['plan-only']?null:((qa.ready??readyAt)-first)/1000,
             ...qa};
@@ -229,7 +241,7 @@ try {
                 const incomeLost=after.rate < before.rate-1e-8*Math.max(1,Math.abs(before.rate));
                 const slowerUpgrade=Number.isFinite(before.eta)
                     && (!Number.isFinite(after.eta) || after.eta > before.eta+1e-8*Math.max(1,before.eta));
-                if(incomeLost || slowerUpgrade){
+                if(incomeLost || slowerUpgrade || report.displayedCoinsPerDay < reference.displayedCoinsPerDay){
                     process.exitCode=1;
                     console.error(name,label,'income',before.rate,after.rate,'upgrade seconds',before.eta,after.eta);
                 }

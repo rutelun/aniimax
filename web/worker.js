@@ -11,7 +11,7 @@ import { autoMaximizeSeasonPoints, hasSeasonCropMinimums } from './season-planni
 import {continuousProduction} from './continuous-production.js';
 import {continuousNeighborhood, incomeRepairNeighborhood, neighborhoodResult, keepProductionWitness} from './continuous-neighborhood.js';
 import {comparisonConcurrency} from './comparison-queue.js';
-import {proveFirstSwitch,searchRecipeSwitches} from './recipe-switch-search.js';
+import {proveFirstSwitch,searchRecipeSwitches} from './recipe-switch-search.js?v=validated-upgrade';
 import {refineStaffing} from './staffing-search.js';
 import {economicWorkers} from './economic-parallel.js';
 import {comparePlans} from './opportunity-comparison.js';
