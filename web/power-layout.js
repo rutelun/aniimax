@@ -124,26 +124,49 @@ export function connectPower(layout, cells, maximum, repack = true, canRelocate 
     const bucket = r => { const c = center(r); return [Math.floor(c.x / 4), Math.floor(c.y / 4)]; };
     while (connected.size && targets.some(t => !connected.has(t)) && poles.length < maximum) {
         const available = candidates.filter(r => !poles.some(p => overlap(r, p, EPS * 2)));
-        if (preferCoverage) {
-            const remaining = targets.filter(t => !connected.has(t));
-            const scored = new Map(available.map(r => [r, remaining.reduce((sum,t) => sum + (powerLinked(r,t) ? 1 : 0), 0)]));
-            available.sort((a,b) => scored.get(b)-scored.get(a));
+        const remaining = targets.filter(t => !connected.has(t));
+        const relays = [...connected].filter(relaysPower);
+        const starts = new Set();
+        const goals = new Map();
+        let direct = null, directScore = 0;
+        for (const site of available) {
+            const start = relays.some(relay => powerLinked(relay, site));
+            if (start) starts.add(site);
+            let score = 0;
+            for (const target of remaining) if (powerLinked(site, target)) {
+                score++;
+                if (!preferCoverage) break;
+            }
+            if (!score) continue;
+            goals.set(site, score);
+            if (start && score > directScore) {
+                direct = site;
+                directScore = score;
+                if (!preferCoverage || score === remaining.length) break;
+            }
         }
+        // The old breadth-first order checks every one-pole route before
+        // extending a route. Preserve its stable coverage and position ties.
+        if (direct) {
+            poles.push(direct);
+            attach();
+            continue;
+        }
+        if (!goals.size || !starts.size || maximum - poles.length < 2) break;
+        if (preferCoverage) available.sort((a, b) => (goals.get(b) || 0) - (goals.get(a) || 0));
         const buckets = new Map();
         for (const r of available) { const key = bucket(r).join(','); if (!buckets.has(key)) buckets.set(key, new Set()); buckets.get(key).add(r); }
         const parents = new Map();
         const depth = new Map();
         const queue = [];
-        const relays = [...connected].filter(relaysPower);
-        for (const r of available) if (relays.some(n => powerLinked(n, r))) {
+        for (const r of available) if (starts.has(r)) {
             parents.set(r, null); depth.set(r, 1); queue.push(r);
             buckets.get(bucket(r).join(',')).delete(r);
         }
         let end = null;
-        const remaining = targets.filter(t => !connected.has(t));
         for (let head = 0; head < queue.length; head++) {
             const r = queue[head];
-            if (remaining.some(t => powerLinked(r, t))) { end = r; break; }
+            if (goals.has(r)) { end = r; break; }
             if (depth.get(r) >= maximum - poles.length) continue;
             const [bx, by] = bucket(r);
             // Half-tile pole sites link only within four tiles per axis, one bucket away.
