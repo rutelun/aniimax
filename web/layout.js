@@ -1,3 +1,4 @@
+import {rectangleMask} from './rectangle-mask.js';
 import { deliveryRouteCost } from './delivery-routing.js';
 // Places a whole homeland around its Storage Units, so the Aniimo hauling each finished batch
 // walk as little as they can. Final scoring includes the approach from the previous task
@@ -194,7 +195,9 @@ export function layOut(pieces, options = {}) {
     const hasWorkerRoutes = accountForWorkers && pieces.some(p => membersOf(p).some(m => m.workers?.length));
     const squares = new Map();
     const sensitive = new Map();
+    const packingMask = rectangleMask(cells, {removable:true});
     const occupy = (key, spot) => {
+        for (const r of spot.rects) packingMask?.add(r);
         placedRects.set(key, spot.rects);
         spot.rects.forEach(r => spatialCells(r).forEach(c => {
             if (!grid.has(c)) grid.set(c, new Set());
@@ -204,6 +207,8 @@ export function layOut(pieces, options = {}) {
         if (spot.sensitive?.length) sensitive.set(key, spot.sensitive);
     };
     const vacate = key => {
+        // During relocation the piece being tested can overlap its old position.
+        for (const rect of placedRects.get(key) || []) packingMask?.remove(rect);
         (placedRects.get(key) || []).forEach(r => spatialCells(r).forEach(c => grid.get(c)?.delete(key)));
         placedRects.delete(key);
         squares.delete(key);
@@ -211,6 +216,10 @@ export function layOut(pieces, options = {}) {
     };
     const free = (r, ignore) => {
         if (!inside(r)) return false;
+        if (packingMask && !placedRects.has(ignore)) {
+            const blocked = packingMask.overlaps(r);
+            if (blocked !== undefined) return !blocked;
+        }
         collisionStamp=(collisionStamp+1)>>>0;
         if(!collisionStamp){collisionSeen.fill(0);collisionStamp=1;}
         const right=Math.floor((r.x+r.w-EPSILON)/CELL),bottom=Math.floor((r.y+r.h-EPSILON)/CELL);
@@ -252,6 +261,11 @@ export function layOut(pieces, options = {}) {
                 const member=shape.members[0],rectangle={x:0,y:0,w:member.w,h:member.h},rectangles=[rectangle];
                 const monotone=initialPacking&&fast&&!options.canPlace&&options.monotonePacking!==false;
                 const footprint=`${member.w}:${member.h}:${!!member.sensitive}`;
+                // With a grid-aligned center and no worker walk the lattice is
+                // already in exact cost order, including preferred storage profiles.
+                const nearestWins = shape.spread === 0 && Number.isInteger(shape.cx / STEP)
+                    && Number.isInteger(shape.cy / STEP) && member.weight >= 0
+                    && (!hasWorkerRoutes || !member.workers?.some(([worker]) => activeWorkerHubs.has(worker)));
                 let offsetIndex=monotone?(firstAvailableOffset.get(footprint)||0):0;
                 for(;offsetIndex<offsets.length;offsetIndex++){
                     const [ox,oy,distance]=offsets[offsetIndex];
@@ -276,6 +290,7 @@ export function layOut(pieces, options = {}) {
                         const placed={...rectangle};
                         best={cost,x,y,shape,rects:[placed],sensitive:member.sensitive?[placed]:[]};
                     }
+                    if (nearestWins) break;
                 }
                 if(monotone&&firstFit===null)firstAvailableOffset.set(footprint,offsets.length);
                 continue;

@@ -25,6 +25,26 @@ function fixSiteCounts(full, proposal) {
     return {...full, lp:full.lp.replace('\nBounds\n', '\n' + rows.join('\n') + '\nBounds\n')};
 }
 
+// A relaxed recipe mix can already earn its ceiling once its whole buildings
+// trade staffed and electric modes. Fix the total batches of each recipe in
+// the full model and let its work-conservation and climate rows choose the sites.
+function fixRecipeRates(full, proposal) {
+    const rates = new Map(proposal.keys.map((key, i) => [key, proposal.values[i]]));
+    const groups = new Map();
+    for (const [v, name, facility] of full.recipe_options) {
+        const rate = rates.get(full.variable_keys[v]);
+        if (!Number.isFinite(rate) || rate < -1e-8) return null;
+        const key = JSON.stringify([facility, name]);
+        if (!groups.has(key)) groups.set(key, {variables:[], total:0});
+        const group = groups.get(key);
+        group.variables.push(v);
+        group.total += Math.max(0, rate);
+    }
+    const rows = [...groups.values()].map(({variables, total}, i) =>
+        ` selected_rate_${i}: ${variables.map(v => 'x' + v).join(' + ')} = ${total}`);
+    return {...full, lp:full.lp.replace('\nBounds\n', '\n' + rows.join('\n') + '\nBounds\n')};
+}
+
 // Keep every recipe and climate constraint in the search. Introduce the
 // continuous-operation constraints for competing recipes as their rates reveal
 // contention. Each relaxation bounds income; only the full model can earn it.
@@ -43,6 +63,14 @@ export async function searchProductionSites(highs, raw, full, scopedModel, solve
         const checked = await solve(fixSiteCounts(full, proposal), {timeLimit:1});
         if (checked?.objective > (best?.objective ?? 0)) best = checked;
         if (best && Math.abs(upper - best.objective) <= 1e-8 * Math.max(1, best.objective)) break;
+        if (round === 0 && proposal.objective > 0 && Math.abs(upper - proposal.objective) <= 1e-8 * Math.max(1, upper)) {
+            const fixedRates = fixRecipeRates(full, proposal);
+            const fitted = fixedRates && await solve(fixedRates, {timeLimit:1});
+            if (fitted?.values && Math.abs(upper - fitted.objective) <= 1e-8 * Math.max(1, upper)) {
+                best = fitted;
+                break;
+            }
+        }
         let next = suggestEconomicScope(model, proposal.values, scope);
         if (next.length === scope.length) {
             next = [...new Set([...scope, ...proposal.occupiedRecipes, ...proposal.activeRecipes])];

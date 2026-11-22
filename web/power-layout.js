@@ -1,3 +1,4 @@
+import {rectangleMask} from './rectangle-mask.js';
 // Power coverage is square, centered on the generator/pole. A real 1/4 tile overlap
 // connects a building. Only generators and poles relay power; consumers are endpoints. The ranges,
 // footprints and conservative overlap follow Aniimo Camp's public Home planner data.
@@ -25,6 +26,15 @@ function covers(relay, target) {
 }
 export const powerLinked = (a, b) => covers(a, b) || covers(b, a);
 const relaysPower = member => member.generator || member.pole;
+
+function obstacleTest(cells, rectangles) {
+    const mask = rectangleMask(cells);
+    for (const r of rectangles) mask?.add(r);
+    return {
+        add(r) { rectangles.push(r); mask?.add(r); },
+        blocked(r) { return mask?.overlaps(r) ?? rectangles.some(other => overlap(r, other, EPS * 2)); },
+    };
+}
 
 function attachTargets(targets, connected, links) {
     let changed;
@@ -71,7 +81,7 @@ export function connectPower(layout, cells, maximum, repack = true, canRelocate 
         const destinations = [...consumers, ...generators.filter(g => g !== generator)];
         const sumX = destinations.reduce((sum, m) => sum + m.x + m.w / 2, 0);
         const sumY = destinations.reduce((sum, m) => sum + m.y + m.h / 2, 0);
-        const obstacles = [...members.filter(m => m !== generator), ...layout.storages];
+        const obstacles = obstacleTest(cells,[...members.filter(m => m !== generator), ...layout.storages]);
         let best = null;
         for (const cell of destinations.length ? cells : []) {
             for (let y = cell.y; y < cell.y + cell.h; y += 0.5) for (let x = cell.x; x < cell.x + cell.w; x += 0.5) {
@@ -82,7 +92,7 @@ export function connectPower(layout, cells, maximum, repack = true, canRelocate 
                 if (best && cost >= best.cost) continue;
                 const r = { x, y, w: generator.w, h: generator.h };
                 if (canRelocate && !canRelocate(generator, r)) continue;
-                if (!inside(r) || obstacles.some(o => overlap(r, o, EPS * 2))) continue;
+                if (!inside(r) || obstacles.blocked(r)) continue;
                 if (!best || cost < best.cost) best = { x, y, cost };
             }
         }
@@ -96,7 +106,7 @@ export function connectPower(layout, cells, maximum, repack = true, canRelocate 
     const attach = () => attachTargets([...targets, ...poles], connected, links);
     attach();
     // Free half-tile locations for poles, never on facilities, storage or locked land.
-    const blocked = [...members, ...layout.storages];
+    const blocked = obstacleTest(cells,[...members, ...layout.storages]);
     const candidates = [];
     const seen = new Set();
     const needsRoute = connected.size && maximum > 0 && targets.some(t => !connected.has(t));
@@ -106,7 +116,7 @@ export function connectPower(layout, cells, maximum, repack = true, canRelocate 
         seen.add(key);
         const r = { x, y, w: 1.5, h: 1.5, pole: true, facility: 'Crackle Power Pole' };
         if (canPlacePole && !canPlacePole(r)) continue;
-        if (!inside(r) || blocked.some(b => overlap(r, b, EPS * 2))) continue;
+        if (!inside(r) || blocked.blocked(r)) continue;
         candidates.push(r);
     }
     // BFS finds a route with the fewest extra poles to one of the remaining targets.
@@ -114,26 +124,49 @@ export function connectPower(layout, cells, maximum, repack = true, canRelocate 
     const bucket = r => { const c = center(r); return [Math.floor(c.x / 4), Math.floor(c.y / 4)]; };
     while (connected.size && targets.some(t => !connected.has(t)) && poles.length < maximum) {
         const available = candidates.filter(r => !poles.some(p => overlap(r, p, EPS * 2)));
-        if (preferCoverage) {
-            const remaining = targets.filter(t => !connected.has(t));
-            const scored = new Map(available.map(r => [r, remaining.reduce((sum,t) => sum + (powerLinked(r,t) ? 1 : 0), 0)]));
-            available.sort((a,b) => scored.get(b)-scored.get(a));
+        const remaining = targets.filter(t => !connected.has(t));
+        const relays = [...connected].filter(relaysPower);
+        const starts = new Set();
+        const goals = new Map();
+        let direct = null, directScore = 0;
+        for (const site of available) {
+            const start = relays.some(relay => powerLinked(relay, site));
+            if (start) starts.add(site);
+            let score = 0;
+            for (const target of remaining) if (powerLinked(site, target)) {
+                score++;
+                if (!preferCoverage) break;
+            }
+            if (!score) continue;
+            goals.set(site, score);
+            if (start && score > directScore) {
+                direct = site;
+                directScore = score;
+                if (!preferCoverage || score === remaining.length) break;
+            }
         }
+        // The old breadth-first order checks every one-pole route before
+        // extending a route. Preserve its stable coverage and position ties.
+        if (direct) {
+            poles.push(direct);
+            attach();
+            continue;
+        }
+        if (!goals.size || !starts.size || maximum - poles.length < 2) break;
+        if (preferCoverage) available.sort((a, b) => (goals.get(b) || 0) - (goals.get(a) || 0));
         const buckets = new Map();
         for (const r of available) { const key = bucket(r).join(','); if (!buckets.has(key)) buckets.set(key, new Set()); buckets.get(key).add(r); }
         const parents = new Map();
         const depth = new Map();
         const queue = [];
-        const relays = [...connected].filter(relaysPower);
-        for (const r of available) if (relays.some(n => powerLinked(n, r))) {
+        for (const r of available) if (starts.has(r)) {
             parents.set(r, null); depth.set(r, 1); queue.push(r);
             buckets.get(bucket(r).join(',')).delete(r);
         }
         let end = null;
-        const remaining = targets.filter(t => !connected.has(t));
         for (let head = 0; head < queue.length; head++) {
             const r = queue[head];
-            if (remaining.some(t => powerLinked(r, t))) { end = r; break; }
+            if (goals.has(r)) { end = r; break; }
             if (depth.get(r) >= maximum - poles.length) continue;
             const [bx, by] = bucket(r);
             // Half-tile pole sites link only within four tiles per axis, one bucket away.
@@ -183,6 +216,11 @@ export function repackPower(layout, cells, maximum, { canRelocate = null, canPla
     const my = electricMembers.reduce((sum, m) => sum + center(m).y, 0) / electricMembers.length;
     const anchors = cells.map(c => ({ x: c.x + c.w / 2, y: c.y + c.h / 2 }))
         .sort((a, b) => Math.hypot(a.x - mx, a.y - my) - Math.hypot(b.x - mx, b.y - my)).slice(0, attempts);
+    // Every anchor moves the same electric buildings. Exclude immutable
+    // obstacles once before ordering sites for any of those trials.
+    const stationary = [...layout.storages, ...layout.pieces.flatMap(p => p.members)
+        .filter(m => !m.generator && m.electric_level == null)];
+    const fixed = obstacleTest(cells, stationary);
     const positions = new Map();
     const sitesFor = ({ w, h }) => {
         const key = `${w}|${h}`;
@@ -190,7 +228,7 @@ export function repackPower(layout, cells, maximum, { canRelocate = null, canPla
             const sites = [];
             for (const cell of cells) for (let y = cell.y; y < cell.y + cell.h; y += .5) for (let x = cell.x; x < cell.x + cell.w; x += .5) {
                 const site = { x, y, w, h };
-                if (inside(site)) sites.push(site);
+                if (inside(site) && !fixed.blocked(site)) sites.push(site);
             }
             positions.set(key, sites);
         }
@@ -202,7 +240,7 @@ export function repackPower(layout, cells, maximum, { canRelocate = null, canPla
         const all = trial.pieces.flatMap(p => p.members);
         const movable = all.filter(m => m.generator || m.electric_level != null)
             .sort((a, b) => Number(!!b.generator) - Number(!!a.generator) || b.w * b.h - a.w * a.h);
-        const occupied = [...trial.storages, ...all.filter(m => !movable.includes(m))];
+        const occupied = obstacleTest(cells, []);
         const byDistance = new Map();
         const near = member => {
             const sites = sitesFor(member);
@@ -212,11 +250,21 @@ export function repackPower(layout, cells, maximum, { canRelocate = null, canPla
             }
             return byDistance.get(sites);
         };
+        const cursor = new Map();
         let fits = true;
         for (const m of movable) {
-            const spot = near(m).find(r => (!canRelocate || canRelocate(m, r)) && !occupied.some(o => overlap(r, o, EPS * 2)));
+            const sites = near(m);
+            let index = cursor.get(sites) ?? 0;
+            // Occupancy only grows in this trial. A blocked prefix stays
+            // blocked for every later building with this footprint.
+            while (index < sites.length && occupied.blocked(sites[index])) index++;
+            cursor.set(sites, index);
+            if (canRelocate) {
+                while (index < sites.length && (occupied.blocked(sites[index]) || !canRelocate(m, sites[index]))) index++;
+            }
+            const spot = sites[index];
             if (!spot) { fits = false; break; }
-            m.x = spot.x; m.y = spot.y; occupied.push(m);
+            m.x = spot.x; m.y = spot.y; occupied.add(m);
         }
         if (!fits) continue;
         connectPower(trial, cells, maximum, false, canRelocate, canPlacePole);

@@ -2,18 +2,21 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { groupAniimoAssignments } from '../web/aniimo-assignment-groups.js';
 import { recommendBestTeam } from '../web/best-team.js';
+import { productionTeamJobs } from '../web/production-team-jobs.js';
 
 test('uses the assigned job and facility instead of the portrait’s available abilities', () => {
-    const productionJobs = [
-        ['Mine', 'clay', 'Earth'],
-        ['Well', 'fresh_water', 'Water'],
-        ['Nimbus Bed', 'wool', 'Leisure'],
-        ['Bouncy Brew Keg', 'wheat_tea', 'Water'],
-        ['Claw Game Cooker', 'bread', 'Fire'],
-    ].map(([facility, item, ability]) => ({
-        facility, ability, label: [facility, item, ability].join('|'),
-        fixed: ability === 'Leisure', level: 1, busy: 1,
-    }));
+    const plan = {
+        coin_items: [
+            ['Mine', 'clay', 'Earth'],
+            ['Well', 'fresh_water', 'Water'],
+            ['Nimbus Bed', 'wool', 'Leisure'],
+            ['Bouncy Brew Keg', 'wheat_tea', 'Water'],
+            ['Claw Game Cooker', 'bread', 'Fire'],
+        ].map(([facility, item_name, ability]) => ({
+            facility, item_name, status: 'producing', facility_count: 1,
+            aniimo_tasks: [{ ability, level: 1, busy: 1 }],
+        })),
+    };
     const environmentJobs = [
         ['Sunlamp', 'Light'],
         ['Heat Furnace', 'Fire'],
@@ -23,7 +26,7 @@ test('uses the assigned job and facility instead of the portrait’s available a
         facility, ability, label: facility, fixed: true, level: 1, busy: 1,
     }));
 
-    const { shifts } = recommendBestTeam([...productionJobs, ...environmentJobs], 1);
+    const { shifts } = recommendBestTeam([...productionTeamJobs(plan, []), ...environmentJobs], 1);
     const groups = groupAniimoAssignments(shifts);
     assert.deepEqual(groups.map(([label, members]) => [
         label, members.flatMap(shift => [...shift.tasks.keys()]).sort(),

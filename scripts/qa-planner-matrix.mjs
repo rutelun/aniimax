@@ -12,7 +12,7 @@ import {SEASONS,simpleSetup} from '../web/facility-config.js';
 const {values:args} = parseArgs({options:{
     origin:{type:'string',default:'http://127.0.0.1:8082/'}, cdp:{type:'string',default:'http://127.0.0.1:9231'},
     rv:{type:'string',default:'3,12,16,20,21,22'}, profile:{type:'string',default:'best,minimum,my-small,my-mixed'},
-    timeout:{type:'string',default:'600'}, out:{type:'string',default:'target/qa-planner-matrix'},
+    timeout:{type:'string',default:'Infinity'}, out:{type:'string',default:'target/qa-planner-matrix'},
     season:{type:'string',default:'off'}, 'reference-origin':{type:'string'}, repeats:{type:'string',default:'1'},
     variant:{type:'string',multiple:true,default:[]},
     'switch-upgrade':{type:'boolean',default:false}, 'plan-only':{type:'boolean',default:false}, 'save-inputs':{type:'boolean',default:false},
