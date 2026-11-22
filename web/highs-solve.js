@@ -93,3 +93,13 @@ export function polishSolution(highs, problem, result) {
     const objective = refined.ObjectiveValue+(problem.tiebreak || []).reduce((sum,[v,w])=>sum+w*values[v],0);
     return {...result,values,objective,polished:true};
 }
+
+// HiGHS can accept a small overload in an integer solution. Refit the rates
+// with the same whole sites and workers before another goal locks in that rate.
+export function attainablePriority(highs, problem, result) {
+    const checked = polishSolution(highs, problem, result);
+    const tolerance = 1e-10 * Math.max(1, Math.abs(result.objective));
+    if (!checked.polished || checked.objective >= result.objective - tolerance) return result;
+    return {...checked, proven:false, searchProven:false,
+        upper:result.proven ? Math.max(result.upper ?? result.objective, result.objective) : result.upper};
+}

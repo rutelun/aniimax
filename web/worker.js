@@ -419,7 +419,7 @@ async function exactPlanJsonOnce(pkg, payload, step = () => {}, first = () => {}
         comparison?.observe(goal, result);
         return result;
     };
-    const solve = async (problem, goal, rebuild) => {
+    const solveCatalogue = async (problem, goal, rebuild) => {
         // A relaxed candidate may use a new recipe. Keep the previous priority's
         // physical shift until the newly occupied recipes pass their full constraints.
         const previous = incumbent?.values && incumbentKeys ? {keys:incumbentKeys, values:incumbent.values} : null;
@@ -461,6 +461,17 @@ async function exactPlanJsonOnce(pkg, payload, step = () => {}, first = () => {}
             certificates.splice(0,certificates.length,...stable);
             Object.assign(problem,rebuild());
         }
+    };
+    const solve = async (problem, goal, rebuild) => {
+        const result = await solveCatalogue(problem, goal, rebuild);
+        if (!result?.values || !(result.objective > 0) || goal === 'crop_variety') return result;
+        const {attainablePriority} = await incumbentSolver;
+        const checked = attainablePriority(await newHighs(), problem, result);
+        if (checked !== result) {
+            incumbent = checked;
+            incumbentKeys = problem.variable_keys;
+        }
+        return checked;
     };
     let allProven = true;
     if (!input.level_up_strategy && (input.crop_variety || input.season)) {
