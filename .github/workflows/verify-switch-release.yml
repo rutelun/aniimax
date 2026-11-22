@@ -1,0 +1,51 @@
+name: Compare recipe switching across all RV levels
+on:
+  push:
+    branches: [codex/compare-switch-release]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        rv: ['21', '20', '19', '18', '22', '16,17', '13,14,15', '10,11,12', '6,7,8,9', '1,2,3,4,5']
+        profile: [best, minimum, my-small]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Download the reference deployment
+        uses: actions/download-artifact@v4
+        with:
+          name: github-pages
+          run-id: 45026764741
+          github-token: ${{ github.token }}
+          path: pages
+      - name: Prepare both versions
+        run: |
+          mkdir reference
+          git archive c60e736 web | tar -x -C reference
+          tar -xf pages/artifact.tar -C reference/web ./pkg
+          cp -r reference/web/pkg web/
+      - name: Compare final plans in Chrome
+        env:
+          RV: ${{ matrix.rv }}
+          PROFILE: ${{ matrix.profile }}
+        run: |
+          python3 -m http.server --bind 127.0.0.1 --directory web 8082 > "$RUNNER_TEMP/candidate.log" 2>&1 &
+          python3 -m http.server --bind 127.0.0.1 --directory reference/web 8083 > "$RUNNER_TEMP/reference.log" 2>&1 &
+          google-chrome --headless --no-sandbox --disable-dev-shm-usage --disable-background-networking --no-first-run --remote-debugging-port=9231 --user-data-dir="$RUNNER_TEMP/chrome" > "$RUNNER_TEMP/chrome.log" 2>&1 &
+          curl --retry 20 --retry-all-errors --retry-delay 1 -fsS http://127.0.0.1:9231/json/version
+          node scripts/qa-planner-matrix.mjs --rv="$RV" --profile="$PROFILE" --season=both --switch-upgrade --reference-origin=http://127.0.0.1:8083/ --timeout=7200
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: comparison-${{ matrix.rv }}-${{ matrix.profile }}
+          path: target/qa-planner-matrix
