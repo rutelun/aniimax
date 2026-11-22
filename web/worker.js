@@ -11,7 +11,7 @@ import { autoMaximizeSeasonPoints, hasSeasonCropMinimums } from './season-planni
 import {continuousProduction} from './continuous-production.js';
 import {continuousNeighborhood, incomeRepairNeighborhood, neighborhoodResult, keepProductionWitness} from './continuous-neighborhood.js';
 import {comparisonConcurrency} from './comparison-queue.js';
-import {searchRecipeSwitches} from './recipe-switch-search.js';
+import {proveFirstSwitch,searchRecipeSwitches} from './recipe-switch-search.js?v=validated-upgrade';
 import {refineStaffing} from './staffing-search.js';
 import {economicWorkers} from './economic-parallel.js';
 import {comparePlans} from './opportunity-comparison.js';
@@ -383,7 +383,28 @@ async function exactPlanJsonOnce(pkg, payload, step = () => {}, first = () => {}
                 : keepProductionWitness(await runModel(protectedProblem, options, message, bestSeed?.values ?? seed), bestSeed);
             if (result && Number.isFinite(knownUpper) && knownUpper >= result.objective)
                 result.upper = Math.min(result.upper ?? Infinity, knownUpper);
-        }else result=await runModel(protectedProblem,options,message,seed);
+        }else {
+            // A positive upgrade floor forces whole workshop chains. Without
+            // it, repricing equal-income patterns can add another recipe pass.
+            if (!comparison && deadline==null && !input.continuous_fast_neighborhood
+                && stage.pace>0 && initialSeed && seed && goal===(input.currency||'coins') && problem.recipe_options?.length) {
+                try{
+                    const {resourceBounds}=await import('./resource-bounds.js'+load);
+                    const highs=await newHighs();
+                    const witness=(await incumbentSolver).polishSolution(highs,protectedProblem,{values:seed});
+                    const bounded=witness.polished && resourceBounds(highs,protectedProblem,witness);
+                    if(bounded?.pricedColumns) {
+                        const priced=await runModel(bounded.problem,options,undefined,witness.values);
+                        // A different branch order can earn less at the node
+                        // limit. Only replace the ordinary search with a proof.
+                        if(priced?.proven)result=priced;
+                    }
+                }catch(error){
+                    console.warn('Continuing the ordinary income search.',error);
+                }
+            }
+            result??=await runModel(protectedProblem,options,message,seed);
+        }
         // A repair fixes whole buildings. Only the parent solve can supply a
         // bound that later priorities may reuse across different buildings.
         result = keepProductionWitness(result,repaired);
@@ -398,7 +419,7 @@ async function exactPlanJsonOnce(pkg, payload, step = () => {}, first = () => {}
         comparison?.observe(goal, result);
         return result;
     };
-    const solve = async (problem, goal, rebuild) => {
+    const solveCatalogue = async (problem, goal, rebuild) => {
         // A relaxed candidate may use a new recipe. Keep the previous priority's
         // physical shift until the newly occupied recipes pass their full constraints.
         const previous = incumbent?.values && incumbentKeys ? {keys:incumbentKeys, values:incumbent.values} : null;
@@ -440,6 +461,17 @@ async function exactPlanJsonOnce(pkg, payload, step = () => {}, first = () => {}
             certificates.splice(0,certificates.length,...stable);
             Object.assign(problem,rebuild());
         }
+    };
+    const solve = async (problem, goal, rebuild) => {
+        const result = await solveCatalogue(problem, goal, rebuild);
+        if (!result?.values || !(result.objective > 0) || goal === 'crop_variety') return result;
+        const {attainablePriority} = await incumbentSolver;
+        const checked = attainablePriority(await newHighs(), problem, result);
+        if (checked !== result) {
+            incumbent = checked;
+            incumbentKeys = problem.variable_keys;
+        }
+        return checked;
     };
     let allProven = true;
     if (!input.level_up_strategy && (input.crop_variety || input.season)) {
@@ -607,7 +639,7 @@ async function exactPlanJsonOnce(pkg, payload, step = () => {}, first = () => {}
         };
         if (workProblem.lp) {
             step('materials', 'start');
-            const worked = await (await materialSearch).searchMaterials({...workProblem,continuousMaterialSearch:true}, solved.values, runModel, options);
+            const worked = await (await materialSearch).searchMaterials({...workProblem,continuousMaterialSearch:true,requiredUpgradeFlow:stage.pace>0}, solved.values, runModel, options);
             step('materials', worked ? 'done' : 'fail', worked?.proven);
             if (worked) {
                 allProven &&= solved.proven;
@@ -846,9 +878,9 @@ async function repairDispatchPlan(pkg, input, witness) {
         material_work_note:'unproven'};
 }
 
-async function withRecipeSwitches(pkg,input,baseline,progress=()=>{},timed=false) {
+async function withRecipeSwitches(pkg,input,baseline,progress=()=>{},timed=false,firstProposal) {
     const deadline=timed ? performance.now()+10000 : null;
-    return searchRecipeSwitches(input,baseline,{
+    return searchRecipeSwitches(input,baseline,{firstProposal,
         parallel:globalThis.navigator?.hardwareConcurrency>=8 && globalThis.navigator?.deviceMemory>=8
             ? 4 : comparisonConcurrency(globalThis.navigator,4),
         createWorker:!timed && typeof Worker==='function'?()=>new Worker(plannerWorkerUrl,{type:'module'}):null,
@@ -929,6 +961,15 @@ self.onmessage = async (event) => {
             let fallbackReason = null;
             // Each solve's start and end go to the page as progress, as `{ step, state, proven }`.
             const step = (key, state, proven) => self.postMessage({ id, type: 'progress', count: { step: key, state, proven } });
+            const switchingInput = JSON.parse(payload);
+            const firstSwitch = await proveFirstSwitch(switchingInput, async trial => {
+                const {upgradeSwitchBounds} = await import('./recipe-switch-bound.js'+load);
+                return upgradeSwitchBounds(pkg,await newHighs(),switchingInput,trial);
+            }, async trial => JSON.parse(await exactPlanJson(pkg,JSON.stringify(trial))), step);
+            if (firstSwitch?.winner) {
+                self.postMessage({id,ok:true,result:JSON.stringify(firstSwitch.winner)});
+                return;
+            }
             try {
                 let top = null;
                 result = await exactPlanJson(pkg, payload, step, found => { top ||= found; },null,null,event.data.routeWitness);
@@ -962,9 +1003,8 @@ self.onmessage = async (event) => {
                 plan.fallback_reason = fallbackReason;
                 result = JSON.stringify(plan);
             }
-            const switchingInput=JSON.parse(payload);
             if(switchingInput.recipe_switching?.max_buildings>0){
-                const selected=await withRecipeSwitches(pkg,switchingInput,JSON.parse(result),step);
+                const selected=await withRecipeSwitches(pkg,switchingInput,JSON.parse(result),step,false,firstSwitch?.proposed);
                 result=JSON.stringify(selected);
             }
             self.postMessage({ id, ok: true, result });

@@ -40,7 +40,7 @@ function planner(materialResult, priorities = ['coins'], extra = {}) {
         },
     };
     const run = plannerFunction('solveModel', 'materialSearch','prioritySearch','autoMaximizeSeasonPoints','hasSeasonCropMinimums', `const SOLVE_OPTIONS={time_limit:30}, STRICT_OPTIONS={}, SEASON_POINTS='season_points';
-        const newHighs=async()=>({solve:()=>({})}), incumbentSolver=Promise.resolve({polishSolution:(_,__,r)=>r});
+        const newHighs=async()=>({solve:()=>({})}), incumbentSolver=Promise.resolve({attainablePriority:(_,__,r)=>r,polishSolution:(_,__,r)=>r});
         ${pipeline}; return exactPlanJson;`)(solveModel, Promise.resolve({searchMaterials}),Promise.resolve({productionObjective,productionCertificate,withProductionBounds}),autoMaximizeSeasonPoints,hasSeasonCropMinimums);
     return {calls,checks,progress, result, run:()=>run(pkg, JSON.stringify({currency:'coins',priorities,
         facilities:{'Woodworking Bench':[{count:2,level:2}]},...extra}), (...event)=>progress.push(event))};
@@ -164,7 +164,7 @@ test('initial planning remaps the incumbent when a new priority inserts or reord
         exact_plan:()=>JSON.stringify({success:true,rate_per_second:1}),
     };
     const run=plannerFunction('solveModel','prioritySearch','autoMaximizeSeasonPoints','hasSeasonCropMinimums',`const SOLVE_OPTIONS={time_limit:30},STRICT_OPTIONS={},SEASON_POINTS='season_points';
-        const newHighs=async()=>({solve:()=>({})}), incumbentSolver=Promise.resolve({polishSolution:(_,__,r)=>r});
+        const newHighs=async()=>({solve:()=>({})}), incumbentSolver=Promise.resolve({attainablePriority:(_,__,r)=>r,polishSolution:(_,__,r)=>r});
         ${pipeline};return exactPlanJson;`)(solveModel,Promise.resolve({productionObjective,productionCertificate,withProductionBounds}),autoMaximizeSeasonPoints,hasSeasonCropMinimums);
     await run(pkg,JSON.stringify({currency:'coins',priorities:['coins','Wood Blocks'],facilities:{'Woodworking Bench':[],'Chimney Kiln':[]}}));
     assert.deepEqual(calls[1].seed,[0,.3,.2]);
@@ -189,7 +189,7 @@ test('a proved earlier currency maximum passes directly to materials; unproved o
                 : {...model(JSON.parse(stage).maximize_material_work?'materials':'final'),stage:JSON.parse(stage)}),
             exact_plan:()=>JSON.stringify({success:true,rate_per_second:10})};
         const run=plannerFunction('solveModel','prioritySearch','materialSearch','autoMaximizeSeasonPoints','hasSeasonCropMinimums',`const SOLVE_OPTIONS={time_limit:30},STRICT_OPTIONS={},SEASON_POINTS='season_points';
-            const newHighs=async()=>({solve:()=>({})}),incumbentSolver=Promise.resolve({polishSolution:(_,__,r)=>r});
+            const newHighs=async()=>({solve:()=>({})}),incumbentSolver=Promise.resolve({attainablePriority:(_,__,r)=>r,polishSolution:(_,__,r)=>r});
             ${pipeline};return exactPlanJson;`)(solveModel,Promise.resolve({productionObjective,productionCertificate,withProductionBounds}),Promise.resolve({searchMaterials}),autoMaximizeSeasonPoints,hasSeasonCropMinimums);
         const priorities = pacePosition === 'before' ? ['level_up','coins','Wood Blocks']
             : pacePosition === 'after' ? ['coins','level_up','Wood Blocks'] : ['coins','Wood Blocks'];
@@ -218,7 +218,7 @@ test('a zero-output incumbent does not seed the next production priority', async
     };
     const run = plannerFunction('solveModel', 'prioritySearch', 'autoMaximizeSeasonPoints', 'hasSeasonCropMinimums',
         `const SOLVE_OPTIONS = {}, STRICT_OPTIONS = {}, SEASON_POINTS = 'season_points';
-        const newHighs = async () => ({}), incumbentSolver = Promise.resolve({ polishSolution: (_, __, result) => result });
+        const newHighs = async () => ({}), incumbentSolver = Promise.resolve({ attainablePriority: (_, __, result) => result, polishSolution: (_, __, result) => result });
         ${pipeline}; return exactPlanJson;`)(solveModel,
         Promise.resolve({ productionObjective, productionCertificate, withProductionBounds }),
         autoMaximizeSeasonPoints, hasSeasonCropMinimums);
