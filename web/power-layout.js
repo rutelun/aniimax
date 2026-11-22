@@ -1,3 +1,4 @@
+import {rectangleMask} from './rectangle-mask.js';
 // Power coverage is square, centered on the generator/pole. A real 1/4 tile overlap
 // connects a building. Only generators and poles relay power; consumers are endpoints. The ranges,
 // footprints and conservative overlap follow Aniimo Camp's public Home planner data.
@@ -25,6 +26,15 @@ function covers(relay, target) {
 }
 export const powerLinked = (a, b) => covers(a, b) || covers(b, a);
 const relaysPower = member => member.generator || member.pole;
+
+function obstacleTest(cells, rectangles) {
+    const mask = rectangleMask(cells);
+    for (const r of rectangles) mask?.add(r);
+    return {
+        add(r) { rectangles.push(r); mask?.add(r); },
+        blocked(r) { return mask?.overlaps(r) ?? rectangles.some(other => overlap(r, other, EPS * 2)); },
+    };
+}
 
 function attachTargets(targets, connected, links) {
     let changed;
@@ -71,7 +81,7 @@ export function connectPower(layout, cells, maximum, repack = true, canRelocate 
         const destinations = [...consumers, ...generators.filter(g => g !== generator)];
         const sumX = destinations.reduce((sum, m) => sum + m.x + m.w / 2, 0);
         const sumY = destinations.reduce((sum, m) => sum + m.y + m.h / 2, 0);
-        const obstacles = [...members.filter(m => m !== generator), ...layout.storages];
+        const obstacles = obstacleTest(cells,[...members.filter(m => m !== generator), ...layout.storages]);
         let best = null;
         for (const cell of destinations.length ? cells : []) {
             for (let y = cell.y; y < cell.y + cell.h; y += 0.5) for (let x = cell.x; x < cell.x + cell.w; x += 0.5) {
@@ -82,7 +92,7 @@ export function connectPower(layout, cells, maximum, repack = true, canRelocate 
                 if (best && cost >= best.cost) continue;
                 const r = { x, y, w: generator.w, h: generator.h };
                 if (canRelocate && !canRelocate(generator, r)) continue;
-                if (!inside(r) || obstacles.some(o => overlap(r, o, EPS * 2))) continue;
+                if (!inside(r) || obstacles.blocked(r)) continue;
                 if (!best || cost < best.cost) best = { x, y, cost };
             }
         }
@@ -96,7 +106,7 @@ export function connectPower(layout, cells, maximum, repack = true, canRelocate 
     const attach = () => attachTargets([...targets, ...poles], connected, links);
     attach();
     // Free half-tile locations for poles, never on facilities, storage or locked land.
-    const blocked = [...members, ...layout.storages];
+    const blocked = obstacleTest(cells,[...members, ...layout.storages]);
     const candidates = [];
     const seen = new Set();
     const needsRoute = connected.size && maximum > 0 && targets.some(t => !connected.has(t));
@@ -106,7 +116,7 @@ export function connectPower(layout, cells, maximum, repack = true, canRelocate 
         seen.add(key);
         const r = { x, y, w: 1.5, h: 1.5, pole: true, facility: 'Crackle Power Pole' };
         if (canPlacePole && !canPlacePole(r)) continue;
-        if (!inside(r) || blocked.some(b => overlap(r, b, EPS * 2))) continue;
+        if (!inside(r) || blocked.blocked(r)) continue;
         candidates.push(r);
     }
     // BFS finds a route with the fewest extra poles to one of the remaining targets.
@@ -202,7 +212,7 @@ export function repackPower(layout, cells, maximum, { canRelocate = null, canPla
         const all = trial.pieces.flatMap(p => p.members);
         const movable = all.filter(m => m.generator || m.electric_level != null)
             .sort((a, b) => Number(!!b.generator) - Number(!!a.generator) || b.w * b.h - a.w * a.h);
-        const occupied = [...trial.storages, ...all.filter(m => !movable.includes(m))];
+        const occupied=obstacleTest(cells,[...trial.storages, ...all.filter(m => !movable.includes(m))]);
         const byDistance = new Map();
         const near = member => {
             const sites = sitesFor(member);
@@ -214,9 +224,9 @@ export function repackPower(layout, cells, maximum, { canRelocate = null, canPla
         };
         let fits = true;
         for (const m of movable) {
-            const spot = near(m).find(r => (!canRelocate || canRelocate(m, r)) && !occupied.some(o => overlap(r, o, EPS * 2)));
+            const spot = near(m).find(r => (!canRelocate || canRelocate(m, r)) && !occupied.blocked(r));
             if (!spot) { fits = false; break; }
-            m.x = spot.x; m.y = spot.y; occupied.push(m);
+            m.x = spot.x; m.y = spot.y; occupied.add(m);
         }
         if (!fits) continue;
         connectPower(trial, cells, maximum, false, canRelocate, canPlacePole);

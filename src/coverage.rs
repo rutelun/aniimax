@@ -310,38 +310,39 @@ pub struct PackingSolution {
 /// splitting one building type's owned count across modes within a single combined ILP) hangs at
 /// moderate scale.
 fn add_cell_conflict_constraints(problem: &mut microlp::Problem, vars: &[(Placement, microlp::Variable)], capacity: u32) {
-    let (mut min_x, mut max_x, mut min_y, mut max_y) =
-        (f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY);
-    for (p, _) in vars {
-        let r = p.rect();
-        min_x = min_x.min(r.x1);
-        max_x = max_x.max(r.x2);
-        min_y = min_y.min(r.y1);
-        max_y = max_y.max(r.y2);
-    }
-    if !min_x.is_finite() {
-        return; // no vars
-    }
-    let cols = ((max_x - min_x) / GRID_STEP).round() as i64;
-    let rows = ((max_y - min_y) / GRID_STEP).round() as i64;
-    for cx in 0..cols {
-        let cell_x1 = min_x + cx as f64 * GRID_STEP;
-        let cell_x2 = cell_x1 + GRID_STEP;
-        for cy in 0..rows {
-            let cell_y1 = min_y + cy as f64 * GRID_STEP;
-            let cell_y2 = cell_y1 + GRID_STEP;
-            let terms: Vec<(microlp::Variable, f64)> = vars
-                .iter()
-                .filter(|(p, _)| {
-                    let r = p.rect();
-                    r.x1 < cell_x2 - EPS && r.x2 > cell_x1 + EPS && r.y1 < cell_y2 - EPS && r.y2 > cell_y1 + EPS
-                })
-                .map(|(_, v)| (*v, 1.0))
-                .collect();
-            if terms.len() < 2 {
-                continue; // a cell touched by at most one candidate can never conflict
+    if vars.is_empty() { return; }
+    // The set of plots covering a cell changes only at a plot edge. This
+    // represents whole-, half- and quarter-tile alignments on the same grid.
+    let edges = |axis: fn(&Placement) -> f64| {
+        let mut edges: Vec<_> = vars.iter().flat_map(|(plot, _)| {
+            let start = (axis(plot) / GRID_STEP).round() as i32;
+            [start, start + (plot.size / GRID_STEP).round() as i32]
+        }).collect();
+        edges.sort_unstable();
+        edges.dedup();
+        edges
+    };
+    let xs = edges(|p| p.x);
+    let ys = edges(|p| p.y);
+    let rows = ys.len() - 1;
+    let mut cells = vec![Vec::new(); (xs.len() - 1) * rows];
+    for (plot, variable) in vars {
+        let bins = |edges: &[i32], start: f64| {
+            let first = (start / GRID_STEP).round() as i32;
+            let end = first + (plot.size / GRID_STEP).round() as i32;
+            edges.binary_search(&first).unwrap()..edges.binary_search(&end).unwrap()
+        };
+        let py = bins(&ys, plot.y);
+        for x in bins(&xs, plot.x) {
+            for y in py.clone() {
+                cells[x * rows + y].push(*variable);
             }
-            problem.add_constraint(&terms, microlp::ComparisonOp::Le, capacity as f64);
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    for cell in cells.iter().filter(|cell| cell.len() > 1) {
+        if seen.insert(cell.as_slice()) {
+            problem.add_constraint(cell.iter().map(|&v| (v, 1.0)), microlp::ComparisonOp::Le, capacity as f64);
         }
     }
 }
@@ -677,13 +678,15 @@ fn compact_layout(building: f64, mut layout: Vec<Placement>, types: &[&str]) -> 
     }
 }
 
+mod catalogue_layout;
+
 thread_local! {
     static TIDY_CACHE: std::cell::RefCell<HashMap<(u64, Vec<(String, u32)>), Option<Vec<Placement>>>> =
         std::cell::RefCell::new(HashMap::new());
 }
 
 /// A tidy layout for exactly `counts` plots: start with a valid deterministic grid,
-/// then pull plots inward. Use [`nearest_layout`] only when the grids cannot fit.
+/// then pull plots inward. Reuse a catalogued packing for mixed footprints that do not fit these grids.
 /// All keep every plot on the building's tile grid, inside the rules. Only
 /// for drawing: how many plots a building covers comes from the packing, not from this. `None`
 /// if nothing fits, so the packing's quarter-tile layout is shown instead. Cached per `counts`.
@@ -695,6 +698,7 @@ pub fn tidy_layout(building: f64, counts: &[(String, u32)]) -> Option<Vec<Placem
     }
     let types: Vec<_> = counts.iter().map(|(facility,_)|facility.as_str()).collect();
     let layout = fallback_layout(building, &counts).map(|layout|compact_layout(building,layout,&types))
+        .or_else(||catalogue_layout::catalogue_layout(building, &counts))
         .or_else(||nearest_layout(building, &counts));
     TIDY_CACHE.with(|cache| cache.borrow_mut().insert(key, layout.clone()));
     layout
@@ -812,8 +816,9 @@ fn nearest_layout_at(
         return None;
     }
     let chosen: Vec<Placement> = vars.iter().filter(|(_, v)| solution[*v] > 0.5).map(|(p, _)| p.clone()).collect();
-    let wanted: u32 = counts.iter().map(|(_, n)| n).sum();
-    (chosen.len() == wanted as usize).then_some((solution.objective(), chosen))
+    let matches_request = counts.iter().all(|(name, count)|
+        chosen.iter().filter(|p| p.facility == *name).count() == *count as usize);
+    matches_request.then_some((solution.objective(), chosen))
 }
 
 /// Plots flush against the building and each other, nearest first: each plot takes the closest
@@ -1144,6 +1149,9 @@ pub fn pair_layout_for(sizes: PairSizes, types: &[&str], offset: Offset, counts:
     for (t, &facility) in types.iter().enumerate() {
         let size = facility_footprint(facility)?;
         for (placement, zone) in pair_candidates(sizes, facility, size, offset) {
+            if counts[zone as usize][t] == 0 {
+                continue;
+            }
             vars.push((placement, problem.add_binary_var(0.0)));
             tagged.push((t, zone));
         }
@@ -1188,12 +1196,24 @@ pub fn pair_layout_for(sizes: PairSizes, types: &[&str], offset: Offset, counts:
     Some(layouts)
 }
 
+type PairLayoutKey = ((u64, u64), Offset, Vec<String>, [Vec<u32>; 3]);
+thread_local! {
+    static LAST_TIDY_PAIR: std::cell::RefCell<Option<(PairLayoutKey, [Vec<Placement>; 3])>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 /// A tidy arrangement of the same plots a [`PairOption`] holds: the same counts in the same zones,
 /// but gathered in around the building they belong to (around the midpoint, in the zone both
 /// reach) and lined up edge to edge, as [`nearest_layout`] does for one building. All three zones
 /// are placed at once, so plots never land on each other. `None` if those counts can't be placed
 /// this way, in which case the packing's own layout stands.
 pub fn tidy_pair_layout(sizes: PairSizes, types: &[&str], offset: Offset, counts: &[Vec<u32>; 3]) -> Option<[Vec<Placement>; 3]> {
+    let key = (sizes.key(), offset, types.iter().map(|name| (*name).to_owned()).collect(), counts.clone());
+    if let Some(layout) = LAST_TIDY_PAIR.with(|cache| {
+        cache.borrow().as_ref().filter(|(previous, _)| *previous == key).map(|(_, layout)| layout.clone())
+    }) {
+        return Some(layout);
+    }
     let (a, b) = pair_coverage(sizes, offset);
     let (first, second) = (sizes.first / 2.0, sizes.second / 2.0);
     let (dx, dy) = offset.as_f64();
@@ -1209,6 +1229,9 @@ pub fn tidy_pair_layout(sizes: PairSizes, types: &[&str], offset: Offset, counts
     for (t, &facility) in types.iter().enumerate() {
         let size = facility_footprint(facility)?;
         for (placement, zone) in pair_candidates(sizes, facility, size, offset) {
+            if counts[zone as usize][t] == 0 {
+                continue;
+            }
             let (ax, ay) = anchors[zone as usize];
             let (ox, oy) = (placement.x + size / 2.0 - ax, placement.y + size / 2.0 - ay);
             let cost = ox.hypot(oy) + OVERHANG_COST * outside_coverage(&placement.rect(), &a, &b);
@@ -1222,7 +1245,13 @@ pub fn tidy_pair_layout(sizes: PairSizes, types: &[&str], offset: Offset, counts
     // Plots of a size lined up edge to edge, a whole side against a whole side, earn a reward, so
     // the nearest arrangement also comes out in rows and columns rather than staggered.
     for (i, (a, va)) in vars.iter().enumerate() {
-        for (b, vb) in &vars[i + 1..] {
+        for (j, (b, vb)) in vars.iter().enumerate().skip(i + 1) {
+            // Two placements cannot earn an alignment reward if they compete
+            // for the only plot of this type assigned to their zone.
+            let (t, zone) = tagged[i];
+            if tagged[j] == (t, zone) && counts[zone as usize][t] == 1 {
+                continue;
+            }
             let side = (a.size - b.size).abs() < EPS
                 && (((a.x - b.x).abs() - a.size).abs() < EPS && (a.y - b.y).abs() < EPS
                     || ((a.y - b.y).abs() - a.size).abs() < EPS && (a.x - b.x).abs() < EPS);
@@ -1268,6 +1297,11 @@ pub fn tidy_pair_layout(sizes: PairSizes, types: &[&str], offset: Offset, counts
         if layouts[zone].len() as u32 != counts[zone].iter().sum::<u32>() {
             return None;
         }
+    }
+    // A later request may improve a limited solve. Reuse only a proven
+    // minimum for these exact footprints, counts, zones and offset.
+    if solution.stop_reason() == &microlp::StopReason::Finished {
+        LAST_TIDY_PAIR.with(|cache| cache.replace(Some((key, layouts.clone()))));
     }
     Some(layouts)
 }
@@ -1616,6 +1650,51 @@ mod tests {
             }
         }
         println!("{checked} baked arrangements laid out");
+    }
+
+    #[test]
+    fn compressed_conflicts_match_quarter_tiles_for_mixed_grids_and_capacity() {
+        let plots = [(-0.75, -0.5, 2.0), (0.25, 0.0, 2.0), (0.0, 0.25, 1.0), (1.25, -0.5, 1.0)];
+        // The first and fourth plots share an edge; the first three overlap.
+        // Enumerate all assignments, including two copies at the same spot.
+        for capacity in [1, 2] {
+            for encoded in 0..(capacity + 1u32).pow(plots.len() as u32) {
+                let mut remainder = encoded;
+                let mut problem = microlp::Problem::new(microlp::OptimizationDirection::Maximize);
+                let mut occupied = HashMap::new();
+                let mut vars = Vec::new();
+                for (x, y, size) in plots {
+                    let count = remainder % (capacity + 1);
+                    remainder /= capacity + 1;
+                    let selected = problem.add_var(0.0, (count as f64, count as f64));
+                    vars.push((Placement {facility: String::new(), x, y, size}, selected));
+                    for cx in (x * 4.0) as i32..((x + size) * 4.0) as i32 {
+                        for cy in (y * 4.0) as i32..((y + size) * 4.0) as i32 {
+                            *occupied.entry((cx, cy)).or_insert(0) += count;
+                        }
+                    }
+                }
+                add_cell_conflict_constraints(&mut problem, &vars, capacity);
+                assert_eq!(problem.solve().is_ok(), occupied.values().all(|n| *n <= capacity));
+            }
+        }
+    }
+
+    #[test]
+    fn pair_layouts_preserve_each_requested_type_in_each_zone() {
+        let sizes = PairSizes::of("Heat Furnace", "Cooling Unit");
+        let offset = Offset::new(6, 4);
+        let counts = [vec![1, 0], vec![0, 1], vec![1, 1]];
+        for types in [["Dewy House", "Farmland"], ["Farmland", "Dewy House"]] {
+            for layout in [pair_layout_for(sizes, &types, offset, &counts), tidy_pair_layout(sizes, &types, offset, &counts)] {
+                let zones = layout.unwrap();
+                for (zone, plots) in zones.iter().enumerate() {
+                    for (t, name) in types.iter().enumerate() {
+                        assert_eq!(plots.iter().filter(|p| p.facility == *name).count(), counts[zone][t] as usize);
+                    }
+                }
+            }
+        }
     }
 
     // A tidied pair layout holds exactly what the packing found, keeps every plot in its own

@@ -1,3 +1,4 @@
+import {rectangleMask} from './rectangle-mask.js';
 import { deliveryRouteCost } from './delivery-routing.js';
 // Places a whole homeland around its Storage Units, so the Aniimo hauling each finished batch
 // walk as little as they can. Final scoring includes the approach from the previous task
@@ -194,7 +195,9 @@ export function layOut(pieces, options = {}) {
     const hasWorkerRoutes = accountForWorkers && pieces.some(p => membersOf(p).some(m => m.workers?.length));
     const squares = new Map();
     const sensitive = new Map();
+    let packingMask = rectangleMask(cells);
     const occupy = (key, spot) => {
+        for (const r of spot.rects) packingMask?.add(r);
         placedRects.set(key, spot.rects);
         spot.rects.forEach(r => spatialCells(r).forEach(c => {
             if (!grid.has(c)) grid.set(c, new Set());
@@ -204,6 +207,8 @@ export function layOut(pieces, options = {}) {
         if (spot.sensitive?.length) sensitive.set(key, spot.sensitive);
     };
     const vacate = key => {
+        // During relocation the piece being tested can overlap its old position.
+        packingMask = null;
         (placedRects.get(key) || []).forEach(r => spatialCells(r).forEach(c => grid.get(c)?.delete(key)));
         placedRects.delete(key);
         squares.delete(key);
@@ -211,6 +216,10 @@ export function layOut(pieces, options = {}) {
     };
     const free = (r, ignore) => {
         if (!inside(r)) return false;
+        if (packingMask && !placedRects.has(ignore)) {
+            const blocked = packingMask.overlaps(r);
+            if (blocked !== undefined) return !blocked;
+        }
         collisionStamp=(collisionStamp+1)>>>0;
         if(!collisionStamp){collisionSeen.fill(0);collisionStamp=1;}
         const right=Math.floor((r.x+r.w-EPSILON)/CELL),bottom=Math.floor((r.y+r.h-EPSILON)/CELL);

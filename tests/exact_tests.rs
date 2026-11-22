@@ -1077,6 +1077,71 @@ fn exact_uses_the_fewest_environment_buildings() {
     assert!((plan.objective - recomputed).abs() < 1e-9, "objective {} vs {recomputed}", plan.objective);
 }
 
+#[test]
+fn repeated_climate_pairs_distribute_plots_across_individual_instances() {
+    use aniimax::coverage::{building_size, Offset};
+    use aniimax::exact::ExactPair;
+    use aniimax::models::FacilityPlacement;
+
+    let specs = [("Woodland", "Scorching", 7), ("Tidewhisper Sandcastle", "Warm", 1), ("Farmland", "Cool", 5)];
+    let counts = FacilityCounts::only(&[("Woodland", 7, 1), ("Tidewhisper Sandcastle", 1, 1), ("Farmland", 5, 1)]);
+    let mut items: Vec<_> = specs.iter().map(|(name, _, _)| walking_item(name, name, 10.0, "coins")).collect();
+    let mut plan = solve_exact(&items, "coins", &counts, &ModuleLevels::default(), Goal::Earn { floors: &[] }, None, None).unwrap();
+    for (item, (_, mode, _)) in items.iter_mut().zip(specs) {
+        item.environment = Some(mode.into());
+    }
+    plan.pairs = vec![ExactPair {
+        buildings: ("Heat Furnace".into(), "Cooling Unit".into()), modes: ("Scorching".into(), "Cool".into()),
+        offset: Offset::new(6, 5), count: 2,
+        zone_modes: specs.map(|(_, mode, _)| Some(mode.into())),
+        zone_covers: specs.map(|(facility, _, total)| vec![(facility.into(), (total + 1) / 2)]),
+    }];
+    let touches = |p: &FacilityPlacement, x: f64, y: f64, size: f64| {
+        p.x < x + size && x < p.x + p.size && p.y < y + size && y < p.y + p.size
+    };
+    for shared in [true, false] {
+        if !shared { plan.units.remove("Tidewhisper Sandcastle"); }
+        let report = to_production_plan(&plan, &items, "coins", &counts);
+        let assignments = &report.environment_assignments;
+        assert_eq!(assignments.len(), if shared { 3 } else { 2 });
+        for (zone, (facility, mode, total)) in specs.iter().enumerate() {
+            if !shared && zone == 1 { continue; }
+            let row = assignments.iter().find(|row| row.mode == *mode).unwrap();
+            assert_eq!(row.covered, vec![((*facility).to_string(), *total)]);
+            assert_eq!(row.partner.is_some(), shared);
+            assert_eq!(row.units, 2);
+            assert_eq!(row.layouts.len(), 2);
+            for (i, plots) in row.layouts.iter().enumerate() {
+                assert_eq!(plots.len() as u32, total / 2 + u32::from(i < (total % 2) as usize));
+                for plot in plots {
+                    assert_eq!(plot.facility, *facility);
+                    assert_eq!((plot.x * 4.0).fract(), 0.0);
+                    assert_eq!((plot.y * 4.0).fract(), 0.0);
+                    let size = building_size(&row.building);
+                    assert!(!touches(plot, 0.0, 0.0, size));
+                    let first = touches(plot, size / 2.0 - 4.5, size / 2.0 - 4.5, 9.0);
+                    if shared {
+                        assert!(!touches(plot, 6.0, 5.0, 2.0));
+                        let second = touches(plot, 6.0 + 1.0 - 4.5, 5.0 + 1.0 - 4.5, 9.0);
+                        assert_eq!((first, second), [(true, false), (true, true), (false, true)][zone]);
+                    } else { assert!(first); }
+                }
+            }
+        }
+        for i in 0..2 {
+            for row in assignments {
+                let mut plots: Vec<_> = row.layouts[i].iter().collect();
+                if shared {
+                    plots = assignments.iter().flat_map(|r| r.layouts[i].iter()).collect();
+                }
+                for (j, p) in plots.iter().enumerate() {
+                    assert!(plots[j+1..].iter().all(|q| !touches(p, q.x, q.y, q.size)));
+                }
+            }
+        }
+    }
+}
+
 /// The data's items reworked for `crew` (see `aniimax::models::crew_variants`).
 fn crew_items(crew: &aniimax::models::Crew) -> Option<Vec<ProductionItem>> {
     let items = load_items()?;

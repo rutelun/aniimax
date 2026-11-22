@@ -241,26 +241,46 @@ export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},fi
         fullIncome=priority(fullPayload,currencyStage,currency);
         const proofScope=new Set(scope);
         const exactBound=bound;
-        let witness=await restoreCatalogue(highs,solveModel,fullIncome,witnessSeed);
+        const oldCounts=initialWitness.counts??initialWitness.continuous_site_counts;
+        const refitCounts=async(counts)=>{
+            if(!counts)return null;
+            const occupied=new Map(Object.entries(counts).filter(([,n])=>n>0));
+            if(!occupied.size)return null;
+            const compact=priority(payloadFor(occupied.keys(),true),currencyStage,currency);
+            const local=economicCountNeighborhood(highs,compact,occupied);
+            if(!local)return null;
+            const result=await solveModel(local,options(2));
+            if(!result?.values)return null;
+            const polished=polishSolution(highs,local,result);
+            if(!polished.polished)return null;
+            return restoreCatalogue(highs,solveModel,fullIncome,{keys:compact.variable_keys,values:polished.values});
+        };
+        let witness=await refitCounts(oldCounts);
+        if(!witness)witness=await restoreCatalogue(highs,solveModel,fullIncome,witnessSeed);
         let earned=witness ? sum(fullIncome.primary_objective,witness.values) : -Infinity;
         let proofSeed=witness?{keys:fullIncome.variable_keys,values:witness.values}:witnessSeed;
         let initialScope=true;
         let firstProposal;
         for (;;) {
             const model=scopedModel([...proofScope]);
-            // A feasible shift on the measured map is a lower bound. Leave
-            // it in the search and discard branches earning strictly less.
-            const competitive=witness ? keepRawIncome(model,model,earned) : model;
-            // Keep the measured witness for alignment and effort selection.
-            // Certification always starts with a fresh integer search.
-            const proofOptions={scope:[...proofScope],exact:true,seed:proofSeed};
-            let bound=await exactBound(competitive,proofOptions);
-            if(competitive!==model && !bound?.proven)bound=await exactBound(model,proofOptions);
-            if(!bound?.proven || !Number.isFinite(bound.upper) || !bound.values)break;
+            // HiGHS presolve can incorrectly declare a smaller optimum when a
+            // redundant currency floor duplicates the objective on a dispatch model.
+            const proofOptions={scope:[...proofScope],exact:true,seed:proofSeed,
+                relativeGap:CURRENCY_RELATIVE_GAP};
+            let bound=await exactBound(model,proofOptions);
+            if(!Number.isFinite(bound?.upper) || !bound.values)break;
             if(initialScope)firstProposal=bound;
             proofSeed={keys:bound.keys,values:bound.values};
             if(!witness || !close(earned,bound.upper)){
-                let fit=await restoreCatalogue(highs,solveModel,fullIncome,bound);
+                const warm=align(fullIncome,bound);
+                const pattern=fixPhysical(fullIncome,warm,true);
+                const shifted=await solveModel(pattern,options(1),undefined,warm);
+                let fit=shifted?.values && polishSolution(highs,pattern,shifted);
+                if(!fit?.polished || !close(sum(fullIncome.primary_objective,fit.values),bound.upper)){
+                    const alt=await refitCounts(siteCounts(model,bound.values));
+                    if(alt && (!fit?.polished || sum(fullIncome.primary_objective,alt.values)>sum(fullIncome.primary_objective,fit.values)))fit=alt;
+                }
+                if(!fit?.polished)fit=await restoreCatalogue(highs,solveModel,fullIncome,bound);
                 if(!fit&&!initialScope&&bound.upper>0){
                     // Try to attain the relaxed ceiling with those building
                     // counts while refitting all crew shares and power modes.
@@ -286,23 +306,13 @@ export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},fi
                     firstProposal=null;
                     const repaired=best && await restoreCatalogue(highs,solveModel,fullIncome,best);
                     if(repaired){
-                        const value=sum(fullIncome.primary_objective,repaired.values);
                         fit=repaired;
-                        if(bound.upper<=value*CURRENCY_GAP_FACTOR){
-                            const competitive=keepRawIncome(fullIncome,fullIncome,value);
-                            const seed={keys:fullIncome.variable_keys,values:repaired.values};
-                            const full=await exactBound(competitive,{exact:true,seed});
-                            if(full?.proven && full.values && full.upper>=value-1e-7 && close(full.objective,full.upper)){
-                                bound=full;
-                                fit=full;
-                            }
-                        }
                     }
                 }
                 const value=fit && sum(fullIncome.primary_objective,fit.values);
                 if(fit && value>earned){witness=fit;earned=value;}
             }
-            if(witness && close(earned,bound.upper)){
+            if(witness && earned > 0 && bound.upper >= earned - 1e-7 && bound.upper <= earned*CURRENCY_GAP_FACTOR){
                 for(const name of active(fullIncome,witness.values))names.add(name);
                 remember(fullIncome.variable_keys,witness.values,earned);
                 verifiedIncomeValues=witness.values;
@@ -576,11 +586,34 @@ export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},fi
         r=polishSolution(highs,local,r);
     }
     if(request.maximize_material_work)materialWork=sum(p.primary_objective,r.values);
-    const audit=answer=>JSON.parse(pkg.exact_plan(fullPayload,JSON.stringify(request),JSON.stringify({values:answer.values,proven:false,bound:upper,verify_only:true})));
-    const refined=await refineStaffing(local,r,solveModel,{pkg,input,report:values=>audit({values})});
-    let final=refined,plan=audit(final);
-    if(!plan.success&&refined!==r){final=r;plan=audit(final);}
+    // Staffing compares validated production and worker totals. Only the final
+    // shift needs display coordinates for its climate buildings and plots.
+    const audit=(values,summaryOnly=false)=>JSON.parse(pkg.exact_plan(fullPayload,JSON.stringify(request),
+        JSON.stringify({values,proven:false,bound:upper,verify_only:true,summary_only:summaryOnly})));
+    const refined=await refineStaffing(local,r,solveModel,{pkg,input,report:values=>audit(values,true)});
+    let final=refined,plan=audit(final.values);
+    if(!plan.success&&refined!==r){final=r;plan=audit(final.values);}
     if(!plan.success||!Number.isFinite(plan.rate_per_second)||plan.rate_per_second+1e-7<minRate||plan.rate_per_second>upper+1e-7)return null;
+    if (materialPace != null && plan.level_up_preview?.requirements && request.maximize_material_work) {
+        // Material work can improve the pace even after the prior stage has
+        // fixed its minimum. Verify that additional pace with the native model.
+        const needed=plan.level_up_preview.requirements.filter(row=>row.name!==currency && row.need>row.have);
+        const paceColumn=p.variable_keys.indexOf('material_pace#0');
+        if (needed.length && paceColumn>=0) {
+            const pace=Math.min(86400,...needed.map(row=>86400*row.per_second/(row.need-row.have)));
+            if (Number.isFinite(pace) && pace>materialPace+1e-8) {
+                const values=final.values.slice();
+                values[paceColumn]=pace;
+                const lifted={...final,values};
+                const checked=audit(lifted);
+                if (checked.success && checked.rate_per_second>=minRate-1e-7 && checked.rate_per_second<=upper+1e-7) {
+                    final=lifted;
+                    plan=checked;
+                    materialPace=pace;
+                }
+            }
+        }
+    }
     const used=active(p,final.values);
     if(used.some(name=>!names.has(name)))return null;
     const verified=new Map(p.variable_keys.map((key,v)=>[key,final.values[v]]));

@@ -203,6 +203,13 @@ fn embedded_season_items(id: &str) -> Vec<ProductionItem> {
 /// Get embedded production data.
 /// This embeds the CSV data directly into the WASM binary.
 fn get_embedded_items() -> Vec<ProductionItem> {
+    thread_local! {
+        static ITEMS: Vec<ProductionItem> = parse_embedded_items();
+    }
+    ITEMS.with(Clone::clone)
+}
+
+fn parse_embedded_items() -> Vec<ProductionItem> {
     use csv::ReaderBuilder;
 
     // Helper to parse module requirement string
@@ -952,9 +959,11 @@ pub struct JsUnverified {
 
 /// The Farmland/Woodland Aniimo jobs embedded in the web build; see `data/grower_steps.csv`.
 fn embedded_grower_steps() -> crate::models::GrowerSteps {
-    crate::data::parse_grower_steps(include_str!("../data/grower_steps.csv"))
-        .expect("embedded grower_steps.csv is valid")
-        .with_watering()
+    thread_local! {
+        static STEPS: crate::models::GrowerSteps = crate::data::parse_grower_steps(include_str!("../data/grower_steps.csv"))
+            .expect("embedded grower_steps.csv is valid").with_watering();
+    }
+    STEPS.with(Clone::clone)
 }
 
 /// The Aniimo work one producing row creates. A worked facility keeps one Aniimo busy per busy
@@ -1026,8 +1035,11 @@ pub struct JsAniimo {
 
 /// The Aniimo requirements embedded in the web build; see `data/aniimo_requirements.csv`.
 fn embedded_aniimo_requirements() -> crate::models::AniimoRequirements {
-    crate::data::parse_aniimo_requirements(include_str!("../data/aniimo_requirements.csv"))
-        .expect("embedded aniimo_requirements.csv is valid")
+    thread_local! {
+        static REQUIREMENTS: crate::models::AniimoRequirements = crate::data::parse_aniimo_requirements(include_str!("../data/aniimo_requirements.csv"))
+            .expect("embedded aniimo_requirements.csv is valid");
+    }
+    REQUIREMENTS.with(Clone::clone)
 }
 
 fn aniimo_setup_from(
@@ -1759,14 +1771,7 @@ pub fn exact_problem(input_json: &str, stage_json: &str) -> String {
 
 /// `{"lp", "variables", "tiebreak"}` for a model (see [`crate::exact::LpProblem`]).
 fn lp_json(problem: &crate::exact::LpProblem) -> String {
-    serde_json::json!({ "lp": problem.lp, "variables": problem.variables, "tiebreak": problem.tiebreak,
-        "primary_objective": problem.primary_objective, "material_fixed": problem.material_fixed,
-        "variable_keys": problem.variable_keys, "production_zero":problem.production_zero,
-        "recipe_variables":problem.recipe_variables,
-        "recipe_options":problem.recipe_options,
-        "staffing_pools":problem.staffing_pools, "staffing_groups":problem.staffing_groups,
-        "climate_skills":problem.climate_skills,
-        "integer_groups":problem.integer_groups }).to_string()
+    serde_json::to_string(problem).expect("an exact model has serializable fields")
 }
 
 /// The solver's answer to [`exact_problem`]'s model.
@@ -1906,7 +1911,9 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
     let plan = build_report(&exact, reporting_items, &currency, &report_counts);
     let mut js = prepared.to_js(plan, Some(proof));
     js.recipe_switching_candidate = prepared.input.recipe_switching_relaxation;
-    if js.recipe_switching_candidate {
+    if js.recipe_switching_candidate || (!result.summary_only
+        && prepared.input.e_mode_rv.unwrap_or(0) >= 12
+        && prepared.input.aniimo.as_deref().is_some_and(|setup| setup.starts_with("best"))) {
         let all: std::collections::HashMap<_, _> = reporting_items.iter()
             .map(|item| (item.name.as_str(), item)).collect();
         js.schedule_sources = exact.recipe_rates.iter().filter(|(_, rate)| **rate > 1e-9)

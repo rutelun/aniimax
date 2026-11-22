@@ -2859,7 +2859,7 @@ pub struct StaffingPool {
 }
 
 /// A model written out for an external solver.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct LpProblem {
     /// CPLEX LP text.
     pub lp: String,
@@ -3022,12 +3022,14 @@ pub fn write_lp(
     {
         return LpProblem::default();
     }
-    let term = |c: f64, v: usize| format!("{} {} x{v}", if c < 0.0 { "-" } else { "+" }, c.abs());
+    use std::fmt::Write;
+    let term = |out: &mut String, c: f64, v: usize| {
+        write!(out, " {} {} x{v}", if c < 0.0 { "-" } else { "+" }, c.abs()).unwrap();
+    };
     let mut out = String::from("Maximize\n obj:");
     for (v, &c) in model.objective.iter().enumerate() {
         if c != 0.0 {
-            out.push(' ');
-            out.push_str(&term(c, v));
+            term(&mut out, c, v);
         }
     }
     if !model.objective.is_empty() && model.objective.iter().all(|&c| c == 0.0) {
@@ -3040,21 +3042,25 @@ pub fn write_lp(
             ComparisonOp::Ge => ">=",
             ComparisonOp::Eq => "=",
         };
-        let lhs: Vec<String> = terms.iter().map(|&(v, c)| term(c, v)).collect();
-        out.push_str(&format!(" c{k}: {} {op} {rhs}\n", lhs.join(" ")));
+        write!(out, " c{k}:").unwrap();
+        for &(v, c) in terms {
+            term(&mut out, c, v);
+        }
+        if terms.is_empty() { out.push(' '); }
+        writeln!(out, " {op} {rhs}").unwrap();
     }
     out.push_str("Bounds\n");
     for (v, &(lo, hi)) in model.bounds.iter().enumerate() {
         if hi.is_finite() {
-            out.push_str(&format!(" {lo} <= x{v} <= {hi}\n"));
+            writeln!(out, " {lo} <= x{v} <= {hi}").unwrap();
         } else {
-            out.push_str(&format!(" x{v} >= {lo}\n"));
+            writeln!(out, " x{v} >= {lo}").unwrap();
         }
     }
     out.push_str("General\n");
     for (v, &int) in model.integer.iter().enumerate() {
         if int {
-            out.push_str(&format!(" x{v}\n"));
+            writeln!(out, " x{v}").unwrap();
         }
     }
     out.push_str("End\n");
@@ -3731,7 +3737,7 @@ fn production_plan(
                 .iter()
                 .filter_map(|(facility, covered)| {
                     let left = still_needed.entry((facility.clone(), mode.clone())).or_default();
-                    let take = (*covered * pair.count).min(*left);
+                    let take = covered.saturating_mul(pair.count).min(*left);
                     *left -= take;
                     (take > 0).then(|| (facility.clone(), take))
                 })
@@ -3744,16 +3750,17 @@ fn production_plan(
             names.dedup();
             names
         };
-        let counts: [Vec<u32>; 3] = std::array::from_fn(|zone| {
-            types
-                .iter()
-                .map(|facility| used[zone].iter().find(|(f, _)| f == facility).map_or(0, |(_, n)| *n))
-                .collect()
-        });
         let sizes = PairSizes::of(&pair.buildings.0, &pair.buildings.1);
-        // A plain arrangement of the same plots, for when the tidy one can't be worked out.
-        let plain = || {
-            crate::coverage::pair_layout_for(sizes, &types, pair.offset, &counts).unwrap_or_default()
+        // Covered is the total across identical pairs. Split each type's actual
+        // demand across copies; even the larger share fits its single-pair capacity.
+        let per_unit = |zone: usize, unit: u32| -> Vec<(String, u32)> {
+            used[zone].iter().filter_map(|(facility, total)| {
+                let count = total / pair.count + u32::from(unit < total % pair.count);
+                (count > 0).then(|| (facility.clone(), count))
+            }).collect()
+        };
+        let placements = |plots: Vec<crate::coverage::Placement>| -> Vec<FacilityPlacement> {
+            plots.into_iter().map(|p| FacilityPlacement { facility: p.facility, x: p.x, y: p.y, size: p.size }).collect()
         };
         // Standing two buildings a measured distance apart is fiddly, and it only buys anything
         // while all three zones are growing something: with one of them empty the plan wants two
@@ -3789,40 +3796,50 @@ fn production_plan(
             })
             .flatten();
         if let Some(apart) = apart {
-            for (zone, building, mode) in apart {
-                let layout = crate::coverage::tidy_layout(building_size(building), &used[zone])
-                    .unwrap_or_else(|| plain()[zone].clone())
-                    .into_iter()
-                    .map(|p| FacilityPlacement { facility: p.facility, x: p.x, y: p.y, size: p.size })
-                    .collect::<Vec<_>>();
-                pair_assignments.push(EnvironmentAssignment {
+            let detached: Option<Vec<_>> = apart.into_iter().map(|(zone, building, mode)| {
+                let layouts = (0..pair.count).map(|unit|
+                    crate::coverage::tidy_layout(building_size(building), &per_unit(zone, unit)).map(placements)
+                ).collect::<Option<_>>()?;
+                Some(EnvironmentAssignment {
                     building: building.clone(),
                     mode,
                     units: pair.count,
                     covered: used[zone].clone(),
-                    layouts: vec![layout; pair.count as usize],
+                    layouts,
                     partner: None,
                     zone: None,
                     pair_modes: None,
                     pair_id: None,
-                });
+                })
+            }).collect();
+            // A detached building needs placements in its own coordinate frame.
+            // Keep the original paired arrangement if a single layout cannot fit.
+            if let Some(detached) = detached {
+                pair_assignments.extend(detached);
+                continue;
             }
-            continue;
         }
-        let layouts: [Vec<crate::coverage::Placement>; 3] =
-            crate::coverage::tidy_pair_layout(sizes, &types, pair.offset, &counts).unwrap_or_else(plain);
+        let mut layouts: [Vec<Vec<FacilityPlacement>>; 3] = Default::default();
+        for unit in 0..pair.count {
+            let counts = std::array::from_fn(|zone| {
+                let here = per_unit(zone, unit);
+                types.iter().map(|name| here.iter().find(|(f, _)| f == name).map_or(0, |(_, n)| *n)).collect()
+            });
+            let packed = crate::coverage::tidy_pair_layout(sizes, &types, pair.offset, &counts)
+                .or_else(|| crate::coverage::pair_layout_for(sizes, &types, pair.offset, &counts))
+                .unwrap_or_default();
+            for (zone, plots) in packed.into_iter().enumerate() {
+                layouts[zone].push(placements(plots));
+            }
+        }
         for zone in 0..3 {
             let (Some(mode), true) = (pair.zone_modes[zone].clone(), holds(zone)) else { continue };
-            let layout: Vec<FacilityPlacement> = layouts[zone]
-                .iter()
-                .map(|p| FacilityPlacement { facility: p.facility.clone(), x: p.x, y: p.y, size: p.size })
-                .collect();
             pair_assignments.push(EnvironmentAssignment {
                 building: pair.buildings.0.clone(),
                 mode,
                 units: pair.count,
                 covered: used[zone].clone(),
-                layouts: vec![layout; pair.count as usize],
+                layouts: std::mem::take(&mut layouts[zone]),
                 partner: Some((pair.buildings.1.clone(), pair.offset.dx, pair.offset.dy)),
                 zone: Some(zone as u8),
                 pair_modes: Some((pair.modes.0.clone(), pair.modes.1.clone())),

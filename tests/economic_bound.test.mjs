@@ -51,3 +51,17 @@ test('unequal consumer loads identify the competing recipes and their source', (
         lp:problem.lp.replace('x4 >= 0','x4 - 1 x6 = 0')};
     assert.deepEqual(new Set(suggestEconomicScope(sellAll,[1,1,.25,1,.75,1,0])),new Set(['crop','a','b']));
 });
+
+test('a search stopping within the relative gap keeps its certified upper bound', () => {
+    const problem={production_only:true,variables:1,variable_keys:['rate:crop#0'],
+        primary_objective:[[0,1]],lp:'Maximize\n obj: x0\nEnd',
+        recipe_options:[[0,'crop','Farmland',true,false,1]]};
+    const native={getDimensions:()=>({numCols:1}),getColName:()=>'x0',options:{set(){}},run(){},
+        getModelStatus:()=>7,getObjectiveValue:()=>10,getSolution:()=>({colValue:[10]}),dispose(){},
+        info:{get:name=>({mip_dual_bound:10.01,primal_solution_status:2,mip_gap:.001})[name]}};
+    const runtime={constants:{modelStatus:{optimal:7},solutionStatus:{feasible:2}},createModel:()=>native};
+    const result=solveEconomicBound(runtime,problem,{exact:true,relativeGap:.002});
+    assert.equal(result.objective,10);
+    assert.equal(result.upper,10.01);
+    assert.equal(result.proven,false);
+});
