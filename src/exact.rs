@@ -1258,7 +1258,9 @@ fn build_model<'a>(
             let needs_strong = !strong_staffed.is_empty();
             let mut staffed: Vec<(usize, f64)> = used.into_iter().map(|(v, n)| (v, -n)).collect();
             let mut eligible = crew.members.iter().enumerate()
-                .filter(|(member, _)| crew.can_work(*member, ability, 1)).peekable();
+                .filter(|(member, aniimo)| crew.can_work(*member, ability, 1) &&
+                    (building != GENERATOR || facility_counts.power().is_some_and(|p| p.generator_output(aniimo.level(ability)) > 0.0)))
+                .peekable();
             while let Some((member, aniimo)) = eligible.next() {
                 let maximum = if building == GENERATOR {
                     aniimo.count.min(facility_counts.power().unwrap().generator_limit())
@@ -2711,7 +2713,11 @@ pub fn check_plan_with_workload(
             if crew.can_work(*member, ability, 2) { *strong_staffed.entry(building.as_str()).or_default() += share; }
             if building == GENERATOR {
                 let power = facility_counts.power().ok_or("Crackle Generator staffed without a power grid")?;
-                generated += share * power.generator_output(crew.members[*member].level("Lightning"));
+                let output = power.generator_output(crew.members[*member].level("Lightning"));
+                if *share > 0.0 && output == 0.0 {
+                    return Err(format!("Roster member {member} lacks the Lightning level for this generator"));
+                }
+                generated += share * output;
             }
         }
         for (&building, &used) in &buildings_used {

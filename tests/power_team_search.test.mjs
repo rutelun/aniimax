@@ -43,7 +43,7 @@ test('shortlist measures ordinary powered modes and keeps only native-checked ge
     const source={facility,item,id:item,facility_level:1,rate:1,cycle:1,turns:false,inputs:[],outputs:[[item,1]],electric_level:null};
     const row={facility,item_name:item,facility_count:1,status:'producing',busy_units:1,cycle_time:1,aniimo:role,aniimo_tasks:[role]};
     const incumbent={schedule_sources:[source],coin_items:[row],comparison_seed:{keys:[],values:[]},
-        comparison_goals:{floors:[]},rate_per_second:1,generator_watts_by_lightning:[600]};
+        comparison_goals:{floors:[]},rate_per_second:1,generator_tiers_by_lightning:[1],generator_watts_by_lightning:[600]};
     const problem={variable_keys:['rate:brick#0','rate:brick__electric1#0','generators#0'],
         recipe_options:[[0,item,facility,false,false,1],[1,item,facility,false,true,1]],lp:'\nBounds\n'};
     const pkg={exact_problem:()=>JSON.stringify(problem),get_all_items:()=>JSON.stringify([{name:item,facility_level:1,aniimo:['Fire',1]}]),

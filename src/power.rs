@@ -31,27 +31,28 @@ pub struct PowerPlan {
 pub struct GeneratorLimits {
     pub count: u32,
     tier: usize,
+    placed: bool,
     lightning: u32,
 }
 
 const GENERATOR_TIERS: [(u32, u32, u32, u32); 5] = [
-    // RV unlock, recommended Lightning, watts, workload
+    // RV unlock, minimum Lightning, watts, workload
     (12, 1, 600, 60), (14, 2, 800, 60), (16, 3, 1000, 75),
-    (18, 3, 1200, 90), (20, 3, 1500, 105),
+    (18, 3, 1200, 90), (20, 4, 1500, 105),
 ];
 
 impl GeneratorLimits {
     pub fn for_rv(rv: u32, lightning: u32) -> Option<Self> {
         let tier = GENERATOR_TIERS.iter().rposition(|&(unlock, ..)| unlock <= rv)?;
         let count = if rv >= 18 { 3 } else if rv >= 15 { 2 } else { 1 };
-        Some(Self { count, tier, lightning: lightning.clamp(1, 4) })
+        Some(Self { count, tier, placed: false, lightning: lightning.clamp(1, 4) })
     }
 
     pub fn with_placed(self, count: u32, level: u32) -> Option<Self> {
         if count == 0 || level == 0 {
             return None;
         }
-        Some(Self { count: count.min(self.count), tier: self.tier.min(level as usize - 1), ..self })
+        Some(Self { count: count.min(self.count), tier: self.tier.min(level as usize - 1), placed: true, ..self })
     }
 
     /// Choose the strongest available generator recipe supported by this worker.
@@ -59,6 +60,9 @@ impl GeneratorLimits {
         let Some(tier) = GENERATOR_TIERS[..=self.tier].iter().rposition(|&(_, required, ..)| required <= lightning) else {
             return (0, 0);
         };
+        if self.placed && tier != self.tier {
+            return (0, 0);
+        }
         let (_, _, watts, workload) = GENERATOR_TIERS[tier];
         let work_rate = 45 + 15 * lightning.min(4);
         // Round down so the planner never budgets more power than is generated.
@@ -70,11 +74,15 @@ impl GeneratorLimits {
     /// The fewest generators, then the lowest Lightning levels that cover the demand.
     pub fn staffing(self, watts: f64) -> Vec<u32> {
         let max = self.max_output() as f64;
+        if max == 0.0 { return Vec::new(); }
         let count = ((watts - 1e-6) / max).ceil().max(0.0) as u32;
         let mut remaining = watts;
         (0..count).rev().map(|others| {
             let level = (1..=self.lightning)
-                .find(|&level| self.generator(level).1 as f64 + others as f64 * max + 1e-6 >= remaining)
+                .find(|&level| {
+                    let output = self.generator(level).1;
+                    output > 0 && output as f64 + others as f64 * max + 1e-6 >= remaining
+                })
                 .unwrap_or(self.lightning);
             remaining -= self.generator(level).1 as f64;
             level

@@ -24,7 +24,7 @@ test('electrified workshop switches preserve every material rate, physical tier 
     sources.push({id:'tree',item:'tree',facility:'Woodland',cycle:1,facility_level:1,rate:1,turns:false,
         electric_level:null,inputs:[],outputs:[['wood_block',2.5]]});
     const role = {ability,level:3,personality_bonus:true};
-    const base = {rate_per_second:10,schedule_sources:sources,generator_watts_by_lightning:[600,800,1000,1000],
+    const base = {rate_per_second:10,schedule_sources:sources,generator_tiers_by_lightning:[1,2,3,3],generator_watts_by_lightning:[600,800,1000,1000],
         coin_items:sources.map(s => ({status:'producing',facility:s.facility,item_name:s.item,busy_units:s.rate,
             facility_count:Math.ceil(s.rate),cycle_time:1,electric_level:null,aniimo:role,aniimo_tasks:[{...role,busy:s.rate,jobs:[]}]}))};
     const scheduleInput = scheduleInputForPlan(input,base);
@@ -55,7 +55,7 @@ test('ordinary E-mode changes use native cycle and owned tier, and preserve nati
     const facility='Crafting Table', item='widget';
     const source={facility,id:item,item,rate:.25,cycle:1,facility_level:1,turns:false,inputs:[],outputs:[[item,1]]};
     const row={facility,item_name:item,status:'producing',facility_count:1,aniimo:{ability:'Artisanship',level:3},busy_units:.25};
-    const plan={schedule_sources:[source], coin_items:[row], generator_watts_by_lightning:[600,600,600,600]};
+    const plan={schedule_sources:[source], coin_items:[row], generator_tiers_by_lightning:[1,1,1,1],generator_watts_by_lightning:[600,600,600,600]};
     const input={facilities:{[facility]:[{level:2,count:1}]},e_mode_rv:12,aniimo_levels:{Lightning:2}};
     const problem={recipe_options:[[0,item,facility,false,false,1],[1,item,facility,false,true,2]],
         variable_keys:['rate:widget#0','rate:widget__electric2#0']};
@@ -74,7 +74,7 @@ test('a powered upgrade cannot consume the only site available to a higher-tier 
     const facility='Crafting Table', items=['low','high'];
     const plan={schedule_sources:items.map(item=>({item,id:item,facility,cycle:1,rate:.5,inputs:[],outputs:[[item,1]]})),
         coin_items:items.map(item=>({item_name:item,facility,status:'producing',facility_count:1,busy_units:.5,
-            aniimo:{ability:'Artisanship',level:3}})),generator_watts_by_lightning:[600,600,600,600]};
+            aniimo:{ability:'Artisanship',level:3}})),generator_tiers_by_lightning:[1,1,1,1],generator_watts_by_lightning:[600,600,600,600]};
     const problem={recipe_options:[[0,'low',facility,false,false,1],[1,'low',facility,false,true,1],
         [2,'high',facility,false,false,1]],variable_keys:['rate:low#0','rate:low__electric3#0','rate:high#0']};
     const recipes=items.map((name,i)=>({name,facility_level:i?3:1,aniimo:['Artisanship',1]}));
@@ -89,7 +89,7 @@ test('the shortlist can electrify a competing workshop even if the incumbent use
     const facility='Crafting Table', items=['safe','competing'], skills=['Fire','Artisanship'];
     const plan={schedule_sources:items.map((item,i)=>({item,id:i?item:item+'__electric1',facility,rate:.5,cycle:1,
         electric_level:i?null:1,inputs:[],outputs:[[item,1]]})),power_generator_levels:[[1,4]],
-        generator_watts_by_lightning:[1,2,3,18],coin_items:items.map((item,i)=>({item_name:item,facility,status:'producing',
+        generator_tiers_by_lightning:[1,1,1,1],generator_watts_by_lightning:[1,2,3,18],coin_items:items.map((item,i)=>({item_name:item,facility,status:'producing',
         facility_count:1,busy_units:.5,electric_level:i?null:1,aniimo:i?{ability:skills[i],level:1}:null}))};
     const problem={variable_keys:[],recipe_options:[]};
     for(const item of items) for(const electric of [false,true]){
@@ -100,4 +100,22 @@ test('the shortlist can electrify a competing workshop even if the incumbent use
     const recipes=items.map((name,i)=>({name,facility,facility_level:1,aniimo:[skills[i],1]}));
     const candidates=[...powerTeamCandidates(plan,input,problem,recipes)];
     assert.ok(candidates.some(p=>p.schedule_sources[1].electric_level===1 && p.power_used===18));
+});
+
+test('RV21 never assigns a Lightning 3 operator to a level 5 generator', () => {
+    const facility='Mine', item='ore';
+    const source={facility,id:item,item,cycle:1,rate:.5,inputs:[],outputs:[[item,1]]};
+    const plan={schedule_sources:[source],generator_tiers_by_lightning:[1,2,4,5],
+        generator_watts_by_lightning:[600,800,1200,1500],
+        coin_items:[{facility,item_name:item,status:'producing',facility_count:1,busy_units:.5,aniimo:{ability:'Earth',level:1}}]};
+    const problem={recipe_options:[[0,item,facility,false,false,1],[1,item,facility,false,true,1]],
+        variable_keys:['rate:ore#0','rate:ore__electric1#0']};
+    const recipes=[{name:item,facility,facility_level:1,aniimo:['Earth',1]}];
+    for (const lightning of [3,4]) {
+        const candidates=[...powerTeamCandidates(plan,{e_mode_rv:21,aniimo_levels:{Lightning:lightning},
+            facilities:{Mine:[{level:1,count:1}]}},problem,recipes)];
+        const pairs=candidates.flatMap(c=>c.power_generator_levels);
+        assert.ok(pairs.some(([tier,skill])=>tier===plan.generator_tiers_by_lightning[lightning-1] && skill===lightning));
+        assert.ok(pairs.every(([tier,skill])=>tier===plan.generator_tiers_by_lightning[skill-1] && skill<=lightning));
+    }
 });

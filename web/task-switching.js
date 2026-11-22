@@ -14,7 +14,7 @@ export function dispatchLocations(layout) {
             if (!output.item || output.electric_level != null || !(output.rate > 0)) continue;
             const key = locationKey(site.facility, output.item);
             if (!locations.has(key)) locations.set(key, []);
-            locations.get(key).push({ point, rate: output.rate, cycle:output.cycle??site.cycle, facility: site.facility, item: output.item });
+            locations.get(key).push({ point, rate: output.rate, cycle:output.cycle??site.cycle, scheduleId:site.scheduleId, facility: site.facility, item: output.item });
         }
     }
     return locations;

@@ -300,7 +300,7 @@ function substituteOrdinary(plan, changes, input) {
     return {...plan, coin_items: rows, schedule_sources: plan.schedule_sources.map(s => changed.get(s.item)?.source ?? s)};
 }
 
-function* generatorTeams(count, used, outputs, rv) {
+function* generatorTeams(count, used, outputs, tiers) {
     if (!count) { if (!used) yield []; return; }
     if (!used || outputs.at(-1) * count < used - EPS) return;
     // A strong first generator can feed an island while a low-level worker
@@ -313,8 +313,7 @@ function* generatorTeams(count, used, outputs, rv) {
             const level = i < strong ? outputs.length : 1 + outputs.findIndex(w =>
                 w + (count - i - 1) * outputs.at(-1) >= remaining - EPS);
             remaining -= outputs[level - 1];
-            const tier = Math.min(5, 1 + Math.floor((rv - 12) / 2), level <= 2 ? level : 5);
-            team.push([tier, level]);
+            team.push([tiers[level - 1], level]);
         }
         team.sort((a, b) => b[1] - a[1]);
         const key = team.map(pair => pair[1]).join(',');
@@ -329,7 +328,9 @@ export function* powerTeamCandidates(plan, input, problem, recipes) {
     const modes = nativeModes(problem, definitions), rv = input.e_mode_rv;
     const limit = generatorLimit(rv), lightning = input.aniimo_levels?.Lightning ?? (input.aniimo?.startsWith('best3') ? 3 : 4);
     const outputs = plan.generator_watts_by_lightning?.slice(0, lightning);
-    if (!limit || !outputs?.length || !outputs.every(w => w > 0)) return;
+    const tiers = plan.generator_tiers_by_lightning?.slice(0, lightning);
+    if (!limit || !outputs?.length || tiers?.length !== outputs.length ||
+        !outputs.every(w => w > 0) || !tiers.every(t => Number.isInteger(t) && t > 0)) return;
     const jobs = productionTeamJobs(plan,[...definitions.values()]);
     for (const [,level] of plan.power_generator_levels?.length ? plan.power_generator_levels : [[null,outputs.length]]) {
         jobs.push({ability:'Lightning',level,busy:1,fixed:true,facility:'Crackle Generator',label:'Generator'});
@@ -383,7 +384,7 @@ export function* powerTeamCandidates(plan, input, problem, recipes) {
             for (const state of ordinaryWithin(budget)) {
                 if (!candidates.has(state)) candidates.set(state, substituteOrdinary(base, state.changes, input));
                 const candidate = candidates.get(state), used = chainWatts + state.watts;
-                for (const levels of generatorTeams(count, used, outputs, rv))
+                for (const levels of generatorTeams(count, used, outputs, tiers))
                     yield {...candidate, power_used: used, power_generators: count, power_generator_levels: levels,
                         power_generated: levels.reduce((n, [, l]) => n + outputs[l - 1], 0)};
             }
