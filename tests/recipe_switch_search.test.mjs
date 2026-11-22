@@ -36,3 +36,41 @@ test('switching can make an otherwise infeasible physical-building setup feasibl
  const result=await searchRecipeSwitches(input,{success:false,error:'Insufficient distinct sites'}, {candidate:async()=>candidate,solve:async m=>highs.solve(m.lp)});
  assert.equal(result.success,true);assert.ok(result.recipe_schedule);
 });
+
+test('parallel switch search starts alternatives together and accepts the first verified choice in order', async()=>{
+    const pending=[],terminated=[];
+    const createWorker=()=>{
+        const worker={
+            postMessage({payload}){
+                const facilities=JSON.parse(payload).recipe_switching_facilities;
+                pending.push({worker,facilities});
+            },
+            terminate(){terminated.push(worker);}
+        };
+        return worker;
+    };
+    const twoSites={...baseline,coin_items:['Kiln','Mill'].flatMap(facility=>['a','b'].map(item_name=>({status:'producing',facility,item_name})))};
+    const found=searchRecipeSwitches({...input,recipe_switching:{max_buildings:2,max_switches:1}},twoSites,{
+        createWorker,parallel:3,candidate:()=>assert.fail('unexpected inline retry'),solve:async m=>highs.solve(m.lp),
+    });
+    assert.deepEqual(pending.map(p=>p.facilities),[['Kiln','Mill'],['Kiln'],['Mill']]);
+    pending[1].worker.onmessage({data:{ok:true,result:JSON.stringify({...candidate,rate_per_second:3})}});
+    pending[0].worker.onmessage({data:{ok:true,result:JSON.stringify(candidate)}});
+    assert.equal((await found).rate_per_second,2);
+    assert.equal(new Set(terminated).size,3);
+});
+
+test('a failed switch worker retries its choice inline; a single choice stays inline',async()=>{
+    let starts=0, retries=0;
+    const deps={parallel:2,createWorker(){starts++;throw Error('workers unavailable');},
+        candidate:async()=>{retries++;return candidate;},solve:async m=>highs.solve(m.lp)};
+    const found=await searchRecipeSwitches(input,baseline,deps);
+    assert.equal(found.rate_per_second,2);
+    assert.equal(starts,0);
+    const facilities=['Kiln','Mill'];
+    const base={...baseline,coin_items:facilities.flatMap(facility=>['a','b'].map(item_name=>({status:'producing',facility,item_name})))};
+    const retried=await searchRecipeSwitches({...input,recipe_switching:{max_buildings:2,max_switches:1}},base,deps);
+    assert.equal(retried.rate_per_second,2);
+    assert.equal(starts,2);
+    assert.equal(retries,2);
+});

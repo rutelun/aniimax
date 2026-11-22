@@ -18,7 +18,9 @@ export function solveEconomicBound(highs, problem, {seed, scope = [], timeLimit 
         const nativeOptions = exact ? precision : planSearchOptions({time_limit:timeLimit,...precision});
         if (discovery) nativeOptions.mip_max_nodes = Math.ceil(128*timeLimit);
         model.options.set(nativeOptions);
-        if (seed?.keys?.length === seed?.values?.length && seed?.keys) {
+        // A partial integer start can make HiGHS 1.15.1 report its repaired
+        // incumbent as Optimal. Use it only for discovery, which supplies no bound.
+        if (discovery && seed?.keys?.length === seed?.values?.length && seed?.keys) {
             const previous = new Map(seed.keys.map((key, v) => [key, seed.values[v]]));
             // Let HiGHS refit rates and complete the scope-local availability
             // binaries. Assigning zero to missing binaries can invalidate a

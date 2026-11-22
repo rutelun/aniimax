@@ -2,8 +2,9 @@
 // recipes. Candidate models check work conservation on every occupied site.
 const version = new URL(import.meta.url).search;
 const [
+    {cachedEconomicBound},
     {priorityCeiling},
-    {productionObjective},
+    {productionObjective, CURRENCY_RELATIVE_GAP, CURRENCY_GAP_FACTOR},
     {solveEconomicBound,suggestEconomicScope},
     {polishSolution},
     {refineStaffing},
@@ -12,6 +13,7 @@ const [
     {searchProductionSites},
     {measuredProductionShift}
 ] = await Promise.all([
+    import('./economic-bound-cache.js'+version),
     import('./priority-ceilings.js'+version),
     import('./priority-search.js'+version),
     import('./economic-bound.js'+version),
@@ -227,6 +229,8 @@ export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},fi
     };
     const dispatched=Object.keys(input.roster?.dispatch??{}).length>0;
     const fullPayload=JSON.stringify({...input,always_running_recipes:undefined,restrict_to_checked_recipes:false});
+    const localBound = (p,o)=>solveEconomicBound(highs,p,o);
+    const bound = (p,o)=>cachedEconomicBound(p,o,evaluateBound ?? localBound);
     let fullIncome;
     const scopedModel = recipes => priority(payloadFor(recipes),currencyStage,currency);
     let siteSearch, verifiedIncomeValues;
@@ -236,7 +240,7 @@ export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},fi
         // The relaxed optimum bounds every executable shift on this dispatch.
         fullIncome=priority(fullPayload,currencyStage,currency);
         const proofScope=new Set(scope);
-        const exactBound=evaluateBound ?? ((p,o)=>solveEconomicBound(highs,p,o));
+        const exactBound=bound;
         let witness=await restoreCatalogue(highs,solveModel,fullIncome,witnessSeed);
         let earned=witness ? sum(fullIncome.primary_objective,witness.values) : -Infinity;
         let proofSeed=witness?{keys:fullIncome.variable_keys,values:witness.values}:witnessSeed;
@@ -247,8 +251,8 @@ export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},fi
             // A feasible shift on the measured map is a lower bound. Leave
             // it in the search and discard branches earning strictly less.
             const competitive=witness ? keepRawIncome(model,model,earned) : model;
-            // Keep the physical layout as a partial integer start. Its old
-            // rates need to be refitted to the newly measured pickup shares.
+            // Keep the measured witness for alignment and effort selection.
+            // Certification always starts with a fresh integer search.
             const proofOptions={scope:[...proofScope],exact:true,seed:proofSeed};
             let bound=await exactBound(competitive,proofOptions);
             if(competitive!==model && !bound?.proven)bound=await exactBound(model,proofOptions);
@@ -276,7 +280,7 @@ export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},fi
                 if(!fit && !initialScope && !witness && firstProposal){
                     for(const name of firstProposal.activeRecipes)names.add(name);
                     await checkedCandidate(firstProposal);
-                    if(best && bound.upper>best.objective*1.0025){
+                    if(best && bound.upper>best.objective*CURRENCY_GAP_FACTOR){
                         await repairModes(initialWitness.counts??initialWitness.continuous_site_counts);
                     }
                     firstProposal=null;
@@ -284,7 +288,7 @@ export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},fi
                     if(repaired){
                         const value=sum(fullIncome.primary_objective,repaired.values);
                         fit=repaired;
-                        if(bound.upper<=value*1.0025){
+                        if(bound.upper<=value*CURRENCY_GAP_FACTOR){
                             const competitive=keepRawIncome(fullIncome,fullIncome,value);
                             const seed={keys:fullIncome.variable_keys,values:repaired.values};
                             const full=await exactBound(competitive,{exact:true,seed});
@@ -316,9 +320,13 @@ export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},fi
             for(const name of next)proofScope.add(name);
         }
     }
-    if (!input.roster && !input.season && !witnessSeed) {
-        fullIncome=priority(fullPayload,currencyStage,currency);
-        siteSearch=searchProductionSites(highs,raw,fullIncome,scopedModel);
+    const seasonalSites = input.season && !input.roster && !witnessSeed;
+    let sitesAttempted=false;
+    const priceSitePatterns=async()=>{
+        sitesAttempted=true;
+        fullIncome??=priority(fullPayload,currencyStage,currency);
+        siteSearch=await searchProductionSites(highs,raw,fullIncome,scopedModel,
+            (model,settings)=>cachedEconomicBound(model,settings,localBound));
         if (siteSearch) {
             const candidate=siteSearch.best;
             remember(candidate.keys,candidate.values,candidate.objective);
@@ -326,13 +334,14 @@ export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},fi
             ceilings.push(siteSearch.upper);
             upper=Math.min(upper,siteSearch.upper);
         }
-    }
-    if (!siteSearch || siteSearch.upper > siteSearch.best.objective * 1.0025 + 1e-7) {
+    };
+    if (!input.roster && !input.season && !witnessSeed) await priceSitePatterns();
+    if (!siteSearch || siteSearch.upper > siteSearch.best.objective * CURRENCY_GAP_FACTOR + 1e-7) {
         const initialModel=scope.length ? priority(payloadFor(scope),currencyStage,currency) : raw;
         const discovery=scope.length>0 && !witnessSeed;
         const masterOptions={seed:witnessSeed,scope,timeLimit:discovery?3:2,discovery};
         const priceSitesFirst = input.roster && stage.pace && !witnessSeed && !dispatched;
-        let pending=!priceSitesFirst && evaluateBound?{model:initialModel,result:evaluateBound(initialModel,masterOptions)}:null;
+        let pending=!priceSitesFirst && evaluateBound?{model:initialModel,result:bound(initialModel,masterOptions)}:null;
         const countOptions={input,timeLimit:2};
         let countJob;
         const startCounts=()=>{countJob??=evaluateCounts(raw,countOptions);};
@@ -341,7 +350,7 @@ export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},fi
         // building counts or fixing plots from the provisional map.
         let measuredClosed=false, nextBound=null;
         if(witnessSeed && dispatched && scope.length){
-            const measuredBound=pending?await pending.result:solveEconomicBound(highs,initialModel,masterOptions);
+            const measuredBound=pending?await pending.result:await bound(initialModel,masterOptions);
             pending={model:initialModel,result:measuredBound};
             if(measuredBound?.values && Number.isFinite(measuredBound.upper)){
                 for(const name of measuredBound.activeRecipes)names.add(name);
@@ -354,7 +363,7 @@ export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},fi
                     const next=suggestEconomicScope(initialModel,measuredBound.values,scope);
                     if(next.length>scope.length){
                         const model=scopedModel(next);
-                        nextBound={model,scope:next,result:evaluateBound(model,{seed:best??witnessSeed,scope:next,timeLimit:5})};
+                        nextBound={model,scope:next,result:bound(model,{seed:best??witnessSeed,scope:next,timeLimit:5})};
                     }
                 }
             }
@@ -364,7 +373,7 @@ export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},fi
             await checkedCandidate(witnessSeed);
             if(!best)await checkedCandidate(witnessSeed,true,raw);
             await repairModes(initialWitness.counts??initialWitness.continuous_site_counts);
-            if(dispatched&&(!best||oldCurrency>best.objective*1.0025)){
+            if(dispatched&&(!best||oldCurrency>best.objective*CURRENCY_GAP_FACTOR)){
                 const measured=await measuredProductionShift({modelFor:scope=>priority(payloadFor(scope),currencyStage,currency),
                     counts:initialWitness.counts??initialWitness.continuous_site_counts,checked:witnessNames,seed:witnessSeed,solveModel,highs});
                 if(measured){
@@ -383,7 +392,7 @@ export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},fi
                 const compact=priority(payloadFor(allowed,true),currencyStage,currency);
                 // This dual bound prices all building patterns. When this
                 // particular pattern falls short, still test its feasible income.
-                const target=(counts.upper??0)/1.0025;
+                const target=(counts.upper??0)/CURRENCY_GAP_FACTOR;
                 for(const floor of target>0 ? [target,0] : [0]){
                     const local=economicCountNeighborhood(highs,compact,counts,floor);
                     if(!local)continue;
@@ -399,18 +408,21 @@ export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},fi
         // An independently priced building pattern may already meet the
         // preliminary income tolerance. The full catalogue and measured map
         // are still checked below and in the dispatch pass.
+        // If crop reservations leave the proposed building counts infeasible,
+        // search alternative site patterns before repairing the relaxed rates.
+        if(seasonalSites && !best) await priceSitePatterns();
         const preparingMap=priceSitesFirst && input.map_dispatch_pending && best;
-        if(preparingMap && upper>best.objective*1.0025){
+        if(preparingMap && upper>best.objective*CURRENCY_GAP_FACTOR){
             await repairModes();
             await checkedCandidate(best,false);
         }
-        const pricedWithinGap = priceSitesFirst && best && upper >= best.objective-1e-7
-            && upper <= best.objective*1.0025;
-        if ((preparingMap || pricedWithinGap) && !close(upper,best.objective)) await repairModes();
+        const pricedWithinGap = (priceSitesFirst || seasonalSites) && best && upper >= best.objective-1e-7
+            && upper <= best.objective*CURRENCY_GAP_FACTOR;
+        if ((preparingMap || (priceSitesFirst && pricedWithinGap)) && !close(upper,best.objective)) await repairModes();
         for(let round=0;!measuredClosed && !preparingMap && !pricedWithinGap && round<3;round++){
             const model=pending?.model??(round===0?initialModel:priority(payloadFor(scope),currencyStage,currency));
             const settings=round===0?masterOptions:{seed:best??witnessSeed,scope,timeLimit:5};
-            const result=pending?await pending.result:evaluateBound?await evaluateBound(model,settings):solveEconomicBound(highs,model,settings);
+            const result=pending?await pending.result:await bound(model,settings);
             pending=null;
             if(Number.isFinite(result?.upper)){ceilings.push(result.upper);upper=Math.min(upper,result.upper);}
             if(result?.values){
@@ -427,16 +439,22 @@ export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},fi
                     pending=nextBound;
                 }else{
                     const narrowed=scopedModel(next);
-                    pending={model:narrowed,result:evaluateBound(narrowed,{seed:best??witnessSeed,scope:next,timeLimit:5})};
+                    pending={model:narrowed,result:bound(narrowed,{seed:best??witnessSeed,scope:next,timeLimit:5})};
                 }
                 nextBound=null;
             }
             if(result?.values)await checkedCandidate(result);
             if(!witnessSeed&&!round&&best&&!close(best.objective,upper))await repairModes();
-            if((!best || upper-best.objective>(dispatched?1e-7:0.0025*best.objective))&&round===0)await checkedCandidate(best??result??witnessSeed,false);
+            if((!best || upper-best.objective>(dispatched?1e-7:CURRENCY_RELATIVE_GAP*best.objective))&&round===0)await checkedCandidate(best??result??witnessSeed,false);
             if(best&&close(upper,best.objective))break;
             if(nearFloorOnly&&next.length===scope.length)break;
-            if(!dispatched&&best&&upper<=best.objective*1.0025)break;
+            if(!dispatched&&best&&upper<=best.objective*CURRENCY_GAP_FACTOR)break;
+            // Crop reservations often close on the first pricing round. If they
+            // leave a material gap, price complete site patterns before widening.
+            if(!round && seasonalSites && !sitesAttempted){
+                await priceSitePatterns();
+                if(best && upper<=best.objective*CURRENCY_GAP_FACTOR)break;
+            }
             if(!result?.values)break;
             if(round&&next.length===scope.length)break;
             scope=next;
@@ -458,16 +476,10 @@ export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},fi
     }
     if(!restored)return null;
     best=restored;
-    // The existing planner continues searching when discovery has neither a
-    // comparable checked shift nor its customary 0.25% currency guarantee.
-    // Measured walking itself can lower earnings. A large simultaneous loss
-    // against the previous shift and its global ceiling warrants the full
-    // search, while a small measured change retains its explicit proof gap.
-    const transferred = witnessSeed&&Number.isFinite(oldCurrency)&&best.objective*1.01>=oldCurrency;
-    // A draft can retain its actual gap: the next solve prices the routes
-    // measured on that map. The final solve still checks its income ceiling.
+    // The provisional map will be measured and solved again. On the final
+    // map, compare the restored shift against this map's own income ceiling.
     const routeDraft=input.map_dispatch_pending && input.roster && !dispatched && !initialWitness;
-    const needsWiderSearch=!routeDraft && !transferred && upper>best.objective*1.0025;
+    const needsWiderSearch=!routeDraft && upper>best.objective*CURRENCY_GAP_FACTOR;
     // The wider search can start with this shift once all remaining
     // priorities and the full catalogue have been checked below.
     if(needsWiderSearch && !onIncumbent)return null;

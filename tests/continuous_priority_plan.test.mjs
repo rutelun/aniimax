@@ -52,9 +52,9 @@ test('a site proposal that violates full climate coverage cannot certify its rev
         production_only:true,primary_objective:[[0,1]],recipe_variables:[[0,'crop'],[1,'crop']],
         recipe_options:[[0,'crop','Farmland',false,false,1]],
         lp:'Maximize\n obj: x0\nSubject To\n shift: x0 - x1 = 0\n heat: x1 - x2 <= 0\nBounds\n 0 <= x0 <= 1\n 0 <= x1 <= 1\n 0 <= x2 <= 0\nGeneral\n x1\n x2\nEnd'};
-    assert.equal(searchProductionSites(highs,model,model,()=>model),null);
+    assert.equal(await searchProductionSites(highs,model,model,()=>model),null);
     const heated={...model,lp:model.lp.replace('0 <= x2 <= 0','0 <= x2 <= 1')};
-    const verified=searchProductionSites(highs,heated,heated,()=>heated);
+    const verified=await searchProductionSites(highs,heated,heated,()=>heated);
     assert.equal(verified.best.objective,1);
     assert.equal(verified.upper,1);
 });
@@ -99,14 +99,16 @@ test('restoring a shift accounts for unsold output left by an earlier priority f
     assert.equal(plan?.rate_per_second,1);
 });
 
-test('a measured shift with an open income gap survives as a fully checked fallback',async()=>{
+test('a measured shift at the 0.2% income gap is accepted and a 0.22% gap keeps searching',async()=>{
     const highs=await highsModule({wasmBinary:fs.readFileSync(new URL('../web/vendor/highs/highs.wasm',import.meta.url)),
         print(){},printErr(){}});
+    let ceiling = .5011;
     const build=payload=>{
-        const relaxed=JSON.parse(payload).always_running_recipes?.length===0;
+        const config=JSON.parse(payload);
+        const relaxed=config.always_running_recipes != null && !config.restrict_to_checked_recipes;
         return JSON.stringify({variables:2,variable_keys:['rate:crop#0','units:crop#0'],primary_objective:[[0,1]],tiebreak:[],
             integer_groups:[['crop',[[1,1]],1]],recipe_options:[[0,'crop','Farm',false,false,1]],recipe_variables:[[0,'crop'],[1,'crop']],
-            lp:`Maximize\n obj: x0\nSubject To\n shift: x0 - x1 <= 0\nBounds\n 0 <= x0 <= ${relaxed?1:0.5}\n 0 <= x1 <= 1\nGeneral\n x1\nEnd`});
+            lp:`Maximize\n obj: x0\nSubject To\n shift: x0 - x1 <= 0\nBounds\n 0 <= x0 <= ${relaxed?ceiling:0.5}\n 0 <= x1 <= 1\nGeneral\n x1\nEnd`});
     };
     const pkg={exact_priority_problem:build,exact_problem:build,exact_plan:(payload,_stage,report)=>{
         assert.equal(JSON.parse(payload).always_running_recipes,undefined);
@@ -119,11 +121,27 @@ test('a measured shift with an open income gap survives as a fully checked fallb
         return r.Columns?{values:p.variable_keys.map((_k,i)=>r.Columns['x'+i].Primal),objective:r.ObjectiveValue}:null;
     };
     let fallback;
-    const fast=await tryPriorityPlan(pkg,{currency:'coins',always_running:true,roster:{dispatch:{fixed:[1]}}},
-        {highs,solveModel,evaluateCounts:()=>null,onIncumbent:plan=>{fallback=plan;}});
+    const input={currency:'coins',always_running:true,roster:{dispatch:{fixed:[1]}}};
+    const search=()=>tryPriorityPlan(pkg,input,{highs,solveModel,evaluateCounts:()=>null,onIncumbent:plan=>{fallback=plan;}});
+    const fast=await search();
     assert.equal(fast,null);
     assert.equal(fallback?.rate_per_second,.5);
     assert.equal(fallback.continuous_production_checked,true);
+    // The old map earned exactly as much, but cannot certify the new map.
+    fallback = null;
+    const {solveEconomicBound}=await import('../web/economic-bound.js');
+    const carried=await tryPriorityPlan(pkg,input,{highs,solveModel,evaluateCounts:()=>null,
+        evaluateBound:(p,o)=>o.exact?null:solveEconomicBound(highs,p,o),
+        initialWitness:{seed:{keys:['rate:crop#0','units:crop#0'],values:[.5,1]},goals:{currency_value:.5},recipes:['crop']},
+        onIncumbent:plan=>{fallback=plan;}
+    });
+    assert.equal(carried,null);
+    assert.equal(fallback?.rate_per_second,.5);
+    ceiling = .501;
+    fallback = null;
+    const accepted = await search();
+    assert.equal(accepted?.rate_per_second,.5);
+    assert.equal(fallback,null);
 });
 
 test('a repaired measured shift seeds an exact full-catalogue income proof', async () => {

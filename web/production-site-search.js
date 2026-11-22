@@ -16,20 +16,6 @@ function recipesWithoutInputs(problem) {
     return [...sources];
 }
 
-function relaxCoverage(problem) {
-    const climate = new Set(problem.variable_keys.flatMap((key, v) => /^(environment|pair):/.test(key) ? [v] : []));
-    if (!climate.size) return problem;
-    const [head, rest] = problem.lp.split('\nSubject To\n');
-    const [body, bounds] = rest.split('\nBounds\n');
-    const kept = body.split('\n').filter(row => {
-        for (const match of row.matchAll(/\bx(\d+)/g)) {
-            if (climate.has(Number(match[1]))) return false;
-        }
-        return true;
-    });
-    return {...problem, lp:head + '\nSubject To\n' + kept.join('\n') + '\nBounds\n' + bounds};
-}
-
 function fixSiteCounts(full, proposal) {
     const sites = new Map(proposal.keys.map((key, i) => [key, proposal.values[i]]));
     const rows = full.recipe_variables.flatMap(([v]) => {
@@ -39,27 +25,31 @@ function fixSiteCounts(full, proposal) {
     return {...full, lp:full.lp.replace('\nBounds\n', '\n' + rows.join('\n') + '\nBounds\n')};
 }
 
-// Removing coverage and recipe constraints gives a global upper bound. Fixing a
-// proposed site pattern in the complete model only gives a feasible lower bound.
-export function searchProductionSites(highs, raw, full, scopedModel) {
+// Keep every recipe and climate constraint in the search. Introduce the
+// continuous-operation constraints for competing recipes as their rates reveal
+// contention. Each relaxation bounds income; only the full model can earn it.
+export async function searchProductionSites(highs, raw, full, scopedModel, solve = (p,o)=>solveEconomicBound(highs,p,o)) {
     let scope = recipesWithoutInputs(raw);
     if (!scope) return null;
+    let seed;
     let upper = Infinity;
     let best;
     for (let round = 0; round < 5; round++) {
         const model = scope.length ? scopedModel(scope) : raw;
-        const proposal = solveEconomicBound(highs, relaxCoverage(model), {timeLimit:4});
+        // The standard full-plan effort prices alternative site counts on each relaxation.
+        const proposal = await solve(model, {seed, timeLimit:30});
         if (Number.isFinite(proposal?.upper)) upper = Math.min(upper, proposal.upper);
         if (!proposal?.values) break;
-        const checked = solveEconomicBound(highs, fixSiteCounts(full, proposal), {timeLimit:1});
-        if (checked?.values && (!best || checked.objective > best.objective)) best = checked;
+        const checked = await solve(fixSiteCounts(full, proposal), {timeLimit:1});
+        if (checked?.objective > (best?.objective ?? 0)) best = checked;
         if (best && Math.abs(upper - best.objective) <= 1e-8 * Math.max(1, best.objective)) break;
-        const next = suggestEconomicScope(model, proposal.values, scope);
+        let next = suggestEconomicScope(model, proposal.values, scope);
         if (next.length === scope.length) {
-            for (const name of proposal.activeRecipes) if (!next.includes(name)) next.push(name);
+            next = [...new Set([...scope, ...proposal.occupiedRecipes, ...proposal.activeRecipes])];
         }
         if (next.length === scope.length) break;
         scope = next;
+        seed = proposal;
     }
     if (!best || !Number.isFinite(upper) || upper < best.objective - 1e-7) return null;
     return {best, upper:Math.max(best.objective, upper)};

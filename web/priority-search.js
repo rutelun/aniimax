@@ -1,3 +1,6 @@
+export const CURRENCY_RELATIVE_GAP = 0.002;
+export const CURRENCY_GAP_FACTOR = 1 + CURRENCY_RELATIVE_GAP;
+
 // Intermediate lexicographic stages need the largest production value, not a preferred
 // staffing/layout among equal producers. Those preferences are optimized by the final model.
 // Mixing tiny staffing penalties into every stage makes branch-and-bound prove irrelevant

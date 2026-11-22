@@ -2,11 +2,13 @@
 // small devices, where the planner already supports the same computations inline.
 export function economicWorkers(load) {
     const workers = new Map(), pending = new Map();
-    let nextId = 0;
+    let nextId = 0, closed = false;
     function invoke(kind,problem,options) {
+        if (closed) return null;
         let worker = workers.get(kind);
         if (!worker) {
-            worker = new Worker(new URL('economic-worker.js'+load,import.meta.url),{type:'module'});
+            try { worker = new Worker(new URL('economic-worker.js'+load,import.meta.url),{type:'module'}); }
+            catch { return null; }
             workers.set(kind,worker);
             worker.onmessage = ({data:{id,result,error}}) => {
                 const request = pending.get(id);
@@ -27,7 +29,8 @@ export function economicWorkers(load) {
         const id = nextId++;
         return new Promise(resolve=>{
             pending.set(id,{kind,resolve});
-            worker.postMessage({id,kind,problem,options});
+            try { worker.postMessage({id,kind,problem,options}); }
+            catch { pending.delete(id); resolve(null); }
         });
     }
     const parallel = typeof Worker === 'function' && (globalThis.navigator?.hardwareConcurrency ?? 1) >= 4;
@@ -37,8 +40,10 @@ export function economicWorkers(load) {
             evaluateCounts:(p,opts)=>invoke('counts',p,opts),
         } : {},
         close() {
+            closed = true;
             for (const worker of workers.values()) worker.terminate();
             for (const request of pending.values()) request.resolve(null);
+            workers.clear();
             pending.clear();
         },
     };
