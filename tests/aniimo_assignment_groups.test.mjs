@@ -31,9 +31,9 @@ test('uses the assigned job and facility instead of the portrait’s available a
         ['Leisure', ['Nimbus Bed|wool|Leisure']],
         ['Mining', ['Mine|clay|Earth']],
         ['Water Extraction', ['Well|fresh_water|Water']],
-        ['Lighting & Climate', ['Cooling Unit', 'Heat Furnace', 'Sunlamp']],
+        ['Lighting & Climate', ['Cooling Unit', 'Crackle Generator', 'Heat Furnace', 'Sunlamp']],
         ['Other Assignments', ['Bouncy Brew Keg|wheat_tea|Water', 'Claw Game Cooker|bread|Fire',
-            'Crackle Generator', 'Hauling to Storage Units']],
+            'Hauling to Storage Units']],
     ]);
 });
 

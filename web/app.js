@@ -38,7 +38,7 @@ import { scheduleRosterCopies } from './roster-work.js?v=measured-walking';
 import { buildDispatch, rosterJobSwitching, TASK_SWITCHING } from './task-switching.js?v=base-travel';
 import { buildReactiveDispatch, permanentWorkers, measuredDispatchWork, routeDispatchKey, attachDeliveryFlows } from './reactive-dispatch.js';
 import { recommendBestTeam } from './best-team.js?v=team-support';
-import { groupAniimoAssignments } from './aniimo-assignment-groups.js';
+import { groupAniimoAssignments } from './aniimo-assignment-groups.js?v=generator-assignments';
 import facilityIcons from './facility-icons.json' with { type: 'json' };
 import { abilityGlyph, gameAbilityIcon } from './ability-icons.js?v=game-heads';
 

@@ -7,7 +7,9 @@ function assignmentGroup({ ability, facility }) {
     if (ability === 'Leisure') return 'Leisure';
     if (facility === 'Mine') return 'Mining';
     if (facility === 'Well') return 'Water Extraction';
-    if (FACILITY_CATEGORY_BY_NAME.get(facility) === 'Environment') return 'Lighting & Climate';
+    if (facility === 'Crackle Generator' || FACILITY_CATEGORY_BY_NAME.get(facility) === 'Environment') {
+        return 'Lighting & Climate';
+    }
     return OTHER;
 }
 
