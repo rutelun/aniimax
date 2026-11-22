@@ -18,7 +18,7 @@ export async function searchMaterials(problem, incumbent, solve, options) {
         // accept a reserve-heavy seed before comparing an equally productive owned team.
         // A flow that is required even at this stage consumes a whole
         // physical site. Keep those implications in the optimistic LP.
-        const cuts=requiredSiteRows(problem);
+        const cuts=problem.requiredUpgradeFlow?requiredSiteRows(problem):[];
         const lp=problem.lp.replace(/\nGeneral\n[\s\S]*\nEnd/, '\nEnd');
         const relaxed = { ...problem, tiebreak: [], lp:cuts.length
             ? lp.replace('\nBounds\n','\n'+cuts.join('\n')+'\nBounds\n') : lp };

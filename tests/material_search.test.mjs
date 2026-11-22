@@ -68,7 +68,7 @@ test('equal output cannot hide a reserve-heavy seed from the owned-worker prefer
 });
 
 test('a mandatory recipe reserves a whole site in the material bound and proves the seed',async()=>{
-    const p={variables:5,variable_keys:['rate:a','rate:b','units:a','units:b','pace#0'],
+    const p={requiredUpgradeFlow:true,variables:5,variable_keys:['rate:a','rate:b','units:a','units:b','pace#0'],
         material_fixed:[2],primary_objective:[[1,1]],tiebreak:[],
         recipe_options:[[0,'a'],[1,'b']],
         lp:'Maximize\n obj: x1\nSubject To\n supply: x0 - x4 >= 0\n a: x0 - x2 <= 0\n b: x1 - x3 <= 0\n sites: x2 + x3 <= 2\nBounds\n 0 <= x0 <= 2\n 0 <= x1 <= 2\n 0 <= x2 <= 2\n 0 <= x3 <= 2\n 0.25 <= x4 <= 0.25\nGeneral\n x2\n x3\nEnd'};

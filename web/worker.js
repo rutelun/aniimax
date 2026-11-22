@@ -384,8 +384,10 @@ async function exactPlanJsonOnce(pkg, payload, step = () => {}, first = () => {}
             if (result && Number.isFinite(knownUpper) && knownUpper >= result.objective)
                 result.upper = Math.min(result.upper ?? Infinity, knownUpper);
         }else {
+            // A positive upgrade floor forces whole workshop chains. Without
+            // it, repricing equal-income patterns can add another recipe pass.
             if (!comparison && deadline==null && !input.continuous_fast_neighborhood
-                && initialSeed && seed && goal===(input.currency||'coins') && problem.recipe_options?.length) {
+                && stage.pace>0 && initialSeed && seed && goal===(input.currency||'coins') && problem.recipe_options?.length) {
                 try{
                     const {resourceBounds}=await import('./resource-bounds.js'+load);
                     const highs=await newHighs();
@@ -626,7 +628,7 @@ async function exactPlanJsonOnce(pkg, payload, step = () => {}, first = () => {}
         };
         if (workProblem.lp) {
             step('materials', 'start');
-            const worked = await (await materialSearch).searchMaterials({...workProblem,continuousMaterialSearch:true}, solved.values, runModel, options);
+            const worked = await (await materialSearch).searchMaterials({...workProblem,continuousMaterialSearch:true,requiredUpgradeFlow:stage.pace>0}, solved.values, runModel, options);
             step('materials', worked ? 'done' : 'fail', worked?.proven);
             if (worked) {
                 allProven &&= solved.proven;
