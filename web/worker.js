@@ -384,9 +384,10 @@ async function exactPlanJsonOnce(pkg, payload, step = () => {}, first = () => {}
             if (result && Number.isFinite(knownUpper) && knownUpper >= result.objective)
                 result.upper = Math.min(result.upper ?? Infinity, knownUpper);
         }else {
-            // A positive upgrade floor forces whole workshop chains. Without
-            // it, repricing equal-income patterns can add another recipe pass.
-            if (!comparison && deadline==null && !input.continuous_fast_neighborhood
+            // Reserve the second income search for a switching proof that can
+            // replace the fixed plan. Tied provisional incomes can lead to
+            // different delivery routes and different final roster incomes.
+            if (input.prove_early_switch && !comparison && deadline==null && !input.continuous_fast_neighborhood
                 && stage.pace>0 && initialSeed && seed && goal===(input.currency||'coins') && problem.recipe_options?.length) {
                 try{
                     const {resourceBounds}=await import('./resource-bounds.js'+load);
@@ -639,7 +640,7 @@ async function exactPlanJsonOnce(pkg, payload, step = () => {}, first = () => {}
         };
         if (workProblem.lp) {
             step('materials', 'start');
-            const worked = await (await materialSearch).searchMaterials({...workProblem,continuousMaterialSearch:true,requiredUpgradeFlow:stage.pace>0}, solved.values, runModel, options);
+            const worked = await (await materialSearch).searchMaterials({...workProblem,continuousMaterialSearch:true,requiredUpgradeFlow:input.prove_early_switch && stage.pace>0}, solved.values, runModel, options);
             step('materials', worked ? 'done' : 'fail', worked?.proven);
             if (worked) {
                 allProven &&= solved.proven;
@@ -971,7 +972,7 @@ self.onmessage = async (event) => {
             const firstSwitch = await proveFirstSwitch(switchingInput, async trial => {
                 const {upgradeSwitchBounds} = await import('./recipe-switch-bound.js'+load);
                 return upgradeSwitchBounds(pkg,await newHighs(),switchingInput,trial);
-            }, async trial => JSON.parse(await exactPlanJson(pkg,JSON.stringify(trial))), step);
+            }, async trial => JSON.parse(await exactPlanJson(pkg,JSON.stringify({...trial,prove_early_switch:true}))), step);
             if (firstSwitch?.winner) {
                 self.postMessage({id,ok:true,result:JSON.stringify(firstSwitch.winner)});
                 return;
