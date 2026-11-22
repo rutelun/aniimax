@@ -36,6 +36,10 @@ test('fast priority plan checks the occupied recipe and returns the actual shift
     assert.deepEqual(implicit.continuous_upper_bounds.map(([key])=>JSON.parse(key)[0]),['tokens','coins']);
     const generated=await tryPriorityPlan(pkg,{currency:'coins',priorities:['coins'],always_running:true},{highs,solveModel});
     assert.equal(generated.rate_per_second,.25);
+    const switching = {...input, recipe_switching:{max_buildings:5,max_switches:2}};
+    const fixedShift = await tryPriorityPlan(pkg,switching,{highs,solveModel});
+    assert.equal(fixedShift?.rate_per_second,plan.rate_per_second);
+    assert.equal(await tryPriorityPlan(pkg,{...switching,recipe_switching_relaxation:true},{highs,solveModel}),null);
     assert.deepEqual(generated.continuous_upper_bounds,plan.continuous_upper_bounds);
     const measured=await tryPriorityPlan(pkg,{...input,season_crop_minimums:{crop:1}},{
         highs,solveModel,initialWitness:plan,
@@ -144,7 +148,7 @@ test('a measured shift at the 0.2% income gap is accepted and a 0.22% gap keeps 
     assert.equal(fallback,null);
 });
 
-test('a repaired measured shift seeds an exact full-catalogue income proof', async () => {
+test('a fully audited shift within the measured bound can finish without an exact full-catalogue solve', async () => {
     const highs = await highsModule({wasmBinary:fs.readFileSync(new URL('../web/vendor/highs/highs.wasm',import.meta.url)),
         print(){},printErr(){}});
     const keys = ['rate:crop#0','units:crop#0'];
@@ -172,14 +176,42 @@ test('a repaired measured shift seeds an exact full-catalogue income proof', asy
         if (o.exact && !o.scope) {
             fullProofs++;
             assert.deepEqual(o.seed.values,[.25,1]);
-            assert.match(p.lp,/retain_currency/);
+            assert.doesNotMatch(p.lp,/retain_currency/);
         }
         return solveEconomicBound(highs,p,o);
     };
     const plan = await tryPriorityPlan(pkg,{currency:'coins',always_running:true,roster:{dispatch:{work:[1]}}},{
         highs,solveModel,evaluateBound,initialWitness:{recipes:['crop'],counts:{crop:1},seed:{keys,values:[.2501,1]}},
     });
-    assert.equal(fullProofs,1);
+    assert.equal(fullProofs,0);
     assert.equal(plan?.rate_per_second,.25);
-    assert.equal(plan.upper_bound ?? plan.continuous_upper_bounds[0][1],.25);
+    assert.equal(plan.upper_bound ?? plan.continuous_upper_bounds[0][1],.2501);
+    assert.ok(plan.continuous_production_checked);
+});
+
+test('measured income certification omits a redundant incumbent floor', async () => {
+    const highs=await highsModule({wasmBinary:fs.readFileSync(new URL('../web/vendor/highs/highs.wasm',import.meta.url)),
+        print(){},printErr(){}});
+    const keys=['rate:crop#0','units:crop#0'];
+    const problem={variables:2,variable_keys:keys,primary_objective:[[0,1]],tiebreak:[],
+        integer_groups:[['crop',[[1,1]],1]],recipe_options:[[0,'crop','Farm',true,false,1]],
+        recipe_variables:[[0,'crop'],[1,'crop']],lp:'Maximize\n obj: x0\nSubject To\n capacity: x0 - x1 <= 0\nBounds\n 0 <= x0 <= .5\n 0 <= x1 <= 1\nGeneral\n x1\nEnd'};
+    const pkg={exact_priority_problem:()=>JSON.stringify(problem),exact_problem:()=>JSON.stringify(problem),
+        exact_plan:(_payload,_stage,report)=>JSON.stringify({success:true,rate_per_second:JSON.parse(report).values[0]})};
+    const solveModel=(p,o,_,seed)=>{
+        const result=solveWithIncumbent(highs,p,o,seed,false);
+        return result.Columns && {values:keys.map((_key,v)=>result.Columns['x'+v].Primal),objective:result.ObjectiveValue};
+    };
+    const {solveEconomicBound}=await import('../web/economic-bound.js');
+    const evaluateBound=(p,o)=>{
+        // The real seasonal RV12 dispatch model has a feasible better shift that
+        // presolve loses only when the current income is duplicated as a row.
+        assert.doesNotMatch(p.lp,/retain_currency/);
+        return solveEconomicBound(highs,p,o);
+    };
+    const plan=await tryPriorityPlan(pkg,{currency:'coins',always_running:true,roster:{dispatch:{measured:[1]}}},{
+        highs,solveModel,evaluateBound,initialWitness:{recipes:['crop'],counts:{crop:1},seed:{keys,values:[.4,1]}}
+    });
+    assert.equal(plan.rate_per_second,.5);
+    assert.equal(plan.continuous_upper_bounds[0][1],.5);
 });

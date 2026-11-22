@@ -1,6 +1,6 @@
 // Occupied quarter tiles, packed into 32-bit rows. The caller keeps its exact
 // rectangle intersection test for coordinates that this grid cannot represent.
-export function rectangleMask(cells) {
+export function rectangleMask(cells, {removable = false} = {}) {
     if (!cells?.length) return null;
     const left = Math.floor(Math.min(...cells.map(r => r.x)) * 4);
     const top = Math.floor(Math.min(...cells.map(r => r.y)) * 4);
@@ -10,6 +10,7 @@ export function rectangleMask(cells) {
     const stride = Math.ceil(width / 32);
     const words = new Uint32Array(stride * height);
     let complete = true;
+    let disjoint = true;
 
     function fitsGrid(r) {
         return Number.isInteger(r.x * 4) && Number.isInteger(r.y * 4)
@@ -17,7 +18,7 @@ export function rectangleMask(cells) {
             && r.x * 4 >= left && r.y * 4 >= top
             && (r.x + r.w) * 4 <= left + width && (r.y + r.h) * 4 <= top + height;
     }
-    function visit(r, add) {
+    function visit(r, operation) {
         const x = r.x * 4 - left, y = r.y * 4 - top;
         const right = x + r.w * 4 - 1, bottom = y + r.h * 4;
         const first = x >>> 5, last = right >>> 5;
@@ -26,7 +27,10 @@ export function rectangleMask(cells) {
             const mask = (word === first ? leftMask : 0xffffffff) & (word === last ? rightMask : 0xffffffff);
             for (let row = y; row < bottom; row++) {
                 const i = row * stride + word;
-                if (add) words[i] |= mask;
+                if (operation === 'add') {
+                    if (removable && (words[i] & mask)) disjoint = false;
+                    words[i] |= mask;
+                } else if (operation === 'remove') words[i] &= ~mask;
                 else if (words[i] & mask) return true;
             }
         }
@@ -34,9 +38,15 @@ export function rectangleMask(cells) {
     }
     return {
         add(r) {
-            if (fitsGrid(r)) visit(r, true);
+            if (fitsGrid(r)) visit(r, 'add');
             else complete = false;
         },
-        overlaps(r) { return complete && fitsGrid(r) ? visit(r, false) : undefined; },
+        remove(r) {
+            // Shared tiles have no owner in this bitset. After such a removal,
+            // the caller uses its rectangle index for exact overlap checks.
+            if (complete && disjoint && removable && fitsGrid(r)) visit(r, 'remove');
+            else complete = false;
+        },
+        overlaps(r) { return complete && fitsGrid(r) ? visit(r, 'query') : undefined; },
     };
 }

@@ -4,7 +4,7 @@ import {planSearchOptions,runPlanModel,searchStopped} from './highs-solve.js';
 // physical building and balance. Omitting a recipe's work-conservation rules
 // enlarges its feasible set, so its MIP dual bound also bounds the full model.
 // A primal from this relaxation still needs the caller's full production audit.
-export function solveEconomicBound(highs, problem, {seed, scope = [], timeLimit = 2, discovery = false, exact = false} = {}) {
+export function solveEconomicBound(highs, problem, {seed, scope = [], timeLimit = 2, discovery = false, exact = false, relativeGap = 0} = {}) {
     const keys = problem.variable_keys;
     if (!problem.production_only || problem.continuousRestricted || !problem.primary_objective?.length
         || keys?.length !== problem.variables || !problem.recipe_options || !(timeLimit > 0)) return null;
@@ -13,7 +13,7 @@ export function solveEconomicBound(highs, problem, {seed, scope = [], timeLimit 
         const {numCols} = model.getDimensions();
         const indices = Array.from({length:numCols}, (_, i) => Number(model.getColName(i).slice(1)));
         if (indices.some(v => !Number.isInteger(v) || v < 0 || v >= keys.length)) return null;
-        const precision = {mip_abs_gap:0, mip_rel_gap:0,
+        const precision = {mip_abs_gap:0, mip_rel_gap:relativeGap,
             primal_feasibility_tolerance:discovery?1e-7:1e-9, mip_feasibility_tolerance:discovery?1e-8:1e-9};
         const nativeOptions = exact ? precision : planSearchOptions({time_limit:timeLimit,...precision});
         if (discovery) nativeOptions.mip_max_nodes = Math.ceil(128*timeLimit);
@@ -50,8 +50,12 @@ export function solveEconomicBound(highs, problem, {seed, scope = [], timeLimit 
         const status = model.getModelStatus();
         if (status !== statuses.optimal && !searchStopped(status,statuses)) return null;
         const optimal = status === statuses.optimal;
-        const upper = optimal ? model.getObjectiveValue() : model.info.get('mip_dual_bound');
-        const result = {upper:!discovery && Number.isFinite(upper) ? upper : null, proven:optimal && !discovery, scope:[...scope]};
+        const upper = optimal && !relativeGap ? model.getObjectiveValue() : model.info.get('mip_dual_bound');
+        // HiGHS also reports Optimal when it reaches a requested MIP gap.
+        // The dual bound, rather than that status, distinguishes exact income.
+        const exactObjective = optimal && (!relativeGap || model.info.get('mip_gap') === 0);
+        const result = {upper:!discovery && Number.isFinite(upper) ? upper : null,
+            proven:exactObjective && !discovery, scope:[...scope]};
         if (model.info.get('primal_solution_status') !== highs.constants.solutionStatus.feasible) return result;
         const values = Array(keys.length).fill(0), native = model.getSolution().colValue;
         indices.forEach((v, i) => { values[v] = native[i]; });
