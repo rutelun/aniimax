@@ -246,7 +246,7 @@ test('preparing suggestions does not launch searches, and a check stays in its c
     }
     const api=new Function('Worker','setTimeout','clearTimeout','baseline','base','keepBetterComparison','startComparisonQueue','comparisonConcurrency',`
         let rankRunId=0,rankWorkers=[],rankCleanups=[],ranking=null,rankingsBySetup={};
-        const mainSolve=null,setupSolve=null,layoutWorker=null,lastLayout=null,lastPlan=baseline,lastPlanInput=base;
+        const mainSolve=null,setupSolve=null,layoutWorker=null,powerTeamController=null,lastLayout=null,lastPlan=baseline,lastPlanInput=base;
         const plansBySetup={roster:baseline},WORKER_URL='worker',SETUP_TIMEOUT=100;
         const aniimoInput=()=>({}),haulingRouteBound=()=>0,renderImprovements=()=>{};
         const improvementCandidates=()=>({candidates:[0,1,2].map(i=>({kind:i===2?'Recipes':'Aniimo',input:{...base,change:i}}))});

@@ -1,15 +1,17 @@
 import {siteSchedule,scheduledRate} from './recipe-timeline.js';
 import {renderRecipeSchedule} from './recipe-schedule-view.js';
-import {scheduleProfiles,haulingScheduleProfile} from './recipe-schedule-plan.js';
+import {scheduleProfiles} from './recipe-schedule-plan.js';
 import {splitPhaseTasks} from './phase-work.js';
 // Aniimax Web Application
 
-import { currentLocale, sourceAttribute, translate } from './i18n.js?v=aniimo-assignment-groups';
+import { currentLocale, sourceAttribute, translate } from './i18n.js?v=recommendations';
 import './math-translation.js?v=results-columns';
 import { autoMaximizeSeasonPoints } from './season-planning.js?v=optional-season-points';
 import { normalizeMapStyle } from './map-style.js?v=production-groups';
 import { productionGroupOutline } from './group-outline.js?v=compact-groups';
-import { powerJobDetails } from './power-islands.js?v=independent-grids';
+import {packMappedTeam,addHarvestHelpers,mappedTeamScore} from './mapped-power-team.js';
+import {productionTeamJobs} from './production-team-jobs.js';
+import { analyzePowerNetworks, powerJobDetails } from './power-islands.js?v=independent-grids';
 import { questIncome } from './quest-income.js';
 import { splitProductionSites } from './physical-production.js';
 import { cropPeakInput, selectCropPeakTeam, criticalCropJob } from './crop-peaks.js?v=team-support';
@@ -35,7 +37,7 @@ import { placeRosterCopy, ROSTER_ROW_SIZE, rosterSlotsFor, swapRosterSlots } fro
 import { scheduleRosterCopies } from './roster-work.js?v=measured-walking';
 import { buildDispatch, rosterJobSwitching, TASK_SWITCHING } from './task-switching.js?v=base-travel';
 import { buildReactiveDispatch, permanentWorkers, measuredDispatchWork, routeDispatchKey, attachDeliveryFlows } from './reactive-dispatch.js';
-import { placeBestJobs, recommendBestTeam } from './best-team.js?v=team-support';
+import { recommendBestTeam } from './best-team.js?v=team-support';
 import { groupAniimoAssignments } from './aniimo-assignment-groups.js';
 import facilityIcons from './facility-icons.json' with { type: 'json' };
 import { abilityGlyph, gameAbilityIcon } from './ability-icons.js?v=game-heads';
@@ -1017,7 +1019,7 @@ function improvementCandidates(base, setup, plan) {
 // Prepare suggestions after planning. Full comparisons run only when the player requests
 // a row or the batch, in a small cancellable pool; the current plan stays intact.
 function rankImprovementsFor(setup, requested = null, detailed = false) {
-    if (requested != null && (mainSolve || setupSolve || layoutWorker)) return;
+    if (requested != null && (mainSolve || setupSolve || layoutWorker || powerTeamController)) return;
     stopRanking();
     const plan = plansBySetup[setup] || lastPlan;
     if (!lastPlanInput || !plan?.success) { ranking = null; renderImprovements(); return; }
@@ -1493,6 +1495,9 @@ const initialsOf = name => name.split(/[\s-]+/).map(w => w[0]).join('').toUpperC
 
 let layoutRunId = 0;
 let layoutWorker = null;
+let powerTeamController = null;
+const measuredPowerPlans = new WeakMap();
+const powerTeamSeeds = new WeakMap();
 const layoutsByPlan = new WeakMap();
 const compactedLayouts = new WeakSet();
 
@@ -1836,12 +1841,92 @@ function rememberLayout(plan, key, layout) {
     cached.set(key, layout);
 }
 
+// Ranking includes dedicated generator operators, delivery routes and peak harvest help.
+function measurePowerTeam(plan,layout,input,recipes=recipeIndex) {
+    if (layout.unplaced?.length || homelandPieces(plan,input).unplaced.length) return null;
+    const grid=analyzePowerNetworks(layout).power;
+    if (grid.disconnected || grid.generators !== (plan.power_generators || 0)) return null;
+    const placed=bestTeamLayouts.get(plan);
+    const hauling=placed?.layout===layout ? placed.hauling :
+        haulingWorkload(layout,plan.coin_items,haulingRouteBound(true),recipes,input.facilities,true);
+    return mappedTeamScore(bestPlanTeam(plan,hauling.busy,layout,hauling),grid,ANIIMO_MAX[layoutHomeLevel()-1]);
+}
+
+function runMapWorker(url,message,signal) {
+    return new Promise((resolve,reject)=>{
+        signal?.throwIfAborted();
+        const solver=new Worker(url,{type:'module'});
+        const close=()=>{
+            solver.terminate();
+            signal?.removeEventListener('abort',cancel);
+        };
+        const cancel=()=>{ close(); reject(signal.reason); };
+        signal?.addEventListener('abort',cancel,{once:true});
+        solver.onmessage=({data})=>{close(); if(data.error)reject(new Error(data.error));else resolve(data);};
+        solver.onerror=solver.onmessageerror=event=>{close();reject(new Error(event.message||'The planner worker stopped'));};
+        try {solver.postMessage(message);} catch(error){close();reject(error);}
+    });
+}
+
+async function refineMappedPowerTeam(plan,layout,input,signal,onMeasured,isCurrent=()=>true) {
+    const seed=powerTeamSeeds.get(plan)??plan;
+    const [{selectPowerTeam},{result}]=await Promise.all([
+        import('./power-team-search.js'),
+        runMapWorker(WORKER_URL,{id:1,type:'power_teams',payload:{plan:seed,input}},signal),
+    ]);
+    const candidates=seed===plan?result:[seed,...result];
+    if(!candidates.length || !isCurrent())return plan;
+    const baselineScore=measurePowerTeam(plan,layout,input);
+    const homeLevel=layoutHomeLevel();
+    const {key,cells,poleLimit}=layoutOptionsFor(plan,homeLevel,'best');
+    const entries=candidates.flatMap((candidate,index)=>{
+        const {pieces,unplaced}=homelandPieces(candidate,input);
+        if(unplaced.length)return [];
+        const {coin_items,recipe_schedule,power_generators}=candidate;
+        return [{index,plan:{coin_items,recipe_schedule,power_generators},pieces,jobs:jobsForBestPlan(candidate)}];
+    });
+    const lanes=comparisonConcurrency(globalThis.navigator,entries.length);
+    const batches=Array.from({length:lanes},()=>[]);
+    entries.forEach((entry,i)=>batches[i%lanes].push(entry));
+    let completed=0;
+    const outcomes=await Promise.allSettled(batches.map(async batch=>{
+        const {winner}=await runMapWorker(WORKER_URL.replace('worker.js','power-team-map-worker.js'),{
+            candidates:batch,baseLayout:layout,cells,poleLimit,facilities:input.facilities,
+            recipes:recipeIndex,limit:ANIIMO_MAX[homeLevel-1],haulingBound:haulingRouteBound(true),baselineScore,
+        },signal);
+        completed+=batch.length;
+        if(isCurrent() && !signal?.aborted)onMeasured?.(completed,entries.length);
+        return winner;
+    }));
+    if(!isCurrent() || signal?.aborted)return plan;
+    const winners=[];
+    for(const outcome of outcomes){
+        if(outcome.status==='fulfilled')winners.push(outcome.value);
+        else console.warn('A generator layout search stopped.',outcome.reason);
+    }
+    if(outcomes.length && !winners.length)throw outcomes[0].reason;
+    // The candidate order breaks exact ties regardless of which worker finished first.
+    const mapped=new Map(winners.filter(Boolean).sort((a,b)=>a.index-b.index)
+        .map(measured=>[candidates[measured.index],measured]));
+    const selected=await selectPowerTeam(plan,[...mapped.keys()],
+        p=>p===plan?baselineScore:mapped.get(p).score,()=>isCurrent() && !signal?.aborted);
+    if(selected===plan)return plan;
+    const best=mapped.get(selected);
+    selected.hauling_busy=best.hauling.busy;
+    rememberLayout(selected,key,best.layout);
+    bestTeamLayouts.set(selected,{layout:best.layout,hauling:best.hauling});
+    Object.assign(bestTeamCache.get(selected),{layout:best.layout,hauling:best.hauling,haulingBusy:best.hauling.busy,result:best.team});
+    if(selected!==seed)powerTeamSeeds.set(selected,seed);
+    return selected;
+}
+
 function renderHomelandLayout(plan, keepLayout = false) {
     const card = document.getElementById('layout-card');
     if (!plan?.success || !lastPlanInput) {
         card.style.display = 'none';
         return;
     }
+    powerTeamController?.abort();
     const runId = ++layoutRunId;
     lastLayout = null;
     layoutZoom = null;
@@ -1887,9 +1972,10 @@ function renderHomelandLayout(plan, keepLayout = false) {
             return piece.cluster ? `${piece.buildings[0].facility} and its plots` : piece.members[0].facility;
         }))];
         const missingGenerators = Math.max(0, (plan.power_generators || 0) - generatorLimit(homeLevel));
+        const gridDraw = layout.power.networks?.reduce((total,net)=>total+net.rated*net.percent/100,0);
         const powerSummary = layout.power.consumers ? translate('Power grid: {n} generators, {p} / {max} poles, {w} W.')
             .replace('{n}', layout.power.generators).replace('{p}', layout.power.poles.length)
-            .replace('{max}', layout.power.maximum).replace('{w}', formatNumber(plan.power_used || 0)) : '';
+            .replace('{max}', layout.power.maximum).replace('{w}', formatNumber(gridDraw ?? plan.power_used ?? 0)) : '';
         const notes = [
             powerSummary,
             ...(layout.power.networks??[]).filter(n=>n.generators).map(powerNetworkLabel),
@@ -1985,7 +2071,37 @@ function renderHomelandLayout(plan, keepLayout = false) {
             plan.layout_walking = layoutWalkingAdjustments(layout.pieces.flatMap(piece => piece.members), plan);
             if (assignLayoutHauling(layout, plan)) return;
         }
-        renderAniimoSummary(plan);
+        const setup=selectedAniimoSetup();
+        if (setup.startsWith('best') && lastPlanInput.e_mode_rv>=12 && !lastPlanInput.fixed_homeland
+            && plan.schedule_sources?.length && plan.comparison_seed && measuredPowerPlans.get(plan)!==layoutKey) {
+            const controller=new AbortController();
+            powerTeamController=controller;
+            const input={...lastPlanInput,...aniimoInput(setup)};
+            setStep('power_team','start');
+            try {
+                const search=refineMappedPowerTeam(plan,layout,input,controller.signal,
+                    (count,total)=>setStep('power_team','start',`${count} / ${total}`));
+                renderAniimoSummary(plan);
+                const winner=await search;
+                if (controller.signal.aborted||runId!==layoutRunId) return;
+                measuredPowerPlans.set(winner,layoutKey);
+                setStep('power_team','done');
+                if (winner!==plan) {
+                    plansBySetup[setup]=winner;
+                    showSelectedPlan();
+                    return;
+                }
+            } catch(error) {
+                if (controller.signal.aborted) return;
+                setStep('power_team','fail');
+                console.warn('Keeping the current team after the power search failed.',error);
+            } finally {
+                if(powerTeamController===controller)powerTeamController=null;
+            }
+        } else {
+            setStep('power_team',measuredPowerPlans.get(plan)===layoutKey?'done':'skip');
+            renderAniimoSummary(plan);
+        }
         if (!setupSolve && !mainSolve) {
             resetPlanButton();
             rankImprovementsFor(selectedAniimoSetup());
@@ -2020,6 +2136,8 @@ function renderHomelandLayout(plan, keepLayout = false) {
 
 // Stops a layout still being worked out, so it can't land over a newer plan.
 function stopLayout() {
+    powerTeamController?.abort();
+    powerTeamController=null;
     clearTimeout(layoutStorageTimer);
     stopLayoutSim();
     layoutRunId++;
@@ -2143,7 +2261,7 @@ function powerNetworkLabel(network){
     return translate('Grid {n} ({generators}): {percent}% · {draw} / {output} W')
         .replace('{n}',network.id+1).replace('{percent}',formatNumber(network.percent))
         .replace('{generators}',network.generator_ids.map(id=>`G${id}`).join(' + '))
-        .replace('{draw}',formatNumber(network.rated)).replace('{output}',formatNumber(network.generated));
+        .replace('{draw}',formatNumber(network.rated*network.percent/100)).replace('{output}',formatNumber(network.generated));
 }
 
 function layoutWorkerBadges(site, work, electric) {
@@ -2599,6 +2717,7 @@ function startProgress(input, runId) {
         ...(input.always_running ? [{key:'continuous_production',label:'Continuous resource allocation'}] : []),
         ...(input.recipe_switching?.max_buildings?[{key:'recipe_switching',label:'Daily recipe schedule'}]:[]),
         { key: 'layout', label: 'Homeland Layout' },
+        ...(input.aniimo?.startsWith('best')&&input.e_mode_rv>=12?[{key:'power_team',label:'E-mode and generator teams'}]:[]),
     ];
     progress = { runId, steps: steps.map(step => ({ ...step, state: 'pending' })) };
     renderProgress();
@@ -2796,7 +2915,9 @@ function assignLayoutHauling(layout, plan) {
     const setup = selectedSetupTab();
     const accountForTravel = true;
     const bound = haulingRouteBound(accountForTravel);
-    const work = haulingWorkload(layout, plan.coin_items || [], bound, recipeIndex, lastPlanInput?.facilities, accountForTravel);
+    const placed=setup==='custom' ? null : bestTeamLayouts.get(plan);
+    const work = placed?.layout===layout ? placed.hauling :
+        haulingWorkload(layout, plan.coin_items || [], bound, recipeIndex, lastPlanInput?.facilities, accountForTravel);
     plan.hauling_estimates = work.seconds;
     plan.hauling_busy = work.busyByLevel[setup === 'minimum' ? 1 : 3];
     if (setup !== 'custom') bestTeamLayouts.set(plan, { layout, hauling: work });
@@ -3142,15 +3263,28 @@ async function fillRosterFrom(setup) {
     status.textContent = 'Working out the source team…';
     try {
         const sourceInput = { ...lastPlanInput, ...aniimoInput(setup) };
-        const plan = plansBySetup[setup] || JSON.parse(await callWorker('find_plan', JSON.stringify(sourceInput)));
+        let plan = plansBySetup[setup] || JSON.parse(await callWorker('find_plan', JSON.stringify(sourceInput)));
         if (runId !== planRunId || version !== rosterFillVersion) return;
         if (!plan.success) {
             status.textContent = 'No working team to copy from this plan.';
             return;
         }
         const haulingLevel = setup === 'minimum' ? 1 : 3;
-        const layout = await sourceTeamLayout(plan, sourceInput, setup.split(':')[0]);
-        if (runId !== planRunId || version !== rosterFillVersion) return;
+        const current=()=>runId===planRunId && version===rosterFillVersion;
+        let layout = await sourceTeamLayout(plan, sourceInput, setup.split(':')[0]);
+        if (!current()) return;
+        if (sourceInput.e_mode_rv>=12 && setup.startsWith('best') && !sourceInput.fixed_homeland
+            && plan.comparison_seed && plan.schedule_sources?.length) {
+            const {key}=layoutOptionsFor(plan,layoutHomeLevel(),'best');
+            if (measuredPowerPlans.get(plan)!==key) {
+                const selected=await refineMappedPowerTeam(plan,layout,sourceInput,undefined,undefined,current);
+                if (!current()) return;
+                if (selected!==plan) layout=await sourceTeamLayout(selected,sourceInput,'best');
+                if (!current()) return;
+                plan=selected;
+                measuredPowerPlans.set(plan,key);
+            }
+        }
         const accountForTravel = true;
         const hauling = haulingWorkload(layout, plan.coin_items || [], haulingRouteBound(accountForTravel),
             recipeIndex, sourceInput.facilities, accountForTravel);
@@ -3205,22 +3339,12 @@ async function fillRosterFrom(setup) {
     }
 }
 
-async function sourceTeamLayout(plan, input, setup) {
+async function sourceTeamLayout(plan, input, setup, signal) {
     const { key, ...options } = layoutOptionsFor(plan, layoutHomeLevel(), setup);
     let layout = layoutsByPlan.get(plan)?.get(key);
     if (!layout) {
         const { pieces } = homelandPieces(plan, input);
-        layout = await new Promise((resolve, reject) => {
-            const solver = new Worker(WORKER_URL.replace('worker.js', 'layout-worker.js'), { type: 'module' });
-            const finish = (error, result) => {
-                solver.terminate();
-                if (error) reject(error);
-                else resolve(result);
-            };
-            solver.onerror = solver.onmessageerror = event => finish(new Error(event.message || 'The layout worker stopped'));
-            solver.onmessage = ({data}) => finish(data?.error ? new Error(data.error) : null, data);
-            solver.postMessage({ pieces, ...options });
-        });
+        layout = await runMapWorker(WORKER_URL.replace('worker.js', 'layout-worker.js'),{pieces,...options},signal);
         rememberLayout(plan, key, layout);
     }
     return layout;
@@ -5040,58 +5164,33 @@ const bestTeamCache = new WeakMap();
 const bestTeamLayouts = new WeakMap();
 const minimumTeamCache = new WeakMap();
 
-function bestPlanTeam(plan, haulingBusy = plan.hauling_busy || 0,
-    layout = bestTeamLayouts.get(plan)?.layout ?? null, hauling = bestTeamLayouts.get(plan)?.hauling) {
+function jobsForBestPlan(plan) {
     let cached = bestTeamCache.get(plan);
     if (!cached) {
         const jobs = environmentTeamJobs(plan);
-        const profiles=scheduleProfiles(plan);
-        const families = new Map(recipeIndex.filter(recipe => recipe.family).map(recipe => [recipe.name, recipe.family]));
-        const personalities = new Map(FACILITIES.map(facility => [facility.name, facility.personality]));
-        for (const step of plan.coin_items || []) {
-            if (step.status !== 'producing' || step.electric_level != null) continue;
-            for (const task of step.aniimo_tasks || []) {
-                const item = prettyItem(step.item_name);
-                const label = task.jobs?.length
-                    ? `${task.jobs.map(translate).join(' / ')} · ${item}`
-                    : `${translate(step.facility)} (${item})`;
-                const resident = RESIDENT_FACILITIES.has(step.facility);
-                const batches = step.cycle_time > 0 ? (step.busy_units ?? step.facility_count) / step.cycle_time : 0;
-                jobs.push({
-                    ability: task.ability, level: task.level, label, facility: step.facility,
-                    profile:profiles.get(`${step.facility}|${step.item_name}`),
-                    busy: resident ? step.facility_count : task.busy,
-                    siteKey: resident ? null : `${step.facility}|${step.item_name}`,
-                    visitsPerShare: !resident && task.busy > 0 ? batches * (task.jobs?.length || 1) / task.busy : 0,
-                    growing: task.jobs?.length > 0, fixed: resident,
-                    critical: (task.jobs || []).some(criticalCropJob),
-                    duration: batches > 0 ? task.busy / batches / (task.jobs?.length || 1) : 0,
-                    personality: task.personality_bonus ? personalities.get(step.facility) : null,
-                    family: task.ability === 'Leisure' ? families.get(step.item_name) : null,
-                });
-            }
-        }
+        jobs.push(...productionTeamJobs(plan,recipeIndex,(step,task)=>{
+            const item=prettyItem(step.item_name);
+            return task.jobs?.length ? `${task.jobs.map(translate).join(' / ')} · ${item}` : `${translate(step.facility)} (${item})`;
+        }));
         cached = { jobs };
         bestTeamCache.set(plan, cached);
     }
-    const scheduleOptions={phaseDurations:plan.recipe_schedule?.phases.map(p=>p.duration),haulingProfile:haulingScheduleProfile(plan,hauling)};
-    if (!layout && !haulingBusy) return cached.baseline ??= recommendBestTeam(cached.jobs,0,[],scheduleOptions);
+    return cached.jobs;
+}
+
+function bestPlanTeam(plan, haulingBusy = plan.hauling_busy || 0,
+    layout = bestTeamLayouts.get(plan)?.layout ?? null, hauling = bestTeamLayouts.get(plan)?.hauling) {
+    const jobs=jobsForBestPlan(plan);
+    const cached=bestTeamCache.get(plan);
+    if (!layout && !haulingBusy) return cached.baseline ??= recommendBestTeam(jobs,0,[],{
+        phaseDurations:plan.recipe_schedule?.phases.map(p=>p.duration),
+    });
     if (cached.layout !== layout || cached.haulingBusy !== haulingBusy || cached.hauling !== hauling) {
         cached.layout = layout;
         cached.haulingBusy = haulingBusy;
         cached.hauling = hauling;
-        const dispatch = layout && buildDispatch(layout, recipeIndex, hauling, RESIDENT_FACILITIES);
-        cached.result = recommendBestTeam(placeBestJobs(cached.jobs, layout, dispatch?.locations), haulingBusy, dispatch?.opportunities||[],scheduleOptions);
-        if (layout) {
-            const pools = cached.result.shifts.map(shift => ({ ...shift, busy:Math.max(shift.busy,...(shift.phaseBusy||[])), count: 1 }));
-            const support = withCropSupport({ layout, recipes: recipeIndex, pools, limit: ANIIMO_MAX[layoutHomeLevel()-1] });
-            const peak = support.peak;
-            cached.result.cropPeaks = peak;
-            for (const { member, count } of peak.additions) for (let i=0;i<count;i++) {
-                const source = support.pools[member];
-                cached.result.shifts.push({ ...source, busy: 0, tasks: new Map(), allocations: [], peakSupport: true });
-            }
-        }
+        cached.result = packMappedTeam(plan,jobs,layout,hauling,haulingBusy,recipeIndex);
+        if(layout)addHarvestHelpers(cached.result,layout,recipeIndex,ANIIMO_MAX[layoutHomeLevel()-1]);
     }
     return cached.result;
 }
@@ -6061,8 +6160,6 @@ async function runFindPlan() {
             // The season the plan used, if any, so its currency and points keep their names.
             season: input.season,
         };
-        startProgress(input, runId);
-
         // Runs in the worker (see worker.js); the main thread stays free to paint the progress
         // bar above for however long this takes, instead of freezing. `onTrialProgress` receives
         // the solver's own real, running trial-solve count after every trial solve; converted to
@@ -6073,6 +6170,7 @@ async function runFindPlan() {
         requestedSetup = bestSetup;
         mainSolve = { setup: bestSetup, runId };
         Object.assign(input, aniimoInput(bestSetup));
+        startProgress(input, runId);
         const bestJson = await callWorker('find_plan', JSON.stringify({ ...input, aniimo: bestSetup,
             map_dispatch_pending:bestSetup.startsWith('roster') }), (count) => {
             // The exact planner reports each solve; the backup planner counts its trials.
@@ -6092,7 +6190,7 @@ async function runFindPlan() {
         showSelectedPlan();
         // With no plan there's nothing to lay out or improve on.
         if (!plansBySetup[bestSetup].success && progress) {
-            progress.steps.forEach(s => { if ((s.key === 'layout' || s.key === 'improve') && s.state === 'pending') s.state = 'skipped'; });
+            progress.steps.forEach(s => { if (['layout','power_team','improve'].includes(s.key) && s.state === 'pending') s.state = 'skipped'; });
             renderProgress();
         }
 

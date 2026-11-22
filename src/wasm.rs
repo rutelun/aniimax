@@ -1906,7 +1906,9 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
     let plan = build_report(&exact, reporting_items, &currency, &report_counts);
     let mut js = prepared.to_js(plan, Some(proof));
     js.recipe_switching_candidate = prepared.input.recipe_switching_relaxation;
-    if js.recipe_switching_candidate {
+    if js.recipe_switching_candidate || (!result.summary_only
+        && prepared.input.e_mode_rv.unwrap_or(0) >= 12
+        && prepared.input.aniimo.as_deref().is_some_and(|setup| setup.starts_with("best"))) {
         let all: std::collections::HashMap<_, _> = reporting_items.iter()
             .map(|item| (item.name.as_str(), item)).collect();
         js.schedule_sources = exact.recipe_rates.iter().filter(|(_, rate)| **rate > 1e-9)

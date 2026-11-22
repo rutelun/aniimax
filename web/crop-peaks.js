@@ -1,6 +1,6 @@
 import { workerTravelSeconds } from './worker-travel.js';
 import { dispatchLocations } from './task-switching.js';
-import { recurringCropWork, REGROWTH_TARGET_SECONDS } from './recurring-crops.js';
+import { prepareRecurringCropWork, REGROWTH_TARGET_SECONDS } from './recurring-crops.js';
 
 const EPS=1e-8;
 export const CROP_PEAK_TARGET_SECONDS=100;
@@ -167,14 +167,16 @@ export function selectCropPeakTeam({members,counts,permanent=[],jobs,outside=[],
     };
     // Candidate selection, pruning and the removal tooltip revisit the same
     // team. All eight scenarios share fixed inputs throughout this search.
+    const recurringWork=recurring && prepareRecurringCropWork({jobs,members,counts,permanent,outside});
     const scenariosByTeam=new Map();
-    const evaluate=allocation=>{
+    const evaluate=(allocation,trackShares=false)=>{
         const key=allocation.join(',');
         if(!scenariosByTeam.has(key))scenariosByTeam.set(key,recurring?
-            recurringCropWork({jobs,members,counts,permanent,outside},allocation):simulate(allocation));
+            recurringWork(allocation,trackShares):simulate(allocation));
         return scenariosByTeam.get(key);
     };
-    let result=evaluate(active);const beforeWait=result.wait,beforeCompletion=result.completion;
+    const originalTeam=active.join(',');
+    let result=evaluate(active,true);const beforeWait=result.wait,beforeCompletion=result.completion;
     const better=(a,b)=>(a.uncovered||0)<(b.uncovered||0) || a.completion<b.completion-EPS
         || (Math.abs(a.completion-b.completion)<=EPS && a.wait<b.wait-EPS);
     const improve=(allocation,initial,available,floor=counts,cap=limit)=>{
@@ -215,6 +217,10 @@ export function selectCropPeakTeam({members,counts,permanent=[],jobs,outside=[],
     const required=[...proposed];
     const shortfall = recommend && !meetsTarget(recommendation.completion)
         ? improve(required,recommendation,()=>true,proposed,required.reduce((a,b)=>a+b,0)+8) : recommendation;
+    // Candidate comparisons only consume timing. Materialize the full dispatch
+    // shares once if a different team supplied the accepted timing.
+    if (recurring && active.join(',')!==originalTeam)
+        result=recurringWork(active,true);
     return {...result,recurring,counts:active,baseCounts:[...counts],withoutHelper,beforeWait,beforeCompletion,targetSeconds,
         targetMet:meetsTarget(result.completion),
         additions:proposed.flatMap((n,member)=>n>active[member]?[{member,count:n-active[member]}]:[]),

@@ -67,3 +67,26 @@ test('unchanged steady production does not reserve a full phase of its inputs',a
  const p={daySeconds:100,approximate:true,maxBuildings:0,maxSwitches:0,jobs:[],buildings:[],workerCapacity:{},backgroundInputs:{water:2},backgroundOutputs:{water:2}};
  assert.equal(module.validateRecipeSchedule(p,{phases:[{duration:100,assignments:[]}],initialStock:{}}).valid,true);
 });
+
+test('attached power includes dedicated background sites and counts a shared upgraded site once',()=>{
+    const facility='Chimney Kiln', tier=4;
+    const sources=['brick','ore'].map(item=>source(item,{electric_level:tier,crew:null}));
+    const rows=sources.map(s=>({facility,item_name:s.item,status:'producing',electric_level:tier,facility_count:1}));
+    rows.push({facility:'Mine',item_name:'sand',status:'producing',electric_level:3,facility_count:2});
+    const proposed={...plan,schedule_sources:sources,coin_items:rows,power_used:72,power_generated:288};
+    const p=scheduleInputForPlan({...input,facilities:{[facility]:[{count:2,level:tier}]}},proposed);
+    const site=p.buildings[0].id;
+    const schedule={phases:sources.map(j=>({duration:43200,assignments:[{building:site,job:j.id,batches:1728}]})),initialStock:{}};
+    assert.equal(attachRecipeSchedule(proposed,p,schedule).power_used,288);
+    assert.throws(()=>attachRecipeSchedule({...proposed,power_generated:287},p,schedule),/generation/i);
+});
+
+test('a manual raw processor stays fully staffed when its powered neighbour switches recipes',()=>{
+    const item={facility:'Woodworking Bench',item:'rough_lumber',batches:86400};
+    const jobs=[{...item,id:'manual'}, {...item,id:'powered',electric_level:4,batches:43200}];
+    const manual={job:'manual',batches:43200}, powered={job:'powered',batches:43200};
+    const phases=[[manual,powered],[manual]].map(assignments=>({duration:43200,assignments}));
+    const plan={recipe_schedule:{jobs,phases}};
+    assert.deepEqual(scheduleProfiles(plan,true).get('Woodworking Bench|rough_lumber'),[1,1]);
+    assert.deepEqual(scheduleProfiles(plan).get('Woodworking Bench|rough_lumber'),[4/3,2/3]);
+});

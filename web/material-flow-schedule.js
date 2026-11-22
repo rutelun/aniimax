@@ -6,15 +6,18 @@ export const materialChains={
     'Woodworking Bench':['rough_lumber','standard_planks','laminated_beams','densified_timber_component'],
     'Chimney Kiln':['coarse_sifted_ore','sintered_ore_brick','refined_ore','microcrystalline_ore_plate'],
 };
-export function independentMaterialChains(input) {
+export function independentMaterialChains(input, allowMixed = false) {
     if(!input.alwaysRunning||!input.approximate||!input.jobs.length)return null;
     const groups=new Map();
     for(const job of input.jobs) {
         const index=materialChains[job.facility]?.indexOf(job.recipe)??-1;
-        if(index<0||job.electric_level!=null)return null;
+        if(index<0||(!allowMixed&&job.electric_level!=null))return null;
         if(!groups.has(job.facility))groups.set(job.facility,[]);
         const group=groups.get(job.facility);
-        if(group[index])return null;
+        if(group[index]){
+            const sameTerms=(a,b)=>Object.keys(a).length===Object.keys(b).length&&Object.entries(a).every(([k,v])=>b[k]===v);
+            if(!allowMixed||!sameTerms(group[index].inputs,job.inputs)||!sameTerms(group[index].outputs,job.outputs))return null;
+        }
         group[index]=job;
     }
     for(const [facility,jobs] of groups) {
@@ -32,7 +35,7 @@ export function independentMaterialChains(input) {
 
 // The input stock at dawn for a periodically fed machine with spare capacity
 // is the largest excess of arrivals over capacity in any suffix of yesterday.
-function processStage(supply,capacity,quantity) {
+export function processStage(supply,capacity,quantity) {
     const intervals=[];
     let stock=0,net=0;
     for(const period of supply) {
