@@ -1,3 +1,5 @@
+const {requiredSiteRows}=await import('./priority-ceilings.js'+new URL(import.meta.url).search);
+
 // Fill the material processors around the already chosen production plan first. This gives
 // the full search a useful incumbent instead of an income plan making no RV materials.
 export async function searchMaterials(problem, incumbent, solve, options) {
@@ -14,8 +16,12 @@ export async function searchMaterials(problem, incumbent, solve, options) {
     if (seed && problem.primary_objective?.length) {
         // Keep the same objective in this upper bound. Proving only the raw output could
         // accept a reserve-heavy seed before comparing an equally productive owned team.
-        const relaxed = { ...problem, tiebreak: [], lp: problem.lp
-            .replace(/\nGeneral\n[\s\S]*\nEnd/, '\nEnd') };
+        // A flow that is required even at this stage consumes a whole
+        // physical site. Keep those implications in the optimistic LP.
+        const cuts=requiredSiteRows(problem);
+        const lp=problem.lp.replace(/\nGeneral\n[\s\S]*\nEnd/, '\nEnd');
+        const relaxed = { ...problem, tiebreak: [], lp:cuts.length
+            ? lp.replace('\nBounds\n','\n'+cuts.join('\n')+'\nBounds\n') : lp };
         const bound = await solve(relaxed, { ...options, time_limit: Math.min(2, options.time_limit ?? 2) });
         if (bound?.proven && score(seed) >= bound.objective - 1e-9) {
             return { ...seed, proven: true };

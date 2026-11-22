@@ -63,14 +63,19 @@ export function requiredRecipeSites(problem, model, positiveObjective=false) {
     return groups;
 }
 
+export function requiredSiteRows(problem, parsed, positiveObjective=false) {
+    if (!problem.recipe_options?.length || problem.variable_keys?.length!==problem.variables) return [];
+    const groups=requiredRecipeSites(problem,parsed ?? parseLinearLp(problem.lp,problem.variables),positiveObjective);
+    return groups.map((group,i)=>` required_site_${i}: ${group.map(v=>'x'+v).join(' + ')} >= 1`);
+}
+
 // This is an upper bound only. A plan reaching it has to be checked against
 // every integer decision and every continuous-production constraint.
 export function priorityCeiling(highs, problem, goal) {
     if (!problem?.lp || !(goal==='crop_variety' || problem.production_only)) return null;
     let lp = problem.lp;
     if (goal==='level_up' && problem.recipe_options?.length && problem.variable_keys?.length===problem.variables) {
-        const groups = requiredRecipeSites(problem,parseLinearLp(lp,problem.variables),true);
-        const cuts = groups.map((group,i)=>` required_site_${i}: ${group.map(v=>'x'+v).join(' + ')} >= 1`);
+        const cuts = requiredSiteRows(problem,null,true);
         if (cuts.length) lp = lp.replace('\nBounds\n','\n'+cuts.join('\n')+'\nBounds\n');
     }
     const model = highs.createModel({format:'lp',data:lp.replace(/\nGeneral\n[\s\S]*?\nEnd/,'\nEnd')});

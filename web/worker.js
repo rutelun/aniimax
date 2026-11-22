@@ -383,7 +383,26 @@ async function exactPlanJsonOnce(pkg, payload, step = () => {}, first = () => {}
                 : keepProductionWitness(await runModel(protectedProblem, options, message, bestSeed?.values ?? seed), bestSeed);
             if (result && Number.isFinite(knownUpper) && knownUpper >= result.objective)
                 result.upper = Math.min(result.upper ?? Infinity, knownUpper);
-        }else result=await runModel(protectedProblem,options,message,seed);
+        }else {
+            if (!comparison && deadline==null && !input.continuous_fast_neighborhood
+                && initialSeed && seed && goal===(input.currency||'coins') && problem.recipe_options?.length) {
+                try{
+                    const {resourceBounds}=await import('./resource-bounds.js'+load);
+                    const highs=await newHighs();
+                    const witness=(await incumbentSolver).polishSolution(highs,protectedProblem,{values:seed});
+                    const bounded=witness.polished && resourceBounds(highs,protectedProblem,witness);
+                    if(bounded?.pricedColumns) {
+                        const priced=await runModel(bounded.problem,options,undefined,witness.values);
+                        // A different branch order can earn less at the node
+                        // limit. Only replace the ordinary search with a proof.
+                        if(priced?.proven)result=priced;
+                    }
+                }catch(error){
+                    console.warn('Continuing the ordinary income search.',error);
+                }
+            }
+            result??=await runModel(protectedProblem,options,message,seed);
+        }
         // A repair fixes whole buildings. Only the parent solve can supply a
         // bound that later priorities may reuse across different buildings.
         result = keepProductionWitness(result,repaired);
