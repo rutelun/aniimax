@@ -1,4 +1,4 @@
-import {recommendBestTeam, placeBestJobs} from './best-team.js';
+import {recommendBestTeam, placeBestJobs, protectedShift} from './best-team.js';
 import {buildDispatch} from './task-switching.js';
 import {haulingScheduleProfile} from './recipe-schedule-plan.js';
 import {FACILITIES} from './facility-config.js';
@@ -20,7 +20,8 @@ export function addHarvestHelpers(team, layout, recipes, limit) {
     const {pools:choices, peak} = withCropSupport({layout, recipes, pools, limit});
     team.cropPeaks = peak;
     for (const {member,count} of peak.additions) for (let i=0; i<count; i++) {
-        team.shifts.push({...choices[member], busy:0, tasks:new Map(), allocations:[], peakSupport:true});
+        const helper=choices[member];
+        team.shifts.push({...helper, distractions:helper.helperDistractions ?? helper.distractions, busy:0, tasks:new Map(), allocations:[], peakSupport:true});
     }
     return team;
 }
@@ -31,5 +32,6 @@ export function mappedTeamScore(team, grid, limit) {
     if (grid.disconnected || team.shifts.length>limit || team.cropPeaks?.recommendedTargetMet===false ||
         team.shifts.some(s => !s.entry || s.busy>1+1e-6 || s.phaseBusy?.some(n=>n>1+1e-6))) return null;
     const active=grid.networks.filter(n=>n.consumers && n.generated>0);
-    return {people:team.shifts.length,generators:active.reduce((sum,n)=>sum+n.generators,0),networks:active.length};
+    const distractions = team.shifts.filter(protectedShift).reduce((n,s) => n + (s.distractions ?? 0), 0);
+    return {distractions,people:team.shifts.length,generators:active.reduce((sum,n)=>sum+n.generators,0),networks:active.length};
 }

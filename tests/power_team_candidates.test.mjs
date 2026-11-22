@@ -84,3 +84,20 @@ test('a powered upgrade cannot consume the only site available to a higher-tier 
     assert.ok(scarce.every(p=>p.power_used===0));
     assert.ok(candidates([{level:3,count:2}]).some(p=>p.power_used===54));
 });
+
+test('the shortlist can electrify a competing workshop even if the incumbent uses the entire power budget', () => {
+    const facility='Crafting Table', items=['safe','competing'], skills=['Fire','Artisanship'];
+    const plan={schedule_sources:items.map((item,i)=>({item,id:i?item:item+'__electric1',facility,rate:.5,cycle:1,
+        electric_level:i?null:1,inputs:[],outputs:[[item,1]]})),power_generator_levels:[[1,4]],
+        generator_watts_by_lightning:[1,2,3,18],coin_items:items.map((item,i)=>({item_name:item,facility,status:'producing',
+        facility_count:1,busy_units:.5,electric_level:i?null:1,aniimo:i?{ability:skills[i],level:1}:null}))};
+    const problem={variable_keys:[],recipe_options:[]};
+    for(const item of items) for(const electric of [false,true]){
+        problem.recipe_options.push([problem.variable_keys.length,item,facility,false,electric,1]);
+        problem.variable_keys.push('rate:'+item+(electric?'__electric1':'')+'#0');
+    }
+    const input={e_mode_rv:12, facilities:{[facility]:[{count:2,level:1}]}};
+    const recipes=items.map((name,i)=>({name,facility,facility_level:1,aniimo:[skills[i],1]}));
+    const candidates=[...powerTeamCandidates(plan,input,problem,recipes)];
+    assert.ok(candidates.some(p=>p.schedule_sources[1].electric_level===1 && p.power_used===18));
+});

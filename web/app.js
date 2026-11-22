@@ -5354,7 +5354,7 @@ function aniimoTeam(plan) {
         const pools = team.kept.map(g => ({ count: g.count, abilities: { [g.ability]: g.level },
             allocations: g.environment ? [{fixed:true,busy:g.count}] : g.allocations }));
         const couriers = Math.max(0, Math.ceil((plan.hauling_busy || 0)-1e-6));
-        const support = withCropSupport({layout:placed.layout,recipes:recipeIndex,pools,limit:ANIIMO_MAX[layoutHomeLevel()-1]-couriers});
+        const support = withCropSupport({layout:placed.layout,recipes:recipeIndex,pools,haulingBusy:plan.hauling_busy,limit:ANIIMO_MAX[layoutHomeLevel()-1]-couriers});
         const peak = support.peak;
         team.cropPeaks = peak;
         for (const {member,count} of peak.additions) {

@@ -112,3 +112,23 @@ test('a slower perfume assignment keeps Dewy and the selected personality', () =
     assert.equal(shifts.find(shift => shift.tasks.has('Soap')).entry.id, 'dewy');
     assert.ok(!incense.tasks.has('Soap'));
 });
+
+test('a fire worker avoids other open jobs even when their assigned worker is more skilled', () => {
+    const {shifts} = recommendBestTeam([
+        {ability:'Fire',level:3,label:'Kiln',busy:1},
+        {ability:'Artisanship',level:4,minimumLevel:1,label:'Bench',busy:1},
+        {ability:'Dark',level:4,minimumLevel:1,label:'Dryer',busy:1},
+    ], 1);
+    const fire = shifts.find(s => s.tasks.has('Kiln'));
+    assert.equal(fire.abilities.Fire, 3);
+    assert.ok(!fire.abilities.Artisanship && !fire.abilities.Dark && !fire.abilities.Hauling);
+});
+
+test('generator workers avoid manual jobs at the recipe unlock level and ignore occupied posts', () => {
+    const generator = {ability:'Lightning',level:4,facility:'Crackle Generator',label:'Power',fixed:true,busy:1};
+    const light = {ability:'Light',level:4,minimumLevel:1,label:'Light job',busy:1};
+    const dark = {ability:'Dark',level:4,minimumLevel:1,label:'Dark job',busy:1};
+    const chosen = jobs => recommendBestTeam([generator,...jobs]).shifts.find(s => s.tasks.has('Power'));
+    assert.equal(chosen([dark,{...light,fixed:true}]).abilities.Dark, undefined);
+    assert.equal(chosen([light,{...dark,fixed:true}]).abilities.Light, undefined);
+});

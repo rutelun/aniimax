@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {productionTeamJobs} from '../web/production-team-jobs.js';
+import {recommendBestTeam} from '../web/best-team.js';
+import {mappedTeamScore} from '../web/mapped-power-team.js';
 import {selectPowerTeam,shortlistPowerTeams} from '../web/power-team-search.js';
 
 const plan = {id:'incumbent'};
@@ -53,4 +56,22 @@ test('separate working grids break a tie after workers and active generators',as
     const split={id:'split'},combined={id:'combined'};
     const winner=await selectPowerTeam(plan,[combined,split],p=>({people:9,generators:2,networks:p===split?2:1}));
     assert.equal(winner,split);
+});
+
+test('equal mapped teams electrify the workshop that can divert the generator operator',async()=>{
+    const recipes=[{name:'brick',facility:'Chimney Kiln',aniimo:['Fire',1]},
+        {name:'parts',facility:'Crafting Table',aniimo:['Artisanship',1]}];
+    const makePlan=electricItem=>({coin_items:recipes.map(r=>({
+        facility:r.facility,item_name:r.name,status:'producing',facility_count:1,
+        electric_level:r.name===electricItem?1:null,aniimo_tasks:[{ability:r.aniimo[0],level:4,busy:1}],
+    }))});
+    const kiln=makePlan('brick'),bench=makePlan('parts');
+    const measure=p=>{
+        const jobs=productionTeamJobs(p,recipes);
+        jobs.push({ability:'Lightning',level:4,busy:1,label:'Generator',facility:'Crackle Generator',fixed:true});
+        return mappedTeamScore(recommendBestTeam(jobs),{networks:[{consumers:1,generated:18,generators:1}]},2);
+    };
+    assert.deepEqual(measure(kiln),{people:2,generators:1,networks:1,distractions:1});
+    assert.deepEqual(measure(bench),{people:2,generators:1,networks:1,distractions:0});
+    assert.equal(await selectPowerTeam(kiln,[bench],measure),bench);
 });

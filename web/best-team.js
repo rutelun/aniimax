@@ -28,6 +28,43 @@ function indexCatalog(entries) {
 const catalogIndex = indexCatalog(catalog.entries);
 const noMatches = new Set();
 
+export function distractionCount(entry, jobs) {
+    let count = 0;
+    for (const job of jobs) {
+        if (entry?.abilities[job.ability] >= (job.minimumLevel ?? job.level) &&
+            (!job.family || entry.family === job.family)) count += job.siteCount ?? 1;
+    }
+    return count;
+}
+
+function bestForm(candidates, roles, growing, otherJobs) {
+    let entry, distractions = 0, bestPrimary = Infinity, bestSecondary = Infinity;
+    for (const candidate of candidates) {
+        let excess = 0;
+        for (const role of roles) excess += candidate.abilities[role.ability] - role.level;
+        const risk = distractionCount(candidate, otherJobs);
+        // Match production speed first. For fields, prefer fewer diversions
+        // and then stronger coverage of the assigned crop stages.
+        const primary = growing ? risk : excess;
+        const secondary = growing ? -excess : risk;
+        if (primary < bestPrimary || (primary === bestPrimary && secondary < bestSecondary)) {
+            entry = candidate;
+            distractions = risk;
+            bestPrimary = primary;
+            bestSecondary = secondary;
+        }
+    }
+    return {entry,distractions};
+}
+
+export function generatorDistractions(level, open) {
+    const role = {ability:'Lightning',level};
+    return bestForm(catalogIndex.get(roleKey(role)) ?? noMatches,[role],false,open).distractions;
+}
+
+export const protectedShift = shift => shift.peakSupport ||
+    shift.allocations.some(job => job.growing || job.facility === 'Crackle Generator');
+
 export function placeBestJobs(jobs, layout, sites) {
     if (!layout) return jobs;
     sites ??= dispatchLocations(layout);
@@ -35,7 +72,7 @@ export function placeBestJobs(jobs, layout, sites) {
         const locations = sites.get(job.siteKey);
         if (!locations) return [job];
         const total = locations.reduce((sum, site) => sum + site.rate, 0);
-        return locations.map(({ point, rate }) => ({ ...job, point, busy: job.busy * rate / total }));
+        return locations.map(({ point, rate }) => ({ ...job, point, siteCount: 1, busy: job.busy * rate / total }));
     });
 }
 
@@ -49,27 +86,12 @@ export function recommendBestTeam(jobs, haulingBusy = 0, dispatch = [], options 
     const available = [];
     const haul = { ability: 'Hauling', level: options.haulingLevel||3, label: 'Hauling to Storage Units', profile:options.haulingProfile };
     const matches = job => catalogIndex.get(roleKey(job)) ?? noMatches;
-    const outsideCrops = new Map();
-    for (const job of jobs.filter(job => !job.growing && !job.fixed && job.busy > EPSILON)) {
-        outsideCrops.set(job.ability, Math.min(job.level, outsideCrops.get(job.ability) ?? Infinity));
-    }
-    if (haulingBusy > EPSILON) outsideCrops.set('Hauling', 1);
-    const candidateFor = shift => {
-        let best;
-        let lowest = Infinity;
-        for (const entry of shift.candidates) {
-            const skills = Object.keys(entry.abilities);
-            let excess = 0;
-            for (const role of shift.roles.values()) excess += entry.abilities[role.ability] - role.level;
-            const distractions = shift.growing ? skills.filter(skill => entry.abilities[skill] >= outsideCrops.get(skill)).length : 0;
-            const value = distractions * 1000 + (shift.growing ? -excess : excess) * 100 - skills.length;
-            if (value < lowest) {
-                best = entry;
-                lowest = value;
-            }
-        }
-        return best;
-    };
+    const open = jobs.filter(job => !job.fixed && job.busy > EPSILON);
+    if (haulingBusy > EPSILON) open.push({...haul, minimumLevel:1});
+    const competing = shift => open.filter(job => !(job.growing && shift.growing) &&
+        !shift.allocations.some(own => own.ability === job.ability && own.label === job.label &&
+            own.siteKey === job.siteKey && own.point === job.point));
+    const candidateFor = shift => bestForm(shift.candidates,[...shift.roles.values()],shift.growing,competing(shift));
     const compatible = (shift, job, candidates) => {
         if (job.personality && shift.personalities.has(opposedPersonality(job.personality))) return null;
         if (shift.roles.has(roleKey(job))) return shift.candidates;
@@ -185,7 +207,7 @@ export function recommendBestTeam(jobs, haulingBusy = 0, dispatch = [], options 
         }
         const additionalCouriers = Math.max(0, Math.ceil(remaining - EPSILON));
         const workers = available.map(shift => {
-            const entry = candidateFor(shift);
+            const {entry} = candidateFor(shift);
             const abilities = entry?.abilities ?? Object.fromEntries([...shift.roles.values()].map(role => [role.ability, role.level]));
             const spare = spareFor(shift,haul);
             const family = entry?.family ?? [...shift.roles.values()].find(role => role.family)?.family;
@@ -200,7 +222,7 @@ export function recommendBestTeam(jobs, haulingBusy = 0, dispatch = [], options 
         });
     }
     for (const { shift, eligible } of couriers) {
-        if (dispatch.length && (candidateFor(shift)?.abilities.Hauling ?? 0) < haul.level) continue;
+        if (dispatch.length && (candidateFor(shift).entry?.abilities.Hauling ?? 0) < haul.level) continue;
         const spare = spareFor(shift,haul);
         haulingSpare += spare;
         const load = Math.min(spare, haulingBusy);
@@ -216,9 +238,9 @@ export function recommendBestTeam(jobs, haulingBusy = 0, dispatch = [], options 
         shifts: shifts.flatMap(pool => {
             const { candidates, roles, growing, homes, ...shift } = pool;
             const requirements = [...roles.values()];
-            const entry = candidateFor(pool);
+            const {entry,distractions} = candidateFor(pool);
             const abilities = entry?.abilities ?? Object.fromEntries(requirements.map(role => [role.ability, role.level]));
-            const result={ ...shift, entry, abilities, family: entry?.family ?? requirements.find(role => role.family)?.family ?? null };
+            const result={ ...shift, entry, abilities, distractions, family: entry?.family ?? requirements.find(role => role.family)?.family ?? null };
             if(!phases||Math.max(...(shift.phaseBusy||[]))<=1+EPSILON)return [result];
             const durations=options.phaseDurations||Array(phases).fill(1);
             const profiles=new Map(shift.allocations.map(a=>[a.label,a.profile]));

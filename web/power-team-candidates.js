@@ -1,3 +1,5 @@
+import {recommendBestTeam, protectedShift, distractionCount} from './best-team.js';
+import {productionTeamJobs} from './production-team-jobs.js';
 import {ratedSiteWatts} from './physical-power.js';
 import {FACILITIES, generatorLimit} from './facility-config.js';
 import {materialChains, processStage} from './material-flow-schedule.js';
@@ -47,26 +49,39 @@ function productionRow(base, source, definitions, input) {
         aniimo: role, aniimo_tasks: role ? [{...role, busy, jobs: []}] : []};
 }
 
-// Equivalent partial assignments leave the same exact-tier powered sites and
-// the same manual-site requirements. Only their least manual work can survive
-// the subsequent watts-and-ability comparison.
-function facilityStates(menus, tiers, definitions, maximum) {
+// Keep both extremes. Fractional manual work and the number of opportunities
+// for diversions need not rank two equal-capacity configurations in the same order.
+function retainState(next, key, state) {
+    const lean = next.get(key);
+    if (!lean || state.work < lean.work - EPS ||
+        (Math.abs(state.work - lean.work) <= EPS && state.risk < lean.risk)) next.set(key,state);
+    const safeKey = key + '|safe', safe = next.get(safeKey);
+    if (!safe || state.risk < safe.risk ||
+        (state.risk === safe.risk && state.work < safe.work - EPS)) next.set(safeKey,state);
+}
+
+function facilityStates(menus, tiers, definitions, maximum, protectedWorkers) {
     const levels = [...new Set(tiers.map(t => t.level))].sort((a, b) => a - b);
     const owned = levels.map(level => tiers.filter(t => t.level === level).reduce((n, t) => n + t.count, 0));
     const options = menus.map(menu => menu.map((pick, i) => {
         const {row} = pick, electric = row.electric_level != null;
-        const required = definitions.get(row.item_name)?.facility_level ?? 1;
-        return {pick, changed: i !== 0, ability: i ? row.aniimo?.ability : null, electric,
+        const recipe = definitions.get(row.item_name), required = recipe?.facility_level ?? 1;
+        const risk = !electric && recipe?.aniimo && facilities.get(row.facility)?.category !== 'Aniimo Materials'
+            ? protectedWorkers.reduce((sum,entry) => sum + distractionCount(entry,[{
+                ability:recipe.aniimo[0],level:recipe.aniimo[1],family:recipe.family,siteCount:row.facility_count,
+            }]),0) : 0;
+        return {pick, risk, changed: i !== 0, ability: i ? row.aniimo?.ability : null, electric,
             tier: electric ? levels.indexOf(row.electric_level) : levels.findIndex(level => level >= required),
             count: row.facility_count, watts: siteWatts(row) * row.facility_count, work: electric ? 0 : row.busy_units};
     }));
-    const baseline = {changes: [], watts: 0, work: 0};
+    const baseline = {changes: [], watts: 0, work: 0, risk: 0};
     for (const [first] of options) {
         baseline.watts += first.watts;
         baseline.work += first.work;
+        baseline.risk += first.risk;
     }
     if (options.every(menu => menu.length === 1)) return [baseline];
-    let states = [{...baseline, watts: 0, work: 0, abilities: [], powered: levels.map(() => 0), manual: levels.map(() => 0)}];
+    let states = [{...baseline, watts: 0, work: 0, risk: 0, abilities: [], powered: levels.map(() => 0), manual: levels.map(() => 0)}];
     for (const menu of options) {
         const next = new Map();
         let order = 0;
@@ -90,17 +105,16 @@ function facilityStates(menus, tiers, definitions, maximum) {
             const changed = !!state.changes.length || option.changed;
             const key = [powered.join(','), manual.join(','), changed, abilities.join(',')].join('|');
             const work = state.work + option.work;
-            if (next.has(key) && next.get(key).work <= work + EPS) continue;
             const changes = option.changed ? [...state.changes, option.pick] : state.changes;
-            next.set(key, {watts, work, changes, abilities, powered, manual, order});
+            retainState(next,key,{watts, work, risk:state.risk + option.risk, changes, abilities, powered, manual, order});
         }
         // Preserve the input recipe order for equally good final assignments.
-        states = [...next.values()].sort((a, b) => a.order - b.order);
+        states = [...new Set(next.values())].sort((a, b) => a.order - b.order);
     }
     return [baseline, ...states.filter(s => s.changes.length)];
 }
 
-function ordinaryStates(plan, input, modes, definitions, maximum) {
+function ordinaryStates(plan, input, modes, definitions, maximum, protectedWorkers) {
     const modeKey = (name, level) => name + '|' + (level ?? '');
     const rows = new Map(plan.coin_items.filter(r => r.status === 'producing').map(r => [modeKey(r.item_name, r.electric_level), r]));
     const counts = new Map();
@@ -142,9 +156,9 @@ function ordinaryStates(plan, input, modes, definitions, maximum) {
     }
     // Combine one facility at a time. At a given draw, retain the allocation
     // with the least manual work as well as the unmodified native allocation.
-    let states = [{watts: 0, work: 0, changes: []}];
+    let states = [{watts: 0, work: 0, risk: 0, changes: []}];
     for (const [facility, menus] of groups) {
-        const entries = facilityStates(menus, input.facilities[facility] ?? [], definitions, maximum);
+        const entries = facilityStates(menus, input.facilities[facility] ?? [], definitions, maximum, protectedWorkers);
         const next = new Map();
         for (const state of states) for (const part of entries) {
             const watts = state.watts + part.watts, work = state.work + part.work;
@@ -152,10 +166,9 @@ function ordinaryStates(plan, input, modes, definitions, maximum) {
             const unchanged = !state.changes.length && !part.changes.length;
             const abilities = new Set([...(state.abilities ?? []), ...part.changes.filter(c => c.row.aniimo).map(c => c.row.aniimo.ability)]);
             const key = [watts, unchanged, [...abilities].sort().join(',')].join('|');
-            if (!next.has(key) || work < next.get(key).work - EPS)
-                next.set(key, {watts, work, abilities, changes: state.changes.concat(part.changes)});
+            retainState(next,key,{watts, work, risk:state.risk + part.risk, abilities, changes:state.changes.concat(part.changes)});
         }
-        states = [...next.values()];
+        states = [...new Set(next.values())];
     }
     return states.sort((a, b) => a.work - b.work || a.watts - b.watts);
 }
@@ -317,7 +330,12 @@ export function* powerTeamCandidates(plan, input, problem, recipes) {
     const limit = generatorLimit(rv), lightning = input.aniimo_levels?.Lightning ?? (input.aniimo?.startsWith('best3') ? 3 : 4);
     const outputs = plan.generator_watts_by_lightning?.slice(0, lightning);
     if (!limit || !outputs?.length || !outputs.every(w => w > 0)) return;
-    const ordinary = ordinaryStates(plan, input, modes, definitions, limit * outputs.at(-1));
+    const jobs = productionTeamJobs(plan,[...definitions.values()]);
+    for (const [,level] of plan.power_generator_levels?.length ? plan.power_generator_levels : [[null,outputs.length]]) {
+        jobs.push({ability:'Lightning',level,busy:1,fixed:true,facility:'Crackle Generator',label:'Generator'});
+    }
+    const crew = recommendBestTeam(jobs,plan.hauling_busy ?? 0).shifts.filter(protectedShift).map(s=>s.entry);
+    const ordinary = ordinaryStates(plan, input, modes, definitions, limit * outputs.at(-1),crew);
     if (!ordinary.length) return;
     const lowestDraw = ordinary.reduce((a, b) => a.watts < b.watts ? a : b);
     const menus = [];
@@ -331,17 +349,19 @@ export function* powerTeamCandidates(plan, input, problem, recipes) {
     }
     // Equal power budgets occur across many changeover patterns. Their best
     // ordinary recipes depend only on how many watts remain.
+    const safestFirst = [...ordinary].sort((a,b) => a.risk-b.risk || a.work-b.work || a.watts-b.watts);
     const budgets = new Map();
     function ordinaryWithin(watts) {
         if (budgets.has(watts)) return budgets.get(watts);
         const selected = new Map();
         for (const state of ordinary) {
             if (state.watts > watts + EPS) continue;
-            const first = selected.size === 0;
             const key = [...state.abilities ?? []].sort().join(',');
             if (!selected.has(key)) selected.set(key, state);
-            if (selected.size === 4 || (first && !state.changes.length)) break;
+            if (selected.size === 4) break;
         }
+        const safest = safestFirst.find(p => p.watts <= watts + EPS);
+        if (safest && ![...selected.values()].some(p => p.risk <= safest.risk)) selected.set('safe',safest);
         const unchanged = ordinary.find(p => !p.changes.length && p.watts <= watts + EPS);
         if (unchanged) selected.set('incumbent', unchanged);
         const result = [...new Set(selected.values())];

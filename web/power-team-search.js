@@ -1,17 +1,26 @@
-import {recommendBestTeam} from './best-team.js';
+import {recommendBestTeam, protectedShift, generatorDistractions} from './best-team.js';
 import {productionTeamJobs} from './production-team-jobs.js';
 import {powerTeamCandidates} from './power-team-candidates.js';
 import {createPowerTeamValidator} from './power-team-validation.js';
 
-const byEstimate = (a,b) => a.people-b.people || a.work-b.work ||
+const byEstimate = (a,b) => a.people-b.people || a.distractions-b.distractions || a.work-b.work ||
     b.plan.power_generated-a.plan.power_generated || a.plan.power_used-b.plan.power_used;
 const ordinaryModes = p => p.schedule_sources.filter(s=>!s.turns && s.electric_level!=null).map(s=>s.id).sort().join('|');
 
 function estimate(plan,recipes) {
-    const {shifts}=recommendBestTeam(productionTeamJobs(plan,recipes),plan.hauling_busy??0,[],{
+    const jobs=productionTeamJobs(plan,recipes);
+    const {shifts}=recommendBestTeam(jobs,plan.hauling_busy??0,[],{
         phaseDurations:plan.recipe_schedule?.phases.map(p=>p.duration),
     });
-    return {people:shifts.length,work:shifts.reduce((v,s)=>v+s.busy,0)};
+    const open=jobs.filter(j=>!j.fixed && j.busy>1e-6);
+    if (plan.hauling_busy>1e-6) open.push({ability:'Hauling',level:1});
+    const riskByLevel=new Map();
+    const powerRisk=level=>{
+        if (!riskByLevel.has(level)) riskByLevel.set(level,generatorDistractions(level,open));
+        return riskByLevel.get(level);
+    };
+    const cropRisk=shifts.filter(protectedShift).reduce((sum,s)=>sum+s.distractions,0);
+    return {powerRisk,cropRisk,people:shifts.length,work:shifts.reduce((v,s)=>v+s.busy,0)};
 }
 
 // Keep backups for native verification while streaming the candidates. Identical
@@ -57,7 +66,9 @@ export async function shortlistPowerTeams(pkg,highs,plan,input) {
         }
         const group=groups.get(count);
         retain(score.unchanged?group.unchanged:group.changed,{
-            ...score,plan:candidate,people:score.people+count,work:score.work+count,
+            ...score,plan:candidate,
+            distractions:candidate.power_generator_levels.reduce((n,[,level])=>n+score.powerRisk(level),score.cropRisk),
+            people:score.people+count,work:score.work+count,
         });
     }
     const verified=[];
@@ -89,7 +100,8 @@ export function improvesMeasuredTeam(candidate, incumbent) {
     if (!incumbent) return true;
     if (candidate.people !== incumbent.people) return candidate.people < incumbent.people;
     if (candidate.generators !== incumbent.generators) return candidate.generators > incumbent.generators;
-    return (candidate.networks ?? 0) > (incumbent.networks ?? 0);
+    if ((candidate.networks ?? 0) !== (incumbent.networks ?? 0)) return (candidate.networks ?? 0) > (incumbent.networks ?? 0);
+    return (candidate.distractions ?? 0) < (incumbent.distractions ?? 0);
 }
 
 export async function selectPowerTeam(plan,candidates,measure,isCurrent=()=>true) {
