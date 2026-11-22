@@ -11,7 +11,7 @@ import { autoMaximizeSeasonPoints, hasSeasonCropMinimums } from './season-planni
 import {continuousProduction} from './continuous-production.js';
 import {continuousNeighborhood, incomeRepairNeighborhood, neighborhoodResult, keepProductionWitness} from './continuous-neighborhood.js';
 import {comparisonConcurrency} from './comparison-queue.js';
-import {searchRecipeSwitches} from './recipe-switch-search.js';
+import {proveFirstSwitch,searchRecipeSwitches} from './recipe-switch-search.js';
 import {refineStaffing} from './staffing-search.js';
 import {economicWorkers} from './economic-parallel.js';
 import {comparePlans} from './opportunity-comparison.js';
@@ -846,9 +846,9 @@ async function repairDispatchPlan(pkg, input, witness) {
         material_work_note:'unproven'};
 }
 
-async function withRecipeSwitches(pkg,input,baseline,progress=()=>{},timed=false) {
+async function withRecipeSwitches(pkg,input,baseline,progress=()=>{},timed=false,firstProposal) {
     const deadline=timed ? performance.now()+10000 : null;
-    return searchRecipeSwitches(input,baseline,{
+    return searchRecipeSwitches(input,baseline,{firstProposal,
         parallel:globalThis.navigator?.hardwareConcurrency>=8 && globalThis.navigator?.deviceMemory>=8
             ? 4 : comparisonConcurrency(globalThis.navigator,4),
         createWorker:!timed && typeof Worker==='function'?()=>new Worker(plannerWorkerUrl,{type:'module'}):null,
@@ -929,6 +929,15 @@ self.onmessage = async (event) => {
             let fallbackReason = null;
             // Each solve's start and end go to the page as progress, as `{ step, state, proven }`.
             const step = (key, state, proven) => self.postMessage({ id, type: 'progress', count: { step: key, state, proven } });
+            const switchingInput = JSON.parse(payload);
+            const firstSwitch = await proveFirstSwitch(switchingInput, async trial => {
+                const {upgradeSwitchBounds} = await import('./recipe-switch-bound.js'+load);
+                return upgradeSwitchBounds(pkg,await newHighs(),switchingInput,trial);
+            }, async trial => JSON.parse(await exactPlanJson(pkg,JSON.stringify(trial))), step);
+            if (firstSwitch?.winner) {
+                self.postMessage({id,ok:true,result:JSON.stringify(firstSwitch.winner)});
+                return;
+            }
             try {
                 let top = null;
                 result = await exactPlanJson(pkg, payload, step, found => { top ||= found; },null,null,event.data.routeWitness);
@@ -962,9 +971,8 @@ self.onmessage = async (event) => {
                 plan.fallback_reason = fallbackReason;
                 result = JSON.stringify(plan);
             }
-            const switchingInput=JSON.parse(payload);
             if(switchingInput.recipe_switching?.max_buildings>0){
-                const selected=await withRecipeSwitches(pkg,switchingInput,JSON.parse(result),step);
+                const selected=await withRecipeSwitches(pkg,switchingInput,JSON.parse(result),step,false,firstSwitch?.proposed);
                 result=JSON.stringify(selected);
             }
             self.postMessage({ id, ok: true, result });

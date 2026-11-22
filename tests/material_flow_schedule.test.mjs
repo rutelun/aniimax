@@ -53,7 +53,7 @@ test('two chains with different raw workloads use two common switch times',()=>{
     assert.ok(validateRecipeSchedule(wrongBatches,schedule).errors.some(e=>e.includes('Wrong daily batches')));
 });
 test('material search accepts the first independently verified roster schedule',async()=>{
-    const {searchRecipeSwitches}=await import('../web/recipe-switch-search.js');
+    const {proveFirstSwitch,searchRecipeSwitches}=await import('../web/recipe-switch-search.js');
     const sample=setup(),facility='Woodworking Bench',day=86400;
     const sources=sample.jobs.map(j=>({id:j.id,item:j.recipe,facility,facility_level:1,crew:0,cycle:j.seconds,
         rate:j.batches/sample.daySeconds,turns:true,inputs:Object.entries(j.inputs),outputs:Object.entries(j.outputs)}));
@@ -73,4 +73,26 @@ test('material search accepts the first independently verified roster schedule',
     assert.equal(proposals,1);
     assert.equal(solves,0);
     assert.equal(result.recipe_schedule.workerProfiles[0].length,result.recipe_schedule.phases.length);
+
+    const request = {...input, level_up_preview:{cost:[['coins',1]],stock:[]}};
+    const checked = {...proposed, continuous_production_checked:true, comparison_scores:{crop_variety:2}};
+    const bounds = () => ({seconds:3*day,crop:2});
+    const early = await proveFirstSwitch(request,bounds,async () => checked);
+    assert.deepEqual(early.winner.recipe_schedule,result.recipe_schedule);
+    assert.equal(early.winner.rate_per_second,result.rate_per_second);
+
+    for (const bound of [{seconds:2*day,crop:2},{seconds:2*day+1,crop:2},{seconds:3*day,crop:3}]) {
+        const open = await proveFirstSwitch(request,() => bound,async () => checked);
+        assert.deepEqual(open,{proposed:checked});
+        const fallback = await searchRecipeSwitches(request,baseline,{firstProposal:open.proposed,
+            candidate:()=>assert.fail('first proposal solved twice'),solve:()=>assert.fail('unexpected schedule solve')});
+        assert.deepEqual(fallback.recipe_schedule,result.recipe_schedule);
+    }
+    const invalid = {...checked,schedule_sources:[]};
+    assert.equal((await proveFirstSwitch(request,bounds,async()=>invalid)).winner,undefined);
+    assert.equal((await proveFirstSwitch(request,bounds,async()=>proposed)).winner,undefined);
+    assert.equal(await proveFirstSwitch({...request,priorities:['coins','level_up']},()=>assert.fail('lower priority'),()=>{}),null);
+    const smaller = {...request,facilities:{[facility]:[{level:1,count:2},{level:2,count:1}]}};
+    assert.equal(await proveFirstSwitch(smaller,()=>assert.fail('cannot fit four sites'),()=>{}),null);
+    assert.equal(await proveFirstSwitch(request,()=>null,()=>assert.fail('missing bound')),null);
 });
