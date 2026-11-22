@@ -161,6 +161,22 @@ fn test_season_environment_column_is_optional() {
 }
 
 #[test]
+fn test_magical_wonder_night_crops_grow_in_thirty_minutes_with_watering() {
+    let Some(mut items) = load_items() else { return };
+    let crops = ["magic_pumpkin", "memory_lanternfruit"];
+    for name in crops {
+        let crop = items.iter().find(|item| item.name == name).unwrap();
+        assert_eq!(crop.production_time, 2400.0, "{name} before watering");
+    }
+
+    aniimax::models::apply_watering(&mut items);
+    for name in crops {
+        let crop = items.iter().find(|item| item.name == name).unwrap();
+        assert_eq!(crop.production_time, 1800.0, "{name} after watering");
+    }
+}
+
+#[test]
 fn test_every_ingredient_is_produced_somewhere() {
     let Some(items) = load_items() else { return };
     let mut names: std::collections::HashSet<&str> = items.iter().map(|i| i.name.as_str()).collect();

@@ -28,7 +28,8 @@ test('Best retains the audited RV16 shift through the wider priority search',
     assert.equal(plan.continuous_production_checked, true);
     assert.deepEqual(plan.comparison_goals.floors.map(([name]) => name), input.priorities.slice(1));
     assert.ok(plan.comparison_goals.pace >= .19221);
-    assert.ok(plan.rate_per_second >= 69.97628);
+    // The reserved seasonal crops take 30 minutes per harvest after watering.
+    assert.ok(plan.rate_per_second >= 69.28794);
     const floors = Object.fromEntries(plan.comparison_goals.floors);
     assert.ok(floors['Wood Blocks'] >= .70833);
     assert.ok(floors.aniipods >= .0007777);

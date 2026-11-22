@@ -1,6 +1,6 @@
 name, facility, raw_materials, required_amount, seed_cost, sell_value, points, production_time, workload, yield, facility_level, environment
-magic_pumpkin, Farmland, , , 4, 61, 1, 1800, , 8, 5, Adequate
-memory_lanternfruit, Farmland, , , 4, 61, 1, 1800, , 8, 5, Adequate
+magic_pumpkin, Farmland, , , 4, 61, 1, 2400, , 8, 5, Adequate
+memory_lanternfruit, Farmland, , , 4, 61, 1, 2400, , 8, 5, Adequate
 sea_salt_roasted_pumpkin, Claw Game Cooker, magic_pumpkin;sea_salt, 8;23, , 1180, 8, , 135, 1, 4,
 honey_glazed_pumpkin_cup, Blazing Stove, sea_salt_roasted_pumpkin;candied_lanternfruit, 1;1, , 4430, 4, , 338, 1, 2,
 magic_pumpkin_cake, Blazing Stove, magic_pumpkin;milled_rice, 8;1, , 1120, 10, , 135, 1, 2,
