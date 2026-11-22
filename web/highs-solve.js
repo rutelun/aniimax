@@ -1,10 +1,14 @@
 const reuse = await import('./highs-reuse.js' + new URL(import.meta.url).search);
 const configuredOptions = new WeakMap();
+const FULL_PLAN_EFFORT = 30;
+const FULL_PLAN_NODE_LIMIT = 2048;
 
 // Main-plan passes use a fixed branch-and-bound effort. LPs run to completion.
 // A slower computer therefore explores the same tree before returning an incumbent.
-export function planSearchOptions({time_limit: effort = 30, ...options}) {
-    return {mip_max_nodes: Math.max(1,Math.ceil(effort / 2)), ...options};
+export function planSearchOptions({time_limit: effort = FULL_PLAN_EFFORT, ...options}) {
+    // Keep the short witness and repair passes cheap before the full search.
+    const nodes = effort >= FULL_PLAN_EFFORT ? FULL_PLAN_NODE_LIMIT : Math.max(1, Math.ceil(effort / 2));
+    return {mip_max_nodes: nodes, ...options};
 }
 
 // A single MIP node may itself solve many LPs. Count their iterations as well

@@ -35,7 +35,9 @@ test('continuous polishing repairs rates without moving a workplace or inventing
 test('production search uses repeatable work limits and keeps early exits distinct from proofs',()=>{
     const options=planSearchOptions({time_limit:2,mip_rel_gap:0});
     assert.equal(options.time_limit,undefined);
-    assert.ok(Number.isInteger(options.mip_max_nodes) && options.mip_max_nodes>0);
+    assert.equal(options.mip_max_nodes,1);
+    assert.equal(planSearchOptions({time_limit:30}).mip_max_nodes,2048);
+    assert.equal(planSearchOptions({mip_max_nodes:128}).mip_max_nodes,128);
     const statuses={optimal:7,timeLimit:13,iterationLimit:14,solutionLimit:16,interrupted:17};
     let interruptedAt;
     const model={run(callbacks){
