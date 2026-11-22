@@ -71,7 +71,7 @@ export function requiredSiteRows(problem, parsed, positiveObjective=false) {
 
 // This is an upper bound only. A plan reaching it has to be checked against
 // every integer decision and every continuous-production constraint.
-export function priorityCeiling(highs, problem, goal) {
+export function priorityCeiling(highs, problem, goal, onOptimum) {
     if (!problem?.lp || !(goal==='crop_variety' || problem.production_only)) return null;
     let lp = problem.lp;
     if (goal==='level_up' && problem.recipe_options?.length && problem.variable_keys?.length===problem.variables) {
@@ -87,6 +87,7 @@ export function priorityCeiling(highs, problem, goal) {
         if (status!==highs.constants.modelStatus.optimal) return null;
         const upper = model.getObjectiveValue();
         if (!Number.isFinite(upper)) return null;
+        onOptimum?.(model);
         // Crop variety awards an integer score for each distinct crop.
         return goal==='crop_variety' ? Math.floor(upper+1e-7) : Math.max(0,upper);
     } finally {

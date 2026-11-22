@@ -96,3 +96,14 @@ test('material search accepts the first independently verified roster schedule',
     assert.equal(await proveFirstSwitch(smaller,()=>assert.fail('cannot fit four sites'),()=>{}),null);
     assert.equal(await proveFirstSwitch(request,()=>null,()=>assert.fail('missing bound')),null);
 });
+
+test('eager switching follows a plausible four-tier workload on the available crew',async()=>{
+    const {suggestsMaterialFlow}=await import('../web/recipe-switch-bound.js');
+    const names=['rough_lumber','standard_planks','laminated_beams','densified_timber_component'];
+    const problem={variable_keys:names.map(n=>'rate:'+n+'__by0#0'),recipe_options:names.map((n,i)=>[i,n,'Woodworking Bench',false,false,10])};
+    assert.ok(suggestsMaterialFlow(problem,[.15,.02,.01,.005],{}));
+    assert.ok(!suggestsMaterialFlow(problem,[.08,.02,.01,.005],{}));
+    assert.ok(!suggestsMaterialFlow(problem,[.25,.02,.01,.005],{}));
+    assert.ok(!suggestsMaterialFlow(problem,[.15,.02,0,.005],{}));
+    assert.ok(!suggestsMaterialFlow(problem,[.15,.02,.01,.005],{roster:{members:[{count:1}]}}));
+});
