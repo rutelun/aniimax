@@ -1332,6 +1332,9 @@ pub struct JsProductionPlan {
     pub power_generators: u32,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub power_generator_levels: Vec<(u32, u32)>,
+    /// Strongest eligible generator tier for each Lightning level on an automatic grid.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub generator_tiers_by_lightning: Vec<u32>,
     /// Wattage of a generator on this plan's grid for Lightning levels 1 through 4.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub generator_watts_by_lightning: Vec<f64>,
@@ -1475,6 +1478,7 @@ fn empty_production_plan(success: bool, error: Option<String>) -> JsProductionPl
         power_used: None,
         power_generators: 0,
         power_generator_levels: Vec::new(),
+        generator_tiers_by_lightning: Vec::new(),
         generator_watts_by_lightning: Vec::new(),
         power_generated: None,
         crop_staffing: false,
@@ -2012,6 +2016,9 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
             route.rate * visits as f64 * 3600.0, route.crop.is_some()))
     }).collect();
     if let Some(power) = report_counts.power() {
+        if let Some(limits) = power.automatic {
+            js.generator_tiers_by_lightning = (1..=4).map(|level| limits.generator(level).0).collect();
+        }
         js.generator_watts_by_lightning = (1..=4).map(|level| power.generator_output(level)).collect();
         let draw = crate::exact::rated_power_draw_with_counts(&exact, reporting_items, &report_counts);
         let needed = draw * power.grid.percent as f64 / 100.0;
@@ -2376,6 +2383,7 @@ impl PreparedInput {
             power_used: None,
             power_generators: 0,
             power_generator_levels: Vec::new(),
+            generator_tiers_by_lightning: Vec::new(),
             generator_watts_by_lightning: Vec::new(),
             power_generated: None,
             crop_staffing: false,

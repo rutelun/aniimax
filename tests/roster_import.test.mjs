@@ -1,3 +1,4 @@
+import {haulingLevelFor} from '../web/hauling.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -6,10 +7,10 @@ const source=fs.readFileSync(new URL('../web/app.js',import.meta.url),'utf8');
 const code=source.slice(source.indexOf('async function fillRosterFrom('),source.indexOf('async function sourceTeamLayout('));
 test('Best import with ability-level cache key uses the Best team, including support copies',async()=>{
  const key='best:Earth4,Dark4',plan={success:true,coin_items:[]};let imported=false;
- const c=vm.createContext({lastPlanInput:{},rosterFillVersion:0,planRunId:1,plansBySetup:{[key]:plan},document:{getElementById:()=>({})},aniimoInput:()=>({}),
+ const c=vm.createContext({haulingLevelFor,lastPlanInput:{},rosterFillVersion:0,planRunId:1,plansBySetup:{[key]:plan},document:{getElementById:()=>({})},aniimoInput:()=>({}),
  sourceTeamLayout:async(p,input,mode)=>{assert.equal(mode,'best');return {};},
- haulingWorkload:()=>({busyByLevel:{3:.2}}),haulingRouteBound:()=>0,recipeIndex:[],
- bestPlanTeam:()=>({shifts:[{id:1},{id:2},{id:2}]}),bestRosterMember:s=>({catalogId:s.id,count:1}),
+ haulingWorkload:()=>({busyByLevel:{4:.2}}),haulingRouteBound:()=>0,recipeIndex:[],
+ bestPlanTeam:(p,busy)=>{assert.equal(busy,.2);return {shifts:[{id:1},{id:2},{id:2}]};},bestRosterMember:s=>({catalogId:s.id,count:1}),
  rosterSlotsFor:r=>r,rosterChanged:()=>{imported=true;},console,Map});
  vm.runInContext(code,c);await c.fillRosterFrom(key);
  assert.equal(imported,true);

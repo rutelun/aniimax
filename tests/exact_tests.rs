@@ -635,7 +635,12 @@ fn test_automatic_electricity_uses_rv_limits_and_assigned_lightning_output() {
         assert_eq!(limits.generator(4), (tier, output));
     }
     let automatic = GeneratorLimits::for_rv(20, 4).unwrap();
-    assert_eq!(automatic.generator(3), (5, 1285));
+    assert_eq!(automatic.generator(3), (4, 1200));
+    assert_eq!(automatic.staffing(1200.0), vec![3]);
+    assert_eq!(automatic.staffing(1201.0), vec![4]);
+    let placed = automatic.with_placed(1, 5).unwrap();
+    assert_eq!(placed.generator(3), (0, 0));
+    assert_eq!(placed.generator(4), (5, 1500));
     assert_eq!(automatic.staffing(1400.0), vec![4]);
     assert_eq!(automatic.staffing(2100.0), vec![1, 4]);
 

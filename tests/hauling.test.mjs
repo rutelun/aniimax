@@ -180,3 +180,16 @@ test('delivery and walking use base speed without allowances or a duplicated ret
     assert.equal(work.seconds['Well|water'], 4);
     assert.equal(work.busy, 4 / 60);
 });
+
+test('Best courier capacity drives the counted trips, workload and dispatch stops', () => {
+    const facility='Mine',item='ore',member={facility,crop:item,weight:60,x:8,y:0,w:2,h:2};
+    const layout={storages:[{x:0,y:0,w:2,h:2}],pieces:[{members:[member]}]};
+    const steps=[{facility,item_name:item,status:'producing',facility_count:1,cycle_time:60}];
+    for (const [units,ratio] of [[100,1],[110,2]]) {
+        const run=level=>haulingWorkload(layout,steps,0,[{name:item,yieldAmount:units}],null,true,level);
+        const three=run(3),four=run(4);
+        assert.equal(three.trips,ratio*four.trips);
+        assert.equal(three.busy,ratio*four.busy);
+        assert.equal(three.tripSites[0].rate,ratio*four.tripSites[0].rate);
+    }
+});

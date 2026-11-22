@@ -26,7 +26,7 @@ import { allocateTurnFacilities, redistributeTurnFacilityRows } from './turn-job
 import { createShareUrl, readShareHash, urlWithoutShare } from './share-config.js?v=compact-roster';
 import { nearestStorage } from './layout.js?v=logic-audit';
 import { projectLayoutWork, layoutWalkingAdjustments, workerTravelDistances, workerTravelSeconds, measuredMovementEstimates } from './worker-travel.js?v=finite-movement';
-import { assignFacilityStock, bufferedBatches, haulingWorkload, allocateHauling, haulingBatchTrips,
+import { assignFacilityStock, bufferedBatches, haulingLevelFor, haulingWorkload, allocateHauling, haulingBatchTrips,
     haulingTravelSeconds, haulingWorkSeconds, pickupStockLimit } from './hauling.js?v=base-travel';
 import { personalityInput, replacementCandidates, compareRecommendations, usefulUpgrade, keepBetterComparison, workerUsage } from './opportunity-comparison.js?v=logic-audit';
 import { comparisonConcurrency, startComparisonQueue } from './comparison-queue.js?v=parallel-comparisons';
@@ -1466,13 +1466,14 @@ function homelandPieces(plan, input) {
     }
     const recipesByName = new Map(recipeIndex.map(recipe => [recipe.name, recipe]));
     assignFacilityStock(physical, input.facilities, recipesByName);
+    const courierLevel = haulingLevelFor(input.aniimo);
     for (const member of physical) {
         if (!(member.weight > 0)) continue;
         member.batchWeight = member.weight;
         const limit = pickupStockLimit(member);
         member.weight = member.jobs ? member.jobs.reduce((sum, job) => sum + job.rate * 3600
-            * haulingBatchTrips(recipesByName.get(job.item), 3, limit, member.facility), 0)
-            : member.weight * haulingBatchTrips(recipesByName.get(member.crop), 3, limit, member.facility);
+            * haulingBatchTrips(recipesByName.get(job.item), courierLevel, limit, member.facility), 0)
+            : member.weight * haulingBatchTrips(recipesByName.get(member.crop), courierLevel, limit, member.facility);
     }
     if(selectedSetupTab()==='custom'&&Object.keys(reactiveDispatch).length){
         attachDeliveryFlows({pieces:[{members:physical}]},reactiveDispatch,recipeIndex,rosterWorkload(plan).members,plan.roster_routes||[]);
@@ -1817,7 +1818,7 @@ function layoutOptionsFor(plan, homeLevel, setup = selectedSetupTab()) {
             haulingSpare: bestTeam?.haulingSpare ?? 0,
             movement: ownedPlan && plan.mobile_work?.length
                 ? { defaultDistance: movementDefaultDistance, byMember: movementDistances, visits } : null,
-            haulingLevel: setup === 'minimum' ? 1 : 3,
+            haulingLevel: haulingLevelFor(setup),
             haulingBound: haulingRouteBound(accountForTravel),
             accountForTravel,
             facilities: lastPlanInput?.facilities,
@@ -1848,7 +1849,7 @@ function measurePowerTeam(plan,layout,input,recipes=recipeIndex) {
     if (grid.disconnected || grid.generators !== (plan.power_generators || 0)) return null;
     const placed=bestTeamLayouts.get(plan);
     const hauling=placed?.layout===layout ? placed.hauling :
-        haulingWorkload(layout,plan.coin_items,haulingRouteBound(true),recipes,input.facilities,true);
+        haulingWorkload(layout,plan.coin_items,haulingRouteBound(true),recipes,input.facilities,true,4);
     return mappedTeamScore(bestPlanTeam(plan,hauling.busy,layout,hauling),grid,ANIIMO_MAX[layoutHomeLevel()-1]);
 }
 
@@ -2917,9 +2918,9 @@ function assignLayoutHauling(layout, plan) {
     const bound = haulingRouteBound(accountForTravel);
     const placed=setup==='custom' ? null : bestTeamLayouts.get(plan);
     const work = placed?.layout===layout ? placed.hauling :
-        haulingWorkload(layout, plan.coin_items || [], bound, recipeIndex, lastPlanInput?.facilities, accountForTravel);
+        haulingWorkload(layout, plan.coin_items || [], bound, recipeIndex, lastPlanInput?.facilities, accountForTravel,haulingLevelFor(setup));
     plan.hauling_estimates = work.seconds;
-    plan.hauling_busy = work.busyByLevel[setup === 'minimum' ? 1 : 3];
+    plan.hauling_busy = work.busyByLevel[haulingLevelFor(setup)];
     if (setup !== 'custom') bestTeamLayouts.set(plan, { layout, hauling: work });
     if (setup !== 'custom') return false;
     if(plan.recipe_schedule){plan.delivery_assignments=[...(plan.hauling_staffing||[])];return false;}
@@ -3269,7 +3270,7 @@ async function fillRosterFrom(setup) {
             status.textContent = 'No working team to copy from this plan.';
             return;
         }
-        const haulingLevel = setup === 'minimum' ? 1 : 3;
+        const haulingLevel = haulingLevelFor(setup);
         const current=()=>runId===planRunId && version===rosterFillVersion;
         let layout = await sourceTeamLayout(plan, sourceInput, setup.split(':')[0]);
         if (!current()) return;
@@ -3287,7 +3288,7 @@ async function fillRosterFrom(setup) {
         }
         const accountForTravel = true;
         const hauling = haulingWorkload(layout, plan.coin_items || [], haulingRouteBound(accountForTravel),
-            recipeIndex, sourceInput.facilities, accountForTravel);
+            recipeIndex, sourceInput.facilities, accountForTravel,haulingLevel);
         const haulingBusy = hauling.busyByLevel[haulingLevel];
         if (setup.startsWith('best:') || setup === 'best' || plan.recipe_schedule) {
             const { shifts } = bestPlanTeam(plan, haulingBusy, layout, hauling);
@@ -5355,7 +5356,7 @@ function aniimoTeam(plan) {
         const pools = team.kept.map(g => ({ count: g.count, abilities: { [g.ability]: g.level },
             allocations: g.environment ? [{fixed:true,busy:g.count}] : g.allocations }));
         const couriers = Math.max(0, Math.ceil((plan.hauling_busy || 0)-1e-6));
-        const support = withCropSupport({layout:placed.layout,recipes:recipeIndex,pools,limit:ANIIMO_MAX[layoutHomeLevel()-1]-couriers});
+        const support = withCropSupport({layout:placed.layout,recipes:recipeIndex,pools,haulingBusy:plan.hauling_busy,limit:ANIIMO_MAX[layoutHomeLevel()-1]-couriers});
         const peak = support.peak;
         team.cropPeaks = peak;
         for (const {member,count} of peak.additions) {

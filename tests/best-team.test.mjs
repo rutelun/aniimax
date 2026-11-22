@@ -1,3 +1,4 @@
+import {productionTeamJobs} from '../web/production-team-jobs.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { placeBestJobs, recommendBestTeam } from '../web/best-team.js';
@@ -111,4 +112,60 @@ test('a slower perfume assignment keeps Dewy and the selected personality', () =
     assert.ok(incense.personalities.has('Energetic'));
     assert.equal(shifts.find(shift => shift.tasks.has('Soap')).entry.id, 'dewy');
     assert.ok(!incense.tasks.has('Soap'));
+});
+
+test('a fire worker avoids other open jobs even when their assigned worker is more skilled', () => {
+    const {shifts} = recommendBestTeam([
+        {ability:'Fire',level:3,label:'Kiln',busy:1},
+        {ability:'Artisanship',level:4,minimumLevel:1,label:'Bench',busy:1},
+        {ability:'Dark',level:4,minimumLevel:1,label:'Dryer',busy:1},
+    ], 1);
+    const fire = shifts.find(s => s.tasks.has('Kiln'));
+    assert.equal(fire.abilities.Fire, 3);
+    assert.ok(!fire.abilities.Artisanship && !fire.abilities.Dark && !fire.abilities.Hauling);
+});
+
+test('generator workers avoid manual jobs at the recipe unlock level and ignore occupied posts', () => {
+    const generator = {ability:'Lightning',level:4,facility:'Crackle Generator',label:'Power',fixed:true,busy:1};
+    const light = {ability:'Light',level:4,minimumLevel:1,label:'Light job',busy:1};
+    const dark = {ability:'Dark',level:4,minimumLevel:1,label:'Dark job',busy:1};
+    const chosen = jobs => recommendBestTeam([generator,...jobs]).shifts.find(s => s.tasks.has('Power'));
+    assert.equal(chosen([dark,{...light,fixed:true}]).abilities.Dark, undefined);
+    assert.equal(chosen([light,{...dark,fixed:true}]).abilities.Light, undefined);
+});
+
+test('a continuously fed bench keeps one operator when compatible workers also have other jobs', () => {
+    const {shifts}=recommendBestTeam([
+        {ability:'Wind',level:4,label:'Pearl Powder',busy:.1},
+        {ability:'Artisanship',level:4,label:'Rough Lumber',workstation:true,busy:1},
+    ]);
+    const operators=shifts.filter(s=>s.tasks.has('Rough Lumber'));
+    assert.equal(operators.length,1);
+    assert.deepEqual([...operators[0].tasks],[['Rough Lumber',1]]);
+});
+
+test('Best selects Hauling 4 for a dedicated courier even when one trip suffices', () => {
+    assert.equal(recommendBestTeam([], .8705).shifts[0].abilities.Hauling,4);
+});
+
+test('a full-day lumber bench and a bench that changes recipes keep distinct operators through both phases', () => {
+    const facility='Woodworking Bench', wood='Rough Lumber', beams='Beams';
+    const row=(item,busy)=>({facility,item_name:item,status:'producing',facility_count:Math.ceil(busy),
+        busy_units:busy,cycle_time:1,aniimo_tasks:[{ability:'Artisanship',level:4,busy}]});
+    const siteJob=(item,rate)=>({item,rate,cycle:1});
+    const sites=[{id:'steady',facility,jobs:[siteJob(wood,1)]},
+        {id:'switch',facility,jobs:[siteJob(wood,.5),siteJob(beams,.5)]}];
+    const plan={coin_items:[row(wood,1.5),row(beams,.5)],recipe_schedule:{
+        sites,jobs:[{id:'w',facility,item:wood,batches:129600},{id:'b',facility,item:beams,batches:43200}],
+        phases:['w','b'].map(job=>({duration:43200,assignments:[
+            {building:'steady',job:'w',batches:43200},{building:'switch',job,batches:43200}]}))}};
+    const layout={pieces:[{members:sites.map((s,i)=>({...s,scheduleId:s.id,x:i*4,y:0,w:2,h:2}))}]};
+    const jobs=placeBestJobs(productionTeamJobs(plan,[],s=>s.item_name),layout);
+    const {shifts}=recommendBestTeam([{ability:'Wind',level:4,label:'Mill',busy:.08},...jobs]);
+    for (const [i,site] of sites.entries()) {
+        const owners=shifts.filter(s=>s.allocations.some(a=>a.scheduleId===site.id));
+        assert.equal(owners.length,1);
+        assert.ok(owners[0].allocations.every(a=>a.scheduleId===site.id && a.point[0]===4*i+1));
+        assert.deepEqual(owners[0].phaseBusy,[1,1]);
+    }
 });

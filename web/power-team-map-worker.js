@@ -22,7 +22,7 @@ self.onmessage = ({data}) => {
             const grid=analyzePowerNetworks(layout).power;
             if (grid.disconnected || grid.generators!==plan.power_generators) continue;
             wiredByCount.set(plan.power_generators,layout);
-            const hauling=haulingWorkload(layout,plan.coin_items,haulingBound,recipes,facilities,true);
+            const hauling=haulingWorkload(layout,plan.coin_items,haulingBound,recipes,facilities,true,4);
             const team=packMappedTeam(plan,jobs,layout,hauling,hauling.busy,recipes);
             const lower=mappedTeamScore(team,grid,limit);
             if (!lower || !improvesMeasuredTeam(lower,best)) continue;
