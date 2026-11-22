@@ -45,7 +45,7 @@ test('Best retains the audited seasonal RV16 shift across all priorities',
     assert.ok(floors['Mineral Sand'] >= .57351);
 });
 
-for (const [rv, maximum] of [[20,495670.6666666666],[21,643495.5111111113]]) {
+for (const [rv, maximum] of [[20,495670.6666666666],[21,644470.1777777778]]) {
     test(`RV${rv} coins finds the audited maximum with fixed recipes`, {skip:!existsSync(wasm)}, async () => {
         const {simpleSetup, LEVEL_UP_COSTS} = await import('../web/facility-config.js');
         const levels = {Fire:4,Water:4,Earth:4,Lightning:4,Wind:4,Dark:4,Artisanship:4,Leisure:4,Perfumery:3};
@@ -59,6 +59,11 @@ for (const [rv, maximum] of [[20,495670.6666666666],[21,643495.5111111113]]) {
         assert.ok(plan.success, plan.error);
         assert.equal(plan.continuous_production_checked, true);
         assert.ok(Math.abs(plan.rate_per_second*3600 - maximum) < .01, String(plan.rate_per_second*3600));
+        if (rv === 21) {
+            const incense = plan.coin_items.find(step => step.item_name === 'orange_flower_incense');
+            assert.equal(incense?.aniimo?.level, 1);
+            assert.equal(incense.cycle_time, incense.aniimo.personality_bonus ? 270 : 324);
+        }
         assert.ok(plan.upper_bound >= plan.rate_per_second - 1e-8);
         assert.ok(plan.upper_bound <= plan.rate_per_second * 1.002 + 1e-8);
     });

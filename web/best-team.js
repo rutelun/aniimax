@@ -11,7 +11,8 @@ function indexCatalog(entries) {
     const index = new Map();
     for (const entry of entries) {
         for (const [ability, level] of Object.entries(entry.abilities)) {
-            for (let min = 1; min <= level; min++) {
+            // A faster perfumer changes the recipe's share of the available flowers.
+            for (let min = ability === 'Perfumery' ? level : 1; min <= level; min++) {
                 const families = ability === 'Leisure' && entry.family ? ['', entry.family] : [''];
                 for (const family of families) {
                     const key = roleKey({ ability, level: min, family });
@@ -39,6 +40,8 @@ export function placeBestJobs(jobs, layout, sites) {
 }
 
 export function recommendBestTeam(jobs, haulingBusy = 0, dispatch = [], options = {}) {
+    jobs = jobs.map(job => job.ability === 'Perfumery' && !job.personality
+        ? {...job, personality: opposedPersonality('Instinctive')} : job);
     const phases=Math.max(options.haulingProfile?.length||0,...jobs.map(j=>j.profile?.length||0));
     const profile=job=>job.profile||Array(phases).fill(1);
     const spareFor=(shift,job)=>Math.max(0,Math.min(1-shift.busy,...profile(job).map((factor,i)=>factor>0?(1-(shift.phaseBusy?.[i]||0))/factor:Infinity)));

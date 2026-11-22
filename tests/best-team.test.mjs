@@ -99,3 +99,16 @@ test('a flexible whole shift can fill existing spare capacity',()=>{
  const {shifts}=recommendBestTeam([{ability:'Grass',level:2,label:'A',busy:.4},{ability:'Grass',level:2,label:'B',busy:1.2},{ability:'Grass',level:2,label:'C',busy:.4}]);
  assert.equal(shifts.length,2);
 });
+
+test('a slower perfume assignment keeps Dewy and the selected personality', () => {
+    const {shifts} = recommendBestTeam([
+        {ability:'Perfumery', level:1, label:'Incense', busy:.25},
+        {ability:'Dark', level:3, label:'Dryer', busy:.25},
+        {ability:'Perfumery', level:1, label:'Soap', busy:.25, personality:'Instinctive'},
+    ]);
+    const incense = shifts.find(shift => shift.tasks.has('Incense'));
+    assert.equal(incense.entry.id, 'dewy');
+    assert.ok(incense.personalities.has('Energetic'));
+    assert.equal(shifts.find(shift => shift.tasks.has('Soap')).entry.id, 'dewy');
+    assert.ok(!incense.tasks.has('Soap'));
+});

@@ -3567,6 +3567,7 @@ fn production_plan(
                 environment: None,
                 busy_units: None,
                 crew: None,
+                worker: None,
                 electric_level: None,
             });
             continue;
@@ -3603,7 +3604,7 @@ fn production_plan(
                 item_name: Some((*base).into()), facility: facility.into(),
                 facility_count: dispatched_count(base, *time), status: PlanStepStatus::Producing,
                 reason: uses_of(recipe), is_grower: grower, cycle_time: Some(time / rate),
-                environment: None, busy_units: Some(*time), crew: None, electric_level: None,
+                environment: None, busy_units: Some(*time), crew: None, worker: None, electric_level: None,
             });
         }
         for (recipe, units, rate) in rows {
@@ -3634,6 +3635,7 @@ fn production_plan(
                 environment: if grower { recipe.environment.clone() } else { None },
                 busy_units: Some((rate * recipe.production_time).min(units as f64)),
                 crew: recipe.crew,
+                worker: crate::models::perfumer_variant(&recipe.name).map(|(_, worker)| worker),
                 electric_level: electric_level(&recipe.name),
             });
         }
@@ -3649,6 +3651,7 @@ fn production_plan(
                 environment: None,
                 busy_units: None,
                 crew: None,
+                worker: None,
                 electric_level: None,
             });
         }

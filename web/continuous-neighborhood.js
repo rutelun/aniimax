@@ -13,8 +13,8 @@ export function continuousNeighborhood(problem, recipes, seed) {
         .map(key => key.replace(/^(rate|units):/,'')));
     if (!variants.size) return problem;
     const shared=sharedSites(problem);
-    for (const [v,name,,,electric] of problem.recipe_options) {
-        if ((electric||shared.has(name)) && allowed.has(name)) variants.add(problem.variable_keys[v].replace(/^rate:/,''));
+    for (const [v,name,facility,,electric] of problem.recipe_options) {
+        if ((electric || facility === 'Phonolfactory Table' || shared.has(name)) && allowed.has(name)) variants.add(problem.variable_keys[v].replace(/^rate:/,''));
     }
     const zero = new Set(problem.recipe_variables.filter(([v,name]) => !allowed.has(name)
         || (/^(rate|units):/.test(problem.variable_keys[v]) && !variants.has(problem.variable_keys[v].replace(/^(rate|units):/,''))))
@@ -57,7 +57,7 @@ export function incomeRepairNeighborhood(problem, recipes, seed, target) {
     const shared=sharedSites(problem);
     for (const [v,name,facility,source,electric] of problem.recipe_options) {
         const key = problem.variable_keys[v];
-        if (allowed.has(name) && (electric || shared.has(name) || (!source && (key.includes('__byreserve:') || crews.get(facility)?.has(key.split('__by')[1])))))
+        if (allowed.has(name) && (electric || facility === 'Phonolfactory Table' || shared.has(name) || (!source && (key.includes('__byreserve:') || crews.get(facility)?.has(key.split('__by')[1])))))
             variants.add(key.slice(5));
     }
     const rows = [];

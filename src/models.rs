@@ -177,7 +177,10 @@ const GATHERING_RATE_PER_LEVEL: f64 = 0.5;
 /// ```
 pub fn efficiency(level: u32, required: u32, gathering: bool) -> f64 {
     let required = required.max(1);
-    // An Aniimo below the requirement can't work the recipe; plans never assign one.
+    // Processing loses 15 workload/minute per level below the recommendation.
+    if !gathering && level < required {
+        return 1.0 - 0.25 * f64::from(required - level.max(1));
+    }
     let level = level.max(required);
     let above = level - required;
     match gathering {
@@ -241,7 +244,22 @@ pub fn base_item_name(name: &str) -> &str {
         Some((base, member)) if !member.is_empty() && member.bytes().all(|b| b.is_ascii_digit()) => base,
         _ => name,
     };
-    name.strip_suffix(UNCOVERED_SUFFIX).unwrap_or(name)
+    perfumer_variant(name).map_or_else(|| name.strip_suffix(UNCOVERED_SUFFIX).unwrap_or(name), |(base, _)| base)
+}
+
+pub(crate) fn minimum_worker_level(ability: &str, recommended: u32) -> u32 {
+    if ability == "Perfumery" { 1 } else { recommended }
+}
+
+// The standard Best recipe already represents the fastest available matching worker.
+const PERFUMERS: [(&str, Worker); 3] = [
+    ("__dewy", Worker::new(1, false)),
+    ("__dewy_instinctive", Worker::new(1, true)),
+    ("__fragrancier", Worker::new(3, false)),
+];
+
+pub(crate) fn perfumer_variant(name: &str) -> Option<(&str, Worker)> {
+    PERFUMERS.iter().find_map(|(suffix, worker)| name.strip_suffix(suffix).map(|base| (base, *worker)))
 }
 
 /// Marks a recipe worked by one Aniimo on the player's roster, e.g. `milled_rice__by2` for the
@@ -357,7 +375,7 @@ pub fn crew_variants(
             (Some(workload), Some((ability, required))) => {
                 let mut fastest = f64::INFINITY;
                 for member in 0..crew.members.len() {
-                    if !crew.can_work(member, ability, required) {
+                    if !crew.can_work(member, ability, minimum_worker_level(ability, required)) {
                         continue;
                     }
                     let mut variant = ProductionItem {
@@ -525,7 +543,7 @@ impl Default for Worker {
 }
 
 impl Worker {
-    pub fn new(suitability: u32, personality_bonus: bool) -> Self {
+    pub const fn new(suitability: u32, personality_bonus: bool) -> Self {
         Self { suitability, personality_bonus }
     }
 
@@ -596,7 +614,10 @@ impl Workers {
         for item in items.iter_mut() {
             if let Some(workload) = item.workload {
                 let required = requirements.get(&item.name).map_or(1, |(_, level)| level);
-                item.production_time = self.get(&item.facility).seconds_for_item(item, workload, required);
+                // With no specified worker, the baseline plan uses the recommended
+                // rate. Apply below-level timing only to an actual assignment.
+                let worker = self.by_facility.get(&item.facility).copied().unwrap_or(Worker::new(required, false));
+                item.production_time = worker.seconds_for_item(item, workload, required);
             }
         }
     }
@@ -724,6 +745,7 @@ impl AniimoRequirements {
                 } else {
                     level
                 };
+                let level = if ability == "Perfumery" && level < 3 { 1 } else { level };
                 Worker::new(level, has_personality_bonus(facility))
             }
             // A facility with no personality of its own never gets the bonus, whatever is said.
@@ -734,7 +756,7 @@ impl AniimoRequirements {
                     worker.personality_bonus && has_personality_bonus(facility),
                 )
             }
-            AniimoSetup::Minimum => Worker::new(self.get(item).map_or(1, |(_, level)| level), false),
+            AniimoSetup::Minimum => Worker::new(self.get(item).map_or(1, |(ability, level)| minimum_worker_level(ability, level)), false),
         }
     }
 
@@ -743,16 +765,36 @@ impl AniimoRequirements {
     pub fn apply(&self, setup: &AniimoSetup, items: &mut [ProductionItem]) {
         for item in items.iter_mut() {
             if let Some(workload) = item.workload {
-                let required = self.get(&item.name).map_or(1, |(_, level)| level);
+                let (ability, required) = self.get(&item.name).unwrap_or(("", 1));
                 let worker = self.worker_for_at(&item.name, &item.facility, setup);
                 // Keep the recipe's price and timing for reporting, but the normal worker
                 // cannot run it. E-mode variants use the original recipe's building level.
-                if matches!(setup, AniimoSetup::Best(_)) && worker.suitability < required {
+                if matches!(setup, AniimoSetup::Best(_)) && worker.suitability < minimum_worker_level(ability, required) {
                     item.facility_level = u32::MAX;
                 }
                 item.production_time = worker.seconds_for_item(item, workload, required);
             }
         }
+    }
+
+    /// A slower perfumer can leave a scarce ingredient for a more valuable recipe.
+    pub(crate) fn add_perfumer_choices(&self, items: &mut Vec<ProductionItem>, setup: &AniimoSetup) {
+        if !matches!(setup, AniimoSetup::Best(_)) { return; }
+        let mut choices = Vec::new();
+        for item in items.iter() {
+            let Some(("Perfumery", recommended)) = self.get(&item.name) else { continue };
+            let Some(workload) = item.workload else { continue };
+            let fastest = self.worker_for_at(&item.name, &item.facility, setup);
+            for (suffix, worker) in PERFUMERS {
+                if worker == fastest || worker.suitability > fastest.suitability { continue; }
+                choices.push(ProductionItem {
+                    name: format!("{}{suffix}", item.name),
+                    production_time: worker.seconds_for_item(item, workload, recommended),
+                    ..item.clone()
+                });
+            }
+        }
+        items.extend(choices);
     }
 }
 
@@ -992,6 +1034,8 @@ pub struct PlanStep {
     pub busy_units: Option<f64>,
     /// When planning with the player's roster, which member works this row (see [`Crew`]).
     pub crew: Option<usize>,
+    /// Worker chosen explicitly for this recipe by the optimizer.
+    pub worker: Option<Worker>,
     /// Physical building level when this row runs in E-mode.
     pub electric_level: Option<u32>,
 }

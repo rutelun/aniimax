@@ -3088,6 +3088,19 @@ details.explain p {
     border-radius: 0.7rem;
     background: #27303f;
 }
+.roster-card-tags:has(> .roster-skill:nth-child(4)) {
+    --badge-size: calc(var(--skill-size) * 0.92);
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    width: calc(4 * var(--badge-size) + 5px);
+    max-width: 100%;
+    box-sizing: border-box;
+}
+.roster-card-tags:has(> .roster-skill:nth-child(4)) > .roster-skill {
+    width: 100%;
+    height: auto;
+    aspect-ratio: 1;
+}
 .roster-card-tags:empty { display: none; }
 .roster-skill {
     position: relative;

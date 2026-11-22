@@ -987,7 +987,7 @@ fn aniimo_tasks_for(
         return Vec::new();
     }
     if let Some((ability, _)) = requirements.get(item) {
-        let worker = requirements.worker_for_at(item, &step.facility, setup);
+        let worker = step.worker.unwrap_or_else(|| requirements.worker_for_at(item, &step.facility, setup));
         return vec![JsAniimoTask {
             ability: ability.to_string(),
             level: worker.suitability,
@@ -1115,6 +1115,7 @@ impl From<JsPlanStep> for crate::models::PlanStep {
             cycle_time: s.cycle_time,
             environment: s.environment,
             busy_units: s.busy_units,
+            worker: s.aniimo.map(|w| crate::models::Worker::new(w.level, w.personality_bonus)),
             crew: s.crew,
             electric_level: s.electric_level,
         }
@@ -1521,7 +1522,7 @@ impl JsProductionPlan {
 /// doesn't block anything else from rendering.
 #[wasm_bindgen]
 pub fn find_plan(input_json: &str, on_progress: Option<js_sys::Function>) -> String {
-    let prepared = match PreparedInput::from_json(input_json) {
+    let prepared = match PreparedInput::from_json(input_json, false) {
         Ok(p) => p,
         Err(error) => return error,
     };
@@ -2136,7 +2137,7 @@ fn prepare_exact_input(input_json: &str) -> Result<Rc<PreparedInput>, String> {
         if let Some((_, prepared)) = cache.borrow().as_ref().filter(|(key, _)| key == input_json) {
             return Ok(Rc::clone(prepared));
         }
-        let prepared = Rc::new(PreparedInput::from_json(input_json)?);
+        let prepared = Rc::new(PreparedInput::from_json(input_json, true)?);
         cache.replace(Some((input_json.to_owned(), Rc::clone(&prepared))));
         Ok(prepared)
     })
@@ -2144,7 +2145,7 @@ fn prepare_exact_input(input_json: &str) -> Result<Rc<PreparedInput>, String> {
 
 impl PreparedInput {
     /// Parses `input_json`; on failure, the error result to return instead.
-    fn from_json(input_json: &str) -> Result<Self, String> {
+    fn from_json(input_json: &str, exact: bool) -> Result<Self, String> {
         let input: JsPlanInput = serde_json::from_str(input_json).map_err(|e| {
             serde_json::to_string(&empty_production_plan(false, Some(format!("Invalid input: {}", e)))).unwrap_or_default()
         })?;
@@ -2260,7 +2261,10 @@ impl PreparedInput {
                 items = crate::models::crew_variants(items, crew, &requirements, &grower_steps);
                 facility_counts.set_crew(crew.clone());
             }
-            (None, Some(setup)) => requirements.apply(setup, &mut items),
+            (None, Some(setup)) => {
+                requirements.apply(setup, &mut items);
+                if exact { requirements.add_perfumer_choices(&mut items, setup); }
+            }
             (None, None) => workers_from(&input.workers).apply(&requirements, &mut items),
         }
         if let Some(power) = power {
@@ -2312,7 +2316,7 @@ impl PreparedInput {
                     _ if step.electric_level.is_some() => None,
                     (Some(setup), Some(item)) if step.status == crate::models::PlanStepStatus::Producing => {
                         self.requirements.get(item).map(|(ability, _)| {
-                            let worker = self.requirements.worker_for_at(item, &step.facility, setup);
+                            let worker = step.worker.unwrap_or_else(|| self.requirements.worker_for_at(item, &step.facility, setup));
                             JsAniimo {
                                 ability: ability.to_string(),
                                 level: worker.suitability,
@@ -2624,7 +2628,7 @@ pub fn get_all_items() -> String {
             required_amount: item.required_amount.clone(),
             module_requirement: item.module_requirement.clone(),
             byproduct: item.byproduct.clone(),
-            aniimo: requirements.get(&item.name).map(|(ability, level)| (ability.to_string(), level)),
+            aniimo: requirements.get(&item.name).map(|(ability, level)| (ability.to_string(), crate::models::minimum_worker_level(ability, level))),
             family: requirements.family(&item.name).map(str::to_string),
             verified: !unverified.iter().any(|(name, facility)| *name == item.name && *facility == item.facility),
             jobs: grower_steps.get(&item.name).iter().map(|s| (s.step.clone(), s.ability.clone(), s.min_level)).collect(),

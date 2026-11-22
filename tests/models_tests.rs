@@ -286,3 +286,22 @@ fn base_item_name_strips_roster_and_uncovered_suffixes() {
     assert_eq!(base_item_name("made__by_hand"), "made__by_hand");
     assert_eq!(base_item_name("rice__by"), "rice__by");
 }
+
+#[test]
+fn dewy_can_process_above_its_perfumery_level_at_its_own_speed() {
+    use aniimax::models::{AniimoLevels, AniimoSetup, Crew, GrowerSteps, RosterAniimo, Worker, crew_variants};
+    let data = std::path::Path::new("data");
+    let reqs = aniimax::data::load_aniimo_requirements(data).unwrap();
+    let recipe = aniimax::data::load_all_data(data).unwrap().into_iter().find(|r| r.name == "orange_flower_incense").unwrap();
+    assert_eq!(Worker::new(1, false).seconds_for_item(&recipe, 162.0, 3), 324.0);
+    assert_eq!(Worker::new(1, true).seconds_for_item(&recipe, 162.0, 3), 270.0);
+    let mut best = vec![recipe.clone()];
+    reqs.apply(&AniimoSetup::Best(AniimoLevels::all(1)), &mut best);
+    assert_eq!(best[0].facility_level, 6);
+    assert_eq!(best[0].production_time, 270.0);
+    reqs.apply(&AniimoSetup::Minimum, &mut best);
+    assert_eq!(best[0].production_time, 324.0);
+    let crew = Crew { members: vec![RosterAniimo { count: 1, abilities: [("Perfumery".into(), 1)].into(), ..Default::default() }], ..Default::default() };
+    let items = crew_variants(vec![recipe], &crew, &reqs, &GrowerSteps::default());
+    assert!(items.iter().any(|item| item.crew == Some(0) && item.production_time == 324.0));
+}
