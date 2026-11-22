@@ -4,7 +4,7 @@ import {scheduleProfiles,haulingScheduleProfile} from './recipe-schedule-plan.js
 import {splitPhaseTasks} from './phase-work.js';
 // Aniimax Web Application
 
-import { currentLocale, sourceAttribute, translate } from './i18n.js?v=recommendations';
+import { currentLocale, sourceAttribute, translate } from './i18n.js?v=aniimo-assignment-groups';
 import './math-translation.js?v=results-columns';
 import { autoMaximizeSeasonPoints } from './season-planning.js?v=optional-season-points';
 import { normalizeMapStyle } from './map-style.js?v=production-groups';
@@ -36,6 +36,7 @@ import { scheduleRosterCopies } from './roster-work.js?v=measured-walking';
 import { buildDispatch, rosterJobSwitching, TASK_SWITCHING } from './task-switching.js?v=base-travel';
 import { buildReactiveDispatch, permanentWorkers, measuredDispatchWork, routeDispatchKey, attachDeliveryFlows } from './reactive-dispatch.js';
 import { placeBestJobs, recommendBestTeam } from './best-team.js?v=team-support';
+import { groupAniimoAssignments } from './aniimo-assignment-groups.js';
 import facilityIcons from './facility-icons.json' with { type: 'json' };
 import { abilityGlyph, gameAbilityIcon } from './ability-icons.js?v=game-heads';
 
@@ -5012,7 +5013,7 @@ function environmentTeamJobs(plan) {
     const jobs = [];
     const add = (building, busy, label, level) => {
         const ability = ENVIRONMENT_BUILDING_ABILITY[building];
-        if (ability && busy) jobs.push({ ability, level: level || 1, anyLevel: !level, busy, label, fixed: true });
+        if (ability && busy) jobs.push({ ability, level: level || 1, anyLevel: !level, busy, label, facility: building, fixed: true });
     };
     const pairs = new Map();
     for (const a of plan.environment_assignments || []) {
@@ -5057,7 +5058,7 @@ function bestPlanTeam(plan, haulingBusy = plan.hauling_busy || 0,
                 const resident = RESIDENT_FACILITIES.has(step.facility);
                 const batches = step.cycle_time > 0 ? (step.busy_units ?? step.facility_count) / step.cycle_time : 0;
                 jobs.push({
-                    ability: task.ability, level: task.level, label,
+                    ability: task.ability, level: task.level, label, facility: step.facility,
                     profile:profiles.get(`${step.facility}|${step.item_name}`),
                     busy: resident ? step.facility_count : task.busy,
                     siteKey: resident ? null : `${step.facility}|${step.item_name}`,
@@ -5124,29 +5125,37 @@ function renderBestTeam(plan, routeStatus = translate('Calculating…')) {
     const routesReady = bestTeamLayouts.has(plan);
     const routeLabels = ['Walking between jobs', 'Hauling to Storage Units'];
     const percent = share => share > 0 && share < .0001 ? '<0.01%' : `${formatNumber(share * 100)}%`;
-    container.innerHTML = total
-        ? `${capNote}${cropPeakNote(cropPeaks, [], true)}<div class="roster-cards">${rosterBoard(shifts.map((_, index) => index), index => {
-            if (index == null) return emptyRosterCell();
-            const shift = shifts[index];
-            const member = bestRosterMember(shift);
-            const label = member.name || translate('Assumed Aniimo');
-            const tasks = routeLabels.filter(label => !shift.peakSupport && (!routesReady || shift.tasks.has(label))).map(label => [
-                translate(label), routesReady ? percent(shift.tasks.get(label)) : routeStatus,
-            ]);
-            if (shift.peakSupport) {
-                const jobs = [...new Set(recipeIndex.flatMap(r => (r.jobs || []).filter(([name,ability,level]) => criticalCropJob(name) && (shift.abilities[ability] || 0) >= level).map(([name]) => translate(name))))];
-                tasks.push([jobs.join(' / '), translate('Crop support')]);
-            }
-            if (shift.tasks.has(TASK_SWITCHING)) tasks.push([translate(TASK_SWITCHING), percent(shift.tasks.get(TASK_SWITCHING))]);
-            for (const [job, share] of [...shift.tasks].sort((a, b) => b[1] - a[1])) {
-                if (!routeLabels.includes(job) && job !== TASK_SWITCHING) tasks.push([translate(job), percent(share)]);
-            }
-            if(shift.phaseBusy?.length)tasks.unshift(['Peak during recipe schedule',percent(Math.max(...shift.phaseBusy))]);
-            const status = shift.peakSupport ? translate('Crop support') : translate('{load} busy').replace('{load}', percent(shift.busy));
-            const traits = [...shift.personalities].map(translate).join(' · ');
-            return assignmentTile(member, label, tasks, status, true, traits);
-        })}</div>`
-        : '';
+    const renderShift = shift => {
+        const member = bestRosterMember(shift);
+        const label = member.name || translate('Assumed Aniimo');
+        const tasks = routeLabels.filter(label => !shift.peakSupport && (!routesReady || shift.tasks.has(label))).map(label => [
+            translate(label), routesReady ? percent(shift.tasks.get(label)) : routeStatus,
+        ]);
+        if (shift.peakSupport) {
+            const jobs = [...new Set(recipeIndex.flatMap(r => (r.jobs || []).filter(([name,ability,level]) => criticalCropJob(name) && (shift.abilities[ability] || 0) >= level).map(([name]) => translate(name))))];
+            tasks.push([jobs.join(' / '), translate('Crop support')]);
+        }
+        if (shift.tasks.has(TASK_SWITCHING)) tasks.push([translate(TASK_SWITCHING), percent(shift.tasks.get(TASK_SWITCHING))]);
+        for (const [job, share] of [...shift.tasks].sort((a, b) => b[1] - a[1])) {
+            if (!routeLabels.includes(job) && job !== TASK_SWITCHING) tasks.push([translate(job), percent(share)]);
+        }
+        if(shift.phaseBusy?.length)tasks.unshift(['Peak during recipe schedule',percent(Math.max(...shift.phaseBusy))]);
+        const status = shift.peakSupport ? translate('Crop support') : translate('{load} busy').replace('{load}', percent(shift.busy));
+        const traits = [...shift.personalities].map(translate).join(' · ');
+        return `<div class="roster-slot">${assignmentTile(member, label, tasks, status, true, traits)}</div>`;
+    };
+    const closedGroups = new Set([...container.querySelectorAll('details[data-assignment-group]:not([open])')]
+        .map(group => group.dataset.assignmentGroup));
+    const groups = groupAniimoAssignments(shifts).map(([label, members]) => `
+        <details class="aniimo-assignment-group" data-assignment-group="${escapeText(label)}"${closedGroups.has(label) ? '' : ' open'}>
+            <summary>
+                <span>${escapeText(translate(label))}</span>
+                <span class="aniimo-assignment-count">${formatNumber(members.length)}</span>
+                <span class="aniimo-assignment-chevron" aria-hidden="true"></span>
+            </summary>
+            <div class="aniimo-assignment-portraits">${members.map(renderShift).join('')}</div>
+        </details>`).join('');
+    container.innerHTML = total ? `${capNote}${cropPeakNote(cropPeaks, [], true)}${groups}` : '';
     if (!aniimoExpansionChosen) setAniimoExpanded(true);
 }
 
