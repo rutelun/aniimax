@@ -1,3 +1,4 @@
+import {materialChains} from './material-flow-schedule.js';
 import {validateRecipeSchedule} from './recipe-schedule.js';
 const DAY=86400, EPS=1e-7;
 const add=(map,key,value)=>{map[key]=(map[key]||0)+value;};
@@ -81,31 +82,40 @@ export function scheduleInputForPlan(input,plan) {
         // instead of certifying a stock buffer which cannot replenish.
         const resources=new Set(jobs.flatMap(j=>[...Object.keys(j.inputs),...Object.keys(j.outputs)]));
         const members=new Set(jobs.flatMap(j=>Object.keys(j.workers)));
-        const background=sources.filter(s=>!s.turns&&s.rate>EPS);
+        const groups=new Map(), siteCounts=new Map();
+        for(const source of sources) {
+            if(source.turns||source.rate<=EPS)continue;
+            const key=`${source.facility}|${source.item}`;
+            if(!groups.has(key))groups.set(key,[]);
+            groups.get(key).push(source);
+        }
+        for(const row of plan.coin_items||[]) {
+            if(row.status!=='producing')continue;
+            const key=`${row.facility}|${row.item_name}`;
+            siteCounts.set(key,(siteCounts.get(key)||0)+row.facility_count);
+        }
         const affected=new Set();
         let changed=true;
         while(changed) {
             changed=false;
-            for(const s of background) {
-                const key=`${s.facility}|${s.item}`;
-                const related=[...s.inputs,...s.outputs].some(([r])=>resources.has(r))
-                    || (s.crew!=null&&members.has(String(s.crew)))
-                    || (s.hauling_seconds||[]).some((seconds,i)=>seconds>0&&members.has(String(i)));
-                if(!related||affected.has(key))continue;
+            for(const [key,group] of groups) {
+                if(affected.has(key))continue;
+                const sharedWorkers=group.some(s=>(s.crew!=null&&members.has(String(s.crew)))
+                    || (s.hauling_seconds||[]).some((seconds,i)=>seconds>0&&members.has(String(i))));
+                if(!sharedWorkers&&!group.some(s=>[...s.inputs,...s.outputs].some(([r])=>resources.has(r))))continue;
+                const work=group.reduce((n,s)=>n+s.rate*s.cycle,0), sites=siteCounts.get(key)||0;
+                if(!sites||work<sites-EPS*Math.max(1,sites)) {
+                    throw new Error(`Switching changes availability for ${group[0].item}; its phase production is not verified.`);
+                }
+                // A full-rate source with independent workers produces the
+                // same batch even if demand for one of its outputs changes.
+                // The phase inventory check still accounts for every output.
+                if(!sharedWorkers&&group.every(s=>!s.inputs.length))continue;
                 affected.add(key);changed=true;
-                for(const peer of background.filter(p=>p.facility===s.facility&&p.item===s.item)) {
+                for(const peer of group) {
                     for(const [r] of [...peer.inputs,...peer.outputs])resources.add(r);
                     if(peer.crew!=null)members.add(String(peer.crew));
                 }
-            }
-        }
-        for(const key of affected) {
-            const group=background.filter(s=>`${s.facility}|${s.item}`===key);
-            const work=group.reduce((n,s)=>n+s.rate*s.cycle,0);
-            const sites=(plan.coin_items||[]).filter(r=>`${r.facility}|${r.item_name}`===key&&r.status==='producing')
-                .reduce((n,r)=>n+r.facility_count,0);
-            if(!sites||work<sites-EPS*Math.max(1,sites)) {
-                throw new Error(`Switching changes availability for ${group[0].item}; its phase production is not verified.`);
             }
         }
     }
@@ -156,12 +166,10 @@ export function haulingScheduleProfile(plan,hauling,level=3) {
 // Fast, easy-to-follow chain: two raw processors in the morning, then one
 // switches to tier 3. Tier 2 and (if present) tier 4 retain their recipes.
 export function materialChainSchedule(input) {
-    const chains={'Woodworking Bench':['rough_lumber','standard_planks','laminated_beams','densified_timber_component'],
-        'Chimney Kiln':['coarse_sifted_ore','sintered_ore_brick','refined_ore','microcrystalline_ore_plate']};
-    if(!input.maxSwitches||input.buildings.some(b=>b.electric_level!=null)||input.jobs.some(j=>!chains[j.facility]?.includes(j.recipe)))return null;
+    if(!input.maxSwitches||input.buildings.some(b=>b.electric_level!=null)||input.jobs.some(j=>!materialChains[j.facility]?.includes(j.recipe)))return null;
     const buildings=input.buildings.map(b=>({...b}));
     for(const facility of new Set(input.jobs.map(j=>j.facility))){
-        const chain=chains[facility],sites=buildings.filter(b=>b.facility===facility);
+        const chain=materialChains[facility],sites=buildings.filter(b=>b.facility===facility);
         const hasLast=input.jobs.some(j=>j.facility===facility&&j.recipe===chain[3]);
         if(sites.length<(hasLast?4:3))return null;
         sites.forEach((b,i)=>b.phaseRecipes=i===1?[[chain[0]],[chain[2]]]:i===2?[[chain[1]],[chain[1]]]:i===3&&hasLast?[[chain[3]],[chain[3]]]:[[chain[0]],[chain[0]]]);

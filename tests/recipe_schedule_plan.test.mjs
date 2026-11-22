@@ -31,6 +31,21 @@ test('always-running switching cannot freeze a competing background recipe at it
     assert.throws(()=>scheduleInputForPlan(setup,candidate),/phase production is not verified/);
     assert.doesNotThrow(()=>scheduleInputForPlan({...setup,always_running:false},candidate));
 });
+test('switching Wood Blocks does not change the other output of a fully busy Woodland',()=>{
+    const setup={...input,always_running:true,facilities:{'Woodworking Bench':[{count:1,level:1}]}};
+    const processor=source('rough_lumber',{facility:'Woodworking Bench',inputs:[['wood_block',8]]});
+    const woodland=source('orange_flower',{turns:false,crew:null,facility:'Woodland',cycle:10,rate:.1,
+        outputs:[['wood_block',8],['orange_flower',8]]});
+    const incense=source('orange_flower_incense',{turns:false,crew:null,facility:'Phonolfactory Table',
+        inputs:[['orange_flower',8]]});
+    const candidate={...plan,schedule_sources:[processor,woodland,incense],
+        coin_items:[woodland,incense].map(({facility,item})=>({facility,item_name:item,status:'producing',facility_count:1}))};
+    const adapted=scheduleInputForPlan(setup,candidate);
+    assert.equal(adapted.backgroundOutputs.orange_flower,.8);
+    assert.equal(adapted.backgroundInputs.orange_flower,.16);
+    assert.throws(()=>scheduleInputForPlan(setup,{...candidate,schedule_sources:[processor,{...woodland,crew:0},incense]}),
+        /phase production is not verified/);
+});
 test('validated schedule produces map jobs and time profiles without changing production',()=>{
     const p=scheduleInputForPlan(input,plan);
     const schedule={phases:[{duration:43200,assignments:[{building:p.buildings[0].id,job:'ore',batches:1728}]},

@@ -1,3 +1,4 @@
+import {materialFlowSchedule} from './material-flow-schedule.js';
 import {buildRecipeSchedule,readRecipeSchedule} from './recipe-schedule.js';
 import {scheduleInputForPlan,attachRecipeSchedule,materialChainSchedule} from './recipe-schedule-plan.js';
 
@@ -44,6 +45,13 @@ export async function searchRecipeSwitches(input,baseline,{candidate,solve,progr
                 const proposed=await candidate({...input,recipe_switching_relaxation:true,recipe_switching_facilities:chosen.facilities,recipe_switching_normal_only:!!chosen.normal,maximize_material_work:false});
                 if(!improvesPlan(proposed,baseline))continue;
                 const scheduleInput=scheduleInputForPlan(input,proposed);
+                if(chosen.normal){
+                    const flow=materialFlowSchedule(scheduleInput);
+                    if(flow){
+                        try{return attachRecipeSchedule(proposed,scheduleInput,flow);}
+                        catch(error){detail=String(error.message||error);}
+                    }
+                }
                 const pattern=chosen.normal?materialChainSchedule(scheduleInput):null;
                 for(const attempt of [pattern,scheduleInput].filter(Boolean)){
                     const model=buildRecipeSchedule(attempt),solution=await solve(model);
