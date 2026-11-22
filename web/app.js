@@ -40,6 +40,7 @@ import facilityIcons from './facility-icons.json' with { type: 'json' };
 import { abilityGlyph, gameAbilityIcon } from './ability-icons.js?v=game-heads';
 
 let wasmReady = false;
+let wasmLoadFailed = false;
 
 // The wasm optimizer runs in a Web Worker (see worker.js), not on the main thread: `find_plan`
 // can take long enough on a complex facility setup that running it here would freeze the page's
@@ -110,7 +111,7 @@ function callWorker(type, payload, onProgress) {
     return new Promise((resolve, reject) => {
         if (!worker) initWorker();
         const id = ++nextRequestId;
-        const timer = type === 'find_plan' ? null : setTimeout(() => {
+        const timer = type === 'find_plan' || type === 'get_version' ? null : setTimeout(() => {
             pendingWorkerRequests.delete(id);
             reject(new Error('This setup took too long. Try simplifying the priorities.'));
             if (!pendingWorkerRequests.size) restartWorker();
@@ -727,8 +728,12 @@ function clearSavedInputs() {
 
 // Initialize the worker and its wasm module.
 async function initWasm() {
+    const button = document.getElementById('optimize-btn');
+    if (wasmLoadFailed) document.getElementById('results-section').style.display = 'none';
+    wasmLoadFailed = false;
+    button.disabled = true;
+    button.querySelector('.btn-text').textContent = 'Loading optimizer…';
     try {
-        initWorker();
         const version = await callWorker('get_version');
         wasmReady = true;
         document.querySelector('#optimize-btn .btn-text').textContent = 'Find the best plan';
@@ -740,7 +745,12 @@ async function initWasm() {
         console.log(`Aniimax v${version} loaded successfully`);
     } catch (error) {
         console.error('Failed to initialize WASM:', error);
-        showError('Failed to load the optimizer. Please refresh the page.');
+        worker?.terminate();
+        worker = null;
+        wasmLoadFailed = true;
+        button.querySelector('.btn-text').textContent = 'Retry loading optimizer';
+        resetPlanButton();
+        showError('Failed to load the optimizer.');
     }
 }
 
@@ -6099,7 +6109,7 @@ async function runFindPlan() {
 // Puts the Find the best plan button back once a run is over or called off.
 function resetPlanButton() {
     const btn = document.getElementById('optimize-btn');
-    btn.disabled = !wasmReady;
+    btn.disabled = !wasmReady && !wasmLoadFailed;
     btn.querySelector('.btn-text').style.display = 'inline';
     btn.querySelector('.btn-loading').style.display = 'none';
     document.getElementById('progress-bar-container').style.display = 'none';
@@ -6123,7 +6133,7 @@ function clearPlanResults() {
     stopRanking();
     stopSetupSolve();
     stopLayout();
-    if (pendingWorkerRequests.size > 0) restartWorker();
+    if (wasmReady && pendingWorkerRequests.size > 0) restartWorker();
     progress = null;
     renderProgress();
     resetPlanButton();
@@ -6447,7 +6457,7 @@ async function initApp() {
     showAniimoSetup();
     initWasm();
 
-    document.getElementById('optimize-btn').addEventListener('click', runFindPlan);
+    document.getElementById('optimize-btn').addEventListener('click', () => wasmLoadFailed ? initWasm() : runFindPlan());
     document.getElementById('clear-saved-btn').addEventListener('click', clearSavedInputs);
     document.getElementById('share-config-btn').addEventListener('click', shareCurrentConfig);
     document.getElementById('improve-check-btn').addEventListener('click', () => {

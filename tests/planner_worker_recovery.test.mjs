@@ -33,6 +33,15 @@ test('a crashed planner can run again and late errors cannot cancel its replacem
     assert.equal(await second,'plan');
 });
 
+test('slow optimizer startup keeps the original worker until it reports its version', async () => {
+    const {call,workers,timers} = harness();
+    const version = call('get_version');
+    assert.equal(timers.length,0);
+    workers[0].respond('0.17.1');
+    assert.equal(await version,'0.17.1');
+    assert.equal(workers.length,1);
+});
+
 test('a timed-out secondary request leaves an active production search running', async () => {
     const {call,workers,timers} = harness();
     const plan = call('find_plan');
