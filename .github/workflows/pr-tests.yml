@@ -40,8 +40,11 @@ jobs:
         # Layout coverage tests repeatedly solve packing problems.
         run: cargo test --release --locked
 
-      - name: Build WASM library
-        run: cargo build --locked --release --lib --target wasm32-unknown-unknown
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --locked
+
+      - name: Build the browser WASM package used by the JavaScript tests
+        run: wasm-pack build --target web --out-dir web/pkg -- --locked
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
