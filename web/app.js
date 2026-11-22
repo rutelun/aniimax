@@ -738,12 +738,12 @@ async function initWasm() {
     button.querySelector('.btn-text').textContent = 'Loading optimizer…';
     try {
         const version = await callWorker('get_version');
+        await loadRecipeIndex();
         wasmReady = true;
         document.querySelector('#optimize-btn .btn-text').textContent = 'Find the best plan';
         resetPlanButton();
 
         document.getElementById('version').textContent = version;
-        loadRecipeIndex();
 
         console.log(`Aniimax v${version} loaded successfully`);
     } catch (error) {
@@ -4072,6 +4072,7 @@ async function loadRecipeIndex() {
         renderSkippedRecipes();
         renderSeasonCropMinimums();
     } catch (error) {
+        if (seasonActive() && Object.values(seasonCropMinimums).some(count=>count>0)) throw error;
         console.warn('Could not load the recipe list:', error);
     }
 }
