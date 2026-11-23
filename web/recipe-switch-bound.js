@@ -1,6 +1,6 @@
 // The first material-switch trial has the same workshops regardless of the
 // ordinary plan's layout. Bound that plan before paying for its lower priorities.
-const {priorityCeiling}=await import('./priority-ceilings.js'+new URL(import.meta.url).search);
+import {priorityCeiling} from './priority-ceilings.js';
 import {materialChains} from './material-flow-schedule.js';
 import {productionObjective} from './priority-search.js';
 

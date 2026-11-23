@@ -6,11 +6,11 @@ import { normalizeMapStyle } from './map-style.js';
 import { parkIdleBuildings } from './idle-layout.js';
 import { optimizePowerNetworks } from './power-islands.js';
 
-const ready = import('./layout.js' + new URL(import.meta.url).search);
-const powerReady = import('./power-layout.js' + new URL(import.meta.url).search);
+const ready = import('./layout.js');
+const powerReady = import('./power-layout.js');
 let refinementReady;
 function loadRefinement() {
-    return refinementReady ??= import('./pkg/aniimax.js' + new URL(import.meta.url).search).then(async pkg => {
+    return refinementReady ??= import(new URL('./pkg/aniimax.js' + new URL(import.meta.url).search, import.meta.url).href).then(async pkg => {
         if(typeof pkg.refine_layout !== 'function')return null;
         await pkg.default({module_or_path:fetch(new URL('./pkg/aniimax_bg.wasm'+new URL(import.meta.url).search,import.meta.url))});
         return pkg.refine_layout;
@@ -30,7 +30,7 @@ async function buildLayout(event) {
     const poleLimit = event.data.poleLimit ?? 0;
     const { recipes, staffing } = event.data;
     if (event.data.groupPackings) {
-        const { searchGroupPackings } = await import('./production-groups.js' + new URL(import.meta.url).search);
+        const { searchGroupPackings } = await import('./production-groups.js');
         let connected = false;
         const layout = searchGroupPackings(pieces,cells,event.data.groupPackings,{storageCount,poleLimit,recipes,staffing,
             onCandidate: candidate => { if (candidate.disconnected === 0) connected = true; }});
@@ -42,7 +42,7 @@ async function buildLayout(event) {
     let groupFailure = 'space';
     const deliver = layout => self.postMessage(optimizePowerNetworks(parkIdleBuildings(layout,cells),cells,poleLimit));
     if (grouped && storageCount > 0) {
-        const { productionGroupLayout, searchGroupPackings } = await import('./production-groups.js' + new URL(import.meta.url).search);
+        const { productionGroupLayout, searchGroupPackings } = await import('./production-groups.js');
         const options = {storageCount,poleLimit,recipes,staffing,onCandidate: candidate => {
             if (candidate.disconnected === 0) groupFailure = 'workload';
         }};
@@ -83,8 +83,8 @@ async function buildLayout(event) {
     if(!accountForWorkers&&storageCount>0&&cells.length) {
         try {
             const [refineJSON,{fastLayoutSeed,refineFastLayout,polishFastLayout},{layoutKeepsIncome}]=await Promise.all([
-                loadRefinement(),import('./fast-layout.js'+new URL(import.meta.url).search),
-                import('./group-layout.js'+new URL(import.meta.url).search),
+                loadRefinement(),import('./fast-layout.js'),
+                import('./group-layout.js'),
             ]);
             if(refineJSON) {
                 const seed=fastLayoutSeed({pieces,cells,storageCount,poleLimit});

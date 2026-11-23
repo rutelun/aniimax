@@ -1,29 +1,15 @@
 // Fast path for the explicit priority list. Global ceilings use all unlocked
 // recipes. Candidate models check work conservation on every occupied site.
-const version = new URL(import.meta.url).search;
-const [
-    {cachedEconomicBound},
-    {priorityCeiling},
-    {productionObjective, CURRENCY_RELATIVE_GAP, CURRENCY_GAP_FACTOR},
-    {solveEconomicBound,suggestEconomicScope},
-    {polishSolution},
-    {refineStaffing},
-    {continuousNeighborhood},
-    {economicRecipeCounts,economicCountNeighborhood},
-    {searchProductionSites},
-    {measuredProductionShift}
-] = await Promise.all([
-    import('./economic-bound-cache.js'+version),
-    import('./priority-ceilings.js'+version),
-    import('./priority-search.js'+version),
-    import('./economic-bound.js'+version),
-    import('./highs-solve.js'+version),
-    import('./staffing-search.js'+version),
-    import('./continuous-neighborhood.js'+version),
-    import('./economic-recipe-counts.js'+version),
-    import('./production-site-search.js'+version),
-    import('./measured-production.js'+version)
-]);
+import {cachedEconomicBound} from './economic-bound-cache.js';
+import {priorityCeiling} from './priority-ceilings.js';
+import {productionObjective, CURRENCY_RELATIVE_GAP, CURRENCY_GAP_FACTOR} from './priority-search.js';
+import {solveEconomicBound,suggestEconomicScope} from './economic-bound.js';
+import {polishSolution} from './highs-solve.js';
+import {refineStaffing} from './staffing-search.js';
+import {continuousNeighborhood} from './continuous-neighborhood.js';
+import {economicRecipeCounts,economicCountNeighborhood} from './economic-recipe-counts.js';
+import {searchProductionSites} from './production-site-search.js';
+import {measuredProductionShift} from './measured-production.js';
 
 const options = seconds => ({time_limit:seconds,mip_rel_gap:0,mip_abs_gap:0,mip_feasibility_tolerance:1e-9});
 const close = (a,b) => Number.isFinite(a) && Number.isFinite(b) && Math.abs(a-b)<=1e-8*Math.max(1,Math.abs(a));

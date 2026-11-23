@@ -2,7 +2,7 @@
 // The LP may split buildings. Its optimal dual prices bound the loss from
 // moving a variable away from a bound, even after other decisions are reoptimized.
 import {parseLinearLp} from './highs-reuse.js';
-const {requiredSiteRows}=await import('./priority-ceilings.js'+new URL(import.meta.url).search);
+import {requiredSiteRows} from './priority-ceilings.js';
 
 export function resourceBounds(highs, problem, witness) {
     const values=witness?.values;

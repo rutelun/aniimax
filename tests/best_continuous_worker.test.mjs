@@ -2,8 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {existsSync} from 'node:fs';
 import {readFile} from 'node:fs/promises';
+import {join} from 'node:path';
+import {pathToFileURL} from 'node:url';
 
-const wasm = new URL('../web/pkg/aniimax_bg.wasm', import.meta.url);
+const pages = process.env.ANIIMAX_PAGES_DIR;
+const workerUrl = pages ? pathToFileURL(join(pages, 'worker.js')) : new URL('../web/worker.js', import.meta.url);
+workerUrl.searchParams.set('load', 'worker-test');
+const wasm = new URL('pkg/aniimax_bg.wasm', workerUrl);
+if (pages) assert.ok(existsSync(wasm), 'Packaged site must include the planner WASM');
 const worker = {performance};
 
 async function bestPlan(input) {
@@ -17,7 +23,7 @@ async function bestPlan(input) {
         headers: {'Content-Type': 'application/wasm'},
     });
     try {
-        await import('../web/worker.js');
+        await import(workerUrl.href);
         await self.onmessage({data:{id:1, type:'find_plan', payload:JSON.stringify(input)}});
     } finally {
         globalThis.fetch = originalFetch;

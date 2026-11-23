@@ -7,9 +7,8 @@ import { workerTravelDistances, workerTravelSeconds } from './worker-travel.js?v
 import {buildReactiveDispatch,measuredDispatchWork} from './reactive-dispatch.js';
 import { canMoveDistrictStorage, districtStorageIndices, improveDistrictStorage } from './district-storage.js?v=workshop-blocks';
 
-const load = new URL(import.meta.url).search;
-const placement = import('./layout.js' + load);
-const wiring = import('./power-layout.js' + load);
+const placement = import('./layout.js');
+const wiring = import('./power-layout.js');
 const area = rectangle => rectangle.w * rectangle.h;
 const center = rectangle => [rectangle.x + rectangle.w / 2, rectangle.y + rectangle.h / 2];
 const halfTile = value => Math.round(value * 2) / 2;

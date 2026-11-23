@@ -1,4 +1,4 @@
-const reuse = await import('./highs-reuse.js' + new URL(import.meta.url).search);
+import * as reuse from './highs-reuse.js';
 const configuredOptions = new WeakMap();
 const FULL_PLAN_EFFORT = 30;
 const FULL_PLAN_NODE_LIMIT = 2048;

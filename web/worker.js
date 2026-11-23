@@ -18,19 +18,19 @@ import {comparePlans} from './opportunity-comparison.js';
 
 const plannerWorkerUrl = import.meta.url;
 const load = new URL(plannerWorkerUrl).search;
-const incumbentSolver = import('./highs-solve.js' + load);
-const materialSearch = import('./material-search.js' + load);
-const comparisonSearch = import('./comparison-search.js' + load);
-const prioritySearch = import('./priority-search.js' + load);
+const incumbentSolver = import('./highs-solve.js');
+const materialSearch = import('./material-search.js');
+const comparisonSearch = import('./comparison-search.js');
+const prioritySearch = import('./priority-search.js');
 let priorityPlanner;
 function loadPriorityPlanner() {
-    return priorityPlanner ??= import('./continuous-priority-plan.js'+load).catch(error=>{
+    return priorityPlanner ??= import('./continuous-priority-plan.js').catch(error=>{
         priorityPlanner=null;
         throw error;
     });
 }
-const boundTightening = import('./bound-tightening.js' + load);
-const ready = import('./pkg/aniimax.js' + load).then(async (pkg) => {
+const boundTightening = import('./bound-tightening.js');
+const ready = import(new URL('./pkg/aniimax.js' + load, import.meta.url).href).then(async (pkg) => {
     await pkg.default({ module_or_path: fetch(new URL('./pkg/aniimax_bg.wasm'+load, import.meta.url)) });
     return pkg;
 });
@@ -53,7 +53,7 @@ async function newHighs() {
     }
     if (!highsRuntime) {
         highsRuntime = (async () => {
-            const { default: highsModule } = await import('./vendor/highs/highs.mjs' + load);
+            const { default: highsModule } = await import(new URL('./vendor/highs/highs.mjs' + load, import.meta.url).href);
             return highsModule({ wasmBinary: await highsBytes, print: () => {}, printErr: line => console.warn(line) });
         })().catch(error => { highsRuntime = null; throw error; });
     }
@@ -397,7 +397,7 @@ async function exactPlanJsonOnce(pkg, payload, step = () => {}, first = () => {}
             if (input.prove_early_switch && !comparison && deadline==null && !input.continuous_fast_neighborhood
                 && stage.pace>0 && initialSeed && seed && goal===(input.currency||'coins') && problem.recipe_options?.length) {
                 try{
-                    const {resourceBounds}=await import('./resource-bounds.js'+load);
+                    const {resourceBounds}=await import('./resource-bounds.js');
                     const highs=await newHighs();
                     const witness=(await incumbentSolver).polishSolution(highs,protectedProblem,{values:seed});
                     const bounded=witness.polished && resourceBounds(highs,protectedProblem,witness);
@@ -917,7 +917,7 @@ async function repairDispatchPlan(pkg, input, witness) {
 }
 
 async function canFillWorkshop(pkg,trial,baseline) {
-    const {canFillSwitchingWorkshop}=await import('./recipe-switch-bound.js'+load);
+    const {canFillSwitchingWorkshop}=await import('./recipe-switch-bound.js');
     return canFillSwitchingWorkshop(pkg,await newHighs(),trial,baseline);
 }
 
@@ -996,19 +996,19 @@ self.onmessage = async (event) => {
             return;
         }
         if (type === 'protect_crops') {
-            const {cropProtectionPlans}=await import('./power-team-validation.js'+load);
+            const {cropProtectionPlans}=await import('./power-team-validation.js');
             const result=cropProtectionPlans(pkg,await newHighs(),payload);
             self.postMessage({id,ok:true,result});
             return;
         }
         if (type === 'power_teams') {
-            const {shortlistPowerTeams}=await import('./power-team-search.js'+load);
+            const {shortlistPowerTeams}=await import('./power-team-search.js');
             const result=await shortlistPowerTeams(pkg,await newHighs(),payload.plan,payload.input);
             self.postMessage({id,ok:true,result});
             return;
         }
         if (type === 'compact_team') {
-            const {compactMeasuredTeam} = await import('./measured-team.js'+load);
+            const {compactMeasuredTeam} = await import('./measured-team.js');
             const plan = compactMeasuredTeam(pkg,await newHighs(),payload);
             self.postMessage({id,ok:true,result:plan});
             return;
@@ -1025,7 +1025,7 @@ self.onmessage = async (event) => {
             const step = (key, state, proven) => self.postMessage({ id, type: 'progress', count: { step: key, state, proven } });
             const switchingInput = JSON.parse(payload);
             const firstSwitch = await proveFirstSwitch(switchingInput, async trial => {
-                const {upgradeSwitchBounds} = await import('./recipe-switch-bound.js'+load);
+                const {upgradeSwitchBounds} = await import('./recipe-switch-bound.js');
                 return upgradeSwitchBounds(pkg,await newHighs(),switchingInput,trial);
             }, async trial => JSON.parse(await exactPlanJson(pkg,JSON.stringify({...trial,prove_early_switch:true}))), step);
             if (firstSwitch?.winner) {

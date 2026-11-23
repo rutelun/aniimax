@@ -1,4 +1,4 @@
-const {requiredSiteRows}=await import('./priority-ceilings.js'+new URL(import.meta.url).search);
+import {requiredSiteRows} from './priority-ceilings.js';
 
 // Fill the material processors around the already chosen production plan first. This gives
 // the full search a useful incumbent instead of an income plan making no RV materials.

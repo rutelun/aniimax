@@ -1,4 +1,4 @@
-const {parseLinearLp} = await import('./highs-reuse.js' + new URL(import.meta.url).search);
+import {parseLinearLp} from './highs-reuse.js';
 
 // At positive upgrade pace, every unstocked input must be produced. A material
 // balance can offer several variants for the same output. If a whole set of

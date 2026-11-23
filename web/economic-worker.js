@@ -4,7 +4,7 @@ const version = new URL(import.meta.url).search;
 let runtime;
 async function evaluate({kind,problem,options}) {
     runtime ??= Promise.all([
-        import('./vendor/highs/highs.mjs'+version),
+        import(new URL('./vendor/highs/highs.mjs' + version, import.meta.url).href),
         fetch(new URL('./vendor/highs/highs.wasm',import.meta.url)).then(response=>{
             if (!response.ok) throw new Error('Could not load the economic solver');
             return response.arrayBuffer();
@@ -12,10 +12,10 @@ async function evaluate({kind,problem,options}) {
     ]).then(([module,wasmBinary])=>module.default({wasmBinary,print(){},printErr(){}}));
     const highs = await runtime;
     if (kind === 'bound') {
-        const {solveEconomicBound} = await import('./economic-bound.js'+version);
+        const {solveEconomicBound} = await import('./economic-bound.js');
         return solveEconomicBound(highs,problem,options);
     }
-    const {economicRecipeCounts} = await import('./economic-recipe-counts.js'+version);
+    const {economicRecipeCounts} = await import('./economic-recipe-counts.js');
     const counts = economicRecipeCounts(highs,problem,options);
     return counts && {entries:[...counts],upper:counts.upper};
 }

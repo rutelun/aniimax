@@ -60,13 +60,16 @@ jobs:
       - name: Setup Pages
         uses: actions/configure-pages@v4
 
-      - name: Version planner assets for browser caching
-        run: sed -i "s/app.js?v=team-support/app.js?build=${GITHUB_SHA}/" web/index.html
+      - name: Bundle the browser app and planner workers
+        run: npm exec --yes --package=esbuild@0.25.12 -- bash scripts/build-pages.sh "$RUNNER_TEMP/aniimax-pages"
+
+      - name: Verify production plans with the packaged worker
+        run: ANIIMAX_PAGES_DIR="$RUNNER_TEMP/aniimax-pages" node --test tests/best_continuous_worker.test.mjs
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: ./web
+          path: ${{ runner.temp }}/aniimax-pages
 
   deploy:
     environment:

@@ -1,6 +1,5 @@
-const query = new URL(import.meta.url).search;
-const {parseLinearLp} = await import('./highs-reuse.js'+query);
-const {requiredRecipeSites} = await import('./priority-ceilings.js'+query);
+import {parseLinearLp} from './highs-reuse.js';
+import {requiredRecipeSites} from './priority-ceilings.js';
 
 const expression = terms => [...terms].map(([v,c]) => `${c<0?'-':'+'} ${Math.abs(c)} ${v}`).join(' ');
 
