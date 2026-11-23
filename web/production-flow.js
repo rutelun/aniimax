@@ -438,18 +438,25 @@ export function attachProductionFlow(card, { itemName, formatAmount, formatReven
             line.append(text('span', label), text('strong', value));
             return line;
         }
-        function badgeImage(src, label, ability) {
-            const badge = text('span', '', 'flow-badge-icon');
-            const glyph = abilityGlyph(ability);
-            if (glyph) badge.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${glyph}</svg>`;
-            else badge.textContent = label.slice(0, 2);
+        function workerPortrait(worker) {
+            const badge = text('span', '', 'production-portrait');
+            badge.classList.toggle('prismana', !!worker.form?.includes('prismana'));
+            const art = text('span', '', 'production-portrait-art');
+            const fallback = text('span', translate(worker.name).slice(0, 2));
+            const glyph = abilityGlyph(worker.ability);
+            if (glyph) fallback.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${glyph}</svg>`;
+            art.append(fallback);
+            const src = aniimoPortrait(worker.form);
             if (src) {
-                const img = new Image(20, 20);
+                const img = new Image();
                 img.alt = '';
+                img.classList.toggle('game-head', src.includes('/UI_PetHead_'));
                 img.referrerPolicy = 'no-referrer';
-                img.addEventListener('load', () => badge.replaceChildren(img), {once:true});
+                img.addEventListener('load', () => img.classList.add('loaded'), {once:true});
                 img.src = src;
+                art.append(img);
             }
+            badge.append(art);
             return badge;
         }
         function facilityBadge(group, baseResource) {
@@ -468,13 +475,16 @@ export function attachProductionFlow(card, { itemName, formatAmount, formatReven
             badge.dataset.tip = building;
             badge.dataset.tipDetail = [assignment, recipeLoad].filter(Boolean).join(' · ');
             badge.setAttribute('aria-label', building + ' · ' + badge.dataset.tipDetail);
-            badge.append(text('strong', baseResource ? count : load));
+            badge.append(text('span', baseResource ? count : load));
             if (group.powered) {
-                const electric = text('span', '', 'production-electric');
-                electric.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${abilityGlyph('Lightning')}</svg>`;
+                const electric = text('span', '', 'flow-electric-hex');
+                electric.innerHTML = `<svg viewBox="0 0 .866 1" aria-hidden="true">
+                    <use href="#roster-hex-shape" transform="scale(.866 1)" class="layout-emode-frame"/>
+                    <svg x=".063" y=".13" width=".74" height=".74" viewBox="0 0 24 24" class="layout-emode-bolt">${abilityGlyph('Lightning')}</svg>
+                </svg>`;
                 badge.append(electric);
             } else for (const worker of workers.slice(0, 3)) {
-                badge.append(badgeImage(aniimoPortrait(worker.form), translate(worker.name), worker.ability));
+                badge.append(workerPortrait(worker));
             }
             if (workers.length > 3) badge.append(text('small', '+' + (workers.length - 3)));
             return badge;
@@ -510,7 +520,7 @@ export function attachProductionFlow(card, { itemName, formatAmount, formatReven
             heading.append(icon(n.item, itemName(n.item)), produced);
             head.append(heading);
             for (const group of buildings?.get(n.item)?.values() || []) crew.append(facilityBadge(group, baseResource));
-            if (!baseResource && crew.childElementCount) head.append(crew);
+            if (crew.childElementCount) head.append(crew);
             el.append(head);
             if (n.sold > 0) {
                 const sale = text('span', '', 'flow-sale');
@@ -532,7 +542,6 @@ export function attachProductionFlow(card, { itemName, formatAmount, formatReven
                     text('strong', formatRevenue(n.grossSales * seconds), 'flow-revenue'));
                 el.append(sale);
             }
-            if (baseResource && crew.childElementCount) el.append(crew);
             for (const change of switchesByItem.get(n.item) || []) el.append(switchRow(change));
             const rewardRate = (rewards[n.item] || 0) / 86400;
             if (rewardRate) el.append(field('Quest rewards', amount(rewardRate), 'flow-amount'));

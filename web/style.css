@@ -3918,7 +3918,7 @@ html { scroll-padding-top: 0.8rem; }
 .product-flow-column > h3 { margin: 0; font-size: .75rem; font-weight: 600; color: var(--text-muted); }
 .flow-chain-stack { position: relative; display: flex; flex-direction: column; justify-content: center; gap: .65rem; }
 .product-flow-column + .product-flow-column .flow-chain-stack { justify-content: flex-start; gap: max(1.75rem, 30px); }
-.product-flow-node { min-width: 0; width: fit-content; max-width: 100%; padding: .32rem .5rem; background: var(--surface); border: 1px solid var(--border); border-radius: 9px; font-size: .8rem; font-variant-numeric: tabular-nums; }
+.product-flow-node { min-width: 0; width: fit-content; max-width: 100%; padding: 4px .5rem .32rem; background: var(--surface); border: 1px solid var(--border); border-radius: 9px; font-size: .8rem; font-variant-numeric: tabular-nums; }
 .product-flow-column .product-flow-node { width: 100%; }
 .flow-sale-only { --sale-color: var(--warning); }
 .flow-sale-partial { --sale-color: #65baff; --sale-tint: 29%; --sale-border: 85%; }
@@ -3927,7 +3927,6 @@ html { scroll-padding-top: 0.8rem; }
     background: color-mix(in srgb, var(--sale-color) var(--sale-tint, 12%), var(--surface));
     border: 1px solid color-mix(in srgb, var(--sale-color) var(--sale-border, 52%), var(--border));
 }
-.product-flow-node.flow-sale-partial { box-shadow: inset 3px 0 var(--sale-color); }
 .flow-sale-key { display: inline-flex; align-items: center; gap: .33rem; margin-inline-start: .5rem; }
 .flow-sale-key::before { content: ''; width: .7rem; height: .7rem; border-radius: .2rem; }
 .product-flow-node h4 { display: inline-flex; align-items: center; gap: .15rem; margin: 0; }
@@ -3948,18 +3947,15 @@ html { scroll-padding-top: 0.8rem; }
 .product-flow-total { border-top: 1px solid var(--border); padding: .65rem 0 0; }
 .product-flow-total strong { color: var(--accent); }
 .product-flow-content .flow-category { margin: .25rem 0 0; font-size: .95rem; }
-.flow-node-head { display: grid; grid-template-columns: 1fr auto; align-items: center; width: 100%; gap: .35rem; }
-.flow-node-head:has(.flow-badge + .flow-badge) { display: flex; flex-wrap: wrap; width: min-content; min-width: 100%; }
-.flow-facilities { display: flex; flex: none; align-items: center; justify-content: flex-end; gap: .45rem; width: max-content; margin-inline-start: auto; }
+.flow-node-head { display: grid; grid-template-columns: max-content 1fr; align-items: start; gap: .5rem; }
+.flow-facilities { display: flex; align-items: center; justify-self: end; gap: .45rem; margin-right: -3px; }
 .flow-tight .flow-facilities { gap: .3rem; }
-.product-flow-node > .flow-facilities { margin-top: .15rem; }
 .flow-switch { display: flex; align-items: center; gap: .35rem; border-top: 1px solid var(--border); margin-top: .2rem; padding-top: .2rem; font-size: .74rem; }
 .flow-switch-recipes { display: inline-flex; align-items: center; gap: .15rem; }
 .flow-switch-recipes { flex-wrap: wrap; max-width: 9rem; }
 .flow-switch-recipes .product-flow-icon { zoom: .72; }
 .flow-switch-time { color: var(--success); margin-left: auto; white-space: nowrap; }
-.flow-badge { display: inline-flex; align-items: center; gap: 3px; font-size: .74rem; white-space: nowrap; }
-.flow-badge strong { font-variant-numeric: tabular-nums; }
-.flow-badge-icon { display: inline-grid; place-items: center; width: 20px; height: 20px; flex: none; font-size: .65rem; }
-.flow-badge-icon img, .flow-badge-icon svg { width: 100%; height: 100%; object-fit: contain; }
-.flow-badge-icon svg { padding: 3px; }
+.flow-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 400; line-height: 1.1; color: var(--text-muted); white-space: nowrap; }
+.flow-badge .production-portrait, .flow-electric-hex { width: 15.6px; height: 18px; }
+.flow-electric-hex > svg { display: block; width: 100%; height: 100%; }
+.flow-badge .production-portrait-art svg { width: 11px; height: 11px; }

@@ -1,4 +1,4 @@
-import { attachProductionFlow, flowBuildings } from './production-flow.js?v=crew-sales';
+import { attachProductionFlow, flowBuildings } from './production-flow.js?v=hex-load';
 import {siteSchedule,scheduledRate} from './recipe-timeline.js';
 import {elapsed as scheduleTime, facilitySchedule, renderRecipeSchedule} from './recipe-schedule-view.js';
 import {scheduleProfiles} from './recipe-schedule-plan.js';
