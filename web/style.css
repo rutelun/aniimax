@@ -3913,7 +3913,11 @@ html { scroll-padding-top: 0.8rem; }
 .product-flow-board > svg > path[data-tone="1"] { stroke: var(--flow-blue, #86ade0); }
 .product-flow-board > svg > path[data-tone="2"] { stroke: var(--flow-gold, #cdaa73); }
 .product-flow-board > svg > path[data-tone="3"] { stroke: var(--flow-lilac, #b89acb); }
-.light .product-flow-board { --flow-blue: #436fa4; --flow-gold: #916a2f; --flow-lilac: #815c94; }
+.product-flow-board > svg > path[data-tone="4"] { stroke: var(--flow-coral, #f19c88); }
+.product-flow-board > svg > path[data-tone="5"] { stroke: var(--flow-cyan, #6dd3e5); }
+.product-flow-board > svg > path[data-tone="6"] { stroke: var(--flow-lime, #bcce77); }
+.product-flow-board > svg > path[data-tone="7"] { stroke: var(--flow-pink, #ed9fcd); }
+.light .product-flow-board { --flow-blue: #436fa4; --flow-gold: #916a2f; --flow-lilac: #815c94; --flow-coral: #a94935; --flow-cyan: #157482; --flow-lime: #65762d; --flow-pink: #aa477d; }
 .product-flow-column { display: grid; grid-row: 1 / -1; grid-template-rows: subgrid; }
 .product-flow-column > h3 { margin: 0; font-size: .75rem; font-weight: 600; color: var(--text-muted); }
 .flow-chain-stack { position: relative; display: flex; flex-direction: column; justify-content: center; gap: .65rem; }

@@ -66,6 +66,61 @@ export function upgradeHorizon(plan, context) {
     return Number.isFinite(seconds) && seconds >= 0 ? seconds : null;
 }
 
+// Give skipped columns a temporary waypoint so even distant customers influence
+// the resource order. Compare sweeps by crossings, then by vertical travel.
+function orderChain(group, upgradeItems) {
+    const layers = [], vertices = new Map(), segments = [];
+    function add(depth, node, priority) {
+        const layer = layers[depth] ??= [];
+        const v = {node, priority, row: layer.length, before: [], after: []};
+        layer.push(v);
+        return v;
+    }
+    for (const n of group) vertices.set(n.item, add(n.depth, n, upgradeItems.has(n.item)));
+    for (const n of group) {
+        for (const id of n.inputs.keys()) {
+            let prev = vertices.get(id);
+            for (let d = prev.node.depth + 1; d <= n.depth; d++) {
+                const next = d === n.depth ? vertices.get(n.item) : add(d, null, upgradeItems.has(n.item));
+                prev.after.push(next);
+                next.before.push(prev);
+                (segments[d] ??= []).push([prev, next]);
+                prev = next;
+            }
+        }
+    }
+    let best, minCross = Infinity, minTravel = Infinity;
+    function score() {
+        let cross = 0, travel = 0;
+        segments.forEach((gap, d) => gap.forEach(([a,b], i) => {
+            travel += Math.abs((a.row + .5) / layers[d-1].length - (b.row + .5) / layers[d].length);
+            for (let j = 0; j < i; j++) {
+                const [c,e] = gap[j];
+                if ((a.row - c.row) * (b.row - e.row) < 0) cross++;
+            }
+        }));
+        if (cross < minCross || (cross === minCross && travel < minTravel)) {
+            minCross = cross;
+            minTravel = travel;
+            best = layers.flat().filter(v => v.node).map(v => v.node);
+        }
+    }
+    if (!group.some(n => upgradeItems.has(n.item))) score();
+    for (let pass = 0; pass < 6; pass++) {
+        const upward = pass % 2 === 0;
+        for (const layer of upward ? [...layers].reverse() : layers) {
+            const neighborRank = v => {
+                const peers = upward ? v.after : v.before;
+                return peers.length ? peers.reduce((sum, p) => sum + p.row, 0) / peers.length : v.row;
+            };
+            layer.sort((a,b) => Number(b.priority) - Number(a.priority) || neighborRank(a) - neighborRank(b));
+            layer.forEach((v,i) => { v.row = i; });
+        }
+        score();
+    }
+    return best;
+}
+
 // Keep independent chains together so connectors do not cross unrelated products.
 export function flowSections(nodes, requirements) {
     const upgradeItems = new Set(requirements.filter(r => r.name !== 'coins' && r.need > r.have && r.per_second > 0).map(r => r.name));
@@ -93,8 +148,7 @@ export function flowSections(nodes, requirements) {
             if (!singles.has(upgrade)) singles.set(upgrade, []);
             singles.get(upgrade).push(n);
         } else {
-            group.sort((a,b) => Number(upgradeItems.has(b.item)) - Number(upgradeItems.has(a.item)));
-            sections.push({upgrade, nodes:group});
+            sections.push({upgrade, nodes:orderChain(group, upgradeItems)});
         }
     }
     for (const [upgrade, items] of singles) sections.push({upgrade, nodes:items, singletons:true});
@@ -232,6 +286,57 @@ export function routeFlowEdges(edges, tracks, height) {
     return routes;
 }
 
+// A vertical run gets its own x coordinate wherever its y interval overlaps
+// another run. Non-overlapping runs can reuse a lane in the same gutter.
+export function gutterLanes(edges, routes, count) {
+    const gutters = Array.from({length:count}, () => []);
+    const neighbors = new Map(edges.map(edge => [edge, new Set()]));
+    for (const edge of edges) {
+        const route = routes.get(edge);
+        for (let i = edge.start; i < edge.end; i++) {
+            const from = route[i - edge.start], to = route[i - edge.start + 1];
+            gutters[i].push({edge, from, to, low:Math.min(from,to), high:Math.max(from,to)});
+        }
+    }
+    const slots = new Map(edges.map(edge => [edge, []]));
+    const widths = gutters.map(runs => {
+        // Descending runs bend from bottom to top, ascending ones from top to
+        // bottom. This preserves the ordering of parallel paths at their turns.
+        runs.sort((a,b) => (a.to >= a.from) - (b.to >= b.from)
+            || (a.to >= a.from ? b.from - a.from : a.from - b.from));
+        const placed = [];
+        for (const run of runs) {
+            let slot = 0;
+            for (const other of placed) {
+                if (run.low > other.high + laneSpacing || other.low > run.high + laneSpacing) continue;
+                neighbors.get(run.edge).add(other.edge);
+                neighbors.get(other.edge).add(run.edge);
+                slot = Math.max(slot, other.slot + 1);
+            }
+            slots.get(run.edge).push(slot);
+            placed.push({...run, slot});
+        }
+        return Math.max(1, ...placed.map(run => run.slot + 1));
+    });
+    // Sharing either endpoint also makes lines easy to confuse, even if their
+    // ports are far enough apart to use the same lane.
+    for (const edge of edges) for (const other of edges) {
+        if (edge !== other && (edge.source === other.source || edge.target === other.target)) neighbors.get(edge).add(other);
+    }
+    const tones = new Map();
+    const usage = Array(8).fill(0);
+    for (const edge of [...edges].sort((a,b) => neighbors.get(b).size - neighbors.get(a).size)) {
+        const scores = [...usage];
+        for (const other of neighbors.get(edge)) {
+            if (tones.has(other)) scores[tones.get(other)] += edges.length + 1;
+        }
+        const tone = scores.indexOf(Math.min(...scores));
+        tones.set(edge, tone);
+        usage[tone]++;
+    }
+    return {slots, widths, tones};
+}
+
 const svgNS = 'http://www.w3.org/2000/svg';
 // Compact the headings on narrow screens without changing any recipe's column.
 function fitBoard(board) {
@@ -279,7 +384,6 @@ function alignRecipes(board) {
                     : bounds.top + el.offsetTop + rect.height / 2;
                 return {el, height: rect.height, desired};
             });
-            cards.sort((a, b) => a.desired - b.desired);
             const gap = parseFloat(getComputedStyle(stack).rowGap);
             let floor = bounds.top;
             for (const card of cards) {
@@ -329,15 +433,12 @@ function drawLinks(board) {
         edge.start = trackIndex.get(edge.source.left - origin.left);
         edge.end = trackIndex.get(edge.target.left - origin.left);
     }
-    const tones = new Map();
-    let branched = false;
     // Order the attachment points by the opposite end of each edge to avoid twists near a card.
     const center = rect => rect.top + rect.height / 2;
     for (const rect of cards.values()) {
         for (const [end, peer, key] of [['source','target','y'], ['target','source','ty']]) {
             const incident = edges.filter(edge => edge[end] === rect)
                 .sort((a,b) => center(a[peer]) - center(b[peer]) || a[peer].left - b[peer].left);
-            if (incident.length > 1) branched = true;
             const spacing = Math.min(11, rect.height / (incident.length + 1));
             incident.forEach((edge, i) => {
                 edge[key] = center(rect) - origin.top + (i - (incident.length - 1) / 2) * spacing;
@@ -351,35 +452,36 @@ function drawLinks(board) {
     const height = board.getBoundingClientRect().height;
     const lines = document.createDocumentFragment();
     const routes = routeFlowEdges(edges, tracks, height);
+    const {slots, widths, tones} = gutterLanes(edges, routes, tracks.length - 1);
+    // Only widen a board when simultaneous vertical runs need another lane.
+    // A wider board retains this space across resize-observer callbacks.
+    const requiredGap = 2 * cardClearance + (Math.max(1, ...widths) - 1) * laneSpacing;
+    if (requiredGap > parseFloat(getComputedStyle(board).columnGap)) {
+        board.style.columnGap = requiredGap + 'px';
+        return drawLinks(board);
+    }
     for (const edge of edges) {
         const {source, target, y, ty, start, end} = edge;
         const x = source.right - origin.left, tx = target.left - origin.left;
         const path = document.createElementNS(svgNS, 'path');
-        let prevX = x + cardClearance, prevY = y;
-        let d = `M ${x} ${y} H ${prevX}`;
-        function curveTo(nextX, nextY) {
-            const mid = (prevX + nextX) / 2;
-            d += ` C ${mid} ${prevY} ${mid} ${nextY} ${nextX} ${nextY}`;
-            prevX = nextX;
-            prevY = nextY;
+        const levels = routes.get(edge);
+        let d = `M ${x} ${y}`;
+        for (let i = start; i < end; i++) {
+            const gap = tracks[i+1].left - tracks[i].right;
+            const step = Math.min(laneSpacing, (gap - 2 * cardClearance) / Math.max(1,widths[i]-1));
+            const turn = tracks[i].right + gap/2 + (slots.get(edge)[i-start] - (widths[i]-1)/2) * step;
+            const from = levels[i-start], to = levels[i-start+1];
+            const r = Math.min(5, Math.abs(to - from)/2);
+            const dy = Math.sign(to - from) * r;
+            d += ` H ${turn-r} Q ${turn} ${from} ${turn} ${from+dy} V ${to-dy} Q ${turn} ${to} ${turn+r} ${to}`;
         }
-        for (let i = start + 1; i < end; i++) {
-            const column = tracks[i], crossing = routes.get(edge)[i - start];
-            curveTo(column.left - cardClearance, crossing);
-            prevX = column.right + cardClearance;
-            d += ` H ${prevX}`;
-        }
-        curveTo(tx - cardClearance, ty);
         d += ` H ${tx}`;
         path.setAttribute('d', d);
         const tip = document.createElementNS(svgNS, 'path');
         tip.setAttribute('d', `M ${tx - 5} ${ty - 3} l 5 3 -5 3`);
         const gap = path.cloneNode();
         gap.setAttribute('class', 'flow-line-gap');
-        if (branched) {
-            if (!tones.has(source)) tones.set(source, tones.size % 4);
-            path.dataset.tone = tip.dataset.tone = tones.get(source);
-        }
+        path.dataset.tone = tip.dataset.tone = tones.get(edge);
         lines.append(gap, path, tip);
     }
     svg.replaceChildren(lines);

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { allOutputSold, productionFlow, upgradeHorizon, flowSections, flowBuildings, routeFlowEdges } from '../web/production-flow.js';
+import { allOutputSold, productionFlow, upgradeHorizon, flowSections, flowBuildings, routeFlowEdges, gutterLanes } from '../web/production-flow.js';
 
 test('combines quick and normal output, retains real sales and routes byproducts to their consumers', () => {
     const row = (item_name, busy_units) => ({ item_name, busy_units, facility_count: 2, cycle_time: 10, status: 'producing' });
@@ -116,4 +116,27 @@ test('a long edge passes below the skipped card when the nearer upper gap would 
     const routes = routeFlowEdges([bypass, enter, leave], tracks, 160);
     assert.ok(routes.get(bypass)[1] > 100);
     assert.deepEqual(routes.get(enter), [95, 75]);
+});
+
+test('resources feeding the same processor stay together without moving out of the first column', () => {
+    const row = (item, inputs = []) => ({rate:1, outputs:[[item,1]], inputs:inputs.map(id => [id,1])});
+    const {nodes} = productionFlow({schedule_sources:[
+        row('a'), row('b'), row('c'), row('d'), row('one',['a','c']), row('two',['b','d']), row('end',['one','two']),
+    ]});
+    const [chain] = flowSections(nodes, []);
+    const resources = chain.nodes.filter(n => !n.depth).map(n => n.item);
+    assert.equal(Math.abs(resources.indexOf('a') - resources.indexOf('c')), 1);
+    assert.equal(Math.abs(resources.indexOf('b') - resources.indexOf('d')), 1);
+});
+
+test('overlapping vertical connections get separate lanes and colors, even when they share a source', () => {
+    const make = (source, target, y, ty) => ({source,target,start:0,end:1,y,ty});
+    const edges = [make('water','sugar',40,180),make('water','soap',50,200),make('fruit','candy',90,130),
+        make('wood','planks',310,320)];
+    const routes = new Map(edges.map(e => [e,[e.y,e.ty]]));
+    const {slots,widths,tones} = gutterLanes(edges, routes, 1);
+    assert.equal(widths[0], 3);
+    assert.equal(new Set(edges.slice(0,3).map(e => slots.get(e)[0])).size, 3);
+    assert.equal(new Set(edges.slice(0,3).map(e => tones.get(e))).size, 3);
+    assert.equal(slots.get(edges[3])[0], 0);
 });
