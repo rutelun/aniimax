@@ -397,20 +397,22 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
         // Try the recipes from both shifts together. If the fallback finds
         // the same recipe set, reuse its exact fit at the new income threshold.
         let joint;
-        const fitJoint=async(parent,proposal,priorValues,minimum)=>{
-            const recipes=new Set([...proposal.activeRecipes,...active(fullIncome,priorValues)]);
+        const priceJoint=(parent,recipes)=>{
             const payload=payloadFor(recipes,true);
-            if(joint?.payload!==payload){
-                const compact=priority(payload,currencyStage,currency);
-                joint={payload};
-                if(compact.variables<parent.variables){
-                    const fit=highs.solve(compact.lp,{mip_rel_gap:0,mip_abs_gap:0,mip_feasibility_tolerance:1e-9});
-                    if(fit.Status==='Optimal' && fit.Columns){
-                        joint.value=fit.ObjectiveValue;
-                        joint.seed={keys:compact.variable_keys,values:compact.variable_keys.map((_,v)=>fit.Columns['x'+v]?.Primal??0)};
-                    }
+            if(joint?.payload===payload)return;
+            const compact=priority(payload,currencyStage,currency);
+            const result={payload};
+            if(compact.variables<parent.variables){
+                const fit=highs.solve(compact.lp,{mip_rel_gap:0,mip_abs_gap:0,mip_feasibility_tolerance:1e-9});
+                if(fit.Status==='Optimal' && fit.Columns){
+                    result.value=fit.ObjectiveValue;
+                    result.seed={keys:compact.variable_keys,values:compact.variable_keys.map((_,v)=>fit.Columns['x'+v]?.Primal??0)};
                 }
             }
+            joint=result;
+        };
+        const fitJoint=async(parent,proposal,priorValues,minimum)=>{
+            priceJoint(parent,new Set([...proposal.activeRecipes,...active(fullIncome,priorValues)]));
             if(!joint.seed || !(joint.value>minimum))return null;
             joint.checked??=restoreCatalogue(highs,solveModel,fullIncome,joint.seed);
             return joint.checked;
@@ -431,6 +433,27 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
             const targetIncome=witness ? earned : initialScope && jointFirst ? oldCurrency : 0;
             const proofOptions={scope:[...proofScope],exact:true,seed:proofSeed,
                 relativeGap:CURRENCY_RELATIVE_GAP, incomeTarget:targetIncome>0 ? targetIncome*CURRENCY_GAP_FACTOR : undefined};
+            if(initialScope && jointFirst && evaluateBound){
+                const prior=align(fullIncome,witnessSeed);
+                const retained=prior && active(fullIncome,prior);
+                let previous;
+                if(retained)proofOptions.onRecipes=items=>{
+                    if(joint)return;
+                    const recipes=new Set([...items,...retained]);
+                    // An improving incumbent that needs fewer recipes can be
+                    // fitted while the other worker finishes its income proof.
+                    // fitJoint reuses it only for the identical final model.
+                    if(previous && recipes.size<previous.size && [...recipes].every(k=>previous.has(k))){
+                        try {
+                            priceJoint(model,recipes);
+                            if(!joint?.seed)joint=null;
+                        } catch {
+                            joint=null;
+                        }
+                    }
+                    previous=recipes;
+                };
+            }
             let bound=await exactBound(model,proofOptions);
             if(!Number.isFinite(bound?.upper) || !bound.values)break;
             if(initialScope)firstProposal=bound;

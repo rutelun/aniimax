@@ -4,7 +4,7 @@ import {planSearchOptions,runPlanModel,searchStopped} from './highs-solve.js';
 // physical building and balance. Omitting a recipe's work-conservation rules
 // enlarges its feasible set, so its MIP dual bound also bounds the full model.
 // A primal from this relaxation still needs the caller's full production audit.
-export function solveEconomicBound(highs, problem, {seed, scope = [], timeLimit = 2, discovery = false, exact = false, relativeGap = 0, incomeTarget} = {}) {
+export function solveEconomicBound(highs, problem, {seed, scope = [], timeLimit = 2, discovery = false, exact = false, relativeGap = 0, incomeTarget, onRecipes} = {}) {
     const keys = problem.variable_keys;
     if (!problem.production_only || problem.continuousRestricted || !problem.primary_objective?.length
         || keys?.length !== problem.variables || !problem.recipe_options || !(timeLimit > 0)) return null;
@@ -43,7 +43,19 @@ export function solveEconomicBound(highs, problem, {seed, scope = [], timeLimit 
             if (!certifyIncome) return runPlanModel(model,highs,!exact && (seed || discovery) ? Math.ceil(timeLimit * 4000) : undefined);
             // A relaxed shift may earn more than the already verified physical
             // shift. Its relative gap alone cannot certify that physical income.
-            return model.run({[highs.constants.callbackType.mipInterrupt]:event=>{
+            const callbacks={};
+            if(onRecipes){
+                const nativeIndex=new Map(indices.map((v,i)=>[v,i]));
+                const rates=problem.recipe_options.map(([v,name])=>[nativeIndex.get(v),name]);
+                callbacks[highs.constants.callbackType.mipImprovingSolution]=({data})=>{
+                    if(data.mip_primal_bound<incomeTarget)return;
+                    const used=new Set();
+                    const values=data.mip_solution;
+                    for(const [i,name] of rates)if(values[i]>1e-10)used.add(name);
+                    onRecipes([...used]);
+                };
+            }
+            return model.run({...callbacks,[highs.constants.callbackType.mipInterrupt]:event=>{
                 const {mip_primal_bound:lower,mip_dual_bound:upper} = event.data;
                 if (!Number.isFinite(lower) || !Number.isFinite(upper) || lower > upper) return;
                 if (upper <= incomeTarget || (lower >= incomeTarget && upper-lower <= relativeGap*Math.abs(lower))) {

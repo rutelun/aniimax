@@ -73,6 +73,8 @@ test('measured income uses the dual bound of the relaxation to certify a physica
     const native={getDimensions:()=>({numCols:1}),getColName:()=>'x0',
         options:{set(options){assert.equal(options.mip_rel_gap,.002);}},
         run(callbacks) {
+            callbacks.improving({data:{mip_primal_bound:99,mip_solution:[1]}});
+            callbacks.improving({data:{mip_primal_bound:101,mip_solution:[1]}});
             // Small relative gap above the target, target certified, and a
             // relaxed incumbent which itself exceeds the physical target.
             for(const [lower,upper,expected] of [[100.01,100.21,false],[100,100.19,true],[101,101.18,true],[101,102,false],[101,100,false]]) {
@@ -84,8 +86,10 @@ test('measured income uses the dual bound of the relaxation to certify a physica
         getModelStatus:()=>17,getObjectiveValue:()=>100,getSolution:()=>({colValue:[100]}),dispose(){},
         info:{get:name=>({mip_dual_bound:100.19,primal_solution_status:2})[name]}};
     const runtime={constants:{modelStatus:{optimal:7,interrupted:17},solutionStatus:{feasible:2},
-        callbackType:{mipInterrupt:'interrupt'}},createModel:()=>native};
-    const result=solveEconomicBound(runtime,problem,{exact:true,relativeGap:.002,incomeTarget:100.2});
+        callbackType:{mipInterrupt:'interrupt',mipImprovingSolution:'improving'}},createModel:()=>native};
+    const proposals=[];
+    const result=solveEconomicBound(runtime,problem,{exact:true,relativeGap:.002,incomeTarget:100.2,onRecipes:names=>proposals.push(names)});
+    assert.deepEqual(proposals,[['crop']]);
     assert.equal(result.upper,100.19);
     assert.equal(result.objective,100);
     assert.equal(result.proven,false);

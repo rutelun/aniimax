@@ -2,7 +2,7 @@
 // the child computes an independent income bound for the same input.
 const version = new URL(import.meta.url).search;
 let runtime;
-async function evaluate({kind,problem,options}) {
+async function evaluate({id,kind,problem,options,reportRecipes}) {
     runtime ??= Promise.all([
         import(new URL('./vendor/highs/highs.mjs' + version, import.meta.url).href),
         fetch(new URL('./vendor/highs/highs.wasm',import.meta.url)).then(response=>{
@@ -13,6 +13,7 @@ async function evaluate({kind,problem,options}) {
     const highs = await runtime;
     if (kind === 'bound') {
         const {solveEconomicBound} = await import('./economic-bound.js');
+        if (reportRecipes) options.onRecipes=recipes=>self.postMessage({id,recipes});
         return solveEconomicBound(highs,problem,options);
     }
     const {economicRecipeCounts} = await import('./economic-recipe-counts.js');

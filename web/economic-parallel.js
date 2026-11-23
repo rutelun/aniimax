@@ -10,10 +10,14 @@ export function economicWorkers(load) {
             try { worker = new Worker(new URL('economic-worker.js'+load,import.meta.url),{type:'module'}); }
             catch { return null; }
             workers.set(kind,worker);
-            worker.onmessage = ({data:{id,result,error}}) => {
+            worker.onmessage = ({data:{id,result,error,recipes}}) => {
                 const request = pending.get(id);
-                pending.delete(id);
                 if (!request) return;
+                if (recipes) {
+                    request.onRecipes?.(recipes);
+                    return;
+                }
+                pending.delete(id);
                 if (kind === 'counts' && result) result = Object.assign(new Map(result.entries),{upper:result.upper});
                 request.resolve(error ? null : result);
             };
@@ -28,8 +32,9 @@ export function economicWorkers(load) {
         }
         const id = nextId++;
         return new Promise(resolve=>{
-            pending.set(id,{kind,resolve});
-            try { worker.postMessage({id,kind,problem,options}); }
+            const {onRecipes,...settings}=options ?? {};
+            pending.set(id,{kind,resolve,onRecipes});
+            try { worker.postMessage({id,kind,problem,options:settings,reportRecipes:!!onRecipes}); }
             catch { pending.delete(id); resolve(null); }
         });
     }

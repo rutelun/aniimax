@@ -45,3 +45,25 @@ test('a late cache miss cannot reopen workers after the plan is finished',async 
     assert.equal(await delayed,null);
     assert.equal(spawned,0);
 });
+
+test('recipe proposals leave the bound request pending until its certificate arrives',async t=>{
+    const {economicWorkers}=await import('../web/economic-parallel.js');
+    t.mock.getter(globalThis,'navigator',()=>({hardwareConcurrency:8}));
+    const original=globalThis.Worker;
+    let worker, request;
+    globalThis.Worker=class {
+        constructor(){worker=this;}
+        postMessage(message){request=structuredClone(message);}
+        terminate(){}
+    };
+    t.after(()=>{if(original)globalThis.Worker=original;else delete globalThis.Worker;});
+    const pool=economicWorkers(''),proposals=[];
+    try{
+        const bound=pool.callbacks.evaluateBound({},{onRecipes:items=>proposals.push(items)});
+        assert.equal(request.reportRecipes,true);
+        worker.onmessage({data:{id:request.id,recipes:['ore']}});
+        worker.onmessage({data:{id:request.id,result:{upper:12}}});
+        assert.deepEqual(await bound,{upper:12});
+        assert.deepEqual(proposals,[['ore']]);
+    }finally{pool.close();}
+});
