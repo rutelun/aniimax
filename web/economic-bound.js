@@ -4,7 +4,7 @@ import {planSearchOptions,runPlanModel,searchStopped} from './highs-solve.js';
 // physical building and balance. Omitting a recipe's work-conservation rules
 // enlarges its feasible set, so its MIP dual bound also bounds the full model.
 // A primal from this relaxation still needs the caller's full production audit.
-export function solveEconomicBound(highs, problem, {seed, scope = [], timeLimit = 2, discovery = false, exact = false, relativeGap = 0} = {}) {
+export function solveEconomicBound(highs, problem, {seed, scope = [], timeLimit = 2, discovery = false, exact = false, relativeGap = 0, incomeTarget} = {}) {
     const keys = problem.variable_keys;
     if (!problem.production_only || problem.continuousRestricted || !problem.primary_objective?.length
         || keys?.length !== problem.variables || !problem.recipe_options || !(timeLimit > 0)) return null;
@@ -15,6 +15,8 @@ export function solveEconomicBound(highs, problem, {seed, scope = [], timeLimit 
         if (indices.some(v => !Number.isInteger(v) || v < 0 || v >= keys.length)) return null;
         const precision = {mip_abs_gap:0, mip_rel_gap:relativeGap,
             primal_feasibility_tolerance:discovery?1e-7:1e-9, mip_feasibility_tolerance:discovery?1e-8:1e-9};
+        const certifyIncome = exact && !discovery && relativeGap > 0 && Number.isFinite(incomeTarget) && incomeTarget > 0;
+        if (certifyIncome) precision.mip_rel_gap = 0;
         const nativeOptions = exact ? precision : planSearchOptions({time_limit:timeLimit,...precision});
         if (discovery) nativeOptions.mip_max_nodes = Math.ceil(128*timeLimit);
         model.options.set(nativeOptions);
@@ -38,14 +40,26 @@ export function solveEconomicBound(highs, problem, {seed, scope = [], timeLimit 
             });
             if (warm.indices.length) model.setSolution(warm);
         }
-        runPlanModel(model,highs,!exact && (seed || discovery) ? Math.ceil(timeLimit * 4000) : undefined);
+        const run = () => {
+            if (!certifyIncome) return runPlanModel(model,highs,!exact && (seed || discovery) ? Math.ceil(timeLimit * 4000) : undefined);
+            // A relaxed shift may earn more than the already verified physical
+            // shift. Its relative gap alone cannot certify that physical income.
+            return model.run({[highs.constants.callbackType.mipInterrupt]:event=>{
+                const {mip_primal_bound:lower,mip_dual_bound:upper} = event.data;
+                if (!Number.isFinite(lower) || !Number.isFinite(upper) || lower > upper) return;
+                if (upper <= incomeTarget || (lower >= incomeTarget && upper-lower <= relativeGap*Math.abs(lower))) {
+                    event.interrupt();
+                }
+            }});
+        };
+        run();
         const statuses = highs.constants.modelStatus;
         // Tight priority floors and measured worker shares can make presolve
         // declare a feasible model infeasible. Verify on its original rows.
         if(exact && model.getModelStatus()===statuses.infeasible){
             model.clearSolver();
             model.options.set({presolve:'off'});
-            runPlanModel(model,highs);
+            run();
         }
         const status = model.getModelStatus();
         if (status !== statuses.optimal && !searchStopped(status,statuses)) return null;

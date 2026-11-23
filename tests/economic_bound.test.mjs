@@ -65,3 +65,28 @@ test('a search stopping within the relative gap keeps its certified upper bound'
     assert.equal(result.upper,10.01);
     assert.equal(result.proven,false);
 });
+
+test('measured income uses the dual bound of the relaxation to certify a physical shift', () => {
+    const problem={production_only:true,variables:1,variable_keys:['rate:crop#0'],
+        primary_objective:[[0,1]],lp:'Maximize\n obj: x0\nEnd',
+        recipe_options:[[0,'crop','Farmland',true,false,1]]};
+    const native={getDimensions:()=>({numCols:1}),getColName:()=>'x0',
+        options:{set(options){assert.equal(options.mip_rel_gap,0);}},
+        run(callbacks) {
+            // Small relative gap above the target, target certified, and a
+            // relaxed incumbent which itself exceeds the physical target.
+            for(const [lower,upper,expected] of [[100.01,100.21,false],[100,100.19,true],[101,101.18,true],[101,102,false],[101,100,false]]) {
+                let stopped=false;
+                callbacks.interrupt({data:{mip_primal_bound:lower,mip_dual_bound:upper},interrupt(){stopped=true;}});
+                assert.equal(stopped,expected);
+            }
+        },
+        getModelStatus:()=>17,getObjectiveValue:()=>100,getSolution:()=>({colValue:[100]}),dispose(){},
+        info:{get:name=>({mip_dual_bound:100.19,primal_solution_status:2})[name]}};
+    const runtime={constants:{modelStatus:{optimal:7,interrupted:17},solutionStatus:{feasible:2},
+        callbackType:{mipInterrupt:'interrupt'}},createModel:()=>native};
+    const result=solveEconomicBound(runtime,problem,{exact:true,relativeGap:.002,incomeTarget:100.2});
+    assert.equal(result.upper,100.19);
+    assert.equal(result.objective,100);
+    assert.equal(result.proven,false);
+});

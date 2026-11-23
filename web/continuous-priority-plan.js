@@ -303,7 +303,7 @@ export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},fi
             // HiGHS presolve can incorrectly declare a smaller optimum when a
             // redundant currency floor duplicates the objective on a dispatch model.
             const proofOptions={scope:[...proofScope],exact:true,seed:proofSeed,
-                relativeGap:CURRENCY_RELATIVE_GAP};
+                relativeGap:CURRENCY_RELATIVE_GAP, incomeTarget:witness && earned>0 ? earned*CURRENCY_GAP_FACTOR : undefined};
             let bound=await exactBound(model,proofOptions);
             if(!Number.isFinite(bound?.upper) || !bound.values)break;
             if(initialScope)firstProposal=bound;
