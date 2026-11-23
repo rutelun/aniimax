@@ -25,6 +25,6 @@ RV 22: 47 Aniimo; 42 Farmland and 21 Woodland; Tidewhisper Sandcastle 5, Craftin
 
 Both levels retain 10 Mines, 4 Wells, 8 Storage Units, 3 generators at level 5, 30 power poles, three of each climate unit, and the existing 16-plot map. No extra land or generator output is inferred.
 
-Gold-Speck Cap requires the Coinwisp/Pouchwisp family and Warm; Sweet Cone requires Sugarfish/Sugarslime/Sugartini and Freeze. Sorghum needs a Sunlamp. The catalog includes the matching Prismana workers; arbitrary Leisure workers cannot substitute.
+Gold-Speck Cap requires the Coinwisp/Pouchwisp family and Warm; Sweet Cone requires Sugarfish/Sugarslime/Sugartini and Freeze. The catalog includes the matching Prismana workers; arbitrary Leisure workers cannot substitute.
 
 Non-production requirements, recorded for completeness: RV 21 requires Trailblazer I, 22,000 Habitability and RV to the Future; RV 22 requires 24,000 Habitability, 40 level-8 fields and four wells. Upgrade construction takes 13 / 14 hours; the existing readiness estimate remains the time to collect materials, not construction time. Paint jobs, furniture, rewards and Habitability are not economic outputs in this planner.

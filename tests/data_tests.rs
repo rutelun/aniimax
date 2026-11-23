@@ -48,6 +48,32 @@ fn test_pearl_face_cream_production_chain() {
 }
 
 #[test]
+fn test_star_diamond_recipe_at_rv20() {
+    let data = Path::new("data");
+    let items = load_all_data(data).unwrap();
+    let diamond = items.iter().find(|item| item.name == "star_diamond").expect("Star Diamond");
+    assert_eq!((diamond.facility.as_str(), diamond.facility_level), ("Crafting Table", 8));
+    assert_eq!(diamond.raw_materials.as_deref().unwrap(), ["gem", "star"]);
+    assert_eq!(diamond.required_amount.as_deref(), Some(&[2, 2][..]));
+    assert_eq!((diamond.yield_amount, diamond.sell_value, diamond.workload), (1, 3990.0, Some(162.0)));
+    let requirements = aniimax::data::load_aniimo_requirements(data).unwrap();
+    assert_eq!(requirements.get("star_diamond"), Some(("Artisanship", 3)));
+}
+
+#[test]
+fn test_food_energy_uses_the_edible_yield_of_a_harvest() {
+    let data = Path::new("data");
+    let items = load_all_data(data).unwrap();
+    let counts = aniimax::models::FacilityCounts::only(&[("Farmland", 1, 1)]);
+    let foods = aniimax::optimizer::calculate_energy_efficiencies(&items, &counts, &Default::default());
+    let wheat = foods.iter().find(|row| row.item.name == "wheat").unwrap();
+    assert_eq!(wheat.energy_per_batch, 5.0 * 140.0);
+    assert_eq!(wheat.item.energy, None, "food energy must not be charged to production");
+    assert_eq!(aniimax::data::food_energy_per_unit("bread"), Some(26740));
+    assert_eq!(aniimax::data::food_energy_per_unit("star_diamond"), None);
+}
+
+#[test]
 fn test_loaded_items_have_valid_data() {
     let data_dir = Path::new("data");
     if !data_dir.exists() {
@@ -174,6 +200,18 @@ fn test_magical_wonder_night_crops_grow_in_thirty_minutes_with_watering() {
         let crop = items.iter().find(|item| item.name == name).unwrap();
         assert_eq!(crop.production_time, 1800.0, "{name} after watering");
     }
+}
+
+#[test]
+fn test_magical_night_points_count_each_production_step_once() {
+    let csv = std::fs::read_to_string("data/magical_wonder_night.csv").unwrap();
+    let items = aniimax::data::parse_season(&csv).unwrap();
+    let points = |name: &str| items.iter().find(|i| i.name == name).unwrap().season.unwrap().points;
+    // Buying one seed awards 2 points. Harvesting its eight crops awards 10 more.
+    assert_eq!(8.0 * points("magic_pumpkin"), 12.0);
+    assert_eq!(8.0 * points("memory_lanternfruit"), 12.0);
+    assert_eq!(points("memory_lantern") - 8.0 * points("memory_lanternfruit"), 8.0);
+    assert_eq!(points("glowfruit_lantern_set") - points("memory_lantern") - points("magic_pumpkin_lantern"), 4.0);
 }
 
 #[test]
@@ -368,12 +406,9 @@ fn test_unverified_list_names_real_recipes() {
     }
 }
 
-// Every processor recipe takes its facility's own ability: a Crafting Table recipe needs
-// Artisanship, a Blazing Stove one Fire, and so on. The web's facility list is where those
-// abilities are written down, so the two are checked against each other. Crops are exempt; each
-// of their jobs (sowing, watering, reaping) has an ability of its own, in grower_steps.csv.
+// Check each processor against its facility's usual skill or its recipe-specific override.
 #[test]
-fn test_recipes_take_their_facility_ability() {
+fn test_recipe_worker_abilities_match_the_catalog() {
     let js = std::fs::read_to_string("web/facility-config.js").expect("the web facility list");
     let mut ability_of: Vec<(String, String)> = Vec::new();
     for entry in js.split("name: '").skip(1) {
@@ -395,7 +430,11 @@ fn test_recipes_take_their_facility_ability() {
         let cols: Vec<&str> = line.split(',').map(str::trim).collect();
         let [name, facility, ability, ..] = cols[..] else { continue };
         let Some((_, wanted)) = ability_of.iter().find(|(f, _)| f == facility) else { continue };
-        assert_eq!(ability, wanted, "{name} at the {facility} needs {wanted}, not {ability}");
+        let required = match (facility, name) {
+            ("Crafting Table", "premium_rose_freshener") => "Perfumery",
+            _ => wanted.as_str(),
+        };
+        assert_eq!(ability, required, "{name} at the {facility}");
         checked += 1;
     }
     assert!(checked > 100, "only checked {checked} recipes");

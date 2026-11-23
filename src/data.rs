@@ -14,6 +14,24 @@ use crate::models::{
     ProductionItem, WoodlandRow,
 };
 
+/// Food energy restored by consuming one unit. Kept separate from production energy
+/// costs. Recipe variants can have different edible outputs.
+pub fn food_energy_per_unit(recipe: &str) -> Option<u32> {
+    use std::collections::HashMap;
+    use std::sync::OnceLock;
+
+    static ENERGY: OnceLock<HashMap<String, u32>> = OnceLock::new();
+    let energy = ENERGY.get_or_init(|| {
+        ReaderBuilder::new()
+            .trim(csv::Trim::All)
+            .from_reader(include_bytes!("../data/food_energy.csv").as_slice())
+            .deserialize::<(String, u32)>()
+            .collect::<Result<_, _>>()
+            .expect("invalid food energy catalog")
+    });
+    energy.get(crate::models::base_item_name(recipe)).copied()
+}
+
 /// One row of `aniimo_requirements.csv`.
 #[derive(Debug, serde::Deserialize)]
 struct AniimoRequirementRow {

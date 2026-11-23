@@ -57,6 +57,8 @@ Open `http://localhost:8080` and exercise the affected UI. Use the local server 
 
 Add tests alongside the relevant code: Rust unit tests in `src/`, domain-level integration tests in `tests/`, and JavaScript tests in `tests/*.mjs`. Name new Rust tests `test_<behavior>_<condition>` where practical.
 
+Use the current [Aniiland planner](https://aniiland.wintira.win/homeland) as the recipe reference. The November 2026 sync used version 3.2.5, including its food-energy supplement. `data/food_energy.csv` stores energy restored per edible unit. For Magical Wonder Night, Aniiland awards points per completed batch and 2 per purchased seed. Aniimax attributes those points to each final output in its steady-state sales model. For example, one pumpkin harvest gives (10 + 2) / 8 = 1.5 points per pumpkin. A Honey-Glazed Pumpkin Cup accounts for both ingredient chains plus the 4 points for the final craft, for 44 points in total.
+
 For a new CSV file, wire it into both Rust loaders (`src/data.rs` and `src/wasm.rs`). When changing game data, include verification details in the pull request and check that item names, ingredients, facility names, and quick variants still match.
 
 ## Name your branch

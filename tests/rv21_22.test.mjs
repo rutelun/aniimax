@@ -28,7 +28,10 @@ test('compiled recipes respect RV/module gates and include complete ingredient a
  for(const name of ['sorghum','premium_potato','quick_agave','silver_ore','snowmelt_cold_spring','gold_speck_cap','sorghum_flour','sisal_plush_mat','sorghum_fermented_mash']){assert.ok(!a.has(name),`${name} too early`);assert.ok(b.has(name),`${name} missing at 21`);}
  for(const name of ['sweet_cone','quick_snowmelt_cold_spring','premium_quicksilver_springstone','coconut_milk_lotion','cocoa_sweet_cone','shredded_coconut_cake']){assert.ok(!b.has(name),`${name} too early`);assert.ok(c.has(name),`${name} missing at 22`);}
  assert.ok(a.has('quick_pearl'));
+ assert.ok(a.has('star_diamond'));
+ assert.ok(!available(19).has('star_diamond'));
  const all=JSON.parse(pkg.get_all_items()),names=new Set([...all.map(r=>r.name),'wood_block','mineral_sand']);
+ assert.equal(all.find(r=>r.name==='bread').food_energy_per_unit,26740);
  for(const recipe of all)for(const ingredient of recipe.raw_materials||[])assert.ok(names.has(ingredient),`${recipe.name}: missing ${ingredient}`);
  const waterRows=['agave_drink','quick_fresh_water','quick_natural_mineral_spring_water'].map(item_name=>({
      item_name,facility:all.find(r=>r.name===item_name).facility,status:'producing',facility_count:2,
@@ -46,7 +49,7 @@ test('compiled recipes respect RV/module gates and include complete ingredient a
 test('new crops, variants and family-restricted gathering retain their real constraints',()=>{
  const crops=csv('farmland');
  for(const name of ['sorghum','premium_potato','quick_agave']) assert.equal(crops.find(r=>r.name===name)?.production_time,'2400');
- assert.equal(crops.find(r=>r.name==='sorghum').environment,'Adequate');
+ assert.equal(crops.find(r=>r.name==='sorghum').environment,'');
  assert.equal(crops.find(r=>r.name==='sorghum').cost,'165');
  assert.equal(crops.find(r=>r.name==='quick_agave').module_requirement,'ecological_module:9');
  assert.equal(csv('well').find(r=>r.name==='quick_snowmelt_cold_spring').module_requirement,'resource_detector:10');

@@ -2571,6 +2571,7 @@ pub fn get_available_items(input_json: &str) -> String {
 /// every recipe in the game data so the page can show what's needed to unlock each one.
 #[derive(Serialize)]
 struct RecipeInfo {
+    food_energy_per_unit: Option<u32>,
     name: String,
     facility: String,
     facility_level: u32,
@@ -2627,6 +2628,7 @@ pub fn get_all_items() -> String {
         .iter()
         .filter(|item| !item.name.ends_with(crate::models::UNCOVERED_SUFFIX))
         .map(|item| RecipeInfo {
+            food_energy_per_unit: crate::data::food_energy_per_unit(&item.name),
             name: item.name.clone(),
             facility: item.facility.clone(),
             facility_level: item.facility_level,

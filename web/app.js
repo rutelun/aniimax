@@ -6547,6 +6547,9 @@ function formatRecipeInputs(recipe) {
 
 function formatRecipeYield(recipe) {
     let text = `${recipe.yield_amount}`;
+    if (recipe.food_energy_per_unit) {
+        text += ` <span class="hint small">${formatNumber(recipe.food_energy_per_unit)} food energy per item</span>`;
+    }
     if (recipe.byproduct) {
         const [name, amount] = recipe.byproduct;
         text += ` <span class="hint small">(+${amount} ${name})</span>`;

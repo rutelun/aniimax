@@ -110,10 +110,10 @@ waxing_moon_pepper, Farmland, Sowing, Grass, 1, 3
 waxing_moon_pepper, Farmland, Reaping, Dark, 1, 3
 magic_pumpkin, Farmland, Reclaiming, Earth, 1, 5
 magic_pumpkin, Farmland, Sowing, Grass, 1, 3
-magic_pumpkin, Farmland, Reaping, Dark, 1, 3
+magic_pumpkin, Farmland, Collecting, Grass, 1, 3
 memory_lanternfruit, Farmland, Reclaiming, Earth, 1, 5
 memory_lanternfruit, Farmland, Sowing, Grass, 1, 3
-memory_lanternfruit, Farmland, Reaping, Dark, 1, 3
+memory_lanternfruit, Farmland, Collecting, Grass, 1, 3
 sorghum, Farmland, Reclaiming, Earth, 1, 5
 sorghum, Farmland, Sowing, Grass, 1, 3
 sorghum, Farmland, Reaping, Dark, 1, 3

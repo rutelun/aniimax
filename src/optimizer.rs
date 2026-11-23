@@ -1553,7 +1553,7 @@ pub fn find_parallel_production_path(
 
 /// Calculates efficiency metrics for items that can be consumed for energy.
 ///
-/// Only items with a non-None energy field can be consumed for energy.
+/// Food energy is per edible unit. Older inputs can supply an energy value per batch.
 /// This is used for energy self-sufficient mode.
 pub fn calculate_energy_efficiencies(
     items: &[ProductionItem],
@@ -1570,7 +1570,9 @@ pub fn calculate_energy_efficiencies(
         }
 
         // Must have energy value to be consumable
-        let energy_per_batch = match item.energy {
+        let food_energy = crate::data::food_energy_per_unit(&item.name)
+            .map(|per_unit| f64::from(per_unit) * f64::from(item.yield_amount));
+        let energy_per_batch = match item.energy.or(food_energy) {
             Some(e) if e > 0.0 => e,
             _ => continue,
         };

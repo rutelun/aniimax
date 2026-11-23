@@ -101,7 +101,7 @@ export const FACILITIES = [
         name: 'Crafting Table', slug: 'crafting-table', defaultCount: 1, category: 'Materials Processing', hasWorker: true, ability: 'Artisanship', personality: 'Judicious',
         unlocks: { 1: 3, 2: 5, 3: 7, 4: 9, 5: 12, 6: 15, 7: 18, 8: 20, 9: 22 },
         counts: [0, 0, 1, 1, 1, 1, 1, 1, 1, 2],
-        tooltip: "Lv.1: Wood Sculpture&#10;Lv.2: Bamboo Ware, River-Washed Stones, Premium River-Washed Stones&#10;Lv.3: Rose Freshener, Pottery, Premium Rose Freshener&#10;Lv.4: Bouquet, Shell Ornament, Lavender Sachet&#10;Lv.5: Wind Chime, Star Wish Lantern, Dream Catcher, Advanced Wind Chime&#10;Lv.6: Rubber Duck, Pearl Necklace, Woven Toy, Porcelain&#10;Lv.7: Dye, Gemstone Dust, Flowers in a Bottle, Advanced Gemstone Dust&#10;Lv.8: Doll, Pearl Face Cream&#10;Lv.9: Quicksilver Springstone, Glitter Powder, Orange Flower Scented Mat, Premium Quicksilver Springstone"
+        tooltip: "Lv.1: Wood Sculpture&#10;Lv.2: Bamboo Ware, River-Washed Stones, Premium River-Washed Stones&#10;Lv.3: Rose Freshener, Pottery, Premium Rose Freshener&#10;Lv.4: Bouquet, Shell Ornament, Lavender Sachet&#10;Lv.5: Wind Chime, Star Wish Lantern, Dream Catcher, Advanced Wind Chime&#10;Lv.6: Rubber Duck, Pearl Necklace, Woven Toy, Porcelain&#10;Lv.7: Dye, Gemstone Dust, Flowers in a Bottle, Advanced Gemstone Dust&#10;Lv.8: Doll, Pearl Face Cream, Star Diamond&#10;Lv.9: Quicksilver Springstone, Glitter Powder, Orange Flower Scented Mat, Premium Quicksilver Springstone"
     },
     {
         name: 'Claw Game Cooker', slug: 'claw-game-cooker', defaultCount: 1, category: 'Materials Processing', hasWorker: true, ability: 'Fire', personality: 'Practical',
