@@ -99,10 +99,12 @@ export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},fi
     const currency=input.currency||'coins', priorities=[...(input.priorities??[])];
     if(!priorities.includes(currency))priorities.push(currency);
     const pos=priorities.indexOf(currency);
-    // Switching first needs an ordinary fixed-recipe plan for comparison.
-    // Shared-site trials have different capacity rules and use the full solver.
+    // A generated team's currency-only switch trial uses the same income
+    // bound and full-catalogue audit as ordinary production. The caller then
+    // verifies the daily schedule before comparing it with the fixed plan.
+    const compactSwitch=!input.roster && priorities.length===1 && priorities[0]===currency;
     if (!input.always_running || input.level_up_strategy || input.prioritize_byproducts
-        || input.recipe_switching_relaxation || input.level_up || !highs || !solveModel) return null;
+        || (input.recipe_switching_relaxation && !compactSwitch) || input.level_up || !highs || !solveModel) return null;
     const witnessSeed=initialWitness?.seed??initialWitness?.comparison_seed;
     const oldGoals=initialWitness?.goals??initialWitness?.comparison_goals;
     const oldScores=initialWitness?.scores??initialWitness?.comparison_scores;
