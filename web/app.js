@@ -1,5 +1,5 @@
 import {siteSchedule,scheduledRate} from './recipe-timeline.js';
-import {renderRecipeSchedule} from './recipe-schedule-view.js';
+import {elapsed as scheduleTime, facilitySchedule, renderRecipeSchedule} from './recipe-schedule-view.js';
 import {scheduleProfiles} from './recipe-schedule-plan.js';
 import {splitPhaseTasks} from './phase-work.js';
 // Aniimax Web Application
@@ -4914,19 +4914,50 @@ function facilityPlanCards(rows, plan, heading, first = []) {
         <div class="production-grid">${ordered.map(([facility, jobs]) => {
             const icon = facilityIconUrl(facility);
             const initials = facility.split(' ').map(word => word[0]).join('').slice(0, 3);
+            const scheduled = facilitySchedule(plan.recipe_schedule, facility);
             return `<article class="production-building-card${jobs.some(job => job.status === 'producing') ? '' : ' is-idle'}"
                 data-facility="${escapeText(facility)}">
                 <h4 class="production-building-title">
                     <span class="production-building" aria-hidden="true">
                         <span>${escapeText(initials)}</span>
                         ${icon ? `<img src="${icon}" alt="" width="40" height="40" loading="lazy" decoding="async">` : ''}
-                    </span><span>${escapeText(facility)}</span>
+                    </span><span>${escapeText(facility)}</span>${scheduled ? `<span class="production-count">×${scheduled.length}</span>` : ''}
                 </h4>
-                ${jobs.map(step => productionCard(step, plan)).join('')}
+                ${scheduled ? scheduled.map(unit => scheduledProductionUnit(unit, plan)).join('') : jobs.map(step => productionCard(step, plan)).join('')}
             </article>`;
         }).join('')}</div>
       </section>
     `;
+}
+
+function scheduledProductionUnit({site, periods}, plan) {
+    const rows = plan.coin_items.filter(row => row.facility === site.facility);
+    const layout = lastLayout?.plan === plan ? lastLayout.layout : null;
+    const machine = layout?.pieces.flatMap(piece => piece.members).find(member => member.scheduleId === site.id);
+    const factor = site.electric_level != null && machine?.power_percent > 0 ? 120 / machine.power_percent : 1;
+    const networks = (machine?.power_networks || []).map(id => layout.power.networks[id]);
+    const totalDuration = periods.reduce((sum, period) => sum + period.duration, 0);
+    let busySeconds = 0;
+    const tiles = periods.map(({start, duration, jobs}) => {
+        const label = periods.length === 1 ? translate('All day') : start === 0 ? translate('Morning') : scheduleTime(start);
+        if (!jobs.length) {
+            const idle = rows.find(row => row.status !== 'producing');
+            return productionCard({...idle, facility: site.facility, status: 'idle', item_name: null}, plan, {label, networks: []});
+        }
+        return jobs.map(({job, rate}) => {
+            const row = rows.find(r => r.item_name === job.item && r.electric_level == job.electric_level && r.crew == job.crew);
+            const cycle = job.seconds * factor;
+            const load = rate * cycle;
+            busySeconds += duration * load;
+            const step = {...row, facility: site.facility, item_name: job.item, status: 'producing',
+                electric_level: job.electric_level, crew: job.crew, cycle_time: cycle, facility_count: 1, busy_units: load,
+                reason: row?.reason?.replace(/(?:; )?takes turns with [^;]+/g, '')};
+            return productionCard(step, plan, {label, networks});
+        }).join('');
+    }).join('');
+    const daily = formatNumber(Math.min(100, 100 * busySeconds / totalDuration));
+    return `<div class="production-unit"><h5><span>#${escapeText(site.id.split(':').at(-1))} · Lv.${escapeText(site.level)}</span>
+        <span class="production-unit-load">${escapeText(translate('Daily load'))} · ${daily}%</span></h5>${tiles}</div>`;
 }
 
 function productionWorkers(step, recipe, plan) {
@@ -4961,7 +4992,7 @@ function productionWorkers(step, recipe, plan) {
     });
 }
 
-function productionCard(step, plan) {
+function productionCard(step, plan, period = null) {
     const producing = step.status === 'producing';
     const item = prettyItem(step.item_name);
     const recipe = item && recipeIndex.find(r => r.name === step.item_name && r.facility === step.facility);
@@ -4978,8 +5009,9 @@ function productionCard(step, plan) {
         alt="" width="23" height="23" loading="lazy">`).join('');
     const workers = producing ? productionWorkers(step, recipe, plan) : [];
     const electric = step.electric_level != null;
-    const poweredJobs=lastLayout?.plan===plan?powerJobDetails(lastLayout.layout,step):[];
-    const slowerNetworks=[...new Map(poweredJobs.flatMap(j=>j.networks).filter(n=>n.percent<120-1e-6).map(n=>[n.id,n])).values()];
+    const poweredJobs=!period&&lastLayout?.plan===plan?powerJobDetails(lastLayout.layout,step):[];
+    const networks=period?.networks??poweredJobs.flatMap(j=>j.networks);
+    const slowerNetworks=[...new Map(networks.filter(n=>n.percent<120-1e-6).map(n=>[n.id,n])).values()];
     const gridLabels=slowerNetworks.map(n=>`${n.generator_ids.map(id=>`G${id}`).join('+')} · ${formatNumber(n.percent)}%`);
     const cycles=poweredJobs.map(j=>j.cycle).filter(c=>c>0);
     const cycleText=cycles.length&&Math.max(...cycles)-Math.min(...cycles)>1e-6
@@ -4989,6 +5021,7 @@ function productionCard(step, plan) {
         ? Math.max(0, Math.min(100, (poweredJobs.length?poweredJobs.reduce((s,j)=>s+j.load,0)/poweredJobs.length
             :(step.busy_units ?? step.facility_count)/step.facility_count)*100)) : null;
     const loadText = load == null ? '' : `${formatNumber(load)}%`;
+    const loadLabel = period ? 'Load during this period' : 'Building load';
     const crew = electric
         ? `<span class="production-electric"><svg viewBox="0 0 24 24" aria-hidden="true">${abilityGlyph('Lightning')}</svg><span class="production-grid-labels">${gridLabels.length?gridLabels.map(label=>`<span>${escapeText(label)}</span>`).join(''):'E-mode'}</span></span>`
         : workers.length
@@ -5000,13 +5033,14 @@ function productionCard(step, plan) {
             <summary class="production-summary">
                 ${colors.length ? `<span class="production-edge" aria-hidden="true">${colors.map(color => `<span style="background:${color}"></span>`).join('')}</span>` : ''}
                 <span class="production-title">
+                    ${period ? `<span class="production-period">${escapeText(period.label)}</span>` : ''}
                     <span class="production-item">${escapeText(item || 'Idle')}</span>
-                    <span class="production-count">×${formatNumber(step.facility_count)}</span>
+                    ${period ? '' : `<span class="production-count">×${formatNumber(step.facility_count)}</span>`}
                     ${unverified ? '<span class="tag unverified" title="Not yet checked in game">unverified</span>' : ''}
                 </span>
                 <span class="production-state">
                     ${crew}
-                    ${loadText ? `<span class="production-load" title="${escapeText(translate('Building load'))}">
+                    ${loadText ? `<span class="production-load" title="${escapeText(translate(loadLabel))}">
                         <span class="production-load-track" aria-hidden="true"><span style="width:${load}%"></span></span><strong>${loadText}</strong>
                     </span>` : ''}
                 </span>
@@ -5014,7 +5048,7 @@ function productionCard(step, plan) {
             </summary>
             <div class="production-detail">
                 ${step.reason ? `<p>${escapeText(prettyReason(step.reason))}</p>` : ''}
-                ${loadText ? `<p><span>Building load</span> <strong>${loadText}</strong> <span>·</span>
+                ${loadText ? `<p><span>${escapeText(translate(loadLabel))}</span> <strong>${loadText}</strong> <span>·</span>
                     <span>${translate('{duration} per batch').replace('{duration}', cycleText)}</span></p>` : ''}
                 ${slowerNetworks.map(n=>`<p>${escapeText(powerNetworkLabel(n))}</p>`).join('')}
                 ${requirementText ? `<p><span>${electric ? 'Minimum for normal mode' : 'Required abilities'}</span><strong>${escapeText(requirementText)}</strong></p>` : ''}
@@ -5047,6 +5081,9 @@ function filterFacilityPlan() {
         for (const card of building.querySelectorAll('.production-tile')) {
             const item = card.dataset.search || 'Idle';
             card.hidden = !matchesSearch(terms, `${facility} ${item} ${translate(item)}`);
+        }
+        for (const unit of building.querySelectorAll('.production-unit')) {
+            unit.hidden = !unit.querySelector('.production-tile:not([hidden])');
         }
         building.hidden = !building.querySelector('.production-tile:not([hidden])');
     }

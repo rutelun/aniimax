@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {renderRecipeSchedule} from '../web/recipe-schedule-view.js';
+import {facilitySchedule, renderRecipeSchedule} from '../web/recipe-schedule-view.js';
 
 const schedule = {
     phases: [
@@ -12,6 +12,24 @@ const schedule = {
     jobs: [{id: 'bread', recipe: 'Bread', facility: 'Kitchen'}, {id: 'jam', recipe: 'Jam', facility: 'Kitchen'}],
     buildings: [{id: 'a', facility: 'Kitchen', level: 2}, {id: 'b', facility: 'Unchanged facility', level: 1}],
 };
+
+test('building cards keep physical units, zero-output selections and weighted loads across unrelated switches', () => {
+    const buildings = ['a', 'b', 'c'].map(id => ({id, facility: 'Kitchen'}));
+    const jobs = schedule.jobs;
+    const phases = [
+        {duration: 10, assignments: [{building: 'a', job: 'bread', batches: 0}, {building: 'b', job: 'bread', batches: 1}]},
+        {duration: 20, assignments: [{building: 'a', job: 'jam', batches: 4}, {building: 'b', job: 'bread', batches: 1}]},
+        {duration: 30, assignments: [{building: 'a', job: 'jam', batches: 1}, {building: 'b', job: 'bread', batches: 4}]},
+    ];
+    const plan = {buildings, jobs, phases, switchedBuildings: ['a']};
+    const [a, b, c] = facilitySchedule(plan, 'Kitchen');
+    assert.deepEqual(a.periods.map(p => [p.start, p.duration, p.jobs[0].job.id, p.jobs[0].rate]),
+        [[0, 10, 'bread', 0], [10, 50, 'jam', 0.1]]);
+    assert.deepEqual(b.periods, [{start: 0, duration: 60, jobs: [{job: jobs[0], rate: 0.1}]}]);
+    assert.deepEqual(c.periods, [{start: 0, duration: 60, jobs: []}]);
+    assert.equal(facilitySchedule(plan, 'Mill'), null);
+    assert.equal(facilitySchedule(null, 'Kitchen'), null);
+});
 
 test('schedule opens above production with morning setup and changed recipes only', () => {
     const html = renderRecipeSchedule(schedule);

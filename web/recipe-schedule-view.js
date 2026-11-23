@@ -3,9 +3,43 @@ const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
 })[c]);
 
-function elapsed(seconds) {
+export function elapsed(seconds) {
     const minutes = Math.max(0, Math.round((Number(seconds) || 0) / 60));
     return `+${Math.floor(minutes / 60)}:${String(minutes % 60).padStart(2, '0')}`;
+}
+
+// Only use the physical view for facility types where a site actually changes
+// recipes. Keep adjacent periods together when only another site changes.
+export function facilitySchedule(schedule, facility) {
+    const sites = schedule?.buildings?.filter(site => site.facility === facility);
+    const switched = new Set(schedule?.switchedBuildings);
+    if (!sites?.some(site => switched.has(site.id)) || !schedule.phases?.length) return null;
+    const jobs = new Map(schedule.jobs.map(job => [job.id, job]));
+    return sites.map(site => {
+        const periods = [];
+        let start = 0;
+        for (const phase of schedule.phases) {
+            const batches = new Map();
+            for (const assignment of phase.assignments) {
+                // A material-flow phase can keep a recipe selected at zero output.
+                if (assignment.building !== site.id) continue;
+                batches.set(assignment.job, (batches.get(assignment.job) || 0) + assignment.batches);
+            }
+            const previous = periods.at(-1);
+            const sameJobs = previous && previous.batches.size === batches.size
+                && [...batches.keys()].every(id => previous.batches.has(id));
+            if (sameJobs) {
+                previous.duration += phase.duration;
+                for (const [id, count] of batches) previous.batches.set(id, previous.batches.get(id) + count);
+            } else {
+                periods.push({start, duration: phase.duration, batches});
+            }
+            start += phase.duration;
+        }
+        return {site, periods: periods.map(({start, duration, batches}) => ({
+            start, duration, jobs: [...batches].map(([id, count]) => ({job: jobs.get(id), rate: count / duration})),
+        }))};
+    });
 }
 
 export function renderRecipeSchedule(schedule, {
