@@ -23,6 +23,7 @@ import { workerHubs, workerPlacementCost, workerLayoutCost, workerTravelDistance
 const STEP = 0.25;
 const EPSILON = 1e-6;
 const CELL = 4;
+const storageDistanceProfiles = new WeakMap();
 const RADIUS = 4.5;
 // Building positions tried past the first that works, since a building's plots can go anywhere
 // in its square and the nearest building isn't always the cheapest; of those, how many also try
@@ -157,11 +158,17 @@ export function layOut(pieces, options = {}) {
             x2: Math.max(...cells.map(c => c.x + c.w)), y2: Math.max(...cells.map(c => c.y + c.h)),
         }
         : { x: -reach, y: -reach, x2: reach, y2: reach };
-    const distanceToStorage = cacheGridDistance(extent,rawDistanceToStorage);
-    const offsets = latticeByDistance(extent, STEP, distanceToStorage);
-    // Environment buildings stand on whole tiles, which is plenty for them and far fewer to try.
-    const clusterOffsets = latticeByDistance(extent, 1, distanceToStorage);
-    const defaultProfile = { distanceToStorage, offsets, clusterOffsets };
+    // Successive local repacks use the same depots. Distances and their stable
+    // ordering depend only on depot centers and the bounds of the search grid.
+    const signature=JSON.stringify([extent.x,extent.y,extent.x2,extent.y2,storageCenters]);
+    let defaultProfile=cells && storageDistanceProfiles.get(cells);
+    if(!defaultProfile || defaultProfile.signature!==signature){
+        const distanceToStorage=cacheGridDistance(extent,rawDistanceToStorage);
+        defaultProfile={signature,distanceToStorage,offsets:latticeByDistance(extent,STEP,distanceToStorage),
+            clusterOffsets:latticeByDistance(extent,1,distanceToStorage)};
+        if(cells)storageDistanceProfiles.set(cells,defaultProfile);
+    }
+    const {distanceToStorage,offsets}=defaultProfile;
     const profiles = new Map();
     const profileFor = i => {
         if (fast) return defaultProfile;
@@ -836,6 +843,9 @@ export function refineDistrictDeliveries(layout, groups, {
     })));
     const local = groups.map((_, i) => entries.filter(entry => entry.district === i));
     const occupied = new Map();
+    const mask=rectangleMask(groups.map(group=>group.bounds),{removable:true});
+    for(const rect of fixed)mask?.add(rect);
+    for(const entry of entries)mask?.add(entry.rect);
     const gridLeft=Math.floor(Math.min(...groups.map(g=>g.bounds.x))/CELL)-2;
     const gridTop=Math.floor(Math.min(...groups.map(g=>g.bounds.y))/CELL)-2;
     const gridWidth=Math.ceil(Math.max(...groups.map(g=>g.bounds.x+g.bounds.w))/CELL)-gridLeft+3;
@@ -860,6 +870,10 @@ export function refineDistrictDeliveries(layout, groups, {
     const supplied = suppliedPlacementOptions(result);
     const valid = (entry, rect, swap) => {
         const { i, district, climate } = entry;
+        // Most candidate sites are occupied. A probe clear of its current
+        // building can use the same quarter-tile mask for every worker.
+        const blocked=!swap && !overlaps(rect,entry.rect) ? mask?.overlaps(rect) : undefined;
+        if(blocked)return false;
         const boundary=groups[district].bounds;
         const inDistrict=result.groupStyle==='groups'
             ? rect.x>=boundary.x-EPSILON&&rect.y>=boundary.y-EPSILON&&rect.x+rect.w<=boundary.x+boundary.w+EPSILON&&rect.y+rect.h<=boundary.y+boundary.h+EPSILON
@@ -869,6 +883,7 @@ export function refineDistrictDeliveries(layout, groups, {
         if (climate && !matchesClimate(rect, climates[i], entry.rect.zone)) return false;
         if ((climate || entry.rect.sensitive) && climates.some((squares, j) => (!climate || j !== i)
             && squares.some(square => overlaps(square, rect)))) return false;
+        if(blocked===false)return true;
         if (fixed.some(r => overlaps(r, rect))) return false;
         collisionStamp=(collisionStamp+1)>>>0;
         if(!collisionStamp){collisionSeen.fill(0);collisionStamp=1;}
@@ -907,6 +922,10 @@ export function refineDistrictDeliveries(layout, groups, {
             : costOf(result);
         if (nextCost < cost - EPSILON && accept(result)) {
             cost = nextCost;
+            mask?.remove({...entry.rect,...old});
+            if(swap)mask?.remove({...swap.rect,...back});
+            mask?.add(entry.rect);
+            if(swap)mask?.add(swap.rect);
             reindex(entry);
             if (swap) reindex(swap);
             return true;

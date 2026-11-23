@@ -80,6 +80,7 @@ async function buildLayout(event) {
     const storage = { w: 2, h: 2 };
     // A failed grouped layout explicitly falls back to Shortest delivery.
     const accountForWorkers = !grouped && style !== 'delivery';
+    let incompleteRegularSeed;
     if(!accountForWorkers&&storageCount>0&&cells.length) {
         try {
             const [refineJSON,{fastLayoutSeed,refineFastLayout,polishFastLayout},{layoutKeepsIncome}]=await Promise.all([
@@ -88,7 +89,8 @@ async function buildLayout(event) {
             ]);
             if(refineJSON) {
                 const seed=fastLayoutSeed({pieces,cells,storageCount,poleLimit});
-                if(!seed.unplaced.length&&!seed.power.disconnected) {
+                if(seed.unplaced.length || seed.power.disconnected)incompleteRegularSeed=seed;
+                else {
                     const broad=refineFastLayout(seed,cells,refineJSON);
                     const polished=polishFastLayout(broad,seed,cells,refineJSON);
                     const candidate=layoutKeepsIncome(polished,staffing,recipes||[])?polished:broad;
@@ -110,7 +112,10 @@ async function buildLayout(event) {
     const centered = accountForWorkers || !pieces.some(piece => piece.members?.some(member => member.electric_level != null))
         ? null : centralDeliverySeed(pieces, cells, storage, storageCount, options);
     const centerCost = centered ? cost(centered) : 0;
-    let best = connectPower(centered || place(), cells, poleLimit);
+    // An incomplete fast seed is the ordinary placement with power already
+    // connected. The fallback compares that same placement with the centered one.
+    const regularSeed=()=>incompleteRegularSeed ?? connectPower(place(),cells,poleLimit);
+    let best = centered ? connectPower(centered,cells,poleLimit) : regularSeed();
     const complete = current => !current.unplaced.length && !current.power.disconnected;
     const fewerProblems = (candidate, previous) => candidate.unplaced.length < previous.unplaced.length
         || (candidate.unplaced.length === previous.unplaced.length && candidate.power.disconnected < previous.power.disconnected);
@@ -118,7 +123,7 @@ async function buildLayout(event) {
     if (centered && (!complete(best) || cost(best) > centerCost * 1.3)) {
         // When wiring scatters the central placement, compare it with the regular seed
         // after both have had a chance to move their storage units.
-        const regular = connectPower(place(), cells, poleLimit);
+        const regular = regularSeed();
         if (fewerProblems(regular, best) || (complete(regular) && (!complete(best)
             || cost(improveFixedStorage(regular, cells, 0)) < cost(improveFixedStorage(best, cells, 0))))) {
             best = regular;

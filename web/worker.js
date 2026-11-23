@@ -1137,10 +1137,11 @@ self.onmessage = async (event) => {
                     self.postMessage({id,ok:true,result:JSON.stringify({...ordinary,pending_workshop_routes:true})});
                     return;
                 }
-                if (ordinary.success && ordinary.continuous_production_checked && switchingInput.map_dispatch_pending
+                const measuredLayout=!!event.data.routeWitness && !switchingInput.map_dispatch_pending;
+                if (ordinary.success && ordinary.continuous_production_checked && (switchingInput.map_dispatch_pending || measuredLayout)
                     && switchingInput.roster && !switchingInput.fixed_homeland && switchingInput.priorities?.[0]==='level_up'
                     && comparisonConcurrency(globalThis.navigator,2)>1) {
-                    self.postMessage({id,type:'progress',count:{ordinaryForMap:result}});
+                    self.postMessage({id,type:'progress',count:{ordinaryForMap:result,layoutOnly:measuredLayout}});
                 }
                 const selected=await withRecipeSwitches(pkg,switchingInput,ordinary,step,false,firstSwitch?.proposed,workshopProof);
                 result=JSON.stringify(selected);

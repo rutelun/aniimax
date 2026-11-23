@@ -249,9 +249,10 @@ function ensurePlanFor(setup, refining = false, previousPlan = null) {
         solver.onmessage = (event) => {
             const { type, ok, result, error, count } = event.data;
             if (type === 'progress') {
-                if (!refining && setupSolve === job && runId === planRunId && count && typeof count === 'object') {
-                    if (count.ordinaryForMap) prepareOrdinaryRoute(count.ordinaryForMap, setup, runId);
-                    else setStep(count.step, count.state, undefined, count.proven);
+                if (setupSolve === job && runId === planRunId && count && typeof count === 'object') {
+                    if (count.ordinaryForMap && (!refining || count.layoutOnly))
+                        prepareOrdinaryRoute(count.ordinaryForMap, setup, runId, !!count.layoutOnly);
+                    else if (!refining) setStep(count.step, count.state, undefined, count.proven);
                 }
                 return;
             }
@@ -1853,10 +1854,10 @@ function runMapWorker(url,message,signal) {
 // While the worker checks alternative workshop schedules, measure the ordinary
 // plan's routes. Both its map and its measured solve are conditional on the
 // corresponding full request still matching when the ordered search finishes.
-function prepareOrdinaryRoute(planJson, setup, runId) {
+function prepareOrdinaryRoute(planJson, setup, runId, layoutOnly = false) {
     if (runId !== planRunId || selectedAniimoSetup() !== setup) return;
     discardRoutePreview();
-    const preview = {runId, setup, controller: new AbortController()};
+    const preview = {runId, setup, layoutOnly, controller: new AbortController()};
     routePreview = preview;
     const prepare = async () => {
         const plan = JSON.parse(planJson);
@@ -1866,7 +1867,7 @@ function prepareOrdinaryRoute(planJson, setup, runId) {
         preview.layoutInput = JSON.stringify(message);
         preview.layout = runMapWorker(WORKER_URL.replace('worker.js', 'layout-worker.js'), message, preview.controller.signal);
         const layout = await preview.layout;
-        if (routePreview !== preview || runId !== planRunId || selectedAniimoSetup() !== setup) return;
+        if (layoutOnly || routePreview !== preview || runId !== planRunId || selectedAniimoSetup() !== setup) return;
         const dispatch = measureRosterRoutes(layout, plan, null);
         if (!Object.keys(dispatch).length) return;
         const team = aniimoInput(setup);
@@ -2166,14 +2167,18 @@ function renderHomelandLayout(plan, keepLayout = false) {
             rankImprovementsFor(selectedAniimoSetup());
         }
     };
-    if (!keepLayout && routePreview) {
+    if (routePreview && (!keepLayout || routePreview.layoutOnly)) {
         const preview = routePreview;
-        if (preview.runId === planRunId && preview.setup === selectedAniimoSetup() && !plan.recipe_schedule
+        // Applying measured dispatch changes the roster's setup key. The
+        // completed job still holds the same plan under its original key.
+        const sameSetup=preview.setup===selectedAniimoSetup() || (preview.layoutOnly && plansBySetup[preview.setup]===plan);
+        if (preview.runId === planRunId && sameSetup && !plan.recipe_schedule
             && preview.layoutInput === JSON.stringify({pieces, ...layoutOptions})) {
             pendingPreviewLayout = runId;
             preview.layout.then(layout => {
                 if (runId !== layoutRunId) return;
                 pendingPreviewLayout = null;
+                if (preview.layoutOnly && routePreview === preview) routePreview = null;
                 applyLayout(layout);
             }, () => {
                 if (runId !== layoutRunId) return;
@@ -6338,7 +6343,7 @@ async function runFindPlan() {
             map_dispatch_pending:bestSetup.startsWith('roster') }), (count) => {
             // The exact planner reports each solve; the backup planner counts its trials.
             if (count?.ordinaryForMap) {
-                prepareOrdinaryRoute(count.ordinaryForMap,bestSetup,runId);
+                prepareOrdinaryRoute(count.ordinaryForMap,bestSetup,runId,!!count.layoutOnly);
                 return;
             }
             if (typeof count === 'object') {

@@ -282,6 +282,34 @@ test('a fully audited shift within the measured bound can finish without an exac
     assert.deepEqual(scoped,[[],[]]);
     assert.equal(refined?.rate_per_second,.25);
     assert.equal(refined.continuous_upper_bounds[0][1],.2501);
+
+    // A seasonal measured map may earn more than the old map. Only a joint
+    // shift checked against the new bound can bypass the old site-count refit.
+    for(const ceiling of [.2501,.251]){
+        const measuredProblem=payload=>{
+            const p=JSON.parse(build(payload)),config=JSON.parse(payload);
+            if(config.always_running_recipes && !config.restrict_to_checked_recipes){
+                p.variables++;p.variable_keys.push('unused#0');
+                p.lp=p.lp.replace('0.2501',String(ceiling)).replace('\nGeneral','\n 0 <= x2 <= 0\nGeneral');
+            }
+            return JSON.stringify(p);
+        };
+        let countFits=0;
+        const checked=await tryPriorityPlan({...pkg,exact_priority_problem:measuredProblem,exact_crop_variety_problem:build},{
+            currency:'coins',always_running:true,season:'event',season_crop_minimums:{crop:1},roster:{dispatch:{work:[1]}},
+        },{
+            highs,solveModel:(model,...args)=>{
+                if(model.lp.includes(' local_sites_'))countFits++;
+                return solveModel(model,...args);
+            },
+            evaluateBound,initialWitness:{goals:{currency_value:.1},counts:{crop:1},recipes:['crop'],seed:{keys,values:[.1,1]}},
+            onIncumbent:()=>{},
+        });
+        if(ceiling===.2501){
+            assert.equal(checked?.rate_per_second,.25);
+            assert.equal(countFits,0);
+        }else assert.ok(countFits>0);
+    }
 });
 
 test('measured income certification omits a redundant incumbent floor', async () => {

@@ -64,3 +64,16 @@ test('monotone packing skips only previously blocked probes across repeated foot
   assert.ok(actual.tried<=reference.tried);
  }
 });
+
+test('repacking after storage or land moves uses the current grid distances',()=>{
+    const cells=[{x:-8,y:-8,w:16,h:16}],storages=[{x:0,y:0,w:2,h:2}];
+    const pieces=[{members:[{x:0,y:0,w:2,h:2,weight:3}]}];
+    const place=land=>layOut(pieces,{cells:land,storages,passes:0,fast:true});
+    const first=place(cells);
+    storages[0].x=5;
+    const moved=place(cells);
+    assert.notDeepEqual(moved.pieces,first.pieces);
+    assert.deepEqual(moved,place(structuredClone(cells)));
+    cells[0].w=12;
+    assert.deepEqual(place(cells),place(structuredClone(cells)));
+});

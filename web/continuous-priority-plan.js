@@ -385,8 +385,30 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
             if(!polished.polished)return null;
             return restoreCatalogue(highs,solveModel,fullIncome,{keys:compact.variable_keys,values:polished.values});
         };
-        let witness=await refitCounts(oldCounts);
-        if(!witness)witness=await restoreCatalogue(highs,solveModel,fullIncome,witnessSeed);
+        // Try the recipes from both shifts together. If the fallback finds
+        // the same recipe set, reuse its exact fit at the new income threshold.
+        let joint;
+        const fitJoint=async(parent,proposal,priorValues,minimum)=>{
+            const recipes=new Set([...proposal.activeRecipes,...active(fullIncome,priorValues)]);
+            const payload=payloadFor(recipes,true);
+            if(joint?.payload!==payload){
+                const compact=priority(payload,currencyStage,currency);
+                joint={payload};
+                if(compact.variables<parent.variables){
+                    const fit=highs.solve(compact.lp,{mip_rel_gap:0,mip_abs_gap:0,mip_feasibility_tolerance:1e-9});
+                    if(fit.Status==='Optimal' && fit.Columns){
+                        joint.value=fit.ObjectiveValue;
+                        joint.seed={keys:compact.variable_keys,values:compact.variable_keys.map((_,v)=>fit.Columns['x'+v]?.Primal??0)};
+                    }
+                }
+            }
+            if(!joint.seed || !(joint.value>minimum))return null;
+            joint.checked??=restoreCatalogue(highs,solveModel,fullIncome,joint.seed);
+            return joint.checked;
+        };
+        const refitPrior=async()=>await refitCounts(oldCounts) ?? await restoreCatalogue(highs,solveModel,fullIncome,witnessSeed);
+        const jointFirst=hasSeasonCropMinimums(input) && oldCurrency>0 && !input.recipe_switching_relaxation;
+        let witness=jointFirst?null:await refitPrior();
         let earned=witness ? sum(fullIncome.primary_objective,witness.values) : -Infinity;
         let proofSeed=witness?{keys:fullIncome.variable_keys,values:witness.values}:witnessSeed;
         let initialScope=true;
@@ -395,13 +417,31 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
             const model=scopedModel([...proofScope]);
             // HiGHS presolve can incorrectly declare a smaller optimum when a
             // redundant currency floor duplicates the objective on a dispatch model.
+            // Previous-map income only steers the bound search. Closing this
+            // map always requires a physically checked shift at its own prices.
+            const targetIncome=witness ? earned : initialScope && jointFirst ? oldCurrency : 0;
             const proofOptions={scope:[...proofScope],exact:true,seed:proofSeed,
-                relativeGap:CURRENCY_RELATIVE_GAP, incomeTarget:witness && earned>0 ? earned*CURRENCY_GAP_FACTOR : undefined};
+                relativeGap:CURRENCY_RELATIVE_GAP, incomeTarget:targetIncome>0 ? targetIncome*CURRENCY_GAP_FACTOR : undefined};
             let bound=await exactBound(model,proofOptions);
             if(!Number.isFinite(bound?.upper) || !bound.values)break;
             if(initialScope)firstProposal=bound;
             proofSeed={keys:bound.keys,values:bound.values};
-            if(!witness || !close(earned,bound.upper)){
+            let jointCloses=false;
+            if(initialScope && jointFirst){
+                const priorValues=align(fullIncome,witnessSeed);
+                if(priorValues && bound.upper>oldCurrency*CURRENCY_GAP_FACTOR){
+                    const fit=await fitJoint(model,bound,priorValues,bound.upper/CURRENCY_GAP_FACTOR-1e-8);
+                    const value=fit?.polished && sum(fullIncome.primary_objective,fit.values);
+                    if(value>0 && value<=bound.upper+1e-7 && value*CURRENCY_GAP_FACTOR>=bound.upper){
+                        witness=fit;earned=value;jointCloses=true;
+                    }
+                }
+                if(!jointCloses){
+                    witness=await refitPrior();
+                    if(witness)earned=sum(fullIncome.primary_objective,witness.values);
+                }
+            }
+            if(!jointCloses && (!witness || !close(earned,bound.upper))){
                 const warm=align(fullIncome,bound);
                 const pattern=fixPhysical(fullIncome,warm,true);
                 const shifted=await solveModel(pattern,options(1),undefined,warm);
@@ -446,18 +486,10 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
                 // A relaxation can pick the right recipes but assign too many
                 // sites to the wrong ones. Reallocate sites across the two
                 // working shifts before widening the catalogue.
-                const recipes=new Set([...bound.activeRecipes,...active(fullIncome,witness.values)]);
-                const compact=priority(payloadFor(recipes,true),currencyStage,currency);
-                if(compact.variables<model.variables){
-                    const fit=highs.solve(compact.lp,{mip_rel_gap:0,mip_abs_gap:0,mip_feasibility_tolerance:1e-9});
-                    if(fit.Status==='Optimal' && fit.Columns && fit.ObjectiveValue>earned+1e-8){
-                        const values=compact.variable_keys.map((_,v)=>fit.Columns['x'+v]?.Primal??0);
-                        const checked=await restoreCatalogue(highs,solveModel,fullIncome,{keys:compact.variable_keys,values});
-                        if(checked?.polished){
-                            const income=sum(fullIncome.primary_objective,checked.values);
-                            if(income>earned){witness=checked;earned=income;}
-                        }
-                    }
+                const checked=await fitJoint(model,bound,witness.values,earned+1e-8);
+                if(checked?.polished){
+                    const income=sum(fullIncome.primary_objective,checked.values);
+                    if(income>earned){witness=checked;earned=income;}
                 }
             }
             // Refitting the physical shift can raise the income we need to

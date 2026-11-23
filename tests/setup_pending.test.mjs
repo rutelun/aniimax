@@ -94,6 +94,9 @@ test('automatic refinement keeps completed progress and updates the map in place
     assert.deepEqual(p.steps,[['refine','start']]);
     p.workers[0].onmessage({data:{type:'progress',count:{step:'priority:coins',state:'start'}}});
     assert.equal(p.steps.length,1,'internal solves must not restart completed progress rows');
+    p.run('let measuredMapOnly; function prepareOrdinaryRoute(plan,setup,runId,layoutOnly){measuredMapOnly=layoutOnly;}');
+    p.workers[0].onmessage({data:{type:'progress',count:{ordinaryForMap:'{}',layoutOnly:true}}});
+    assert.equal(p.run('measuredMapOnly'),true);
     p.workers[0].onmessage({data:{ok:true,result:'{"success":true}'}});
     assert.equal(p.state.keepLayout,true);
 });
