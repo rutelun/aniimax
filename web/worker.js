@@ -369,16 +369,34 @@ async function exactPlanJsonOnce(pkg, payload, step = () => {}, first = () => {}
                 : null;
             let bestSeed = witness && (!repaired || witness.objective > repaired.objective) ? witness : repaired;
             const target = initialSeed.currencyTarget / CURRENCY_GAP_FACTOR;
+            const nearCeiling = shift => Number.isFinite(knownUpper) && shift?.objective > 0
+                && shift.objective <= knownUpper + 1e-8
+                && knownUpper - shift.objective <= CURRENCY_RELATIVE_GAP * shift.objective;
+            const priceFull = async infeasibleMessage => {
+                const full = problem.switchIncome ? (await boundTightening).withWorkshopCapacityCuts(protectedProblem) : protectedProblem;
+                return runModel(full, options, infeasibleMessage, bestSeed?.values ?? seed);
+            };
+            let priced;
             if (input.aniimo?.startsWith('roster') && target > 0 && !(bestSeed?.objective >= target)) {
                 const alternative = incomeRepairNeighborhood(bounded,input.always_running_recipes,initialSeed,target);
                 if (alternative) {
-                    const candidate = await searchModel(alternative,{...options,time_limit:Math.min(3,options.time_limit)},undefined,seed);
-                    if (candidate && (!bestSeed || candidate.objective > bestSeed.objective)) bestSeed = candidate;
+                    // The repair adds a minimum income to a subset of this same
+                    // workshop model. The full search can rule it out while
+                    // pricing the shift we already have.
+                    if (problem.switchIncome && bestSeed?.values && !nearCertifiedCurrencyCeiling
+                        && !nearDiscoveryIncome && !nearCeiling(bestSeed)) priced = await priceFull();
+                    const excluded = !priced?.restricted && Number.isFinite(priced?.upper) && priced.upper >= priced.objective
+                        && priced.upper < target - 1e-6*Math.max(1,target);
+                    if (!excluded) {
+                        const candidate = await searchModel(alternative,{...options,time_limit:Math.min(3,options.time_limit)},undefined,seed);
+                        if (candidate && (!bestSeed || candidate.objective > bestSeed.objective)) {
+                            bestSeed = candidate;
+                            priced = null;
+                        }
+                    }
                 }
             }
-            nearCertifiedCurrencyCeiling = Number.isFinite(knownUpper) && bestSeed?.objective > 0
-                && bestSeed.objective <= knownUpper + 1e-8
-                && knownUpper - bestSeed.objective <= CURRENCY_RELATIVE_GAP * bestSeed.objective;
+            nearCertifiedCurrencyCeiling = nearCeiling(bestSeed);
             nearDiscoveryIncome = bestSeed?.objective > 0 && initialSeed.currencyTarget > 0
                 && bestSeed.objective >= initialSeed.currencyTarget / CURRENCY_GAP_FACTOR;
             // The discovery relaxation already bounded the unrestricted
@@ -388,8 +406,7 @@ async function exactPlanJsonOnce(pkg, payload, step = () => {}, first = () => {}
             if (nearCertifiedCurrencyCeiling) {
                 result = {...bestSeed, proven:false, searchProven:false, upper:knownUpper};
             } else {
-                const full = problem.switchIncome ? (await boundTightening).withWorkshopCapacityCuts(protectedProblem) : protectedProblem;
-                result = keepProductionWitness(await runModel(full, options, message, bestSeed?.values ?? seed), bestSeed);
+                result = keepProductionWitness(priced ?? await priceFull(message), bestSeed);
             }
             if (result && Number.isFinite(knownUpper) && knownUpper >= result.objective)
                 result.upper = Math.min(result.upper ?? Infinity, knownUpper);
