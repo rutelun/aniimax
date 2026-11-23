@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { connectPower, powerLinked, updatePowerConnections } from '../web/power-layout.js';
+import { connectPower, powerLinked, repackPower, updatePowerConnections } from '../web/power-layout.js';
 import { refineSuppliedLayout, layoutCost, nearestStorage } from '../web/layout.js';
 import { powerPoleLimit, generatorLimit } from '../web/facility-config.js';
 import { allocateTurnFacilities } from '../web/turn-jobs.js';
@@ -91,6 +91,25 @@ test('hauling layout is regrouped when its scattered electric facilities exceed 
     const result = connectPower(layout([generator(), consumer(35), consumer(1)]), cells, 0);
     assert.equal(result.power.disconnected, 0);
     assert.equal(result.power.poles.length, 0);
+});
+test('regrouping preserves position ties and each consumer’s relocation restrictions', () => {
+    const source = layout([generator(4, 4), {...consumer(0, 0), pinnedRow:true}, consumer(8, 8)]);
+    source.power = {generators:1, consumers:2, disconnected:2, poles:[]};
+    const result = repackPower(source, [{x:0, y:0, w:10, h:10}], 0, {
+        canRelocate: (member, site) => member.generator ? site.x === 4 && site.y === 4 : !member.pinnedRow || site.y >= 4,
+    });
+    assert.deepEqual(result.pieces[0].members.map(m => [m.x,m.y]), [[4,4],[2,4],[4,2]]);
+    assert.equal(result.power.disconnected, 0);
+});
+test('a pole can leave a separate group of goal sites exactly at the relay reach', () => {
+    const terrain = [{x:0, y:0, w:18, h:10}];
+    const network = x => connectPower(layout([generator(0, 4), consumer(13.5, 4)]), terrain, 3, false,
+        (_, site) => site.x === 0 && site.y === 4,
+        site => site.y === 4 && (site.x === x || site.x === 10)).power;
+    assert.equal(network(3).disconnected, 1);
+    const connected = network(6);
+    assert.equal(connected.disconnected, 0);
+    assert.deepEqual(connected.poles.map(site => site.x), [6,10]);
 });
 test('separate generators join the same grid and storage blocks pole footprints', () => {
     const source = layout([generator(), generator(24)]);

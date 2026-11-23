@@ -130,19 +130,20 @@ export function connectPower(layout, cells, maximum, repack = true, canRelocate 
     // Terrain and consumers stay put while this network grows. Query nearby
     // rows once per endpoint and keep the original site order for routing ties.
     const neighbors = new Map();
-    const linkedSites = target => {
-        if (neighbors.has(target)) return neighbors.get(target);
-        const sites = [], c = center(target);
+    function* adjacentSites(target) {
+        const c = center(target);
         const horizontal = Math.max(3.5 + target.w / 2, powerRadius(target) + .75);
         const vertical = Math.max(3.5 + target.h / 2, powerRadius(target) + .75);
         for (const [y, row] of rows) {
             if (Math.abs(y + .75 - c.y) > vertical + EPS) continue;
             for (const site of row) {
-                if (Math.abs(site.x + .75 - c.x) <= horizontal + EPS && powerLinked(site, target)) sites.push(site);
+                if (Math.abs(site.x + .75 - c.x) <= horizontal + EPS && powerLinked(site, target)) yield site;
             }
         }
-        neighbors.set(target, sites);
-        return sites;
+    }
+    const linkedSites = target => {
+        if (!neighbors.has(target)) neighbors.set(target, [...adjacentSites(target)]);
+        return neighbors.get(target);
     };
     const order = new Map(candidates.map((site, i) => [site, i]));
     const occupied = new Set();
@@ -178,6 +179,20 @@ export function connectPower(layout, cells, maximum, repack = true, canRelocate 
             continue;
         }
         if (!goals.size || !starts.size || maximum - poles.length < 2) break;
+        // No one-pole route exists here, so the starts and goals are disjoint.
+        // Every longer route must cross the boundary of both sets. A pocket
+        // of legal sites with no room for an adjacent pole cannot be wired.
+        const edge = goals.size < starts.size ? goals : starts;
+        let canLeave = false;
+        boundary: for (const site of edge.keys()) {
+            for (const next of adjacentSites(site)) {
+                if (!edge.has(next) && !occupied.has(next) && !overlap(site, next, EPS * 2)) {
+                    canLeave = true;
+                    break boundary;
+                }
+            }
+        }
+        if (!canLeave) break;
         const available = candidates.filter(site => !occupied.has(site));
         if (preferCoverage) available.sort((a, b) => (goals.get(b) || 0) - (goals.get(a) || 0));
         const buckets = new Map();
@@ -251,15 +266,19 @@ export function repackPower(layout, cells, maximum, { canRelocate = null, canPla
         .filter(m => !m.generator && m.electric_level == null)];
     const fixed = obstacleTest(cells, stationary);
     const positions = new Map();
-    const sitesFor = ({ w, h }) => {
+    const rowsFor = ({ w, h }) => {
         const key = `${w}|${h}`;
         if (!positions.has(key)) {
-            const sites = [];
-            for (const cell of cells) for (let y = cell.y; y < cell.y + cell.h; y += .5) for (let x = cell.x; x < cell.x + cell.w; x += .5) {
-                const site = { x, y, w, h };
-                if (inside(site) && !fixed.blocked(site)) sites.push(site);
+            const rows = [];
+            for (const cell of cells) for (let y = cell.y; y < cell.y + cell.h; y += .5) {
+                const row = [];
+                for (let x = cell.x; x < cell.x + cell.w; x += .5) {
+                    const site = { x, y, w, h };
+                    if (inside(site) && !fixed.blocked(site)) row.push(site);
+                }
+                if (row.length) rows.push(row);
             }
-            positions.set(key, sites);
+            positions.set(key, rows);
         }
         return positions.get(key);
     };
@@ -270,28 +289,27 @@ export function repackPower(layout, cells, maximum, { canRelocate = null, canPla
         const movable = all.filter(m => m.generator || m.electric_level != null)
             .sort((a, b) => Number(!!b.generator) - Number(!!a.generator) || b.w * b.h - a.w * a.h);
         const occupied = obstacleTest(cells, []);
-        const byDistance = new Map();
-        const near = member => {
-            const sites = sitesFor(member);
-            if (!byDistance.has(sites)) {
-                const cost = r => (r.x + r.w / 2 - anchor.x) ** 2 + (r.y + r.h / 2 - anchor.y) ** 2;
-                byDistance.set(sites, sites.map(r => [r, cost(r)]).sort((a, b) => a[1] - b[1]).map(([r]) => r));
-            }
-            return byDistance.get(sites);
-        };
-        const cursor = new Map();
         let fits = true;
         for (const m of movable) {
-            const sites = near(m);
-            let index = cursor.get(sites) ?? 0;
-            // Occupancy only grows in this trial. A blocked prefix stays
-            // blocked for every later building with this footprint.
-            while (index < sites.length && occupied.blocked(sites[index])) index++;
-            cursor.set(sites, index);
-            if (canRelocate) {
-                while (index < sites.length && (occupied.blocked(sites[index]) || !canRelocate(m, sites[index]))) index++;
+            let bestDistance = Infinity, spot = null;
+            // Rows retain the original cell and site order for equal distances.
+            for (const row of rowsFor(m)) {
+                const dy = row[0].y + m.h / 2 - anchor.y;
+                const vertical = dy * dy;
+                if (vertical >= bestDistance) continue;
+                for (const candidate of row) {
+                    const dx = candidate.x + m.w / 2 - anchor.x;
+                    const distance = dx * dx + vertical;
+                    if (distance >= bestDistance) {
+                        // Farther right, the horizontal distance can only grow.
+                        if (dx >= 0) break;
+                        continue;
+                    }
+                    if (occupied.blocked(candidate) || (canRelocate && !canRelocate(m, candidate))) continue;
+                    spot = candidate;
+                    bestDistance = distance;
+                }
             }
-            const spot = sites[index];
             if (!spot) { fits = false; break; }
             m.x = spot.x; m.y = spot.y; occupied.add(m);
         }
