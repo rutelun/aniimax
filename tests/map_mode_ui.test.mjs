@@ -16,3 +16,22 @@ test('both visible map modes build a worker request and distinct cache keys with
     assert.equal(delivery.style,'delivery');assert.equal(grouped.style,'groups');
     assert.notEqual(delivery.key,grouped.key);
 });
+
+
+test('the measured map preview uses the roster dispatch that the completed plan will display',async()=>{
+    const previewFunction=source.slice(source.indexOf('function prepareOrdinaryRoute('),source.indexOf('async function refineMappedPowerTeam('));
+    let request;
+    const previous={ore:[{member:1,share:1}]}, measured={ore:[{member:2,share:1}]};
+    const context=vm.createContext({AbortController,planRunId:1,selectedAniimoSetup:()=>'roster-key',
+        selectedSetupTab:()=>'custom',discardRoutePreview(){},routePreview:null,layoutHomeLevel:()=>21,
+        layoutOptionsFor:()=>({key:'groups',staffing:{dispatch:previous}}),homelandPieces:()=>({pieces:[]}),
+        lastPlanInput:{},WORKER_URL:'worker.js',runMapWorker:async(url,message)=>{request=message;return {};},
+    });
+    vm.runInContext(previewFunction,context);
+    for(const [policy,expected] of [[measured,measured],[{},previous]]){
+        context.prepareOrdinaryRoute(JSON.stringify({roster_dispatch:policy}),'roster-key',1,true);
+        await context.routePreview.measured;
+        assert.deepEqual(JSON.parse(JSON.stringify(request.staffing.dispatch)),expected);
+        assert.equal(previous.ore[0].member,1);
+    }
+});

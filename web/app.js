@@ -1862,6 +1862,12 @@ function prepareOrdinaryRoute(planJson, setup, runId, layoutOnly = false) {
     const prepare = async () => {
         const plan = JSON.parse(planJson);
         const {key, ...options} = layoutOptionsFor(plan, layoutHomeLevel());
+        // showSelectedPlan adopts the returned roster dispatch before rendering.
+        // Price this preview against the very same policy while the solver finishes.
+        if (layoutOnly && options.staffing && selectedSetupTab()==='custom'
+            && plan.roster_dispatch && Object.keys(plan.roster_dispatch).length) {
+            options.staffing.dispatch = plan.roster_dispatch;
+        }
         const {pieces} = homelandPieces(plan, lastPlanInput);
         const message = {pieces, ...options};
         preview.layoutInput = JSON.stringify(message);
