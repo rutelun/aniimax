@@ -280,7 +280,8 @@ export function economicCountNeighborhood(highs,problem,counts,minimumIncome=0) 
         const site = index.get('units:'+key.slice(5));
         if (site!=null) rows.push(` local_worker_${site}: x${site} = 0`);
     }
-    return {...problem,lp:restrict(),continuousRestricted:true};
+    // The relaxation also bounds the subsequently restricted worker choices.
+    return {...problem,lp:restrict(),continuousRestricted:true,localIncomeUpper:relaxation.ObjectiveValue};
 }
 
 // Price removing each occupied workshop from a provisional layout. These LPs

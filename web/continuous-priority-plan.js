@@ -10,6 +10,7 @@ import {continuousNeighborhood} from './continuous-neighborhood.js';
 import {economicRecipeCounts,economicCountNeighborhood,priceIdleWorkshop} from './economic-recipe-counts.js';
 import {switchingWorkshops} from './material-flow-schedule.js';
 import {searchProductionSites,fitWorkshopIncome} from './production-site-search.js';
+import {hasSeasonCropMinimums} from './season-planning.js';
 import {measuredProductionShift} from './measured-production.js';
 
 const options = seconds => ({time_limit:seconds,mip_rel_gap:0,mip_abs_gap:0,mip_feasibility_tolerance:1e-9});
@@ -264,6 +265,11 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
         // strict gain can make an already optimal shift numerically infeasible.
         const local=economicCountNeighborhood(highs,p,occupied,Math.max(0,best.objective-1e-8));
         if(!local)return;
+        // Only the draft uses this local tolerance. The measured map still
+        // prices every competing recipe against its own global income bound.
+        if(input.map_dispatch_pending && !dispatched && hasSeasonCropMinimums(input)
+            && Number.isFinite(local.localIncomeUpper) && local.localIncomeUpper>=best.objective-1e-8
+            && local.localIncomeUpper<=best.objective*CURRENCY_GAP_FACTOR)return;
         // Rebuilding an identical neighborhood with the same solver options
         // repeats the same search. Any earlier gain is already in best.
         if(previousRepair?.lp===local.lp && previousRepair.model===p.lp)return;
@@ -594,10 +600,14 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
         // search alternative site patterns before repairing the relaxed rates.
         if(seasonalSites && !best) await priceSitePatterns();
         const preparingMap=priceSitesFirst && input.map_dispatch_pending && best;
+        // Seasonal plots reserve crew time across workshops. Try moving the
+        // existing crew between recipes before changing their building counts.
+        const crewSeed=preparingMap && hasSeasonCropMinimums(input) && upper>best.objective*CURRENCY_GAP_FACTOR ? best : null;
+        if(crewSeed)await checkedCandidate(crewSeed,false);
         const shortFit=preparingMap && upper>best.objective*CURRENCY_GAP_FACTOR && await fitIdleWorkshop();
-        if(!shortFit && preparingMap && upper>best.objective*CURRENCY_GAP_FACTOR){
+        if(!shortFit && preparingMap && (!crewSeed || best===crewSeed) && upper>best.objective*CURRENCY_GAP_FACTOR){
             await repairModes();
-            await checkedCandidate(best,false);
+            if(best!==crewSeed)await checkedCandidate(best,false);
         }
         const pricedWithinGap = (priceSitesFirst || seasonalSites) && best && upper >= best.objective-1e-7
             && upper <= best.objective*CURRENCY_GAP_FACTOR;

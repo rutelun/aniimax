@@ -70,6 +70,8 @@ test('a building pattern can earn less than a global ceiling and still supply a 
     const result=highs.solve(local.lp);
     assert.equal(result.Status,'Optimal');
     assert.equal(result.ObjectiveValue,5);
+    assert.equal(local.localIncomeUpper,5);
+    assert.equal(highs.solve(p.lp).ObjectiveValue,15);
     assert.equal(local.continuousRestricted,true);
 });
 
