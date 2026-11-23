@@ -86,7 +86,7 @@ function speculate(trial,createWorker,active) {
     });
 }
 
-export async function searchRecipeSwitches(input,baseline,{candidate,solve,progress=()=>{},createWorker,parallel=1,firstProposal}) {
+export async function searchRecipeSwitches(input,baseline,{candidate,solve,progress=()=>{},createWorker,parallel=1,firstProposal,canFillWorkshop}) {
     const limits=input.recipe_switching;
     if(!limits?.max_buildings||!limits.max_switches )return baseline;
     if(input.fixed_homeland)return {...baseline,recipe_switching_note:'Recipe switching requires an automatically generated layout.'};
@@ -104,20 +104,26 @@ export async function searchRecipeSwitches(input,baseline,{candidate,solve,progr
         const facilities=eligible.slice(0,Math.max(1,limits.max_buildings));
         let detail=null;
         const choices=[...(materialFirst?[materialChoice(input)]:[]),{facilities},...facilities.slice(0,2).map(f=>({facilities:[f]}))].filter((v,i,a)=>a.findIndex(x=>JSON.stringify(x)===JSON.stringify(v))===i);
-        const trials=choices.map(choice=>switchTrial(input,choice));
-        const width=createWorker?Math.min(choices.length,Math.max(1,parallel)):1;
+        const trials=[];
+        for(const [index,choice] of choices.entries()) {
+            const trial=switchTrial(input,choice);
+            try { if(canFillWorkshop && !await canFillWorkshop(trial))continue; }
+            catch { /* An unavailable bound leaves the original search eligible. */ }
+            trials.push({choice,trial,proposal:index===0?firstProposal:null});
+        }
+        const width=createWorker?Math.min(trials.length,Math.max(1,parallel)):1;
         const pending=new Map();
-        for(const [index,chosen] of choices.entries()){
+        for(const [index,{choice:chosen,proposal}] of trials.entries()){
             if(width>1 && index%width===0 && index+1<trials.length){
                 // Keep the parent responsive: nested workers need its event
                 // loop during startup. Accept replies in the original order.
                 for(let j=index;j<Math.min(index+width,trials.length);j++){
-                    if(j===0 && firstProposal)continue;
-                    pending.set(j,speculate(trials[j],createWorker,active));
+                    if(trials[j].proposal)continue;
+                    pending.set(j,speculate(trials[j].trial,createWorker,active));
                 }
             }
             try{
-                const proposed=(index===0 ? firstProposal : null) ?? (await pending.get(index)) ?? await candidate(trials[index]);
+                const proposed=proposal ?? (await pending.get(index)) ?? await candidate(trials[index].trial);
                 if(!improvesPlan(proposed,baseline))continue;
                 const scheduleInput=scheduleInputForPlan(input,proposed);
                 if(chosen.normal){

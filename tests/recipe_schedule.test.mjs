@@ -92,3 +92,27 @@ test('always-running schedules allow a full-speed switch and unused buildings',(
     const input=problem({alwaysRunning:true,buildings:[{id:'kiln',recipes:['ore','brick']},{id:'spare',recipes:['ore','brick']}]});
     assert.ok(solve(input));
 });
+
+// One worker runs the kiln at dawn. The jar stays configured and catches up
+// during the second shift, when its daily supply of fruit is available.
+test('a fixed jar sharing the kiln worker can finish its daily batches in the later phase',async()=>{
+    const {scheduleInputForPlan,attachRecipeSchedule}=await import('../web/recipe-schedule-plan.js');
+    const make=(id,facility,crew,rate,cycle,inputs,turns)=>({id,item:id,facility,facility_level:1,electric_level:null,crew,rate,cycle,inputs,outputs:[[id,1]],turns});
+    const sources=[make('ore','Chimney Kiln',0,.05,10,[],true),make('brick','Chimney Kiln',1,.05,10,[['ore',1]],true),
+        make('fruit','Farmland',null,.1,10,[],false),make('candied','Pickling Jar',0,.1,2,[['fruit',1]],false)];
+    const config={always_running:true,roster:{members:[{count:1},{count:1}]},facilities:{'Chimney Kiln':[{count:1,level:1}],'Pickling Jar':[{count:1,level:1}]},recipe_switching:{max_switches:1,max_buildings:1}};
+    const plan={schedule_sources:sources,roster_workload:[.7,.5],coin_items:[{facility:'Pickling Jar',item_name:'candied',status:'producing',facility_count:1},{facility:'Farmland',item_name:'fruit',status:'producing',facility_count:1}]};
+    const input=scheduleInputForPlan(config,plan);
+    const schedule=solve(input);assert.ok(schedule);
+    const result=attachRecipeSchedule(plan,input,schedule);
+    assert.equal(result.recipe_schedule.switchedBuildings.length,1);
+    const jar=result.recipe_schedule.phases.map(p=>p.fixedRates.candied*p.duration);
+    assert.ok(jar.some(n=>n===0));assert.ok(Math.abs(jar.reduce((a,b)=>a+b)-8640)<1e-6);
+    assert.ok(result.recipe_schedule.workerProfiles[0].every(n=>n<=1+1e-8));
+    const wrongStock=structuredClone(schedule);
+    wrongStock.initialStock.fruit+=10;
+    assert.equal(validateRecipeSchedule(input,wrongStock).valid,false);
+    const busyBothPhases={...input,jobs:input.jobs.map(j=>({...j,workers:{0:j.seconds}}))};
+    assert.throws(()=>solve(busyBothPhases),/cannot sustain its daily batches/);
+    assert.equal(validateRecipeSchedule(busyBothPhases,schedule).valid,false);
+});

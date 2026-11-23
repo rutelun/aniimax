@@ -5895,7 +5895,7 @@ function renderFacilityPlan(plan) {
         + (environmentSections
         ? `<section class="production-section"><h3>Growing environments</h3>
             <div class="production-environment-grid">${environmentSections}</div></section>` : '')
-        + facilityPlanCards(other, plan, 'Other buildings');
+        + facilityPlanCards(other, plan, 'Other buildings', ['Chimney Kiln', 'Woodworking Bench']);
     filterFacilityPlan();
 }
 

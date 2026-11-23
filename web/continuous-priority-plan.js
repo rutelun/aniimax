@@ -128,6 +128,8 @@ export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},fi
         :productionObjective(JSON.parse(pkg.exact_priority_problem(payload,JSON.stringify(stage),key)));
     const exact=(payload,stage)=>JSON.parse(pkg.exact_problem(payload,JSON.stringify(stage)));
     const stage={floors:[]}, bounds=[], early=[];
+    const dispatched=Object.keys(input.roster?.dispatch??{}).length>0;
+    let integerPace=false;
     const prefix=[...(input.crop_variety||input.season?['crop_variety']:[]),...priorities.slice(0,pos)];
     for(const key of prefix){
         const p=priority(relaxed,stage,key);
@@ -135,6 +137,22 @@ export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},fi
         if(!p.lp)return null;
         let upper=priorityCeiling(highs,p,key);
         if(!Number.isFinite(upper))return null;
+        if(key==='level_up' && dispatched && witnessSeed && witnessNames.length && upper>0) {
+            // Walking can make the fractional upgrade pace impossible with
+            // whole posts. Enforcing the previous shift's operating rules
+            // still leaves every recipe available, so its optimum bounds the
+            // fully checked plan. Only refine a bound the old shift cannot meet.
+            const measured=priority(payloadFor(witnessNames),stage,key);
+            const warm=align(measured,witnessSeed);
+            const refit=warm && polishSolution(highs,measured,{values:warm});
+            if(measured.production_only && !(refit?.polished && close(refit.objective,upper))) {
+                const solution=highs.solve(measured.lp,{mip_rel_gap:0,mip_abs_gap:0,mip_feasibility_tolerance:1e-9});
+                if(solution.Status==='Optimal' && solution.ObjectiveValue>0 && solution.ObjectiveValue<upper && !close(solution.ObjectiveValue,upper)) {
+                    upper=solution.ObjectiveValue;
+                    integerPace=true;
+                }
+            }
+        }
         const before=structuredClone(stage);
         early.push({key,before,upper,terms:(key==='crop_variety'?[]:p.primary_objective??[]).map(([v,c])=>[p.variable_keys[v],c])});
         bounds.push([stageKey(key,stage),upper]);
@@ -220,7 +238,9 @@ export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},fi
         const occupied=new Map(Object.entries(counts).filter(([,n])=>n>0));
         // Keep the whole number of sites per recipe but let electric and
         // worker-operated variants trade places across every facility.
-        const local=economicCountNeighborhood(highs,p,occupied,best.objective+1e-7);
+        // Keep the incumbent feasible while maximizing income. Requiring a
+        // strict gain can make an already optimal shift numerically infeasible.
+        const local=economicCountNeighborhood(highs,p,occupied,Math.max(0,best.objective-1e-8));
         if(!local)return;
         const result=await solveModel(local,options(1.5));
         if(!result?.values)return;
@@ -229,14 +249,32 @@ export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},fi
         const objective=sum(p.primary_objective,polished.values);
         if(objective>best.objective+1e-8)remember(p.variable_keys,polished.values,objective);
     };
-    const dispatched=Object.keys(input.roster?.dispatch??{}).length>0;
     const fullPayload=JSON.stringify({...input,always_running_recipes:undefined,restrict_to_checked_recipes:false});
     const localBound = (p,o)=>solveEconomicBound(highs,p,o);
     const bound = (p,o)=>cachedEconomicBound(p,o,evaluateBound ?? localBound);
     let fullIncome;
     const scopedModel = recipes => priority(payloadFor(recipes),currencyStage,currency);
     let siteSearch, verifiedIncomeValues;
-    if (dispatched && witnessSeed) {
+    if(integerPace) {
+        // Price income at the attainable pace in the same relaxation. An
+        // optimum that also works in the full catalogue closes both searches.
+        const model=scopedModel(witnessNames);
+        const solution=highs.solve(model.lp,{mip_rel_gap:0,mip_abs_gap:0,mip_feasibility_tolerance:1e-9});
+        if(solution.Status!=='Optimal' || !solution.Columns || !Number.isFinite(solution.ObjectiveValue))return null;
+        const values=model.variable_keys.map((_,v)=>solution.Columns['x'+v]?.Primal??0);
+        fullIncome=priority(fullPayload,currencyStage,currency);
+        const actual=await restoreCatalogue(highs,solveModel,fullIncome,{keys:model.variable_keys,values});
+        if(!actual?.values)return null;
+        const earned=sum(fullIncome.primary_objective,actual.values);
+        if(!close(earned,solution.ObjectiveValue))return null;
+        for(const name of active(fullIncome,actual.values))names.add(name);
+        remember(fullIncome.variable_keys,actual.values,earned);
+        verifiedIncomeValues=actual.values;
+        upper=Math.max(earned,solution.ObjectiveValue);
+        ceilings.push(upper);
+        siteSearch={best,upper};
+    }
+    if (!siteSearch && dispatched && witnessSeed) {
         // A route measurement changes the feasible shifts. Keep every recipe
         // and worker in the catalogue, adding operating rules only as needed.
         // The relaxed optimum bounds every executable shift on this dispatch.

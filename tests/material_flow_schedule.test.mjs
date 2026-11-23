@@ -107,3 +107,12 @@ test('eager switching follows a plausible four-tier workload on the available cr
     assert.ok(!suggestsMaterialFlow(problem,[.15,.02,0,.005],{}));
     assert.ok(!suggestsMaterialFlow(problem,[.15,.02,.01,.005],{roster:{members:[{count:1}]}}));
 });
+
+test('a relaxed workshop workload below one full site skips the integer candidate',async()=>{
+    const {searchRecipeSwitches}=await import('../web/recipe-switch-search.js');
+    const request={always_running:true,recipe_switching:{max_buildings:1,max_switches:1},facilities:{'Chimney Kiln':[{count:1}]}};
+    const base={success:true,rate_per_second:10,coin_items:['a','b'].map(item_name=>({status:'producing',facility:'Chimney Kiln',item_name}))};
+    let trials=0;
+    await searchRecipeSwitches(request,base,{canFillWorkshop:()=>false,candidate:()=>{trials++;return null;}});
+    assert.equal(trials,0);
+});

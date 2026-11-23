@@ -1,9 +1,21 @@
 import {materialChains} from './material-flow-schedule.js';
-import {validateRecipeSchedule} from './recipe-schedule.js';
+import {completeFixedSchedule,validateRecipeSchedule} from './recipe-schedule.js';
 import {physicalPlanPower} from './physical-power.js';
 export {physicalPlanPower};
 const DAY=86400, EPS=1e-7;
 const add=(map,key,value)=>{map[key]=(map[key]||0)+value;};
+
+// A private feed has one consumer and no surplus or sales. Its replenishing
+// stock and the operator's remaining time determine the fixed recipe's rate.
+function privateFeed(source,sources,inputs,outputs) {
+    for(const [item,quantity] of source.inputs) {
+        if(!(quantity>0) || sources.some(other=>other.rate>EPS && (
+            (other!==source && other.inputs.some(([r])=>r===item)) || (other.turns && other.outputs.some(([r])=>r===item)))))continue;
+        const used=source.rate*quantity;
+        if(Math.abs((inputs[item]||0)-used)*DAY<EPS && Math.abs((outputs[item]||0)-used)*DAY<EPS)return item;
+    }
+    return null;
+}
 
 // Convert effective solver recipes (including crew speed and electric tiers),
 // not the catalog's nominal recipe times, into physical daily scheduling work.
@@ -12,8 +24,9 @@ export function scheduleInputForPlan(input,plan) {
     if(!selected.length)throw new Error('No workshop recipes to schedule');
     const settings=input.recipe_switching||{}, buildings=[],workerCapacity={},backgroundWorkers={};
     const backgroundInputs={},backgroundOutputs={};
-    const jobs=selected.map(s=>({...s,recipe:s.item,batches:s.rate*DAY,seconds:s.cycle,
-        inputs:Object.fromEntries(s.inputs),outputs:Object.fromEntries(s.outputs),workers:{},haulingWorkers:{}}));
+    const makeJob=s=>({...s,recipe:s.item,batches:s.rate*DAY,seconds:s.cycle,
+        inputs:Object.fromEntries(s.inputs),outputs:Object.fromEntries(s.outputs),workers:{},haulingWorkers:{}});
+    const jobs=selected.map(makeJob), fixedProduction=[];
     for(const s of sources.filter(s=>!s.turns)) {
         for(const [r,n] of s.inputs)add(backgroundInputs,r,n*s.rate);
         for(const [r,n] of s.outputs)add(backgroundOutputs,r,n*s.rate);
@@ -39,31 +52,23 @@ export function scheduleInputForPlan(input,plan) {
         }
         for(const tier of owned)site(tier,null);
     }
+    const assignRosterWork=j=>{
+        if(j.crew!=null) {
+            const matches=plan.roster_routes?.filter(r=>r.member===j.crew&&r.item===j.item&&r.facility===j.facility&&!r.jobs.some(([name])=>name));
+            const matchingRate=sources.filter(s=>s.crew===j.crew&&s.item===j.item&&s.facility===j.facility).reduce((v,s)=>v+s.rate,0);
+            const walking=(matches||[]).reduce((v,r)=>v+(r.walking||0),0);
+            add(j.workers,String(j.crew),j.cycle+(matchingRate>0?walking/matchingRate:0));
+        }
+        for(const [member,load] of plan.hauling_staffing||[]) {
+            const total=sources.reduce((v,s)=>v+s.rate*(s.hauling_seconds?.[member]||0),0);
+            if(total>EPS){const seconds=load*(j.hauling_seconds?.[member]||0)/total;add(j.workers,String(member),seconds);j.haulingWorkers[member]=seconds;}
+        }
+    };
+
     if(input.roster) {
         input.roster.members.forEach((m,i)=>workerCapacity[i]=m.count);
         for(const [member,, ,count] of plan.assumed_aniimo||[])workerCapacity[member]=count;
-        const daily={};
-        for(const j of jobs) {
-            if(j.crew!=null) {
-                const matches=plan.roster_routes?.filter(r=>r.member===j.crew&&r.item===j.item&&r.facility===j.facility&&!r.jobs.some(([name])=>name));
-                const matchingRate=sources.filter(s=>s.crew===j.crew&&s.item===j.item&&s.facility===j.facility).reduce((v,s)=>v+s.rate,0);
-                const walking=(matches||[]).reduce((v,r)=>v+(r.walking||0),0);
-                add(j.workers,String(j.crew),j.cycle+(matchingRate>0?walking/matchingRate:0));
-            }
-            for(const [member,load] of plan.hauling_staffing||[]) {
-                const total=sources.reduce((v,s)=>v+s.rate*(s.hauling_seconds?.[member]||0),0);
-                if(total>EPS){const seconds=load*(j.hauling_seconds?.[member]||0)/total;add(j.workers,String(member),seconds);j.haulingWorkers[member]=seconds;}
-            }
-            for(const [member,seconds] of Object.entries(j.workers))add(daily,member,seconds*j.rate);
-        }
-        for(const member of Object.keys(workerCapacity)) {
-            const haul=(plan.hauling_staffing||[]).filter(([i])=>String(i)===member).reduce((v,[,n])=>v+n,0);
-            backgroundWorkers[member]=Math.max(0,(plan.roster_workload?.[member]||0)+haul-(daily[member]||0));
-            // Keep the same availability for critical crop work as in the
-            // original candidate; workshop bursts may not eat that headroom.
-            const critical=plan.roster_routes?.some(r=>String(r.member)===member&&r.jobs.some(([name])=>name&&name!=='Watering'));
-            if(critical)workerCapacity[member]=Math.min(workerCapacity[member],backgroundWorkers[member]+(daily[member]||0));
-        }
+        jobs.forEach(assignRosterWork);
     } else {
         // Generated teams are materialized with phase profiles on the UI side.
         // Here each exact ability/trait requirement has an independent pool.
@@ -78,10 +83,8 @@ export function scheduleInputForPlan(input,plan) {
         }
     }
     if(input.always_running) {
-        // A phase can release ingredients or workers to an unchanged recipe.
-        // Its average throttled rate is then no longer a valid background load.
-        // Until that equilibrium is solved per phase, reject such candidates
-        // instead of certifying a stock buffer which cannot replenish.
+        // Trace interference through shared ingredients and operators. Fixed
+        // recipes that can be fed and staffed per phase enter the schedule.
         const resources=new Set(jobs.flatMap(j=>[...Object.keys(j.inputs),...Object.keys(j.outputs)]));
         const members=new Set(jobs.flatMap(j=>Object.keys(j.workers)));
         const groups=new Map(), siteCounts=new Map();
@@ -104,10 +107,19 @@ export function scheduleInputForPlan(input,plan) {
                 if(affected.has(key))continue;
                 const sharedWorkers=group.some(s=>(s.crew!=null&&members.has(String(s.crew)))
                     || (s.hauling_seconds||[]).some((seconds,i)=>seconds>0&&members.has(String(i))));
-                if(!sharedWorkers&&!group.some(s=>[...s.inputs,...s.outputs].some(([r])=>resources.has(r))))continue;
+                // A change in the downstream demand for a product cannot stall
+                // its producer when its own ingredients and crew are unchanged.
+                if(!sharedWorkers&&!group.some(s=>s.inputs.some(([r])=>resources.has(r))))continue;
                 const work=group.reduce((n,s)=>n+s.rate*s.cycle,0), sites=siteCounts.get(key)||0;
                 if(!sites||work<sites-EPS*Math.max(1,sites)) {
-                    throw new Error(`Switching changes availability for ${group[0].item}; its phase production is not verified.`);
+                    const source=group[0];
+                    const feed=input.roster && sites>0 && group.length===1 && source.crew!=null
+                        && privateFeed(source,sources,backgroundInputs,backgroundOutputs);
+                    if(!feed)throw new Error(`Switching changes availability for ${source.item}; its phase production is not verified.`);
+                    const job=makeJob(source);
+                    assignRosterWork(job);
+                    fixedProduction.push({...job,feed,sites});
+                    for(const worker of Object.keys(job.workers))members.add(worker);
                 }
                 // A full-rate source with independent workers produces the
                 // same batch even if demand for one of its outputs changes.
@@ -121,13 +133,27 @@ export function scheduleInputForPlan(input,plan) {
             }
         }
     }
+    if(input.roster) {
+        const daily={};
+        for(const j of [...jobs,...fixedProduction])for(const [member,seconds] of Object.entries(j.workers))add(daily,member,seconds*j.rate);
+        for(const member of Object.keys(workerCapacity)) {
+            const haul=(plan.hauling_staffing||[]).filter(([i])=>String(i)===member).reduce((v,[,n])=>v+n,0);
+            backgroundWorkers[member]=Math.max(0,(plan.roster_workload?.[member]||0)+haul-(daily[member]||0));
+            // Keep the same availability for critical crop work as in the
+            // original candidate; workshop bursts may not eat that headroom.
+            const critical=plan.roster_routes?.some(r=>String(r.member)===member&&r.jobs.some(([name])=>name&&name!=='Watering'));
+            if(critical)workerCapacity[member]=Math.min(workerCapacity[member],backgroundWorkers[member]+(daily[member]||0));
+        }
+    }
     return {powerPercent:input.e_mode_rv>=12?120:Math.min(120,Math.max(1,input.electricity?.percent??120)),alwaysRunning:!!input.always_running,daySeconds:DAY,approximate:true,maxBuildings:settings.max_buildings||0,maxSwitches:settings.max_switches||0,
-        buildings,jobs,workerCapacity,backgroundWorkers,backgroundInputs,backgroundOutputs,haulingLoads:Object.fromEntries(plan.hauling_staffing||[])};
+        buildings,jobs,fixedProduction,workerCapacity,backgroundWorkers,backgroundInputs,backgroundOutputs,haulingLoads:Object.fromEntries(plan.hauling_staffing||[])};
 }
 
 export function attachRecipeSchedule(plan,input,schedule) {
+    if(input.fixedProduction?.length && !schedule.phases.some(p=>p.fixedRates))schedule=completeFixedSchedule(input,schedule);
     const checked=validateRecipeSchedule(input,schedule);
     if(!checked.valid)throw new Error(checked.errors.join('; '));
+    if(checked.fixed)schedule={...schedule,phases:checked.fixed.phases};
     const jobs=new Map(input.jobs.map(j=>[j.id,j]));
     const sites=input.buildings.map(b=>{
         const totals=new Map();
@@ -135,13 +161,24 @@ export function attachRecipeSchedule(plan,input,schedule) {
         const peakLoad=Math.max(0,...schedule.phases.map(p=>p.assignments.filter(a=>a.building===b.id).reduce((v,a)=>v+a.batches*jobs.get(a.job).seconds,0)/Math.max(EPS,p.duration)));
         return {...b,peakLoad,jobs:[...totals].map(([id,batches])=>{const j=jobs.get(id);return {item:j.item,cycle:j.seconds,rate:batches/DAY,crew:j.crew,electric_level:j.electric_level};})};
     });
-    const workerProfiles=Object.fromEntries(Object.keys(input.workerCapacity).map(id=>[id,schedule.phases.map(p=>(input.backgroundWorkers[id]||0)+p.assignments.reduce((v,a)=>v+(jobs.get(a.job).workers[id]||0)*a.batches,0)/Math.max(p.duration,EPS))]));
+    const phaseLoad=(phase,member,field)=>phase.assignments.reduce((load,a)=>
+        load+(jobs.get(a.job)[field]?.[member]||0)*a.batches,0)/Math.max(phase.duration,EPS);
+    const workerProfiles=Object.fromEntries(Object.keys(input.workerCapacity).map(id=>{
+        const profile=checked.fixed ? checked.fixed.periods.map(p=>p.workers[id]||0)
+            : schedule.phases.map(p=>(input.backgroundWorkers[id]||0)+phaseLoad(p,id,'workers'));
+        return [id,profile];
+    }));
+    const fixedJobs=input.fixedProduction||[];
     const haulingProfiles=Object.fromEntries(Object.entries(input.haulingLoads||{}).filter(([,n])=>n>EPS).map(([id,total])=>{
-        const background=Math.max(0,total-input.jobs.reduce((n,j)=>n+(j.haulingWorkers?.[id]||0)*j.rate,0));
-        return [id,schedule.phases.map(p=>(background+p.assignments.reduce((n,a)=>n+(jobs.get(a.job).haulingWorkers?.[id]||0)*a.batches,0)/Math.max(EPS,p.duration))/total)];
+        const scheduled=[...input.jobs,...fixedJobs].reduce((n,j)=>n+(j.haulingWorkers?.[id]||0)*j.rate,0);
+        const background=Math.max(0,total-scheduled);
+        return [id,schedule.phases.map(p=>{
+            const fixed=fixedJobs.reduce((n,j)=>n+(p.fixedRates?.[j.id]||0)*(j.haulingWorkers?.[id]||0),0);
+            return (background+fixed+phaseLoad(p,id,'haulingWorkers'))/total;
+        })];
     }));
     const result={...plan,proven_optimal:false,recipe_schedule:{...schedule,approximate:true,sites,
-        jobs:input.jobs,buildings:input.buildings,workerProfiles,haulingProfiles,switchedBuildings:checked.switchedBuildings,switches:checked.switches}};
+        jobs:input.jobs,fixedProduction:input.fixedProduction,buildings:input.buildings,workerProfiles,haulingProfiles,switchedBuildings:checked.switchedBuildings,switches:checked.switches}};
     const draw=physicalPlanPower(plan,sites,input.powerPercent);
     if(!Number.isFinite(draw)||draw>(plan.power_generated??0)+EPS)throw new Error('Scheduled E-mode demand exceeds available generation');
     if(draw>0||plan.power_used!=null)result.power_used=draw;
@@ -158,6 +195,9 @@ export function scheduleProfiles(plan, manualOnly = false) {
     for(const key of totals.keys())profiles.set(key,schedule.phases.map(p=>p.assignments.reduce((v,a)=>{
         const j=jobs.get(a.job);return v+((!manualOnly||j.electric_level==null)&&`${j.facility}|${j.item}`===key?a.batches:0);
     },0)/Math.max(p.duration,EPS)*DAY/totals.get(key)));
+    for(const j of schedule.fixedProduction||[])if(!manualOnly||j.electric_level==null){
+        profiles.set(`${j.facility}|${j.item}`,schedule.phases.map(p=>(p.fixedRates?.[j.id]||0)/j.rate));
+    }
     return profiles;
 }
 function addTo(map,key,value){map.set(key,(map.get(key)||0)+value);}

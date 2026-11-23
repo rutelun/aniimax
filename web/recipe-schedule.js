@@ -1,3 +1,4 @@
+import {fixedProductionPhases} from './fixed-production-phases.js';
 import {independentMaterialChains} from './material-flow-schedule.js';
 
 // A certificate for a repeating day of completed batches. Inputs for a phase
@@ -125,12 +126,34 @@ export function buildRecipeSchedule(input) {
     return {lp,input,durations,cells,stocks,variables:bounds.length};
 }
 
+// The deferred fixed recipes can require a different replenishing dawn stock
+// from the provisional model, which only knows their daily average rates.
+export function completeFixedSchedule(input,schedule) {
+    if(!input.fixedProduction?.length)return schedule;
+    const fixed=fixedProductionPhases(input,schedule);
+    if(!fixed)throw new Error('Fixed production cannot sustain its daily batches with the available crew');
+    return {...schedule,phases:fixed.phases,initialStock:fixed.initialStock};
+}
+
+function sameWorkshopRates(a,b) {
+    const rates=p=>{
+        const result=new Map();
+        for(const assignment of p.assignments)if(assignment.batches>0){
+            const key=JSON.stringify([assignment.building,assignment.job]);
+            result.set(key,(result.get(key)||0)+assignment.batches/p.duration);
+        }
+        return result;
+    };
+    const left=rates(a),right=rates(b);
+    return left.size===right.size && [...left].every(([key,v])=>right.has(key)&&Math.abs(v-right.get(key))<=1e-9*Math.max(1,Math.abs(v)));
+}
+
 export function readRecipeSchedule(model,result) {
     if(!result?.Columns)throw new Error('No schedule solution');
     const value=v=>result.Columns[`x${v}`]?.Primal||0;
     const phases=model.durations.map((v,p)=>({duration:value(v),assignments:model.cells.filter(c=>c.phase===p&&value(c.variable)>EPS)
         .map(c=>({building:c.building,job:c.job,batches:model.input.approximate?value(c.variable):Math.round(value(c.variable))}))}));
-    const schedule={approximate:!!model.input.approximate,phases,initialStock:Object.fromEntries([...model.stocks].filter(([,v])=>value(v)>EPS).map(([r,v])=>[r,value(v)]))};
+    const schedule=completeFixedSchedule(model.input,{approximate:!!model.input.approximate,phases,initialStock:Object.fromEntries([...model.stocks].filter(([,v])=>value(v)>EPS).map(([r,v])=>[r,value(v)]))});
     const checked=validateRecipeSchedule(model.input,schedule);
     if(!checked.valid)throw new Error(`Invalid recipe schedule: ${checked.errors.join('; ')}`);
     return {...schedule,switchedBuildings:checked.switchedBuildings,switches:checked.switches};
@@ -139,21 +162,31 @@ export function readRecipeSchedule(model,result) {
 export function validateRecipeSchedule(input,schedule) {
     checkInput(input);
     const errors=[],jobs=new Map(input.jobs.map(j=>[j.id,j])),buildings=new Map(input.buildings.map(b=>[b.id,b]));
-    const phases=schedule.phases||[];
+    const fixed=input.fixedProduction?.length ? fixedProductionPhases(input,schedule) : null;
+    if(input.fixedProduction?.length && !fixed)errors.push('Fixed production cannot sustain its daily batches with the available crew');
+    const phases=fixed?.phases??schedule.phases??[];
     // Within a continuous material chain, an empty buffer changes production
     // rates without requiring the player to change any recipe.
     const flow=schedule.materialFlow===true&&!!independentMaterialChains(input,true);
     if(schedule.materialFlow&&!flow)errors.push('Unsupported material flow schedule');
-    if(!phases.length||(!flow&&phases.length>input.maxSwitches+1))errors.push('Too many phases');
+    if(!phases.length)errors.push('Too many phases');
+    if(!flow && phases.length>input.maxSwitches+1) {
+        const workshopPhases=fixed ? phases.filter((p,i)=>i===0||!sameWorkshopRates(p,phases[i-1])).length : phases.length;
+        if(workshopPhases>input.maxSwitches+1)errors.push('Too many phases');
+    }
     if(phases.some(p=>!Number.isFinite(p.duration)||p.duration<0)||Math.abs(sum(phases.map(p=>p.duration))-input.daySeconds)>EPS)errors.push('Invalid phase durations');
     const depletedInputs=new Set();
-    const inventory={...schedule.initialStock},totals=new Map(),seen=new Map(),last=new Map(),switches=[],execution=[];
+    const initialStock=schedule.initialStock;
+    if(fixed && input.fixedProduction.some(j=>Math.abs((initialStock?.[j.feed]||0)-fixed.initialStock[j.feed])>EPS))errors.push('Incorrect replenishing stock for fixed production');
+    const inventory={...initialStock},totals=new Map(),seen=new Map(),last=new Map(),switches=[],execution=[];
     if(entries(inventory).some(([,v])=>!Number.isFinite(v)||v<0))errors.push('Invalid initial stock');
     let elapsed=0;
     for(const [phaseIndex,phase] of phases.entries()) {
+        const backgroundInputs=fixed?.periods[phaseIndex].inputs??input.backgroundInputs;
+        const backgroundOutputs=fixed?.periods[phaseIndex].outputs??input.backgroundOutputs;
         const work=new Map(),workers=new Map(),recipes=new Map(),assignedJobs=new Map(),
-            consumed=Object.fromEntries(entries(input.backgroundInputs).map(([r,n])=>[r,Math.max(0,n-(input.backgroundOutputs?.[r]||0))*phase.duration])),
-            produced=Object.fromEntries(entries(input.backgroundOutputs).map(([r,n])=>[r,Math.max(0,n-(input.backgroundInputs?.[r]||0))*phase.duration]));
+            consumed=Object.fromEntries(entries(backgroundInputs).map(([r,n])=>[r,Math.max(0,n-(backgroundOutputs?.[r]||0))*phase.duration])),
+            produced=Object.fromEntries(entries(backgroundOutputs).map(([r,n])=>[r,Math.max(0,n-(backgroundInputs?.[r]||0))*phase.duration]));
         let changed=false;
         for(const a of phase.assignments||[]) {
             const j=jobs.get(a.job),b=buildings.get(a.building);
@@ -193,6 +226,9 @@ export function validateRecipeSchedule(input,schedule) {
             if(Math.abs(before)>EPS||Math.abs(after)>EPS)errors.push('Active recipe manually throttled');
             depletedInputs.add(ingredient);
         }
+        if(fixed)for(const [w,load] of entries(fixed.periods[phaseIndex].workers)) {
+            if(load>(input.workerCapacity[w]||0)+1e-8)errors.push('Worker overloaded');
+        }
         for(const [w,time] of workers)if(time>((input.workerCapacity?.[w]||0)-(input.backgroundWorkers?.[w]||0))*phase.duration+EPS)errors.push('Worker overloaded');
         if(!errors.length&&!input.approximate) {
             const packed=packPhase(phase,jobs,input.workerCapacity||{});
@@ -206,10 +242,10 @@ export function validateRecipeSchedule(input,schedule) {
     }
     if(input.alwaysRunning)for(const id of seen.keys())if(phases.some(p=>p.duration>EPS&&!p.assignments?.some(a=>a.building===id&&(flow||a.batches>EPS))))errors.push('Active building paused between phases');
     for(const j of input.jobs)if(Math.abs((totals.get(j.id)||0)-j.batches)>EPS*Math.max(1,j.batches))errors.push(`Wrong daily batches for ${j.id}`);
-    for(const [r,start] of entries(schedule.initialStock))if((inventory[r]||0)<start-EPS)errors.push(`Stock does not replenish: ${r}`);
-    for(const r of depletedInputs)if(Math.abs((inventory[r]||0)-(schedule.initialStock?.[r]||0))>EPS)errors.push(`Material shortage does not repeat: ${r}`);
+    for(const [r,start] of entries(initialStock))if((inventory[r]||0)<start-EPS)errors.push(`Stock does not replenish: ${r}`);
+    for(const r of depletedInputs)if(Math.abs((inventory[r]||0)-(initialStock?.[r]||0))>EPS)errors.push(`Material shortage does not repeat: ${r}`);
     const switchedBuildings=[...seen].filter(([,rs])=>rs.size>1).map(([b])=>b);
     if(switchedBuildings.length>input.maxBuildings)errors.push('Too many switching buildings');
     if(switches.length>input.maxSwitches)errors.push('Too many common changes');
-    return {valid:errors.length===0,errors,switchedBuildings,switches,finalStock:inventory,execution};
+    return {valid:errors.length===0,errors,switchedBuildings,switches,finalStock:inventory,execution,fixed};
 }

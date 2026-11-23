@@ -3,9 +3,25 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import highsModule from '../web/vendor/highs/highs.mjs';
 import {priorityCeiling} from '../web/priority-ceilings.js';
+import {canFillSwitchingWorkshop} from '../web/recipe-switch-bound.js';
 
 const highs = await highsModule({
     wasmBinary:await readFile(new URL('../web/vendor/highs/highs.wasm',import.meta.url)),print(){},printErr(){}
+});
+
+test('switch search requires a full site-day of work in the selected workshops',()=>{
+    const trial={always_running:true,recipe_switching_facilities:['Kiln']};
+    function model(maxRate) {
+        return {exact_priority_problem:()=>JSON.stringify({
+            recipe_options:[[0,'ore','Kiln',false,false,2],[1,'wood','Bench',false,false,1]],
+            lp:['Maximize',' obj: x1','Subject To',' ore: x0 <= '+maxRate,
+                ' wood: x1 <= 20','Bounds',' x0 >= 0',' x1 >= 0','End'].join('\n')
+        })};
+    }
+    assert.equal(canFillSwitchingWorkshop(model(.25),highs,trial),false);
+    assert.equal(canFillSwitchingWorkshop(model(.5),highs,trial),true);
+    assert.equal(canFillSwitchingWorkshop(model(.49),highs,{...trial,recipe_switching_facilities:['Bench','Kiln']}),true);
+    assert.equal(canFillSwitchingWorkshop(model(.25),highs,{...trial,level_up_preview:{stock:[['ore',1]]}}),true);
 });
 
 // The first recipe takes ten seconds per unit and the finishing step takes
@@ -72,4 +88,50 @@ test('ordinary priority ceilings relax all integer decisions and keep preceding 
     assert.ok(Math.abs(upper-3/11)<1e-9);
     assert.equal(priorityCeiling(highs,{...p,production_only:false},'aniipods'),null);
     assert.equal(priorityCeiling(highs,{lp:''},'crop_variety'),null);
+});
+
+test('wildcard switching needs whole active sites in each fixed power mode at the competing upgrade pace',()=>{
+    const trial={always_running:true,recipe_switching_facilities:[],e_mode_rv:12,priorities:['level_up','coins'],
+        level_up_preview:{cost:[['ore',1]],stock:[]},facilities:{Kiln:[{count:2,level:2}]}};
+    const base={success:true,priorities:[{target:'level_up'}],level_up_preview:{seconds:86400}};
+    function model(maxRate, switched=true) {
+        return {exact_priority_problem:(_payload,stage)=>{
+            const minimum=JSON.parse(stage).pace??0;
+            return JSON.stringify({variables:2,variable_keys:['rate:ore#0','rate:ore__electric2#0'],
+                recipe_options:[[0,'ore','Kiln',false,false,1],[1,'ore','Kiln',false,true,1]],
+                switching_rates:switched?[[0,null],[1,2]]:[],
+                lp:['Maximize',' obj: x0','Subject To',' retained: x0 + x1 >= '+minimum,
+                    'Bounds',' 0 <= x0 <= '+maxRate,' 0 <= x1 <= 0.7','End'].join('\n')});
+        }};
+    }
+    assert.equal(canFillSwitchingWorkshop(model(.7),highs,trial,base),false);
+    assert.equal(canFillSwitchingWorkshop(model(1),highs,trial,base),true);
+    assert.equal(canFillSwitchingWorkshop(model(1,false),highs,trial,base),false);
+});
+
+test('unstocked material flow can wait for ingredients at downstream sites',()=>{
+    const facility='Woodworking Bench';
+    const trial={always_running:true,recipe_switching_normal_only:true,recipe_switching_facilities:[facility],
+        facilities:{[facility]:[{count:4,level:1}]},e_mode_rv:12};
+    const model={exact_priority_problem:()=>JSON.stringify({variables:1,variable_keys:['rate:rough_lumber#0'],
+        recipe_options:[[0,'rough_lumber',facility,false,false,1]],switching_rates:[[0,null]],
+        lp:'Maximize\n obj: x0\nSubject To\n raw: x0 = 1.5\nBounds\n x0 >= 0\nEnd'})};
+    assert.equal(canFillSwitchingWorkshop(model,highs,trial),true);
+});
+
+test('feasibility keeps discrete worker posts and a slower upgrade within comparison tolerance',()=>{
+    const trial={always_running:true,recipe_switching_facilities:['Kiln'],priorities:['level_up','coins'],
+        level_up_preview:{cost:[['ore',1]],stock:[]}};
+    const base={success:true,priorities:[{target:'level_up'}],level_up_preview:{seconds:86400}};
+    const model=discretePost=>({exact_priority_problem:(_payload,stage)=>{
+        const {pace}=JSON.parse(stage);
+        assert.ok(pace<1 && pace>0.99);
+        return JSON.stringify({variables:3,variable_keys:['rate:ore__byowned:0#0','post:ore__byowned:0:owned:0#0','pace#0'],
+            recipe_options:[[0,'ore','Kiln',false,false,1]],switching_rates:[[0,null]],
+            lp:['Maximize',' obj: x0','Subject To',' post: x0 - 2 x1 <= 0','Bounds',
+                ' 0 <= x0 <= 1',' 0 <= x1 <= 0.6',' '+pace+' <= x2 <= 0.999995',
+                ...(discretePost?['General',' x1']:[]),'End'].join('\n')});
+    }});
+    assert.equal(canFillSwitchingWorkshop(model(false),highs,trial,base),true);
+    assert.equal(canFillSwitchingWorkshop(model(true),highs,trial,base),false);
 });

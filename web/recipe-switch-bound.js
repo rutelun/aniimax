@@ -47,3 +47,90 @@ export function upgradeSwitchBounds(pkg, highs, input, trial) {
     if ((input.crop_variety || input.season) && !Number.isFinite(crop)) return null;
     return {seconds:86400 / fixed, crop};
 }
+
+// In the ordinary always-running schedule an active site is busy for every
+// phase. Its facility and power mode never change. Summed over a day, the
+// workload for each such group must equal its whole number of active sites.
+// Relax all other integer decisions except the selected recipes' worker posts.
+function fitsWholeSites(highs, problem) {
+    const options = new Map(problem.recipe_options.map(option=>[option[0],option]));
+    const groups = new Map(), recipes = new Set();
+    for (const [column,tier] of problem.switching_rates) {
+        const option = options.get(column);
+        if (!option || !Number.isFinite(option[5]) || option[5]<=0) return true;
+        const [,recipe,facility,,,cycle] = option;
+        const key = JSON.stringify([facility,tier]);
+        if (!groups.has(key)) groups.set(key,[]);
+        groups.get(key).push([column,cycle]);
+        recipes.add(recipe);
+    }
+    if (!groups.size) return false;
+    const rows = [], sites = [];
+    for (const rates of groups.values()) {
+        const site = 'sw'+sites.length;
+        const work = rates.map(([v,cycle])=>cycle+' x'+v).join(' + ');
+        // scheduleInputForPlan drops individual rates at or below 1e-7.
+        // Allow their full combined workload and the schedule's rounding slack.
+        const slack = 1e-5 + rates.reduce((n,[,cycle])=>n+cycle*1e-7,0);
+        rows.push(' lo_'+site+': '+work+' - 0.99999 '+site+' >= -'+slack,
+            ' hi_'+site+': '+work+' - 1.00001 '+site+' <= '+slack);
+        sites.push(site);
+    }
+    rows.push(' active_switch_site: '+sites.join(' + ')+' >= 1');
+    const general = problem.lp.match(/\nGeneral\n([\s\S]*?)\nEnd/);
+    const posts = (general?.[1].match(/\bx\d+\b/g)||[]).filter(column=>{
+        const key = problem.variable_keys[Number(column.slice(1))];
+        return key?.startsWith('post:') && recipes.has(key.slice(5).split(/__|:/,1)[0]);
+    });
+    const relaxed = problem.lp.replace(/\nGeneral\n[\s\S]*?\nEnd/,'\nEnd');
+    const lp = relaxed.replace(/Maximize\n[\s\S]*?\nSubject To\n/,'Maximize\n obj: 0 x0\nSubject To\n')
+        .replace('\nBounds\n','\n'+rows.join('\n')+'\nBounds\n')
+        .replace('\nEnd','\nGeneral\n '+[...sites,...posts].join('\n ')+'\nEnd');
+    const model = highs.createModel({format:'lp',data:lp});
+    try {
+        model.run();
+        if (model.getModelStatus()===highs.constants.modelStatus.infeasible) {
+            // As in the ordinary planner, confirm an infeasibility report
+            // without presolve before discarding a candidate.
+            model.options.set({presolve:'off'});
+            model.clearSolver();
+            model.run();
+        }
+        return model.getModelStatus()!==highs.constants.modelStatus.infeasible;
+    } finally {
+        model.dispose();
+    }
+}
+
+export function canFillSwitchingWorkshop(pkg, highs, trial, baseline) {
+    if (!trial.always_running || trial.level_up_strategy || trial.level_up
+        || trial.level_up_preview?.stock?.some(([,n])=>n>0)) return true;
+    const facilities = trial.recipe_switching_facilities||[];
+    const powered = trial.electricity || trial.e_mode_rv>=12;
+    // The direct four-tier schedule permits ingredient-starved downstream
+    // sites. Its raw processor still has to supply over a full site-day.
+    const flow = trial.recipe_switching_normal_only && Object.keys(materialChains).some(facility=>
+        (!facilities.length || facilities.includes(facility))
+        && (trial.facilities?.[facility]||[]).reduce((n,t)=>n+t.count,0)>=4);
+    if (flow && powered) return true;
+    const seconds = baseline?.level_up_preview?.seconds;
+    const stage = {floors:[]};
+    if (baseline?.success && baseline.priorities?.[0]?.target==='level_up'
+        && trial.priorities?.[0]==='level_up' && trial.level_up_preview && seconds>0 && Number.isFinite(seconds)) {
+        // A slower upgrade can tie within improvesPlan's relative tolerance.
+        stage.pace = 86400 / (seconds + 2e-5*Math.max(1,seconds));
+    }
+    const payload=JSON.stringify({...trial,always_running_recipes:[],restrict_to_checked_recipes:false});
+    const problem=JSON.parse(pkg.exact_priority_problem(payload,JSON.stringify(stage),trial.currency||'coins'));
+    const options=problem.recipe_options;
+    if(!options?.length || !problem.lp.startsWith('Maximize\n'))return true;
+    if (!flow && Array.isArray(problem.switching_rates) && problem.variable_keys?.length===problem.variables) {
+        return fitsWholeSites(highs,problem);
+    }
+    if (powered || !facilities.length) return true;
+    const sites=new Set(facilities);
+    const work=options.filter(([, ,facility])=>sites.has(facility)).map(([v,,,,,cycle])=>[v,cycle]);
+    if(!work.length || work.some(([,cycle])=>!Number.isFinite(cycle)||cycle<=0))return true;
+    const upper=priorityCeiling(highs,productionObjective({...problem,primary_objective:work}),'work');
+    return !Number.isFinite(upper)||upper>=1-1e-5;
+}

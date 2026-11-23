@@ -6,6 +6,38 @@ import {solveWithIncumbent} from '../web/highs-solve.js';
 import {tryPriorityPlan} from '../web/continuous-priority-plan.js';
 import {searchProductionSites} from '../web/production-site-search.js';
 
+test('measured dispatch proves the attainable whole-post pace before optimizing income',async()=>{
+    const highs=await highsModule({wasmBinary:fs.readFileSync(new URL('../web/vendor/highs/highs.wasm',import.meta.url)),print(){},printErr(){}});
+    const keys=['rate:crop#0','units:crop#0','pace#0'];
+    let fullCapacity=1;
+    const build=(payload,stage,key)=>{
+        const full=JSON.parse(payload).always_running_recipes===undefined;
+        const goal=key==='level_up'?2:0;
+        return JSON.stringify({variables:3,variable_keys:keys,primary_objective:[[goal,1]],tiebreak:[],
+            recipe_variables:[[0,'crop'],[1,'crop']],recipe_options:[[0,'crop','Farm',false,false,1]],
+            integer_groups:[['crop',[[1,1]],1]],
+            lp:['Maximize',' obj: x'+goal,'Subject To',' produce: x0 - x1 <= 0',
+                ' upgrade: x2 - 0.5 x1 <= 0',' posts: x1 <= 1.5',' income: x0 <= '+(full?fullCapacity:1),
+                ' prior: x2 >= '+(JSON.parse(stage).pace??0),'Bounds',' x0 >= 0',' x1 >= 0',' x2 >= 0',
+                'General',' x1','End'].join('\n')});
+    };
+    const pkg={exact_priority_problem:build,exact_problem:build,exact_plan:(_payload,_stage,report)=>
+        JSON.stringify({success:true,rate_per_second:JSON.parse(report).values[0]})};
+    const solveModel=(p,o,_,seed)=>{
+        const r=solveWithIncumbent(highs,p,o,seed,false);
+        return r.Columns?{values:keys.map((_,v)=>r.Columns['x'+v].Primal),objective:r.ObjectiveValue,proven:r.Status==='Optimal'}:null;
+    };
+    const input={always_running:true,priorities:['level_up','coins'],roster:{dispatch:{crop:[1]}}};
+    const initialWitness={recipes:['crop'],seed:{keys,values:[1,1,.75]}};
+    const solve=()=>tryPriorityPlan(pkg,input,{highs,solveModel,initialWitness});
+    const plan=await solve();
+    assert.equal(plan.comparison_goals.pace,.5);
+    assert.equal(plan.rate_per_second,1);
+    assert.equal(plan.continuous_production_checked,true);
+    fullCapacity=.5;
+    assert.equal(await solve(),null);
+});
+
 test('fast priority plan checks the occupied recipe and returns the actual shift',async()=>{
     const highs=await highsModule({wasmBinary:fs.readFileSync(new URL('../web/vendor/highs/highs.wasm',import.meta.url)),
         print(){},printErr(){}});
@@ -134,13 +166,23 @@ test('a measured shift at the 0.2% income gap is accepted and a 0.22% gap keeps 
     // The old map earned exactly as much, but cannot certify the new map.
     fallback = null;
     const {solveEconomicBound}=await import('../web/economic-bound.js');
-    const carried=await tryPriorityPlan(pkg,input,{highs,solveModel,evaluateCounts:()=>null,
+    const repairFloors=[];
+    const observedHighs=new Proxy(highs,{get(target,key){
+        if(key!=='solve')return target[key];
+        return (lp,...args)=>{
+            const match=lp.match(/ local_income: [^\n]* >= ([^\n]+)/);
+            if(match)repairFloors.push(Number(match[1]));
+            return target.solve(lp,...args);
+        };
+    }});
+    const carried=await tryPriorityPlan(pkg,input,{highs:observedHighs,solveModel,evaluateCounts:()=>null,
         evaluateBound:(p,o)=>o.exact?null:solveEconomicBound(highs,p,o),
         initialWitness:{seed:{keys:['rate:crop#0','units:crop#0'],values:[.5,1]},goals:{currency_value:.5},recipes:['crop']},
         onIncumbent:plan=>{fallback=plan;}
     });
     assert.equal(carried,null);
     assert.equal(fallback?.rate_per_second,.5);
+    assert.ok(repairFloors.some(floor=>floor<=.5 && floor>=.5-1e-7));
     ceiling = .501;
     fallback = null;
     const accepted = await search();

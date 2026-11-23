@@ -200,92 +200,194 @@ impl Land {
     }
 }
 
+// One bit per candidate origin on the quarter-tile grid. A bit is set if
+// another rectangle blocks this footprint or a previous store already tried it.
+struct PolishOrigins {
+    stride: usize,
+    rows: Vec<u64>,
+}
+
+fn word_masks(left: usize, right: usize) -> impl Iterator<Item = (usize, u64)> {
+    (left / 64..=right / 64).map(move |word| {
+        let first = left.saturating_sub(word * 64);
+        let last = (right - word * 64).min(63);
+        (word, (u64::MAX << first) & (u64::MAX >> (63 - last)))
+    })
+}
+
+impl PolishOrigins {
+    fn new(land: &Land) -> Self {
+        let stride = land.width / 64 + 1;
+        Self {
+            stride,
+            rows: vec![0; stride * (land.height + 1)],
+        }
+    }
+
+    fn reset(&mut self, land: &Land, poses: &[Pose], moving: usize, w: f64, h: f64) {
+        self.rows.fill(0);
+        for (i, p) in poses.iter().enumerate() {
+            if i == moving {
+                continue;
+            }
+            // Strict overlap excludes edge contact, which is a legal placement.
+            let left = ((4.0 * (p.x - w)).floor() as i32 + 1 - land.left).max(0);
+            let right = ((4.0 * (p.x + p.w)).ceil() as i32 - 1 - land.left).min(land.width as i32);
+            let top = ((4.0 * (p.y - h)).floor() as i32 + 1 - land.top).max(0);
+            let bottom = ((4.0 * (p.y + p.h)).ceil() as i32 - 1 - land.top).min(land.height as i32);
+            if left <= right {
+                for (word, mask) in word_masks(left as usize, right as usize) {
+                    for y in top..=bottom {
+                        self.rows[y as usize * self.stride + word] |= mask;
+                    }
+                }
+            }
+        }
+    }
+
+    fn unvisited(
+        &mut self,
+        y: usize,
+        left: usize,
+        right: usize,
+    ) -> impl Iterator<Item = usize> + '_ {
+        word_masks(left, right).flat_map(move |(word, mask)| {
+            let seen = &mut self.rows[y * self.stride + word];
+            let mut remaining = mask & !*seen;
+            *seen |= mask;
+            std::iter::from_fn(move || {
+                if remaining == 0 {
+                    return None;
+                }
+                let x = word * 64 + remaining.trailing_zeros() as usize;
+                remaining &= remaining - 1;
+                Some(x)
+            })
+        })
+    }
+}
+
+// Quarter-tile coordinates make overlap areas exact integers.
+#[derive(Clone, Copy, Default)]
+struct GridRect {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+}
+impl From<Pose> for GridRect {
+    fn from(p: Pose) -> Self {
+        Self {
+            left: (p.x * 4.0) as i32,
+            top: (p.y * 4.0) as i32,
+            right: ((p.x + p.w) * 4.0) as i32,
+            bottom: ((p.y + p.h) * 4.0) as i32,
+        }
+    }
+}
+impl GridRect {
+    fn area(self, other: Self) -> i32 {
+        (self.right.min(other.right) - self.left.max(other.left)).max(0)
+            * (self.bottom.min(other.bottom) - self.top.max(other.top)).max(0)
+    }
+}
 struct Occupancy {
     left: i32,
     top: i32,
     cols: usize,
-    words: usize,
-    grid: Vec<u32>,
-    mask: Vec<u32>,
+    bins: Vec<Vec<usize>>,
+    bounds: Vec<GridRect>,
 }
+
 impl Occupancy {
     fn new(cells: &[Pose], count: usize) -> Self {
         let left = cells
             .iter()
-            .map(|c| (c.x / 4.0).floor() as i32)
+            .map(|c| GridRect::from(*c).left >> 4)
             .min()
-            .unwrap()
-            - 2;
+            .unwrap();
         let top = cells
             .iter()
-            .map(|c| (c.y / 4.0).floor() as i32)
+            .map(|c| GridRect::from(*c).top >> 4)
             .min()
-            .unwrap()
-            - 2;
+            .unwrap();
         let cols = (cells
             .iter()
-            .map(|c| ((c.x + c.w) / 4.0).ceil() as i32)
+            .map(|c| (GridRect::from(*c).right - 1) >> 4)
             .max()
             .unwrap()
             - left
-            + 2) as usize;
+            + 1) as usize;
         let rows = (cells
             .iter()
-            .map(|c| ((c.y + c.h) / 4.0).ceil() as i32)
+            .map(|c| (GridRect::from(*c).bottom - 1) >> 4)
             .max()
             .unwrap()
             - top
-            + 2) as usize;
-        let words = (count + 31) / 32;
+            + 1) as usize;
         Self {
             left,
             top,
             cols,
-            words,
-            grid: vec![0; cols * rows * words],
-            mask: vec![0; words],
+            bins: vec![Vec::new(); cols * rows],
+            bounds: vec![GridRect::default(); count],
         }
     }
     fn index(&mut self, i: usize, r: Pose, add: bool) {
-        let bit = 1u32 << (i % 32);
-        let word = i / 32;
-        for yy in (r.y / 4.0).floor() as i32..=((r.y + r.h - 1e-7) / 4.0).floor() as i32 {
-            for xx in (r.x / 4.0).floor() as i32..=((r.x + r.w - 1e-7) / 4.0).floor() as i32 {
-                let at = (((yy - self.top) as usize) * self.cols + (xx - self.left) as usize)
-                    * self.words
-                    + word;
+        let r = GridRect::from(r);
+        if add {
+            self.bounds[i] = r;
+        }
+        for y in (r.top >> 4)..=((r.bottom - 1) >> 4) {
+            for x in (r.left >> 4)..=((r.right - 1) >> 4) {
+                let bin =
+                    &mut self.bins[(y - self.top) as usize * self.cols + (x - self.left) as usize];
                 if add {
-                    self.grid[at] |= bit;
+                    bin.push(i);
                 } else {
-                    self.grid[at] &= !bit;
+                    let pos = bin.iter().position(|&k| k == i).expect("indexed rectangle");
+                    bin.swap_remove(pos);
                 }
             }
         }
     }
-    fn nearby_area(&mut self, poses: &[Pose], i: usize, j: usize) -> f64 {
-        let r = poses[i];
-        self.mask.fill(0);
-        for yy in (r.y / 4.0).floor() as i32..=((r.y + r.h - 1e-7) / 4.0).floor() as i32 {
-            for xx in (r.x / 4.0).floor() as i32..=((r.x + r.w - 1e-7) / 4.0).floor() as i32 {
-                let at = (((yy - self.top) as usize) * self.cols + (xx - self.left) as usize)
-                    * self.words;
-                for word in 0..self.words {
-                    self.mask[word] |= self.grid[at + word];
+    fn nearby(&self, r: GridRect, mut visit: impl FnMut(usize, GridRect)) {
+        // Count a shared rectangle in the top-left four-tile bin that both
+        // rectangles touch. This avoids building a bitset for every query.
+        let first_x = r.left >> 4;
+        let first_y = r.top >> 4;
+        for y in first_y..=((r.bottom - 1) >> 4) {
+            for x in first_x..=((r.right - 1) >> 4) {
+                let bin =
+                    &self.bins[(y - self.top) as usize * self.cols + (x - self.left) as usize];
+                for &k in bin {
+                    let b = self.bounds[k];
+                    if (x == first_x || x == (b.left >> 4)) && (y == first_y || y == (b.top >> 4)) {
+                        visit(k, b);
+                    }
                 }
             }
         }
-        let mut sum = 0.0;
-        for word in 0..self.words {
-            let mut bits = self.mask[word];
-            while bits != 0 {
-                let k = word * 32 + bits.trailing_zeros() as usize;
-                bits &= bits - 1;
-                if k != i && k != j {
-                    sum += r.area(poses[k]);
-                }
+    }
+    fn nearby_area(&self, poses: &[Pose], i: usize, j: usize) -> f64 {
+        let r = GridRect::from(poses[i]);
+        let mut sum = 0;
+        self.nearby(r, |k, b| {
+            if k != i && k != j {
+                sum += r.area(b);
             }
-        }
-        sum
+        });
+        f64::from(sum) / 16.0
+    }
+    fn update_overlaps(&self, totals: &mut [i32], i: usize, r: Pose, sign: i32) {
+        let r = GridRect::from(r);
+        self.nearby(r, |k, b| {
+            if k != i {
+                let change = sign * r.area(b);
+                totals[k] += change;
+                totals[i] += change;
+            }
+        });
     }
     fn changed_area(&mut self, poses: &[Pose], i: usize, j: Option<usize>) -> f64 {
         self.nearby_area(poses, i, j.unwrap_or(usize::MAX))
@@ -321,20 +423,33 @@ impl Search {
             return 0.0;
         }
         let r = self.poses[i];
+        let stores = &self.poses
+            [self.input.producer_count..self.input.producer_count + self.input.store_count];
+        let shares = &self.input.rectangles[i].arrival_weights;
         let mut nearest = f64::INFINITY;
         let mut arrival = 0.0;
-        for (index, s) in self.poses
-            [self.input.producer_count..self.input.producer_count + self.input.store_count]
-            .iter().enumerate()
-        {
+        let squared_distance = |s: Pose| {
             let dx = r.cx() - s.cx();
             let dy = r.cy() - s.cy();
-            nearest = nearest.min(dx * dx + dy * dy);
-            let share = self.input.rectangles[i].arrival_weights.get(index).copied().unwrap_or(0.0);
-            if share.is_finite() && share > 0.0 { arrival += share * (dx * dx + dy * dy).sqrt(); }
+            dx * dx + dy * dy
+        };
+        if shares.is_empty() {
+            for &store in stores {
+                let squared = squared_distance(store);
+                if squared < nearest {
+                    nearest = squared;
+                }
+            }
+            return weight * nearest.sqrt();
         }
-        if self.input.rectangles[i].arrival_weights.is_empty() { weight * nearest.sqrt() }
-        else { weight * (nearest.sqrt() + arrival) * 0.5 }
+        for (&store, &share) in stores.iter().zip(shares) {
+            let squared = squared_distance(store);
+            if squared < nearest {
+                nearest = squared;
+            }
+            arrival += share * squared.sqrt();
+        }
+        weight * (nearest.sqrt() + arrival) * 0.5
     }
     fn total_cost(&self) -> f64 {
         if self.input.store_count == 0 {
@@ -450,6 +565,9 @@ impl Search {
         for (i, &r) in self.poses.iter().enumerate() {
             grid.index(i, r, true);
         }
+        // Each entry sums all intersections involving that rectangle in sixteenths
+        // of a tile. Single and paired proposals read their old overlap in O(1).
+        let mut collision_totals = vec![0; self.poses.len()];
         let mut cost_cache: Vec<f64> = (0..self.poses.len()).map(|i| self.cost(i)).collect();
         let producer_count = self.input.producer_count;
         let store_end = producer_count + self.input.store_count;
@@ -543,36 +661,25 @@ impl Search {
                 && j.map_or(true, |j| self.valid_position(j))
                 && (self.radius[i] == 0.0 || self.network_valid())
             {
-                // Most proposals fail coverage or land constraints. Defer the
-                // collision and distance work until those cheap checks pass.
-                // Quarter-grid overlap areas are exact multiples of 1/16.
-                // A feasible current state has no old collisions to rescan.
-                let old_overlap = if overlaps == 0.0 {
-                    0.0
-                } else {
-                    let proposed = self.poses[i];
-                    let proposed_other = j.map(|k| self.poses[k]);
-                    self.poses[i] = old;
-                    if let Some(j) = j {
-                        self.poses[j] = other.unwrap();
-                    }
-                    let area = grid.changed_area(&self.poses, i, j);
-                    self.poses[i] = proposed;
-                    if let Some(j) = j {
-                        self.poses[j] = proposed_other.unwrap();
-                    }
-                    area
-                };
+                let mut old_area = collision_totals[i];
+                if let Some(j) = j {
+                    old_area += collision_totals[j] - grid.bounds[i].area(grid.bounds[j]);
+                }
+                let old_overlap = f64::from(old_area) / 16.0;
                 let old_cost = if store_move {
                     current
                 } else {
                     cost_cache[i] + j.map_or(0.0, |k| cost_cache[k])
                 };
                 let new_overlap = grid.changed_area(&self.poses, i, j);
+                let mut next_i = 0.0;
+                let mut next_j = 0.0;
                 let next_cost = if store_move {
                     self.total_cost()
                 } else {
-                    self.cost(i) + j.map_or(0.0, |j| self.cost(j))
+                    next_i = self.cost(i);
+                    next_j = j.map_or(0.0, |j| self.cost(j));
+                    next_i + next_j
                 };
                 let dc = next_cost - old_cost;
                 let da = new_overlap - old_overlap;
@@ -598,17 +705,29 @@ impl Search {
                             cost_cache[k] = self.cost(k);
                         }
                     } else {
-                        cost_cache[i] = self.cost(i);
+                        cost_cache[i] = next_i;
                         if let Some(j) = j {
-                            cost_cache[j] = self.cost(j);
+                            cost_cache[j] = next_j;
                         }
+                    }
+                    if old_overlap > 0.0 {
+                        grid.update_overlaps(&mut collision_totals, i, old, -1);
                     }
                     grid.index(i, old, false);
                     if let Some(j) = j {
+                        if old_overlap > 0.0 {
+                            grid.update_overlaps(&mut collision_totals, j, other.unwrap(), -1);
+                        }
                         grid.index(j, other.unwrap(), false);
+                    }
+                    if new_overlap > 0.0 {
+                        grid.update_overlaps(&mut collision_totals, i, self.poses[i], 1);
                     }
                     grid.index(i, self.poses[i], true);
                     if let Some(j) = j {
+                        if new_overlap > 0.0 {
+                            grid.update_overlaps(&mut collision_totals, j, self.poses[j], 1);
+                        }
                         grid.index(j, self.poses[j], true);
                     }
                     current += dc;
@@ -821,6 +940,7 @@ impl Search {
             })
             .collect();
         order.sort_by(|&a, &b| self.cost(b).total_cmp(&self.cost(a)));
+        let mut origins = PolishOrigins::new(&self.land);
         for _ in 0..self.input.polish_passes {
             let mut changed = false;
             for &i in &order {
@@ -833,6 +953,7 @@ impl Search {
                     } else {
                         (old.h, old.w)
                     };
+                    origins.reset(&self.land, &self.poses, i, w, h);
                     for s in self.input.producer_count
                         ..self.input.producer_count + self.input.store_count
                     {
@@ -852,8 +973,15 @@ impl Search {
                             .floor()
                             .min((self.land.top + self.land.height as i32) as f64 - h * 4.0)
                             as i32;
+                        if left > right {
+                            continue;
+                        }
+                        let first = (left - self.land.left) as usize;
+                        let last = (right - self.land.left) as usize;
                         for y in top..=bottom {
-                            for x in left..=right {
+                            for col in origins.unvisited((y - self.land.top) as usize, first, last)
+                            {
+                                let x = self.land.left + col as i32;
                                 self.poses[i] = Pose {
                                     x: x as f64 / 4.0,
                                     y: y as f64 / 4.0,
@@ -861,10 +989,7 @@ impl Search {
                                     h,
                                 };
                                 let cost = self.cost(i);
-                                if cost < best_cost - 1e-8
-                                    && self.valid_position(i)
-                                    && grid.nearby_area(&self.poses, i, usize::MAX) < 1e-8
-                                {
+                                if cost < best_cost - 1e-8 && self.valid_position(i) {
                                     best = self.poses[i];
                                     best_cost = cost;
                                 }
@@ -996,7 +1121,7 @@ impl Search {
 /// JSON boundary used by the WASM worker. Unsupported or malformed inputs fail
 /// explicitly, so the caller can retain its already validated layout.
 pub fn refine_json(json: &str) -> Result<String, String> {
-    let input: Input = serde_json::from_str(json).map_err(|e| e.to_string())?;
+    let mut input: Input = serde_json::from_str(json).map_err(|e| e.to_string())?;
     if input.polish_passes > 16 {
         return Err("Too many polishing passes".into());
     }
@@ -1051,6 +1176,17 @@ pub fn refine_json(json: &str) -> Result<String, String> {
             iterations: 0,
         })
         .map_err(|e| e.to_string());
+    }
+    // Normalize missing and non-positive arrival shares once at the input boundary.
+    for rectangle in &mut input.rectangles {
+        if !rectangle.arrival_weights.is_empty() && input.store_count > 0 {
+            rectangle.arrival_weights.resize(input.store_count, 0.0);
+            for share in &mut rectangle.arrival_weights {
+                if !share.is_finite() || *share <= 0.0 {
+                    *share = 0.0;
+                }
+            }
+        }
     }
     let land = Land::new(&input.cells)?;
     let poses: Vec<_> = input.rectangles.iter().map(|r| r.p).collect();
@@ -1126,4 +1262,123 @@ pub fn refine_json(json: &str) -> Result<String, String> {
     }
     let output = search.run();
     serde_json::to_string(&output).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod polish_tests {
+    use super::*;
+
+    #[test]
+    fn cached_intersections_match_pairwise_areas_after_a_swap() {
+        let cell = Pose {
+            x: -8.0,
+            y: -8.0,
+            w: 20.0,
+            h: 20.0,
+        };
+        let mut poses = vec![
+            Pose {
+                x: -4.25,
+                y: -2.5,
+                w: 6.0,
+                h: 7.5,
+            },
+            Pose {
+                x: -3.25,
+                y: -3.0,
+                w: 4.0,
+                h: 4.0,
+            },
+            Pose {
+                x: 0.75,
+                y: 0.0,
+                w: 3.5,
+                h: 6.0,
+            },
+            Pose {
+                x: 4.25,
+                y: 1.0,
+                w: 1.5,
+                h: 2.0,
+            },
+        ];
+        let mut grid = Occupancy::new(&[cell], poses.len());
+        let mut totals = vec![0; poses.len()];
+        for (i, &r) in poses.iter().enumerate() {
+            grid.update_overlaps(&mut totals, i, r, 1);
+            grid.index(i, r, true);
+        }
+        let check = |grid: &Occupancy, poses: &[Pose], totals: &[i32]| {
+            for (i, &r) in poses.iter().enumerate() {
+                let expected: f64 = poses
+                    .iter()
+                    .enumerate()
+                    .filter(|(k, _)| *k != i)
+                    .map(|(_, &b)| r.area(b))
+                    .sum();
+                assert_eq!(grid.nearby_area(poses, i, usize::MAX), expected);
+                assert_eq!(f64::from(totals[i]), expected * 16.0);
+            }
+        };
+        check(&grid, &poses, &totals);
+        for i in [0, 3] {
+            grid.update_overlaps(&mut totals, i, poses[i], -1);
+            grid.index(i, poses[i], false);
+        }
+        let (x, y) = (poses[0].x, poses[0].y);
+        (poses[0].x, poses[0].y) = (poses[3].x, poses[3].y);
+        (poses[3].x, poses[3].y) = (x, y);
+        for i in [0, 3] {
+            grid.update_overlaps(&mut totals, i, poses[i], 1);
+            grid.index(i, poses[i], true);
+        }
+        check(&grid, &poses, &totals);
+    }
+
+    #[test]
+    fn overlapping_store_searches_visit_each_free_origin_once_in_the_original_order() {
+        let cell = Pose {
+            x: -4.0,
+            y: -1.0,
+            w: 40.0,
+            h: 3.0,
+        };
+        let land = Land::new(&[cell]).unwrap();
+        let moving = Pose {
+            x: 2.0,
+            y: 0.0,
+            w: 1.5,
+            h: 0.5,
+        };
+        let blocker = Pose {
+            x: 12.0,
+            y: 0.0,
+            w: 0.5,
+            h: 1.0,
+        };
+        let poses = [moving, blocker];
+        let mut origins = PolishOrigins::new(&land);
+        for (w, h) in [(moving.w, moving.h), (moving.h, moving.w)] {
+            origins.reset(&land, &poses, 0, w, h);
+            for row in 0..=land.height {
+                let mut expected = Vec::new();
+                let mut actual = Vec::new();
+                for (left, right) in [(40, 140), (0, 100), (110, 160)] {
+                    actual.extend(origins.unvisited(row, left, right));
+                    for col in left..=right {
+                        let p = Pose {
+                            x: (land.left + col as i32) as f64 / 4.0,
+                            y: (land.top + row as i32) as f64 / 4.0,
+                            w,
+                            h,
+                        };
+                        if !p.hits(blocker) && !expected.contains(&col) {
+                            expected.push(col);
+                        }
+                    }
+                }
+                assert_eq!(actual, expected);
+            }
+        }
+    }
 }

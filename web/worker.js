@@ -882,6 +882,10 @@ async function repairDispatchPlan(pkg, input, witness) {
 async function withRecipeSwitches(pkg,input,baseline,progress=()=>{},timed=false,firstProposal) {
     const deadline=timed ? performance.now()+10000 : null;
     return searchRecipeSwitches(input,baseline,{firstProposal,
+        canFillWorkshop:timed || !input.always_running ? null : async trial=>{
+            const {canFillSwitchingWorkshop}=await import('./recipe-switch-bound.js'+load);
+            return canFillSwitchingWorkshop(pkg,await newHighs(),trial,baseline);
+        },
         parallel:globalThis.navigator?.hardwareConcurrency>=8 && globalThis.navigator?.deviceMemory>=8
             ? 4 : comparisonConcurrency(globalThis.navigator,4),
         createWorker:!timed && typeof Worker==='function'?()=>new Worker(plannerWorkerUrl,{type:'module'}):null,

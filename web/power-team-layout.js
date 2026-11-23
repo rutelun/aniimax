@@ -79,26 +79,49 @@ function poleRoute(from,to,blocked,inside,maximum,step,reached) {
     const right=Math.ceil(Math.max(...blocked.map(r=>r.x+r.w)))+6,bottom=Math.ceil(Math.max(...blocked.map(r=>r.y+r.h)))+6;
     const w=Math.ceil((right-left)/step),h=Math.ceil((bottom-top)/step);
     if(w*h>1_000_000)return null;
-    const mask=rectangleMask(blocked);
-    for(const r of blocked)mask?.add(r);
-    const previous=new Int32Array(w*h).fill(-2),queue=new Int32Array(w*h);
+    const previous=new Int32Array(w*h),queue=new Int32Array(w*h);
     const pole=k=>({x:left+k%w*step,y:top+Math.floor(k/w)*step,w:1.5,h:1.5,pole:true,facility:'Crackle Power Pole'});
-    const legal=p=>inside(p)&&!(mask?.overlaps(p)??blocked.some(r=>overlaps(r,p)));
+    const stride=Math.ceil(w/32),excluded=new Uint32Array(stride*h);
+    // Expand each obstacle by the pole footprint to mark its blocked origins.
+    // Edge contact is legal, including a pole that touches two occupied sites.
+    for(const r of blocked) {
+        const x0=Math.max(0,Math.floor((r.x+1e-7-1.5-left)/step)+1);
+        const x1=Math.min(w-1,Math.ceil((r.x+r.w-1e-7-left)/step)-1);
+        const y0=Math.max(0,Math.floor((r.y+1e-7-1.5-top)/step)+1);
+        const y1=Math.min(h-1,Math.ceil((r.y+r.h-1e-7-top)/step)-1);
+        if(x0>x1)continue;
+        for(let word=x0>>>5;word<=x1>>>5;word++) {
+            const mask=(-1<<Math.max(0,x0-32*word)) & (0xffffffff>>>(31-Math.min(31,x1-32*word)));
+            for(let y=y0;y<=y1;y++)excluded[y*stride+word]|=mask;
+        }
+    }
     let i=0,end=0;
-    function visit(k,parent) {
-        if(previous[k]!==-2)return;
-        const p=pole(k);
-        if(!legal(p)){previous[k]=-3;return;}
-        previous[k]=parent;
-        queue[end++]=k;
+    function visitRange(y,leftX,rightX,parent) {
+        const first=Math.max(0,leftX),last=Math.min(w-1,rightX);
+        for(let word=first>>>5;word<=last>>>5;word++) {
+            const mask=(-1<<Math.max(0,first-32*word)) & (0xffffffff>>>(31-Math.min(31,last-32*word)));
+            const at=y*stride+word;
+            let remaining=mask & ~excluded[at];
+            excluded[at]|=mask;
+            // The least significant bit is the leftmost untested origin.
+            while(remaining) {
+                const x=word*32+31-Math.clz32(remaining & -remaining);
+                remaining&=remaining-1;
+                const k=y*w+x;
+                if(inside(pole(k))) {
+                    previous[k]=parent;
+                    queue[end++]=k;
+                }
+            }
+        }
     }
     for(const r of from) {
         const radius=r.generator?5.5:3.5,cx=r.x+r.w/2,cy=r.y+r.h/2;
         const startX=Math.max(0,Math.ceil((cx-radius-1.25-left)/step)),endX=Math.min(w-1,Math.floor((cx+radius-.25-left)/step));
         const startY=Math.max(0,Math.ceil((cy-radius-1.25-top)/step)),endY=Math.min(h-1,Math.floor((cy+radius-.25-top)/step));
-        for(let y=startY;y<=endY;y++)for(let x=startX;x<=endX;x++)visit(y*w+x,-1);
+        if(startX<=endX)for(let y=startY;y<=endY;y++)visitRange(y,startX,endX,-1);
     }
-    const reach=Math.floor(4/step);
+    const reach=Math.floor(4/step),clearance=Math.ceil(1.5/step);
     for(let depth=1;i<end&&depth<=maximum;depth++) {
         const frontier=end;
         let last=-1,best=0;
@@ -116,12 +139,16 @@ function poleRoute(from,to,blocked,inside,maximum,step,reached) {
             for(let k=last;k>=0;k=previous[k])route.push(pole(k));
             return route;
         }
+        if(depth===maximum)break;
         for(;i<frontier;i++) {
             const k=queue[i],px=k%w,py=Math.floor(k/w);
-            for(let dy=-reach;dy<=reach;dy++)for(let dx=-reach;dx<=reach;dx++) {
-                if(Math.abs(dx)*step<1.5&&Math.abs(dy)*step<1.5)continue;
-                const x=px+dx,y=py+dy;
-                if(x>=0&&x<w&&y>=0&&y<h)visit(y*w+x,k);
+            for(let y=Math.max(0,py-reach);y<=Math.min(h-1,py+reach);y++) {
+                if(Math.abs(y-py)>=clearance) {
+                    visitRange(y,px-reach,px+reach,k);
+                } else {
+                    if(px>=clearance)visitRange(y,px-reach,px-clearance,k);
+                    if(px+clearance<w)visitRange(y,px+clearance,px+reach,k);
+                }
             }
         }
     }
@@ -269,7 +296,7 @@ export function reusePowerTeamLayout(incumbent,pieces,cells,poleLimit) {
     // a pole slot or split an unnecessarily merged grid.
     const tryWiring=()=>{
         let best=null;
-        for(const path of [poles,[]]) {
+        for(const path of (poles.length?[poles,[]]:[poles])) {
             const trial={...layout,power:{poles:path.slice(),maximum:poleLimit}};
             const wired=wire(trial,placed,consumers,inside,blocked,poleLimit);
             if(!wired)continue;

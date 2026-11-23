@@ -2884,6 +2884,9 @@ pub struct LpProblem {
     pub recipe_variables: Vec<(usize, String)>,
     /// Rate column, base recipe, facility, staffed source, electric variant, cycle.
     pub recipe_options: Vec<(usize, String, String, bool, bool, f64)>,
+    /// Recipe rate and fixed powered tier for each job eligible to share a workshop.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub switching_rates: Option<Vec<(usize, Option<u32>)>>,
     /// Worker-days for the final staffing solve, including crop work, travel and hauling.
     pub staffing_pools: Vec<StaffingPool>,
     /// Each sum is a production, physical site or stock commitment staffing must preserve.
@@ -3117,6 +3120,12 @@ pub fn write_lp(
             VarKind::Rate(r)=>Some((v,crate::models::base_item_name(&r.name).to_owned(),r.facility.clone(),
                 r.raw_materials.is_none()&&r.workload.is_some(),electric_level(&r.name).is_some(),r.production_time)),_=>None,
         }).collect(),
+        switching_rates: facility_counts.recipe_switching_relaxation().then(|| {
+            model.kinds.iter().enumerate().filter_map(|(v, kind)| match kind {
+                VarKind::Rate(recipe) if facility_counts.takes_turns(recipe) => Some((v, electric_level(&recipe.name))),
+                _ => None,
+            }).collect()
+        }),
         recipe_variables: model.kinds.iter().enumerate().filter_map(|(v,k)|match k {
             VarKind::Rate(r)|VarKind::Units(r)=>Some((v,crate::models::base_item_name(&r.name).to_owned())),
             VarKind::ContinuousSite { recipe, .. }=>Some((v,crate::models::base_item_name(&recipe.name).to_owned())),
