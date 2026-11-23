@@ -107,7 +107,7 @@ function taskSites(targets,member,facility,item,workers){
 // Expected random dispatch among eligible free workers. A policy allocates ONE
 // original request across workers; it never adds a second copy of its execution.
 // Arrival estimates start at previous work sites, not at the new request site.
-export function buildReactiveDispatch({layout,recipes,members,busy=[],permanent=[],routes=[],previous=null}){
+export function buildReactiveDispatch({layout,recipes,members,busy=[],permanent=[],routes=[],previous=null,deliveryCopies=[]}){
     const locations=dispatchLocations(layout),sites=layout.pieces.flatMap(p=>p.members);
     const byFacility=new Map();
     for(const r of sites){
@@ -145,7 +145,14 @@ export function buildReactiveDispatch({layout,recipes,members,busy=[],permanent=
         for(const [keyAbility,ability,level] of roles){
             const key=dispatchKey(recipe.facility,recipe.name,keyAbility);
             const eligible=members.flatMap((member,i)=>{
-                const capacity=member.assumed?Math.ceil((busy[i]||0)-1e-6):member.count;
+                let capacity=member.count;
+                if(member.assumed){
+                    capacity=Math.ceil((busy[i]||0)-1e-6);
+                    if(keyAbility==='Hauling'){
+                        const retained=previous?.[key]?.some(entry=>entry.member===i && entry.share>0);
+                        capacity=Math.min(member.count,Math.max(capacity,deliveryCopies[i]||0,Number(!!retained)));
+                    }
+                }
                 const mobile=Math.max(0,capacity-(permanent[i]||0));
                 if(!mobile||!(member.abilities?.[ability]>=level)||ability==='Leisure'&&recipe.family&&member.family!==recipe.family)return [];
                 return [{member:i,weight:Math.max(0,capacity-(busy[i]||0)),mobile}];
@@ -198,6 +205,26 @@ export function buildReactiveDispatch({layout,recipes,members,busy=[],permanent=
     const focused=focusedWorkers(sites,members,routes,policy);
     attachDeliveryFlows(routed,policy,recipes,members,routes,focused);
     const flow=deliveryRouting(routed);
+    // A worker approaches a physical site from the same distribution of
+    // origins for every recipe. Its loaded trip also ends at the same depot.
+    const tripsBySite=new Map();
+    const tripTo=site=>{
+        let trip=tripsBySite.get(site);
+        if(!trip){
+            const point=center(site);
+            trip={point,walks:new Map()};
+            tripsBySite.set(site,trip);
+        }
+        return trip;
+    };
+    const walkTo=(member,site)=>{
+        const trip=tripTo(site);
+        if(!trip.walks.has(member)){
+            const walk=deliveryApproach(flow,member,trip.point);
+            trip.walks.set(member,walk==null?null:workerTravelSeconds(walk));
+        }
+        return trip.walks.get(member);
+    };
     for(const recipe of recipes){
         const physical=byFacility.get(recipe.facility);if(!physical?.length)continue;
         const exact=physical.filter(r=>r.crop===recipe.name||r.jobs?.some(j=>j.item===recipe.name));
@@ -206,9 +233,9 @@ export function buildReactiveDispatch({layout,recipes,members,busy=[],permanent=
         const abilities=recipe.aniimo?['Production']:[...new Set((recipe.jobs||[]).map(([,ability])=>ability))];
         for(const ability of abilities)for(const e of policy[dispatchKey(recipe.facility,recipe.name,ability)]||[]){
             const workerTargets=workTargets.length&&ability==='Production'?taskSites(workTargets,e.member,recipe.facility,recipe.name,focused):workTargets;
-            const values=workerTargets.map(s=>deliveryApproach(flow,e.member,center(s)));
+            const values=workerTargets.map(s=>walkTo(e.member,s));
             e.travel_seconds=values.length&&values.every(v=>v!=null)
-                ?values.reduce((sum,v)=>sum+workerTravelSeconds(v),0)/values.length
+                ?values.reduce((sum,v)=>sum+v,0)/values.length
                 :targets.reduce((sum,target)=>sum+approach(e.member,center(target)),0)/targets.length;
         }
         for(const e of policy[dispatchKey(recipe.facility,recipe.name,'Hauling')]||[]){
@@ -216,9 +243,10 @@ export function buildReactiveDispatch({layout,recipes,members,busy=[],permanent=
                 :(s.batchWeight??s.weight??0)/3600):[];
             const total=rates.reduce((n,r)=>n+r,0);
             e.travel_seconds=targets.reduce((sum,target,index)=>{
-                const point=center(target),walk=deliveryApproach(flow,e.member,point);
-                const loaded=(layout.storages||[]).length?Math.min(...layout.storages.map(s=>distance(point,center(s)))):0;
-                return sum+((walk==null?approach(e.member,point):workerTravelSeconds(walk))+workerTravelSeconds(loaded))
+                const trip=tripTo(target),walk=walkTo(e.member,target);
+                trip.loaded??=workerTravelSeconds(layout.storages?.length
+                    ?Math.min(...layout.storages.map(s=>distance(trip.point,center(s)))):0);
+                return sum+((walk??approach(e.member,trip.point))+trip.loaded)
                     *siteHaulingTrips(target,recipe.name,recipe,members[e.member].abilities.Hauling)*(total>0?rates[index]/total:1/targets.length);
             },0);
         }
@@ -265,7 +293,7 @@ export function permanentWorkers(plan,members,residents){
     for(const step of plan.coin_items||[]){
         if(step.status==='producing'&&residents.has(step.facility)&&fixed[step.crew]!=null)fixed[step.crew]+=step.facility_count;
     }
-    return fixed;
+    return fixed.map(count=>Math.max(0,Math.ceil(count-1e-6)));
 }
 
 export function routeDispatchKey(route,recipes){
@@ -292,4 +320,42 @@ export function measuredDispatchWork(plan,policy,recipes){
         for(const e of entries||[])delivery.set(e.member,(delivery.get(e.member)||0)+rate*e.share*e.travel_seconds);
     }
     return {walking:[...walking],delivery:[...delivery]};
+}
+
+
+// Measurement precedes the solver pass that adds a dedicated Hauling pool.
+// Use the same trailing pool index as the solver when pricing that first route.
+export function measureRosterDispatch(context,plan,previous,reserveLimit){
+    const {members,busy,permanent,recipes}=context;
+    function measure(candidate,deliveryCopies=[]){
+        const policy=buildReactiveDispatch({...candidate,previous,deliveryCopies});
+        return {context:candidate,policy,...measuredDispatchWork(plan,policy,recipes)};
+    }
+    const initial=measure(context);
+    if(previous || !(reserveLimit>0) || !Number.isFinite(reserveLimit))return initial;
+    const walking=new Map(initial.walking);
+    const occupied=members.map((_,i)=>Math.max(permanent[i]||0,Math.ceil((busy[i]||0)+(walking.get(i)||0)-1e-6)));
+    const free=reserveLimit-occupied.reduce((total,count)=>total+count,0);
+    if(free<=0)return initial;
+    let excess=0;
+    for(const [i,load] of initial.delivery){
+        const capacity=members[i].assumed?occupied[i]:members[i].count;
+        const spare=Math.max(0,capacity-(busy[i]||0)-(walking.get(i)||0));
+        excess+=Math.max(0,load-spare);
+    }
+    const unassigned=plan.coin_items?.some(step=>step.status==='producing' && step.cycle_time>0 &&
+        (step.busy_units??step.facility_count)>0 && !initial.policy[dispatchKey(step.facility,step.item_name,'Hauling')]?.length);
+    const needed=Math.min(free,Math.max(Number(!!unassigned),Math.ceil(excess-1e-7)));
+    if(needed<=0)return initial;
+    let id=members.findIndex(member=>member?.assumed && member.abilities?.Hauling);
+    let candidate=context;
+    if(id<0){
+        id=members.length;
+        candidate={...context,members:[...members,{assumed:true,count:needed,abilities:{Hauling:3},personalities:[]}],
+            busy:[...busy,0],permanent:[...permanent,0]};
+    }
+    const copies=[];
+    copies[id]=Math.min(candidate.members[id].count,(occupied[id]||0)+needed);
+    const proposed=measure(candidate,copies);
+    return proposed.delivery.some(([member,load])=>member===id && load>0)?proposed:initial;
 }

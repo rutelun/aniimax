@@ -8,7 +8,8 @@ import {productionObjective} from './priority-search.js';
 // already-solved relaxation to decide whether trying this schedule first is
 // worthwhile. The ordinary ordered search still considers every proposal.
 export function suggestsMaterialFlow(problem, values, input) {
-    const chains=new Map();
+    const chains=new Map(), switchable=new Set();
+    const columns=new Map(problem.variable_keys.map((key,v)=>[key,v]));
     for(const [v,name,facility,,electric,cycle] of problem.recipe_options){
         const tier=materialChains[facility]?.indexOf(name)??-1,rate=values[v];
         if(tier<0 || !(rate>1e-9))continue;
@@ -16,12 +17,13 @@ export function suggestsMaterialFlow(problem, values, input) {
         const chain=chains.get(facility);
         if(electric || chain[tier]>0)return false;
         chain[tier]=rate*cycle;
+        if(tier && canRunAtCapacity(problem,columns,input,v,cycle))switchable.add(facility);
         if(tier===0 && input.roster){
             const crew=/__by(?:owned:)?(\d+)#/.exec(problem.variable_keys[v]);
             if(crew && input.roster.members?.[Number(crew[1])]?.count<2)return false;
         }
     }
-    return chains.size>0 && [...chains.values()].every(chain=>chain.every(load=>load>0)
+    return switchable.size===chains.size && chains.size>0 && [...chains.values()].every(chain=>chain.every(load=>load>0)
         && chain[0]>1+1e-8 && chain[0]<2-1e-8);
 }
 
@@ -101,6 +103,22 @@ function fitsShortPhase(highs,problem,trial,options) {
     } finally {model.dispose();}
 }
 
+function mandatoryOwnedRoute(problem,columns,v,cycle){
+    const owned=/^rate:(.+__byowned:(\d+))#0$/.exec(problem.variable_keys[v]);
+    if(!owned)return null;
+    const member=Number(owned[2]), route='route:'+owned[1]+':owned:'+member+':None:';
+    const mobile=columns.get(route+'true#0');
+    const assigned=mobile!=null && !columns.has(route+'false#0')
+        ? problem.staffing_pools?.[member]?.work?.find(([column])=>column===mobile) : null;
+    return {member,seconds:Math.max(cycle,assigned?.[1]??cycle)};
+}
+
+function canRunAtCapacity(problem,columns,trial,v,cycle){
+    const route=mandatoryOwnedRoute(problem,columns,v,cycle);
+    const count=trial.roster?.members?.[route?.member]?.count;
+    return !route || !Number.isSafeInteger(count) || route.seconds/cycle<=count+1e-5;
+}
+
 // In the ordinary always-running schedule an active site is busy for every
 // phase. Its facility and power mode never change. Summed over a day, the
 // workload for each such group must equal its whole number of active sites.
@@ -122,6 +140,22 @@ function fitsWholeSites(highs, problem, trial) {
     }
     if (!groups.size || !fitsShortPhase(highs,problem,trial,options)) return false;
     const rows = [], sites = [];
+    const columns=new Map(problem.variable_keys.map((key,v)=>[key,v]));
+    for(const {rates} of loads.values()){
+        const routes=rates.map(([v,cycle])=>mandatoryOwnedRoute(problem,columns,v,cycle));
+        for(const member of new Set(routes.filter(Boolean).map(route=>route.member))){
+            const count=trial.roster?.members?.[member]?.count;
+            if(!Number.isSafeInteger(count) || count<0)continue;
+            const terms=rates.map(([v,cycle],i)=>[v,(routes[i]?.member===member?routes[i].seconds:0)-count*cycle]);
+            if(!terms.some(([,c])=>c>1e-7))continue;
+            // A selected recipe keeps at least one site busy. Even with jobs
+            // split across operators, its elapsed time cannot exceed the sum
+            // of its machine-seconds. Omitted trace rates retain their slack.
+            const slack=terms.reduce((n,[,c])=>n+Math.abs(c)*1.1e-7,1e-5*(1+count));
+            const work=terms.filter(([,c])=>c!==0).map(([v,c])=>(c<0?'- ':'+ ')+Math.abs(c)+' x'+v).join(' ');
+            rows.push(' recipe_crew_'+rows.length+': '+work+' <= '+slack);
+        }
+    }
     for (const rates of groups.values()) {
         const site = 'sw'+sites.length;
         const work = rates.map(([v,cycle])=>cycle+' x'+v).join(' + ');
@@ -183,10 +217,9 @@ function fitsWholeSites(highs, problem, trial) {
     return !phaseIntegers.length || scheduleFeasible(highs,problem,rows,[...sites,...posts,...phaseIntegers]);
 }
 
-// The direct material-flow constructor chooses one production job for each
-// recipe in a chain. If several variants must all produce that recipe, only
-// the general phase scheduler can cover it. Leave electric jobs unrestricted
-// here, which can only make this preliminary feasibility test more permissive.
+// A downstream recipe occupies one site. At the raw tier a steady site runs
+// all day and a temporary site may use a different worker until its switch.
+// Electric jobs keep their original relaxation in this feasibility check.
 function fitsMaterialFlow(pkg, highs, problem, trial) {
     const switching = new Set(problem.switching_rates.map(([column])=>column));
     const groups = new Map();
@@ -196,10 +229,12 @@ function fitsMaterialFlow(pkg, highs, problem, trial) {
         if (!groups.has(recipe)) groups.set(recipe,[]);
         groups.get(recipe).push([v,cycle]);
     }
-    const rows=[], selectors=[], rawLoads=[];
+    const rows=[], selectors=[], rawLoads=[], rawRecipes=new Set();
+    const dawnCrew=new Map(), activeChains=new Map(), switchable=new Map();
     const columns=new Map(problem.variable_keys.map((key,v)=>[key,v]));
     for (const [recipe,variants] of groups) {
         if (!Object.values(materialChains).some(chain=>chain[0]===recipe)) continue;
+        rawRecipes.add(recipe);
         const active='chain'+rawLoads.length,work=variants.map(([v,c])=>c+' x'+v).join(' + ');
         const slack=1e-5+variants.reduce((n,[,c])=>n+c*1.1e-7,0);
         // The raw processor has two sites before the change and one
@@ -207,24 +242,41 @@ function fitsMaterialFlow(pkg, highs, problem, trial) {
         rows.push(' chain_bit_'+active+': '+active+' <= 1',
             ' chain_on_'+active+': '+work+' - 2 '+active+' <= '+slack,
             ' chain_lo_'+active+': '+work+' - '+active+' >= -'+slack);
-        // The direct schedule assigns two sites to this exact raw recipe
-        // variant at dawn. Leave reserve and unknown worker counts free.
+        // Select one variant per raw site. Both sites may use the same
+        // variant when that worker pool can cover their simultaneous load.
+        const steady=[],temporary=[];
         for (const [v,cycle] of variants) {
-            const owned=/^rate:(.+__byowned:(\d+))#0$/.exec(problem.variable_keys[v]);
-            if (!owned) continue;
-            const member=Number(owned[2]), count=trial.roster?.members?.[member]?.count;
-            const route='route:'+owned[1]+':owned:'+member+':None:';
-            // On a measured route the native worker-time coefficient includes
-            // travel per batch. A local route, if available, can avoid it.
-            const mobile=columns.get(route+'true#0');
-            const assigned=mobile!=null && !columns.has(route+'false#0')
-                ? problem.staffing_pools?.[member]?.work.find(([v])=>v===mobile) : null;
-            const seconds=assigned?.[1]??cycle;
-            if (2*seconds/cycle>count+1e-7) {
-                rows.push(' flow_single_worker_'+v+': x'+v+' <= 1.1e-7');
+            const full=variants.length===1?active:'steady'+v;
+            const extra=variants.length===1?active:'temporary'+v;
+            if(variants.length>1){
+                steady.push(full);
+                temporary.push(extra);
+                rows.push(' steady_site_'+v+': '+cycle+' x'+v+' - '+full+' >= -'+slack,
+                    ' raw_sites_'+v+': '+cycle+' x'+v+' - '+full+' - '+extra+' <= '+slack);
             }
+            const route=mandatoryOwnedRoute(problem,columns,v,cycle);
+            if (!route) continue;
+            const {member,seconds}=route, count=trial.roster?.members?.[member]?.count;
+            if(!Number.isSafeInteger(count))continue;
+            const load=Math.max(1,seconds/cycle);
+            if(!dawnCrew.has(member))dawnCrew.set(member,new Map());
+            const sites=dawnCrew.get(member);
+            for(const site of [full,extra])sites.set(site,(sites.get(site)??0)+load);
+        }
+        if(steady.length){
+            rows.push(' steady_raw_'+active+': '+steady.join(' + ')+' - '+active+' = 0',
+                ' temporary_raw_'+active+': '+temporary.join(' + ')+' - '+active+' = 0');
+            selectors.push(...steady,...temporary);
         }
         rawLoads.push(active);
+        activeChains.set(recipe,active);
+    }
+    // Both chains start their extra raw site at dawn, even when the two
+    // facilities switch at different times. Count the owned crew jointly.
+    for(const [member,sites] of dawnCrew){
+        const terms=[...sites].map(([site,workers])=>workers+' '+site);
+        const capacity=trial.roster.members[member].count;
+        rows.push(' dawn_crew_'+member+': '+terms.join(' + ')+' <= '+(capacity+1e-7));
     }
     if (rawLoads.length) {
         rows.push(' flow_active: '+rawLoads.join(' + ')+' >= 1');
@@ -250,18 +302,36 @@ function fitsMaterialFlow(pkg, highs, problem, trial) {
                 ' feed_hi_'+after[0][0]+': '+net+' <= '+tolerance);
         }
     }
-    for (const variants of groups.values()) {
-        if (variants.length<2) continue;
+    for (const [recipe,variants] of groups) {
+        if(rawRecipes.has(recipe))continue;
+        const eligible=[];
+        switchable.set(recipe,eligible);
+        if(variants.length===1){
+            const [[v,cycle]]=variants;
+            if(canRunAtCapacity(problem,columns,trial,v,cycle))switchable.delete(recipe);
+            rows.push(' downstream_site_'+v+': '+cycle+' x'+v+' <= '+(1.00001+cycle*1.1e-7));
+            continue;
+        }
         const group=[];
         for (const [v,cycle] of variants) {
             const selected='flow'+v;
             group.push(selected);
-            // Even the raw processor uses at most two sites at once. Allow
-            // rates omitted by scheduleInputForPlan and the daily audit slack.
-            rows.push(' flow_load_'+v+': '+cycle+' x'+v+' - 2.00001 '+selected+' <= '+(1e-5+cycle*1.1e-7));
+            if(canRunAtCapacity(problem,columns,trial,v,cycle))eligible.push(selected);
+            // Allow rates omitted by scheduleInputForPlan and the daily audit slack.
+            rows.push(' flow_load_'+v+': '+cycle+' x'+v+' - 1.00001 '+selected+' <= '+(1e-5+cycle*1.1e-7));
         }
         rows.push(' flow_recipe_'+group[0]+': '+group.join(' + ')+' <= 1');
         selectors.push(...group);
+    }
+    // Before the switch every upstream tier produces into the waiting
+    // recipe's buffer. At the change that site must run at its full rate
+    // until it exhausts the buffer. At least one downstream operator must
+    // therefore cover a whole site, walking included.
+    for(const chain of Object.values(materialChains)){
+        const active=activeChains.get(chain[0]), choices=chain.slice(1).map(recipe=>switchable.get(recipe));
+        if(!active || choices.some(group=>!group))continue;
+        const operators=choices.flat();
+        rows.push(' switch_crew_'+chain[0]+': '+active+operators.map(v=>' - '+v).join('')+' <= 0');
     }
     return !selectors.length || scheduleFeasible(highs,problem,rows,selectors);
 }

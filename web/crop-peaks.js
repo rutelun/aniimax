@@ -34,6 +34,17 @@ export function cropPeakInput({layout,recipes,members,busy,permanent=[],routes=[
     const sources=layout.pieces.flatMap(p=>p.members.flatMap(s=>(s.jobs||[{item:s.crop,rate:(s.batchWeight??s.weight??0)/3600}])
         .filter(j=>j.rate>0).map(j=>({point:[s.x+s.w/2,s.y+s.h/2],rate:j.rate})))),stores=layout.storages||[];
     const point=s=>[s.x+s.w/2,s.y+s.h/2];
+    // Every courier picks from the same sources and returns to the same stores.
+    let duration=0;
+    if(stores.length && sources.length && delivery.some(([,n])=>n>0)){
+        let trip=0,total=0;
+        for(const source of sources){
+            const distances=stores.map(s=>workerTravelSeconds(Math.hypot(point(s)[0]-source.point[0],point(s)[1]-source.point[1])));
+            trip+=source.rate*(Math.min(...distances)+distances.reduce((a,b)=>a+b,0)/distances.length);
+            total+=source.rate;
+        }
+        duration=total>0?trip/total:0;
+    }
     outside.forEach((o,i)=>{
         const measured=o.busy;
         const hauling=delivery.find(([id])=>id===i)?.[1]||0;
@@ -42,13 +53,6 @@ export function cropPeakInput({layout,recipes,members,busy,permanent=[],routes=[
         if(hauling>0&&stores.length&&sources.length){
             // A courier can finish at any storage then take any new pickup.
             // Use complete trips, never workload-per-production-batch as duration.
-            let trip=0,total=0;
-            for(const source of sources){
-                const distances=stores.map(s=>workerTravelSeconds(Math.hypot(point(s)[0]-source.point[0],point(s)[1]-source.point[1])));
-                trip+=source.rate*(Math.min(...distances)+distances.reduce((a,b)=>a+b,0)/distances.length);
-                total+=source.rate;
-            }
-            const duration=total>0?trip/total:0;
             o.tripSeconds=duration;
             o.storageOrigins=stores.map(store=>({point:point(store),weight:1}));
             o.seconds+=hauling*duration;

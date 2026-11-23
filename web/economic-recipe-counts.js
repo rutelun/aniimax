@@ -188,10 +188,27 @@ export function economicRecipeCounts(highs, problem, {input,timeLimit=1.5}={}) {
     // is integral and counts once across every participating worker.
     const sites = new Map(recipes.filter(g=>g.whole).map(g=>[g.site,g.name]));
     for (const [v,name] of pooledSites) sites.set('s'+v,name);
+    // Every physical allocation has an integral total per recipe. The compact
+    // model can split that total across variants while pricing the upper bound.
+    const sitesByRecipe = new Map();
+    for (const [site,name] of sites) {
+        if (!sitesByRecipe.has(name)) sitesByRecipe.set(name,[]);
+        sitesByRecipe.get(name).push(site);
+    }
+    const totals = new Map();
+    for (const [name,columns] of sitesByRecipe) {
+        let total = columns[0];
+        if (columns.length>1) {
+            total = 't'+totals.size;
+            addRow([...columns.map(site=>[site,1]),[total,-1]],'=',0);
+            bounds.set(total,[0,Infinity]);
+        }
+        totals.set(total,name);
+    }
     const lp = ['Maximize',' obj: '+expression(objective),'Subject To',
         ...[...rows].map((s,i)=>` c${i}: ${s}`),'Bounds',
         ...[...bounds].map(([v,[lo,hi]])=>Number.isFinite(hi) ? ` ${lo} <= ${v} <= ${hi}` : ` ${v} >= ${lo}`),
-        'General',...[...sites.keys()].map(v=>' '+v),'End'].join('\n');
+        'General',...[...totals.keys()].map(v=>' '+v),'End'].join('\n');
     const model = highs.createModel({format:'lp',data:lp});
     try {
         // The compact model can cheaply compare hundreds of building-count patterns.
@@ -200,10 +217,21 @@ export function economicRecipeCounts(highs, problem, {input,timeLimit=1.5}={}) {
         if (model.info.get('primal_solution_status')!==highs.constants.solutionStatus.feasible) return null;
         const values = model.getSolution().colValue;
         const selected = new Map();
+        const rates = new Map(recipes.map(group=>[group.rate,group]));
+        const load = new Map();
         for (let i=0;i<values.length;i++) {
-            const name = sites.get(model.getColName(i));
-            if (!name || values[i]<0.5) continue;
-            selected.set(name,(selected.get(name) || 0)+Math.round(values[i]));
+            const column = model.getColName(i);
+            const name = totals.get(column);
+            if (name && values[i]>=0.5) selected.set(name,Math.round(values[i]));
+            const group = rates.get(column);
+            if (group) load.set(group.name,(load.get(group.name) || 0)+values[i]*group.seconds);
+        }
+        // Omit idle capacity from the staffing hint. The full model checks
+        // whether the proposed sites can actually support the production rates.
+        for (const [name,count] of selected) {
+            const needed = Math.ceil((load.get(name) || 0)-1e-8);
+            if (needed<=0) selected.delete(name);
+            else if (needed<count) selected.set(name,needed);
         }
         // The integer sums, natural capacity limits and cycle times are the
         // planner's recipe metadata. Merging columns relaxes every retained
@@ -218,12 +246,7 @@ export function economicRecipeCounts(highs, problem, {input,timeLimit=1.5}={}) {
     }
 }
 
-// Condition the executable model on the proposed site counts, then select
-// worker alternatives using its continuous relaxation. These additional rows
-// make a local search. They supply no global income bound.
-export function economicCountNeighborhood(highs,problem,counts,minimumIncome=0) {
-    if (!counts?.size || !Number.isFinite(minimumIncome) || minimumIncome<0 || !problem.production_only ||
-        !Array.isArray(problem.integer_groups) || !problem.recipe_options?.length) return null;
+function fixedRecipeSites(problem) {
     const sites = new Map(problem.integer_groups.map(([name,terms])=>[name,terms.map(([v])=>v)]));
     const shared=new Set();
     for (const [v,name] of problem.recipe_variables) {
@@ -232,6 +255,16 @@ export function economicCountNeighborhood(highs,problem,counts,minimumIncome=0) 
         if (!sites.has(name)) sites.set(name,[]);
         sites.get(name).push(v);
     }
+    return {sites,shared};
+}
+
+// Condition the executable model on the proposed site counts, then select
+// worker alternatives using its continuous relaxation. These additional rows
+// make a local search. They supply no global income bound.
+export function economicCountNeighborhood(highs,problem,counts,minimumIncome=0) {
+    if (!counts?.size || !Number.isFinite(minimumIncome) || minimumIncome<0 || !problem.production_only ||
+        !Array.isArray(problem.integer_groups) || !problem.recipe_options?.length) return null;
+    const {sites,shared}=fixedRecipeSites(problem);
     if ([...counts].some(([name,n])=>!sites.has(name)||!Number.isSafeInteger(n)||n<0)) return null;
     const rows = [...sites].map(([name,columns],i)=>
         ` local_sites_${i}: ${columns.map(v=>'x'+v).join(' + ')} = ${counts.get(name) || 0}`);
@@ -248,4 +281,50 @@ export function economicCountNeighborhood(highs,problem,counts,minimumIncome=0) 
         if (site!=null) rows.push(` local_worker_${site}: x${site} = 0`);
     }
     return {...problem,lp:restrict(),continuousRestricted:true};
+}
+
+// Price removing each occupied workshop from a provisional layout. These LPs
+// guide the next integer fit only. The measured layout still gets its own audit.
+export function priceIdleWorkshop(highs,problem,counts,minimumIncome) {
+    if(!counts?.size || !problem.recipe_options?.length || !highs.createModel)return null;
+    const facilities=new Map();
+    for(const [,recipe,facility] of problem.recipe_options){
+        if(!counts.get(recipe))continue;
+        if(facilities.has(recipe) && facilities.get(recipe)!==facility)return null;
+        facilities.set(recipe,facility);
+    }
+    if(new Set(facilities.values()).size<2)return null;
+    const local=economicCountNeighborhood(highs,problem,counts,minimumIncome);
+    if(!local)return null;
+    const recipes=[...fixedRecipeSites(problem).sites.keys()];
+    const groups=new Map();
+    const model=highs.createModel({format:'lp',data:local.lp.replace(/\nGeneral\n[\s\S]*?\nEnd/,'\nEnd')});
+    let selected=null,estimatedIncome=minimumIncome;
+    try{
+        const {numRows}=model.getDimensions();
+        for(let row=0;row<numRows;row++){
+            const match=/^local_sites_(\d+)$/.exec(model.getRowName(row));
+            if(!match)continue;
+            const recipe=recipes[Number(match[1])],count=counts.get(recipe),facility=facilities.get(recipe);
+            if(!count || !facility)continue;
+            if(!groups.has(facility))groups.set(facility,[]);
+            groups.get(facility).push({row,recipe,count});
+        }
+        for(const group of groups.values()){
+            const rows={kind:'set',indices:group.map(entry=>entry.row)};
+            const zero=group.map(()=>0),original=group.map(entry=>entry.count);
+            model.changeRowsBounds(rows,zero,zero);
+            model.run();
+            if(model.getModelStatus()===highs.constants.modelStatus.optimal && model.getObjectiveValue()>estimatedIncome){
+                estimatedIncome=model.getObjectiveValue();
+                selected=group;
+            }
+            model.changeRowsBounds(rows,original,original);
+        }
+    }finally{model.dispose();}
+    if(!selected)return null;
+    const reduced=new Map(counts);
+    for(const {recipe} of selected)reduced.delete(recipe);
+    const fit=economicCountNeighborhood(highs,problem,reduced,minimumIncome);
+    return fit?{model:fit,estimatedIncome}:null;
 }

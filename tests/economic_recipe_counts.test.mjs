@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import highsModule from '../web/vendor/highs/highs.mjs';
-import {economicRecipeCounts,economicCountNeighborhood} from '../web/economic-recipe-counts.js';
+import {economicRecipeCounts,economicCountNeighborhood,priceIdleWorkshop} from '../web/economic-recipe-counts.js';
 
 const highs=await highsModule({
     wasmBinary:await readFile(new URL('../web/vendor/highs/highs.wasm',import.meta.url)),print(){},printErr(){}
@@ -40,6 +40,19 @@ test('an advertised worker capacity cannot cut stronger output allowed by the un
     const counts=economicRecipeCounts(highs,p,{input:{roster:{members:[{count:1},{count:1}],residents:[]}}});
     assert.ok(counts.upper>=15);
     assert.equal(counts.get('fruit'),3);
+});
+
+test('whole recipe totals can price fractional variants while the executable plan requires whole sites',()=>{
+    const p=sample();
+    p.recipe_options[1][4]=true;
+    p.lp=p.lp.replace('5 x4 - 3 x0','5 x4').replace('Bounds',
+        ' normal: x1 <= 1.5\n powered: x3 <= 1.5\nBounds');
+    p.primary_objective=[[4,5]];
+    const counts=economicRecipeCounts(highs,p);
+    assert.equal(counts.get('fruit'),3);
+    assert.ok(Math.abs(counts.upper-11.25)<1e-5);
+    assert.equal(highs.solve(p.lp).ObjectiveValue,7.5);
+    assert.equal(economicCountNeighborhood(highs,p,counts,11.26),null);
 });
 
 test('unsupported time-sharing and mismatched native cycle metadata decline the projection',()=>{
@@ -85,4 +98,26 @@ test('a positive objective residual on an unmapped route is bounded by the origi
     const counts=economicRecipeCounts(highs,p);
     assert.ok(counts.upper>=15.8);
     assert.ok(counts.upper<15.80001);
+});
+
+test('a provisional fit can drop both jobs in one workshop while retaining the fruit income floor',()=>{
+    const p=sample();
+    const keys=['rate:syrup#0','units:syrup#0','rate:juice#0','units:juice#0'];
+    p.variable_keys.push(...keys);
+    p.variables+=keys.length;
+    p.lp=p.lp.replace('Bounds',' staffing: x3 + x6 + x8 <= 3\n syrup: x5 - x6 <= 0\n juice: x7 - x8 <= 0\nBounds')
+        .replace('General',' x5 >= 0\n x6 >= 0\n x7 >= 0\n x8 >= 0\nGeneral').replace('\nEnd','\n x6\n x8\nEnd');
+    for(const [v,recipe] of [[5,'syrup'],[7,'juice']]){
+        p.recipe_options.push([v,recipe,'Keg',false,false,1]);
+        p.integer_groups.push([recipe,[[v+1,1]],1]);
+        p.recipe_variables.push([v,recipe],[v+1,recipe]);
+    }
+    const counts=new Map([['fruit',3],['syrup',1],['juice',1]]);
+    const fit=priceIdleWorkshop(highs,p,counts,4.9);
+    assert.equal(fit.estimatedIncome,15);
+    const solution=highs.solve(fit.model.lp);
+    assert.equal(solution.ObjectiveValue,15);
+    assert.deepEqual([solution.Columns.x6.Primal,solution.Columns.x8.Primal],[0,0]);
+    assert.equal(counts.get('syrup'),1);
+    assert.equal(priceIdleWorkshop(highs,p,new Map([['fruit',3]]),14.9),null);
 });

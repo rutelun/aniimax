@@ -6,7 +6,7 @@ const range = new RegExp(`^(${number}) <= x(\\d+) <= (${number})$`);
 const lower = new RegExp(`^x(\\d+) >= (${number})$`);
 const rowPattern = new RegExp(`^\\s*[^:]+:\\s*(.*?)\\s*(<=|>=|=)\\s*(${number})\\s*$`);
 
-export function parseLinearLp(lp, variables) {
+export function parseLinearLp(lp, variables, includeOrder = true) {
     const match = lp.match(/^Maximize\n\s*obj:\s*([^\n]*)\nSubject To\n([\s\S]*?)\n?Bounds\n([\s\S]*?)(?:\nGeneral\n([\s\S]*?))?\nEnd\s*$/);
     if (!match || !Number.isInteger(variables) || variables < 1) return null;
     const terms = expression => {
@@ -48,7 +48,7 @@ export function parseLinearLp(lp, variables) {
         if (!integer || Number(integer[1]) >= variables) return null;
         integers[Number(integer[1])] = 1;
     }
-    const order = [...new Set([...lp.matchAll(/\bx(\d+)\b/g)].map(match=>Number(match[1])))];
+    const order = includeOrder ? [...new Set([...lp.matchAll(/\bx(\d+)\b/g)].map(match=>Number(match[1])))] : undefined;
     return {costs,bounds,integers,rows,order};
 }
 
@@ -71,13 +71,23 @@ export function acquireModel(highs, problem, reuse = true) {
     }
     // The native parser already read the initial LP. Only construct a second
     // matrix in JS when a subsequent solve can actually patch this model.
-    const parsed = compatible ? parseLinearLp(problem.lp,problem.variables) : null;
-    // MIP branching is sensitive to the native reader's column order. Keep its cold
-    // order when a new objective introduces columns in a different sequence.
-    const integerOrderChanged = parsed?.integers.some(Boolean) && state.names
-        && state.names.some((name,i)=>Number(name.slice(1)) !== parsed.order[i]);
-    if (parsed && !integerOrderChanged && !state.parsed) {
-        const original = parseLinearLp(state.lp,problem.variables);
+    // The reader assigns column numbers on first sight. A different objective
+    // can change MIP branching. Detect that mismatch before parsing every row.
+    let orderMatches=true;
+    if(compatible && problem.lp.includes('\nGeneral\n')){
+        const seen=new Set();
+        for(const match of problem.lp.matchAll(/\bx\d+\b/g)){
+            const name=match[0];
+            if(seen.has(name))continue;
+            if(name!==state.names[seen.size]){orderMatches=false;break;}
+            seen.add(name);
+            if(seen.size===state.names.length)break;
+        }
+        orderMatches &&= seen.size===state.names.length;
+    }
+    const parsed = compatible && orderMatches ? parseLinearLp(problem.lp,problem.variables,false) : null;
+    if (parsed && !state.parsed) {
+        const original = parseLinearLp(state.lp,problem.variables,false);
         if (original) {
             const byName = new Map(original.rows.map(row=>[row.name,row]));
             const rows = Array.from({length:state.model.getDimensions().numRows},(_,i)=>byName.get(state.model.getRowName(i)));
@@ -86,7 +96,7 @@ export function acquireModel(highs, problem, reuse = true) {
             }
         }
     }
-    if (!parsed || integerOrderChanged || !state.parsed) {
+    if (!parsed || !state.parsed) {
         discardReusableModel(highs);
         const model = highs.createModel({format:'lp',data:problem.lp});
         state.stats.created++;

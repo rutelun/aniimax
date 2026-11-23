@@ -8,7 +8,13 @@ const expression = terms => terms.map(([v, c]) => `${c < 0 ? '-' : '+'} ${Math.a
 // production rate and physical recipe choice. A faster worker can still change how long
 // a kiln runs, provided its input availability and every competing job remain feasible.
 export async function refineStaffing(problem, incumbent, solve, context) {
-    if(!context?.report||!Object.keys(context.input?.roster?.dispatch??{}).length)
+    const input=context?.input;
+    const measured=Object.keys(input?.roster?.dispatch??{}).length>0;
+    // Crop travel and workshop phase loads depend on the placed buildings.
+    // Keep the audited production shift for layout, then staff the measured map.
+    if(input?.map_dispatch_pending && input.roster && !measured && input.always_running
+        && input.priorities?.[0]==='level_up' && Object.values(input.season_crop_minimums??{}).some(n=>n>0))return incumbent;
+    if(!context?.report || !measured)
         return refineShift(problem,incumbent,solve,context);
     const reports=new Map();
     const report=values=>{

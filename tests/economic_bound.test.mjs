@@ -71,7 +71,7 @@ test('measured income uses the dual bound of the relaxation to certify a physica
         primary_objective:[[0,1]],lp:'Maximize\n obj: x0\nEnd',
         recipe_options:[[0,'crop','Farmland',true,false,1]]};
     const native={getDimensions:()=>({numCols:1}),getColName:()=>'x0',
-        options:{set(options){assert.equal(options.mip_rel_gap,0);}},
+        options:{set(options){assert.equal(options.mip_rel_gap,.002);}},
         run(callbacks) {
             // Small relative gap above the target, target certified, and a
             // relaxed incumbent which itself exceeds the physical target.
@@ -89,4 +89,20 @@ test('measured income uses the dual bound of the relaxation to certify a physica
     assert.equal(result.upper,100.19);
     assert.equal(result.objective,100);
     assert.equal(result.proven,false);
+});
+
+test('an unresolved physical target resumes beyond the native gap', () => {
+    const problem={production_only:true,variables:1,variable_keys:['rate:crop#0'],
+        primary_objective:[[0,1]],lp:'Maximize\n obj: x0\nEnd',recipe_options:[]};
+    const gaps=[];
+    const native={getDimensions:()=>({numCols:1}),getColName:()=>'x0',
+        options:{set(options){gaps.push(options.mip_rel_gap);}},run(){},
+        getModelStatus:()=>7,getObjectiveValue:()=>100,getSolution:()=>({colValue:[100]}),dispose(){},
+        info:{get:name=>({mip_gap:gaps.at(-1),mip_dual_bound:gaps.at(-1)?100.2:100,primal_solution_status:2})[name]}};
+    const runtime={constants:{modelStatus:{optimal:7},solutionStatus:{feasible:2},
+        callbackType:{mipInterrupt:'interrupt'}},createModel:()=>native};
+    const result=solveEconomicBound(runtime,problem,{exact:true,relativeGap:.002,incomeTarget:100.1});
+    assert.deepEqual(gaps,[.002,0]);
+    assert.equal(result.upper,100);
+    assert.equal(result.proven,true);
 });

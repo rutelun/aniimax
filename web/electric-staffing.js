@@ -156,11 +156,14 @@ export async function refineElectricStaffing(problem,incumbent,solve,{pkg,input,
             const helpers=input?.crop_peak_helpers?.[member]??0;
             if(helpers>0 || p.crop.some(v=>original[v]>1e-9)){
                 const spare=(input?.roster?.members?.[member]?.count??0)-deployed-helpers;
-                const posts=p.work.filter(([v])=>keys[v].startsWith('staff:'));
+                // A resident's unit occupies a permanent post, just like a
+                // generator or climate assignment. Keep one copy harvesting
+                // while an idle copy of the same family takes that post.
+                const anchors=new Set(p.anchors);
+                const permanent=v=>keys[v].startsWith('staff:') || (anchors.has(v) && keys[v].startsWith('units:'));
+                const posts=p.work.filter(([v])=>permanent(v));
                 if(!provisional && !p.reserve && spare>0 && posts.length){
-                    // A previously idle copy can take a permanent climate or
-                    // generator post without occupying the copy harvesting.
-                    const mobile=p.work.filter(([v])=>!keys[v].startsWith('staff:'));
+                    const mobile=p.work.filter(([v])=>!permanent(v));
                     row(mobile,'<=',sum(mobile,original)+1e-9);
                     row(posts,'<=',sum(posts,original)+spare);
                 }else row(p.work,'<=',sum(p.work,original)+1e-9);

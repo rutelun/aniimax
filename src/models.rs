@@ -1344,6 +1344,7 @@ pub struct FacilityCounts {
     always_running: bool,
     always_running_recipes: Option<std::collections::HashSet<String>>,
     restrict_to_checked_recipes: bool,
+    recipe_site_limits: std::collections::HashMap<String,u32>,
     recipe_switching_facilities: Vec<String>,
 }
 
@@ -1394,6 +1395,7 @@ impl Default for FacilityCounts {
             always_running: false,
             always_running_recipes: None,
             restrict_to_checked_recipes: false,
+            recipe_site_limits: Default::default(),
             recipe_switching_facilities: Vec::new(),
         }
     }
@@ -1432,6 +1434,17 @@ impl FacilityCounts {
 
     pub fn checks_continuous_recipe(&self, name: &str) -> bool {
         self.always_running_recipes.as_ref().is_none_or(|names|names.contains(base_item_name(name)))
+    }
+
+    /// Counts already fixed by a candidate layout also bound each worker and
+    /// electric variant before the continuous-production rows are generated.
+    pub fn set_recipe_site_limits(&mut self, limits: std::collections::HashMap<String,u32>) {
+        self.recipe_site_limits = limits;
+    }
+
+    pub fn recipe_site_limit(&self, recipe: &ProductionItem) -> u32 {
+        let owned = self.get_count(&recipe.facility);
+        self.recipe_site_limits.get(base_item_name(&recipe.name)).map_or(owned, |&limit| owned.min(limit))
     }
 
     /// Limit a candidate solve to its chosen recipes, keeping the item catalog

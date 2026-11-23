@@ -10,6 +10,29 @@ use std::path::Path;
 use std::time::Duration;
 
 #[test]
+fn fixed_recipe_sites_shrink_the_capacity_product_at_equal_income() {
+    use aniimax::exact::write_lp;
+    let raw = walking_item("raw_input", "Mine", 10.0, "coins");
+    let mut processed = walking_item("output", "Chimney Kiln", 10.0, "coins");
+    processed.raw_materials = Some(vec!["raw_input".into()]);
+    processed.required_amount = Some(vec![1]);
+    processed.sell_value = 5.0;
+    let items = vec![raw, processed];
+    let mut counts = FacilityCounts::only(&[("Mine", 1, 1), ("Chimney Kiln", 8, 1)]);
+    counts.set_always_running(true);
+    let modules = ModuleLevels::default();
+    let model = |counts| write_lp(&items, "coins", counts, &modules, Goal::Earn { floors: &[] });
+    let income = |counts| solve_exact(&items, "coins", counts, &modules,
+        Goal::Earn { floors: &[] }, None, None).unwrap().rate_per_second;
+    let full = model(&counts);
+    let expected = income(&counts);
+    let mut limited = counts.clone();
+    limited.set_recipe_site_limits([("output".to_string(), 1)].into());
+    assert!(model(&limited).variables < full.variables);
+    assert!((income(&limited) - expected).abs() < 1e-9);
+}
+
+#[test]
 fn external_values_are_checked_before_skipping_continuous_reoptimization() {
     use aniimax::exact::{plan_from_values, write_lp};
     let items = vec![walking_item("checked_external", "Mine", 10.0, "coins")];

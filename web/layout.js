@@ -137,7 +137,8 @@ export function layOut(pieces, options = {}) {
     let tried = 0;
     // Within the open cells: the parts of it inside each cell add up to all of it.
     const inside = createInsideTest(cells);
-    const shapes = pieces.map(piece => (piece.cluster ? clusterOrientations(piece) : orientations(piece.members)));
+    const shapes = pieces.map(piece => piece.cluster ? clusterOrientations(piece)
+        : orientations(piece.members,options.fixedOrientation));
     const membersOf = piece => (piece.cluster ? [...piece.buildings.map(b => ({ ...b, weight: 0 })), ...piece.plots] : piece.members);
     const weightOf = piece => membersOf(piece).reduce((sum, m) => sum + m.weight, 0);
     const areaOf = piece => membersOf(piece).reduce((sum, m) => sum + m.w * m.h, 0);
@@ -215,11 +216,11 @@ export function layOut(pieces, options = {}) {
         sensitive.delete(key);
     };
     const free = (r, ignore) => {
-        if (!inside(r)) return false;
         if (packingMask && !placedRects.has(ignore)) {
             const blocked = packingMask.overlaps(r);
-            if (blocked !== undefined) return !blocked;
+            if (blocked !== undefined) return !blocked && inside(r);
         }
+        if (!inside(r)) return false;
         collisionStamp=(collisionStamp+1)>>>0;
         if(!collisionStamp){collisionSeen.fill(0);collisionStamp=1;}
         const right=Math.floor((r.x+r.w-EPSILON)/CELL),bottom=Math.floor((r.y+r.h-EPSILON)/CELL);
@@ -1037,7 +1038,10 @@ function improveStorageLayout(layout, pieces, cells, storage, maximum, fast, fix
         let open=freeStorageSites.get(members);
         if(!open){
             const occupied=[...members,...(fixed?layout.power.poles:[])];
-            open=candidates.filter(candidate=>!occupied.some(rect=>overlaps(candidate,rect)));
+            const mask=rectangleMask(cells);
+            for(const rect of occupied)mask?.add(rect);
+            open=candidates.filter(candidate=>!(mask?.overlaps(candidate) ?? occupied.some(rect=>overlaps(candidate,rect))))
+                .map(storage=>({storage,distances:[]}));
             freeStorageSites.set(members,open);
         }
         const destinations = members.filter(member => member.weight > 0).map(member => {
@@ -1047,12 +1051,16 @@ function improveStorageLayout(layout, pieces, cells, storage, maximum, fast, fix
             return { x, y, distance, weight: member.weight };
         });
         let best = null;
-        for (const candidate of open) {
+        for (const {storage:candidate,distances} of open) {
             if (others.some(rect => overlaps(candidate, rect))) continue;
             const x = candidate.x + candidate.w / 2, y = candidate.y + candidate.h / 2;
             let cost=0;
-            for(const member of destinations){
-                cost+=member.weight*Math.min(member.distance,Math.hypot(x-member.x,y-member.y));
+            for(let i=0;i<destinations.length;i++){
+                const member=destinations[i];
+                // Moving another storage changes its competing distance. This
+                // candidate and the pickup stay in place throughout the pass.
+                const distance=distances[i] ?? (distances[i]=Math.hypot(x-member.x,y-member.y));
+                cost+=member.weight*Math.min(member.distance,distance);
                 if(best&&cost>=best.cost-EPSILON)break;
             }
             if (!best || cost < best.cost - EPSILON) best = { storage: candidate, cost };
@@ -1158,10 +1166,10 @@ function packPlots(plots, squares, allowed, free, buildings, distanceToStorage) 
 
 // A rigid piece turned 0 to 3 quarter turns, each with its members' weighted center, used to
 // sweep it outward, and how far its members spread from that center.
-function orientations(members) {
+function orientations(members, fixedOrientation = false) {
     const seen = new Set();
     const out = [];
-    for (let turns = 0; turns < 4; turns++) {
+    for (let turns = 0; turns < (fixedOrientation ? 1 : 4); turns++) {
         const turned = members.map(m => turn(m, turns));
         const minX = Math.min(...turned.map(m => m.x));
         const minY = Math.min(...turned.map(m => m.y));

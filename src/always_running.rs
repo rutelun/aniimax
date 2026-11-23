@@ -74,8 +74,17 @@ fn pool_availability(model: &mut Model, mut factors: Vec<usize>) -> usize {
 pub(super) fn constrain<'a>(model: &mut Model<'a>, rates: &[(&'a ProductionItem, usize)],
     sites: &[(&'a ProductionItem, usize)], balances: &BTreeMap<&str, Vec<(usize, f64)>>,
     busy: &[Vec<(usize, f64)>], counts: &FacilityCounts) {
+    // Only occupied whole sites participate in the work-conservation equations.
+    // Fractional switch reservations are checked by the phase scheduler.
+    let checked_sites: Vec<_> = sites.iter().copied().filter(|(recipe, units)|
+        model.integer[*units] && model.bounds[*units].1 > 0.0 && counts.checks_continuous_recipe(&recipe.name)
+    ).collect();
+    let switching = counts.recipe_switching_relaxation();
+    if switching && checked_sites.is_empty() { return; }
     let recipes: HashMap<usize, &ProductionItem> = rates.iter().map(|(r,v)|(*v,*r)).collect();
-    let ingredients: std::collections::BTreeSet<&str> = rates.iter().filter(|(r,_)|counts.checks_continuous_recipe(&r.name))
+    let resource_sites = if switching { checked_sites.as_slice() } else { rates };
+    let ingredients: std::collections::BTreeSet<&str> = resource_sites.iter()
+        .filter(|(recipe,_)| counts.checks_continuous_recipe(&recipe.name))
         .flat_map(|(r,_)| r.raw_materials.iter().flatten().map(String::as_str)).collect();
     let mut resources = BTreeMap::new();
     for name in ingredients {
@@ -93,7 +102,8 @@ pub(super) fn constrain<'a>(model: &mut Model<'a>, rates: &[(&'a ProductionItem,
         let maximum = income + capacity.values().sum::<f64>();
         resources.insert(name, availability(model, terms, income, maximum.max(1e-9)));
     }
-    let season = season_budget(rates).map(|(budget,spent)| {
+    let uses_seeds = checked_sites.iter().any(|(r,_)| r.season.is_some_and(|s| s.seed_cost > 0.0));
+    let season = (!switching || uses_seeds).then(|| season_budget(rates)).flatten().map(|(budget,spent)| {
         let per_second = budget / PACE_UNIT;
         availability(model, spent.into_iter().map(|(v,c)|(v,-c)).collect(), per_second, per_second.max(1e-9))
     });
@@ -148,13 +158,8 @@ pub(super) fn constrain<'a>(model: &mut Model<'a>, rates: &[(&'a ProductionItem,
     for &(recipe, rate) in rates {
         rates_by_site.entry(site_key(recipe)).or_default().push((recipe, rate));
     }
-    for &(recipe, units) in sites {
-        if !counts.checks_continuous_recipe(&recipe.name) { continue; }
-        // Fractional recipe-switching reservations are relaxed proposals, not
-        // whole-day active recipes. Their executable phases need separate checking.
-        if !model.integer[units] { continue; }
+    for (recipe, units) in checked_sites {
         let max = model.bounds[units].1;
-        if max <= 0.0 { continue; }
         let selected = &rates_by_site[&site_key(recipe)];
         let load: Vec<_> = selected.iter().map(|(r,v)|(*v,r.production_time)).collect();
         let mut factors: Vec<usize> = recipe.raw_materials.iter().flatten()

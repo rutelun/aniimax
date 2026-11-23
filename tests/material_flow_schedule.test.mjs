@@ -1,3 +1,5 @@
+import {materialUpgradeBound} from '../web/material-plan-draft.js';
+import {courierNeedsSpare,mappedMaterialPlan} from '../web/mapped-material-schedule.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {materialFlowSchedule} from '../web/material-flow-schedule.js';
@@ -122,6 +124,17 @@ test('a relaxed workshop workload below one full site skips the integer candidat
     assert.equal(trials,0);
 });
 
+test('whole recipe staffing accounts for walking and operators sharing the same machine',async()=>{
+    const {canStaffWholeRecipes}=await import('../web/recipe-switch-search.js');
+    const input={alwaysRunning:true,daySeconds:100,workerCapacity:{a:1,b:1},backgroundWorkers:{a:.1},
+        jobs:[{recipe:'planks',seconds:1,batches:10,workers:{a:1.2}}]};
+    assert.equal(canStaffWholeRecipes(input),false);
+    input.jobs.push({recipe:'ore',seconds:1,batches:10,workers:{b:1}});
+    assert.equal(canStaffWholeRecipes(input),false);
+    input.jobs[1].recipe='planks';
+    assert.equal(canStaffWholeRecipes(input),true);
+});
+
 test('the same timber output can use the two assumed workers already on shift',async()=>{
     const {checkMaterialDraft}=await import('../web/recipe-switch-search.js');
     const sample=setup(),facility='Woodworking Bench';
@@ -154,4 +167,36 @@ test('one manual raw site stays on shift while a slower electric processor switc
     assert.deepEqual(checked.switches,[40]);
     assert.ok(schedule.phases.every(p=>p.assignments.some(a=>a.job===raw.id&&a.batches===p.duration)));
     assert.equal(schedule.phases.flatMap(p=>p.assignments).filter(a=>a.job==='electric raw').reduce((s,a)=>s+a.batches,0),20);
+});
+
+test('a fully occupied raw operator only needs relief for actual delivery work',()=>{
+    assert.equal(courierNeedsSpare(2.2e-17,1,1),false);
+    assert.equal(courierNeedsSpare(1e-8,1,1),true);
+    assert.equal(courierNeedsSpare(.1,.9,1),false);
+});
+
+test('upgrade bound accounts for stock and raw material reserved by other recipes',()=>{
+    const catalog=new Map(recipes.map((name,i)=>[name,{raw_materials:[i?recipes[i-1]:'wood_block'],
+        required_amount:[2],yield_amount:1}]));
+    catalog.set('other',{raw_materials:['wood_block'],required_amount:[4]});
+    const plan={level_up_preview:{requirements:[{name:recipes.at(-1),have:3,need:13}]},
+        byproduct_rates:[['Wood Blocks',12]],
+        coin_items:[{status:'producing',item_name:'other',busy_units:1,cycle_time:1}]};
+    assert.equal(materialUpgradeBound(plan,catalog),20);
+    const [timber]=plan.level_up_preview.requirements;
+    timber.per_second=1;
+    assert.equal(materialUpgradeBound(plan,catalog),10);
+    plan.level_up_preview.requirements.push({name:'coins',have:0,need:75,per_second:5});
+    assert.equal(materialUpgradeBound(plan,catalog),15);
+    plan.level_up_preview.requirements.pop();
+    delete catalog.get(recipes[0]).required_amount;
+    assert.equal(materialUpgradeBound(plan,catalog),0);
+});
+
+
+test('workshop dispatch skips the roster search when a fixed income stream sets the upgrade time',()=>{
+    const input={priorities:['level_up']};
+    const plan={crop_peaks:{completion:20},comparison_seed:{},level_up_preview:{seconds:15,
+        requirements:[{name:'coins',need:75,have:0,per_second:5}]}};
+    assert.equal(mappedMaterialPlan({get_all_items:()=>'[]'},null,{plan,input}),null);
 });

@@ -16,7 +16,6 @@ export function solveEconomicBound(highs, problem, {seed, scope = [], timeLimit 
         const precision = {mip_abs_gap:0, mip_rel_gap:relativeGap,
             primal_feasibility_tolerance:discovery?1e-7:1e-9, mip_feasibility_tolerance:discovery?1e-8:1e-9};
         const certifyIncome = exact && !discovery && relativeGap > 0 && Number.isFinite(incomeTarget) && incomeTarget > 0;
-        if (certifyIncome) precision.mip_rel_gap = 0;
         const nativeOptions = exact ? precision : planSearchOptions({time_limit:timeLimit,...precision});
         if (discovery) nativeOptions.mip_max_nodes = Math.ceil(128*timeLimit);
         model.options.set(nativeOptions);
@@ -59,6 +58,13 @@ export function solveEconomicBound(highs, problem, {seed, scope = [], timeLimit 
         if(exact && model.getModelStatus()===statuses.infeasible){
             model.clearSolver();
             model.options.set({presolve:'off'});
+            run();
+        }
+        // A native gap stop can leave the physical target between the
+        // incumbent and its upper bound. Resume that case at full precision.
+        if (certifyIncome && model.getModelStatus() === statuses.optimal && model.info.get('mip_gap') > 0
+            && model.getObjectiveValue() < incomeTarget && model.info.get('mip_dual_bound') > incomeTarget) {
+            model.options.set({mip_rel_gap:0});
             run();
         }
         const status = model.getModelStatus();

@@ -32,6 +32,9 @@ test('measured dispatch proves the attainable whole-post pace before optimizing 
     const solve=(solver=solveModel)=>tryPriorityPlan(pkg,input,{highs,solveModel:solver,initialWitness});
     const plan=await solve();
     assert.equal(plan.comparison_goals.pace,.5);
+    const deferred=await tryPriorityPlan(pkg,input,{highs,solveModel,initialWitness:{...initialWitness,goals:{pace:.75}}});
+    assert.equal(deferred.comparison_goals.pace,.5);
+    assert.equal(deferred.rate_per_second,plan.rate_per_second);
     assert.equal(plan.rate_per_second,1);
     assert.equal(plan.continuous_production_checked,true);
     // A tied relaxed shift may fail the first full-catalogue check. The
@@ -44,6 +47,21 @@ test('measured dispatch proves the attainable whole-post pace before optimizing 
     assert.ok(restores>1);
     assert.equal(alternate.rate_per_second,1);
     assert.equal(alternate.continuous_production_checked,true);
+    // The fastest shift leaves the site empty. The income shift runs it
+    // within the native pace slack and is a valid seed for the wider search.
+    const withSlack=(payload,stage,key)=>{
+        const model=JSON.parse(build(payload,stage,key));
+        model.lp=model.lp.replace('x2 - 0.5 x1 <= 0','x2 + 0.00005 x1 <= 1')
+            .replace('prior: x2 >= 1','prior: x2 >= 0.9999');
+        return JSON.stringify(model);
+    };
+    let warm;
+    const result=await tryPriorityPlan({...pkg,exact_priority_problem:withSlack,exact_problem:withSlack},input,{
+        highs,solveModel,initialWitness:{...initialWitness,goals:{pace:1}},onIncumbent:plan=>{warm=plan;},
+    });
+    assert.equal(result,null);
+    assert.equal(warm?.rate_per_second,1);
+    assert.equal(warm?.continuous_production_checked,true);
     fullCapacity=.5;
     assert.equal(await solve(),null);
 });

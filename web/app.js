@@ -38,7 +38,7 @@ import { aniimoPortrait, attachRosterPicker, rosterCatalogId, rosterCatalogFamil
 import { placeRosterCopy, ROSTER_ROW_SIZE, rosterSlotsFor, swapRosterSlots } from './roster-slots.js';
 import { scheduleRosterCopies } from './roster-work.js?v=measured-walking';
 import { buildDispatch, rosterJobSwitching, TASK_SWITCHING } from './task-switching.js?v=base-travel';
-import { buildReactiveDispatch, permanentWorkers, measuredDispatchWork, routeDispatchKey, attachDeliveryFlows } from './reactive-dispatch.js';
+import { measureRosterDispatch, buildReactiveDispatch, permanentWorkers, measuredDispatchWork, routeDispatchKey, attachDeliveryFlows } from './reactive-dispatch.js';
 import { recommendBestTeam, cropWorkshopItems } from './best-team.js?v=team-support';
 import { groupAniimoAssignments } from './aniimo-assignment-groups.js?v=generator-assignments';
 import facilityIcons from './facility-icons.json' with { type: 'json' };
@@ -2954,10 +2954,10 @@ function measureRosterRoutes(layout,plan,previous) {
     const { members, busy } = rosterWorkload(plan);
     const permanent = permanentWorkers(plan, members, RESIDENT_FACILITIES);
     const context={layout, recipes:recipeIndex, members, busy, permanent, routes:plan.roster_routes || []};
-    const policy = buildReactiveDispatch({...context, previous});
-    const delivery=measuredDispatchWork(plan,policy,recipeIndex).delivery;
-    plan.crop_peaks=selectCropPeakTeam(cropPeakInput({...context,delivery,limit:ANIIMO_MAX[layoutHomeLevel()-1]}));
-    return policy;
+    const limit=ANIIMO_MAX[layoutHomeLevel()-1];
+    const measured=measureRosterDispatch(context,plan,previous,lastPlanInput?.fixed_homeland?0:limit);
+    plan.crop_peaks=selectCropPeakTeam(cropPeakInput({...measured.context,delivery:measured.delivery,limit}));
+    return measured.policy;
 }
 
 function refineReactiveDispatch(layout, plan) {
@@ -3688,17 +3688,15 @@ function rosterWorkload(plan) {
     });
     const busy = members.map(() => 0);
     const walking = members.map(() => 0);
-    const anchored = members.map(() => 0);
+    const anchored = permanentWorkers(plan,members,RESIDENT_FACILITIES);
     (plan.coin_items || []).forEach(step => {
         if (step.crew == null || step.status !== 'producing' || !members[step.crew]) return;
         const resident = RESIDENT_FACILITIES.has(step.facility);
         busy[step.crew] += resident ? step.facility_count : (step.busy_units ?? step.facility_count);
-        if (resident) anchored[step.crew] += step.facility_count;
     });
     (plan.staffing || []).forEach(([, member, share]) => {
         if (!members[member]) return;
         busy[member] += share;
-        anchored[member] += share;
     });
     (plan.movement_staffing || []).forEach(([member, travel]) => {
         if (!members[member]) return;
@@ -3804,7 +3802,11 @@ function renderRosterSummary(plan) {
     });
     for (const [member, share] of plan.job_switching || []) busy[member] += share;
     const have = roster.reduce((sum, a) => sum + a.count, 0);
-    const regular = busy.map((load, member) => Math.min(members[member].count, Math.max(anchored[member], Math.ceil(load - 1e-6),Math.ceil(Math.max(0,...(plan.recipe_schedule?.workerProfiles?.[member]||[]))-1e-6),plan.crop_peaks?.counts?.[member]||0)));
+    const regular = busy.map((load, member) => {
+        const demand=Math.max(0,load,anchored[member],plan.crop_peaks?.counts?.[member]||0,
+            ...(plan.recipe_schedule?.workerProfiles?.[member]||[]));
+        return Math.min(members[member].count,Math.max(0,Math.ceil(demand-1e-6)));
+    });
     const assigned = [...regular];
     for (const [member, share] of plan.dedicated_delivery || []) {
         busy[member] += share;

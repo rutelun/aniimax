@@ -69,6 +69,62 @@ export function requiredSiteRows(problem, parsed, positiveObjective=false) {
     return groups.map((group,i)=>` required_site_${i}: ${group.map(v=>'x'+v).join(' + ')} >= 1`);
 }
 
+// A required chain can leave only one kiln per recipe even when the player
+// owns four kilns. Deduce those limits from the model's actual capacity rows.
+export function requiredSiteCapacity(problem) {
+    if(!problem.recipe_options?.length || !problem.recipe_variables?.length)return;
+    const model=parseLinearLp(problem.lp,problem.variables,false);
+    if(!model)return;
+    const sites=new Map(),owners=new Map();
+    for(const [v,name] of problem.recipe_variables){
+        if(!model.integers[v] || !/^(units:|continuous_site:)/.test(problem.variable_keys[v]))continue;
+        if(!sites.has(name))sites.set(name,[]);
+        sites.get(name).push(v);owners.set(v,name);
+    }
+    const groups=requiredRecipeSites(problem,model);
+    const required=groups.filter(group=>{
+        const name=owners.get(group[0]);
+        return name!=null && group.every(v=>owners.get(v)===name);
+    });
+    if(!required.length)return;
+    const limits={};
+    for(const {hi,coefficients} of model.rows){
+        if(!Number.isSafeInteger(hi) || hi<1 || coefficients.some(([,c])=>c<0))continue;
+        const columns=new Set(coefficients.filter(([v,c])=>c>=1 && owners.has(v)).map(([v])=>v));
+        const needed=new Set(required.filter(group=>group.every(v=>columns.has(v))).map(group=>owners.get(group[0])));
+        if(!needed.size)continue;
+        for(const name of new Set([...columns].map(v=>owners.get(v)))){
+            const group=sites.get(name);
+            const cap=hi-needed.size+Number(needed.has(name));
+            if(cap>=0 && group.every(v=>columns.has(v)) && group.some(v=>model.bounds[v][1]>cap)){
+                limits[name]=Math.min(limits[name]??Infinity,cap);
+            }
+        }
+    }
+    if(!Object.keys(limits).length)return;
+    const requirements=groups.map(group=>{
+        const name=owners.get(group[0]);
+        const one=limits[name]===1 && group.every(v=>owners.get(v)===name);
+        return {keys:group.map(v=>problem.variable_keys[v]),one};
+    });
+    return {limits,requirements};
+}
+
+// A smaller model can renumber columns. Retain all alternative sites from the
+// original proof before requiring a whole building for its material output.
+export function applyRequiredSites(problem,capacity){
+    if(!capacity)return problem;
+    const index=new Map(problem.variable_keys.map((key,v)=>[key,v]));
+    const rows=new Set();
+    for(const {keys,one} of capacity.requirements){
+        const sites=keys.map(key=>index.get(key));
+        if(sites.every(v=>v!=null))rows.add(sites.map(v=>'x'+v).join(' + ')+(one?' = 1':' >= 1'));
+    }
+    if(!rows.size)return problem;
+    const constraints=[...rows].map((rhs,i)=>' reserved_recipe_'+i+': '+rhs);
+    return {...problem,lp:problem.lp.replace('\nBounds\n','\n'+constraints.join('\n')+'\nBounds\n')};
+}
+
 // This is an upper bound only. A plan reaching it has to be checked against
 // every integer decision and every continuous-production constraint.
 export function priorityCeiling(highs, problem, goal, onOptimum) {

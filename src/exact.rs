@@ -522,7 +522,8 @@ fn add_movement_work<'a>(model: &mut Model<'a>, rates: &[(&'a ProductionItem, us
                         recipe, member, crop: crop.clone(), mobile: true, seconds, travel });
                     demand.push((allocation, 1.0));
                     busy[member].push((allocation, seconds + travel));
-                    if crop.is_some() {
+                    // For a sole recipient the batch balance below already fixes its share.
+                    if crop.is_some() && !(counts.recipe_switching_relaxation() && policy.len() == 1 && entry.share == 1.0) {
                         model.constrain(vec![(allocation, 1.0), (rate, -entry.share)], ComparisonOp::Eq, 0.0);
                     }
                     continue;
@@ -769,8 +770,15 @@ fn build_model<'a>(
     let mut rate_of: Vec<(&ProductionItem, usize)> = Vec::new();
     let mut units_of: Vec<(&ProductionItem, usize)> = Vec::new();
     for &recipe in eligible_recipes.iter().filter(|recipe| facility_counts.includes_candidate_recipe(&recipe.name)) {
+        // Dispatch gives an unassigned processor zero batches. Its staffed
+        // variant, deliveries and routes therefore cannot run on this map.
+        if let (Some(member), Some(policy)) = (recipe.crew, facility_counts.dispatch(recipe, "Production")) {
+            if facility_counts.recipe_switching_relaxation() && !policy.iter().any(|assignment| assignment.member == member && assignment.share > 0.0) {
+                continue;
+            }
+        }
         let rate = model.add(-seed_cost(recipe), (0.0, f64::INFINITY), false, VarKind::Rate(recipe));
-        let max = facility_counts.get_count(&recipe.facility) as f64;
+        let max = facility_counts.recipe_site_limit(recipe) as f64;
         let dispatched = facility_counts.dispatch_production(recipe);
         let units = model.add(0.0, (0.0, max), !facility_counts.takes_turns(recipe) && !dispatched, VarKind::Units(recipe));
         model.constrain(vec![(rate, recipe.production_time), (units, -1.0)],
@@ -795,7 +803,7 @@ fn build_model<'a>(
         let kind = if facility_counts.always_running() {
             VarKind::ContinuousSite { key: format!("{}|{}", recipe.facility, crate::models::base_item_name(&recipe.name)), recipe }
         } else { VarKind::Extra };
-        let reserved = model.add(0.0, (0.0, facility_counts.get_count(&recipe.facility) as f64), true, kind);
+        let reserved = model.add(0.0, (0.0, facility_counts.recipe_site_limit(recipe) as f64), true, kind);
         let mut terms: Vec<_> = variants.iter().map(|(_, unit)| (*unit, 1.0)).collect();
         terms.push((reserved, -1.0));
         model.constrain(terms, ComparisonOp::Le, 0.0);
@@ -1303,10 +1311,20 @@ fn build_model<'a>(
         }
         for group in production_groups.values() {
             let policy = facility_counts.dispatch(group[0].0, "Production").unwrap();
-            for member in 0..crew.members.len() {
-                let share = policy.iter().find(|e| e.member == member).map_or(0.0, |e| e.share);
-                let terms = group.iter().map(|(r, rate)| (*rate, if r.crew == Some(member) { 1.0 - share } else { -share })).collect();
-                model.constrain(terms, ComparisonOp::Eq, 0.0);
+            if !facility_counts.recipe_switching_relaxation() {
+                for member in 0..crew.members.len() {
+                    let share = policy.iter().find(|e| e.member == member).map_or(0.0, |e| e.share);
+                    let terms = group.iter().map(|(r, rate)| (*rate, if r.crew == Some(member) { 1.0 - share } else { -share })).collect();
+                    model.constrain(terms, ComparisonOp::Eq, 0.0);
+                }
+                continue;
+            }
+            for assignment in policy {
+                let terms: Vec<_> = group.iter().filter_map(|(r, rate)| {
+                    let share = if r.crew == Some(assignment.member) { 1.0 - assignment.share } else { -assignment.share };
+                    (share != 0.0).then_some((*rate, share))
+                }).collect();
+                if !terms.is_empty() { model.constrain(terms, ComparisonOp::Eq, 0.0); }
             }
         }
         if facility_counts.uses_work_routes() {
@@ -1332,7 +1350,11 @@ fn build_model<'a>(
                 if share == Some(0.0) { continue; }
                 let seconds = facility_counts.hauling_seconds_for_member(recipe, member);
                 let staff = model.add(0.0, (0.0, f64::INFINITY), false, VarKind::HaulingStaff { recipe, member, seconds });
-                if let Some(share) = share { model.constrain(vec![(staff, 1.0), (rate, -share)], ComparisonOp::Eq, 0.0); }
+                if let Some(share) = share {
+                    if !(facility_counts.recipe_switching_relaxation() && share == 1.0 && policy.is_some_and(|entries| entries.len() == 1)) {
+                        model.constrain(vec![(staff, 1.0), (rate, -share)], ComparisonOp::Eq, 0.0);
+                    }
+                }
                 deliveries.push((staff, 1.0));
                 busy[member].push((staff, seconds));
             }

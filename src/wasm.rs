@@ -731,6 +731,8 @@ pub struct JsPlanInput {
     pub always_running_recipes: Option<Vec<String>>,
     #[serde(default)]
     pub restrict_to_checked_recipes: bool,
+    #[serde(default)]
+    pub recipe_site_limits: std::collections::HashMap<String,u32>,
     /// `"coins"` (matches `ProductionItem::sell_currency`), or a byproduct
     /// pseudo-currency target: `"wood_blocks"`/`"mineral_sand"`; see
     /// `crate::optimizer::byproduct_resource_name`.
@@ -1579,6 +1581,18 @@ pub fn find_plan(input_json: &str, on_progress: Option<js_sys::Function>) -> Str
     }
 }
 
+/// Cycle lengths for a material draft. The final model still checks every
+/// proposed worker, recipe variant and electric tier at its requested rate.
+#[wasm_bindgen]
+pub fn material_recipe_cycles(input_json: &str) -> String {
+    let Ok(prepared) = prepare_exact_input(input_json) else { return "[]".into() };
+    let cycles: Vec<_> = prepared.items.iter()
+        .filter(|r| prepared.facility_counts.takes_turns(r))
+        .map(|r| (&r.name, r.production_time))
+        .collect();
+    serde_json::to_string(&cycles).unwrap_or_default()
+}
+
 /// With "prioritize byproducts" on, the exact planner first finds the most of each byproduct the
 /// facilities can make: one model per byproduct, `[{"resource", "lp", "variables", "tiebreak"}]` (see
 /// [`exact_problem`] for the format). The caller solves each and passes
@@ -2159,6 +2173,7 @@ impl PreparedInput {
         let mut facility_counts = input.facility_counts();
         facility_counts.set_always_running(input.always_running);
         facility_counts.set_always_running_recipes(input.always_running_recipes.clone());
+        facility_counts.set_recipe_site_limits(input.recipe_site_limits.clone());
         facility_counts.restrict_to_checked_recipes(input.always_running && input.restrict_to_checked_recipes);
         facility_counts.set_recipe_switching_relaxation(input.recipe_switching_relaxation);
         facility_counts.set_recipe_switching_facilities(input.recipe_switching_facilities.clone());

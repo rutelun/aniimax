@@ -150,6 +150,11 @@ test('a measured material trial survives if either scheduling method can run it'
                 'Bounds',' x0 >= 0',' x1 >= 0','End'].join('\n')})};
     }
     assert.equal(canFillSwitchingWorkshop(model(.75,.75),highs,trial),false);
+    const splitCrew={...trial,roster:{...trial.roster,members:[{count:1},{count:1}]}};
+    assert.equal(canFillSwitchingWorkshop(model(1,.5),highs,splitCrew),true,
+        'one operator runs the steady raw site while another operates the temporary one');
+    assert.equal(canFillSwitchingWorkshop(model(1.5,0),highs,splitCrew),false,
+        'one operator cannot run both simultaneous sites');
     assert.equal(canFillSwitchingWorkshop(model(.75,.25),highs,trial),true,'whole-site phases can share a recipe');
     assert.equal(canFillSwitchingWorkshop(model(1.5,0),highs,trial),true,'direct material flow may use a partial site-day');
     assert.equal(canFillSwitchingWorkshop(model(1.5,8e-8),highs,trial),true,'unreported trace rates do not require a second job');
@@ -218,6 +223,61 @@ test('direct raw processors in two chains can use independent change times',()=>
     assert.equal(canFillSwitchingWorkshop(model(0),highs,trial),true);
 });
 
+test('raw operators must cover simultaneous starts in both workshops',()=>{
+    const facilities=['Woodworking Bench','Chimney Kiln'], names=['rough_lumber','coarse_sifted_ore'];
+    const trial={always_running:true,recipe_switching_normal_only:true,recipe_switching_facilities:facilities,
+        facilities:Object.fromEntries(facilities.map(f=>[f,[{count:4,level:4}]]))};
+    const pkg={exact_priority_problem:()=>JSON.stringify({variables:2,
+        variable_keys:names.map(n=>'rate:'+n+'__byowned:0#0'),
+        recipe_options:names.map((n,v)=>[v,n,facilities[v],false,false,1]),switching_rates:[[0,null],[1,null]],
+        lp:'Maximize\n obj: x0\nSubject To\n bench: x0 = 1.25\n kiln: x1 = 1.5\nBounds\n x0 >= 0\n x1 >= 0\nEnd'})};
+    const possible=count=>canFillSwitchingWorkshop(pkg,highs,{...trial,roster:{members:[{count}]}});
+    assert.equal(possible(3),false);
+    assert.equal(possible(4),true);
+});
+
+test('the same raw crew pays both workshops’ measured walking time at dawn',()=>{
+    const facilities=['Woodworking Bench','Chimney Kiln'], names=['rough_lumber','coarse_sifted_ore'];
+    const trial={always_running:true,recipe_switching_normal_only:true,recipe_switching_facilities:facilities,
+        facilities:Object.fromEntries(facilities.map(f=>[f,[{count:4,level:4}]]))};
+    const keys=[...names.map(n=>'rate:'+n+'__byowned:0#0'),...names.map(n=>'route:'+n+'__byowned:0:owned:0:None:true#0')];
+    const pkg={exact_priority_problem:()=>JSON.stringify({variables:4,variable_keys:keys,
+        recipe_options:names.map((n,v)=>[v,n,facilities[v],false,false,1]),switching_rates:[[0,null],[1,null]],
+        staffing_pools:[{work:[[2,1.2],[3,1.2]]}],
+        lp:'Maximize\n obj: x0\nSubject To\n bench: x0 = 1.25\n kiln: x1 = 1.5\nBounds\n x0 >= 0\n x1 >= 0\n x2 >= 0\n x3 >= 0\nEnd'})};
+    const possible=count=>canFillSwitchingWorkshop(pkg,highs,{...trial,roster:{members:[{count}]}});
+    assert.equal(possible(4),false);
+    assert.equal(possible(5),true);
+});
+
+test('a whole-site recipe can cover its mandatory walk by sharing work with another operator',()=>{
+    const facility='Woodworking Bench',name='standard_planks',keys=[
+        'rate:'+name+'__byowned:0#0','rate:'+name+'__byowned:1#0','route:'+name+'__byowned:0:owned:0:None:true#0'];
+    const trial={always_running:true,recipe_switching_facilities:[facility],facilities:{[facility]:[{count:1,level:2}]},
+        roster:{members:[{count:1},{count:1}]}};
+    const possible=(a,b)=>canFillSwitchingWorkshop({exact_priority_problem:()=>JSON.stringify({variables:3,
+        variable_keys:keys,recipe_options:[0,1].map(v=>[v,name,facility,false,false,1]),switching_rates:[[0,null],[1,null]],
+        staffing_pools:[{work:[[2,1.2]]}],lp:'Maximize\n obj: x0\nSubject To\n a: x0 = '+a+'\n b: x1 = '+b+
+            '\nBounds\n x0 >= 0\n x1 >= 0\n x2 >= 0\nEnd'})},highs,trial);
+    assert.equal(possible(1,0),false);
+    assert.equal(possible(.5,.5),true);
+});
+
+test('a raw site can switch only to a tier that can work through its accumulated input',()=>{
+    const facility='Woodworking Bench', names=['rough_lumber','standard_planks','laminated_beams','densified_timber_component'];
+    const trial={always_running:true,recipe_switching_normal_only:true,recipe_switching_facilities:[facility],
+        facilities:{[facility]:[{count:4,level:4}]},roster:{members:[{count:2},{count:1}]}};
+    const keys=names.map((n,i)=>'rate:'+n+'__byowned:'+(i?1:0)+'#0');
+    for(const n of names.slice(1))keys.push('route:'+n+'__byowned:1:owned:1:None:true#0');
+    const possible=lastCycle=>canFillSwitchingWorkshop({exact_priority_problem:()=>JSON.stringify({variables:7,
+        variable_keys:keys,recipe_options:names.map((n,i)=>[i,n,facility,false,false,1]),switching_rates:names.map((_,i)=>[i,null]),
+        staffing_pools:[{}, {work:[[4,1.2],[5,1.2],[6,lastCycle]]}],
+        lp:'Maximize\n obj: x0\nSubject To\n'+[1.5,.2,.05,.01].map((v,i)=>' c'+i+': x'+i+' = '+v).join('\n')+
+            '\nBounds\n'+keys.map((_,i)=>' x'+i+' >= 0').join('\n')+'\nEnd'})},highs,trial);
+    assert.equal(possible(1.2),false);
+    assert.equal(possible(1),true);
+});
+
 test('disjoint short-phase workloads reject a workshop before integer search',()=>{
     const facility='Chimney Kiln',trial={always_running:true,facilities:{[facility]:[{count:2,level:4}]}};
     const loads=[.19,.01,.8],names=['brick','plate','ore'];
@@ -244,4 +304,38 @@ test('a repeating direct ore schedule must process yesterday’s replenished int
     assert.equal(canFillSwitchingWorkshop(model(1.5/8),highs,config),true);
     assert.equal(canFillSwitchingWorkshop(model(1.46/8),highs,config),false);
     assert.equal(canFillSwitchingWorkshop(model(.5),highs,config),true,'whole sites can switch even with surplus');
+});
+
+test('a locked upgrade pace reserves distinct sites without counting the same material twice',async()=>{
+    const {requiredSiteCapacity,applyRequiredSites}=await import('../web/priority-ceilings.js');
+    const problem={variables:7,variable_keys:['rate:ore','units:ore','rate:plate','units:plate',
+        'rate:spare','units:spare','pace#0'],
+        recipe_options:[[0,'ore'],[2,'plate'],[4,'spare']],
+        recipe_variables:[[0,'ore'],[1,'ore'],[2,'plate'],[3,'plate'],[4,'spare'],[5,'spare']],
+        lp:['Maximize',' obj: x4','Subject To',' raw: x0 - x1 <= 0',' finish: x2 - x3 <= 0',
+            ' spare: x4 - x5 <= 0',' ore_balance: x0 - x2 >= 0',' upgrade: x2 - x6 >= 0',
+            ' duplicate: x2 - x6 >= 0',' kilns: x1 + x3 + x5 <= 2','Bounds',
+            ...[0,2,4].map(v=>' x'+v+' >= 0'),...[1,3,5].map(v=>' 0 <= x'+v+' <= 2'),
+            ' 1 <= x6 <= 1','General',' x1',' x3',' x5','End'].join('\n')};
+    const capacity=requiredSiteCapacity(problem);
+    assert.deepEqual(capacity.limits,{ore:1,plate:1,spare:0});
+    assert.equal(highs.solve(applyRequiredSites(problem,capacity).lp).ObjectiveValue,highs.solve(problem.lp).ObjectiveValue);
+    assert.equal(requiredSiteCapacity({...problem,lp:problem.lp.replace('1 <= x6','0 <= x6')}),undefined);
+});
+
+test('a shared output can be supplied by either workshop and keeps both options when columns move',async()=>{
+    const {requiredSiteCapacity,applyRequiredSites}=await import('../web/priority-ceilings.js');
+    const keys=['rate:ore#a','units:ore#a','rate:ore#b','units:ore#b','rate:plate','units:plate','pace#0'];
+    const p={variables:keys.length,variable_keys:keys,recipe_options:[[0,'ore'],[2,'ore'],[4,'plate']],
+        recipe_variables:[[0,'ore'],[1,'ore'],[2,'ore'],[3,'ore'],[4,'plate'],[5,'plate']],
+        lp:['Maximize',' obj: x0','Subject To',' a: x0 - x1 <= 0',' b: x2 - x3 <= 0',' c: x4 - x5 <= 0',
+            ' balance: x0 + x2 - x4 >= 0',' target: x4 - x6 >= 0',' cap: x1 + x3 + x5 <= 2',
+            'Bounds',...[0,2,4].map(v=>' x'+v+' >= 0'),...[1,3,5].map(v=>' 0 <= x'+v+' <= 2'),
+            ' 1 <= x6 <= 1','General',' x1',' x3',' x5','End'].join('\n')};
+    const capacity=requiredSiteCapacity(p);
+    assert.deepEqual(capacity.limits,{ore:1,plate:1});
+    const reordered={...p,variable_keys:keys.toReversed()};
+    assert.match(applyRequiredSites(reordered,capacity).lp,/reserved_recipe_\d+: x5 \+ x3 = 1/);
+    const partial={...p,variable_keys:keys.map(k=>k==='units:ore#b'?'different':k)};
+    assert.doesNotMatch(applyRequiredSites(partial,capacity).lp,/reserved_recipe_\d+: x1 = 1/);
 });

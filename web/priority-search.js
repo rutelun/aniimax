@@ -8,10 +8,13 @@ export const CURRENCY_GAP_FACTOR = 1 + CURRENCY_RELATIVE_GAP;
 export function productionObjective(problem,{prune=false}={}) {
     if (!problem.primary_objective?.length) return problem;
     const objective = problem.primary_objective.map(([v,c])=>`${c<0?'-':'+'} ${Math.abs(c)} x${v}`).join(' ');
-    const zero = new Set(prune ? problem.production_zero || [] : []);
-    const lp = problem.lp.replace(/Maximize\n[\s\S]*?\nSubject To\n/,
-        `Maximize\n obj: ${objective}\nSubject To\n`).replace(/^ (?:0 <= x(\d+) <= [^\n]+|x(\d+) >= 0)$/gm,
+    let lp = problem.lp.replace(/Maximize\n[\s\S]*?\nSubject To\n/,
+        `Maximize\n obj: ${objective}\nSubject To\n`);
+    if (prune && problem.production_zero?.length) {
+        const zero = new Set(problem.production_zero);
+        lp = lp.replace(/^ (?:0 <= x(\d+) <= [^\n]+|x(\d+) >= 0)$/gm,
             (line,a,b)=>zero.has(Number(a??b)) ? ` 0 <= x${a??b} <= 0` : line);
+    }
     return {...problem,production_only:true,tiebreak:[],lp};
 }
 

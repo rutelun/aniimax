@@ -71,16 +71,18 @@ function startSample(worker,sample) {
 function normalizedShares(tallies,copy) {
     const shares={};
     for(const [key,row] of tallies){
-        const total=[...row.values()].reduce((a,b)=>a+b,0);
-        shares[key]=[...row].map(([index,value])=>copy?[index,value/total]:{member:index,share:value/total});
+        const total=[...row.values()].reduce((a,b)=>a+b.count,0);
+        shares[key]=[...row].map(([index,value])=>copy?[index,value.count/total]:{member:index,share:value.count/total});
     }
     return shares;
 }
 
-function record(tallies,key,index) {
+function shareCounter(tallies,key,index) {
     let row=tallies.get(key);
     if(!row)tallies.set(key,row=new Map());
-    row.set(index,(row.get(index)||0)+1);
+    let counter=row.get(index);
+    if(!counter)row.set(index,counter={count:0});
+    return counter;
 }
 
 // When several plots become ready simultaneously, keep their original order.
@@ -148,21 +150,35 @@ function simulateDay(plots,end,counts,permanent,outside,allocation,trackShares) 
         const fixed=permanent[id]||0, mobile=Math.max(0,n-fixed);
         return Array.from({length:mobile},(_,copy)=>prepareWorker(id,copy,outside[id],fixed,counts[id],mobile));
     });
+    const mobileWorkers=workers.flat();
+    mobileWorkers.forEach((worker,index)=>{worker.index=index;});
+    const countersByJob=new Map();
     const templates=plots.map(({steps,cycle},order)=>{
-        const stations=steps.map(step=>({...step,eligible:step.eligibleMembers.flatMap(id=>workers[id]??[])}));
+        const stations=steps.map(step=>{
+            const key=step.job.key;
+            if(trackShares && !countersByJob.has(key))countersByJob.set(key,[]);
+            return {job:step.job,point:step.point,travel:step.travel,first:null,
+                counters:countersByJob.get(key),eligible:step.eligibleMembers.flatMap(id=>workers[id]??[])};
+        });
         const firstPlant=steps.findIndex(s=>s.job.name==='Reclaiming'||s.job.name==='Sowing');
         return {stations,cycle,order,step:Math.max(0,firstPlant),release:0,ripe:0};
     });
     const uncovered=templates.reduce((n,e)=>n+e.stations.filter(s=>!s.eligible.length).length,0);
     if(uncovered)return {uncovered,wait:Infinity,completion:Infinity,worstCompletion:Infinity,shares:{},copyShares:{}};
-    const mobileWorkers=workers.flat();
     for(let sample=0;sample<SAMPLES;sample++){
         for(const worker of mobileWorkers)startSample(worker,sample);
-        const events=templates.map(event=>({...event}));
+        // The rotated first choice depends only on the sample and station.
+        const events=templates.map(({stations,cycle,order,step})=>{
+            for(const station of stations){
+                const index=(sample+(station.job.order||0))%station.eligible.length;
+                station.first=station.eligible[index];
+            }
+            return {stations,cycle,order,step,release:0,ripe:0};
+        });
         while(events.length){
             const event=events[0];
-            const {job,eligible,point,travel}=event.stations[event.step], release=event.release;
-            let worker=eligible[(sample+(job.order||0))%eligible.length],ready=availability(worker,release);
+            const {job,eligible,point,travel,counters,first}=event.stations[event.step], release=event.release;
+            let worker=first,ready=availability(worker,release);
             // No worker can start before release. Preserve the rotated first
             // choice and existing tie tolerance as soon as that bound is reached.
             if (release < ready-1e-8) for(const w of eligible){
@@ -184,8 +200,13 @@ function simulateDay(plots,end,counts,permanent,outside,allocation,trackShares) 
             if(event.ripe>=HOUR){
                 totalWait+=ready+approach-release;
                 if (trackShares) {
-                    record(assigned,job.key,worker.id);
-                    record(copies,job.key+'|'+worker.id,worker.copy);
+                    // Repeated visits increment the same two counters. Register
+                    // them on first service to preserve dispatch tie ordering.
+                    const pair=counters[worker.index]??(counters[worker.index]=[
+                        shareCounter(assigned,job.key,worker.id),
+                        shareCounter(copies,job.key+'|'+worker.id,worker.copy)]);
+                    pair[0].count++;
+                    pair[1].count++;
                 }
             }
             if(++event.step<event.stations.length){

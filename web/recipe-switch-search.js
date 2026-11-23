@@ -71,6 +71,27 @@ export function checkMaterialDraft(input,plan,baseline){
     catch{return null;}
 }
 
+// In the whole-site schedule an active recipe occupies at least one full
+// machine. Its total machine-seconds therefore bound its active seconds,
+// even when copies of the machine or several operators share the recipe.
+export function canStaffWholeRecipes(input) {
+    if(!input.alwaysRunning)return true;
+    const recipes=new Map();
+    for(const job of input.jobs){
+        let group=recipes.get(job.recipe);
+        if(!group){group={seconds:0,work:new Map()};recipes.set(job.recipe,group);}
+        group.seconds+=job.batches*job.seconds;
+        for(const [worker,seconds] of Object.entries(job.workers??{}))
+            group.work.set(worker,(group.work.get(worker)??0)+job.batches*seconds);
+    }
+    for(const {seconds,work} of recipes.values())for(const [worker,needed] of work){
+        const free=input.workerCapacity[worker]-(input.backgroundWorkers?.[worker]??0);
+        const available=Math.max(0,free)*Math.min(input.daySeconds,seconds);
+        if(needed>available+1e-5*Math.max(1,input.daySeconds,needed,available))return false;
+    }
+    return true;
+}
+
 export async function proveFirstSwitch(input, boundsFor, candidate, progress=()=>{}) {
     if (!input.always_running || input.fixed_homeland || input.level_up || input.level_up_strategy || input.prioritize_byproducts
         || input.priorities?.[0] !== 'level_up' || !input.level_up_preview) return null;
@@ -185,6 +206,10 @@ export async function searchRecipeSwitches(input,baseline,{candidate,solve,progr
                     const candidate=chooseMaterialSchedule(proposed,scheduleInput,baseline,
                         error=>{detail=String(error.message||error);});
                     if(candidate)return candidate;
+                }
+                if(!canStaffWholeRecipes(scheduleInput)){
+                    detail='A workshop recipe needs more crew than is available while it runs.';
+                    continue;
                 }
                 const pattern=chosen.normal?materialChainSchedule(scheduleInput):null;
                 for(const attempt of [pattern,scheduleInput].filter(Boolean)){

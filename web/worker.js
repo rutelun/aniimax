@@ -202,12 +202,25 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
                 console.warn('Joint priorities need the full production search.',error);
             }
         }
-        const plan = JSON.parse(await exactPlanJsonOnce(pkg, JSON.stringify(trial),
+        const solveTrial = async settings => JSON.parse(await exactPlanJsonOnce(pkg, JSON.stringify(settings),
             (key,state,proof) => {
                 // The discovery pass only identifies candidate recipes. Report
                 // priority timings and proofs from the constrained search.
                 if (pass > 0 || trial.always_running_recipes?.length) step(key,state,proof);
             }, value => { top ||= value; }, null, deadline, seed));
+        const currencyIndex=input.priorities?.indexOf(input.currency||'coins')??-1;
+        if(pass===1 && trial.always_running_recipes?.length && input.roster && input.recipe_switching_relaxation
+            && deadline==null && input.priorities?.[0]==='level_up' && currencyIndex>0 && currencyIndex<input.priorities.length-1){
+            // Each newly occupied recipe can force a fresh income search
+            // before the next resource priority. Price all operating rules
+            // together using the discovery pass as the starting shift.
+            try{
+                const full=await solveTrial({...trial,always_running_recipes:undefined});
+                if(full?.success && full.continuous_production_checked)return full;
+            }catch(error){console.warn('Retrying the workshop plan with incremental recipe checks.',error);}
+            top=null;
+        }
+        const plan=await solveTrial(trial);
         seed = plan.comparison_seed ? {...plan.comparison_seed, upperBounds:plan.continuous_upper_bounds,
             currencyTarget:plan.comparison_goals?.currency_value, goals:plan.comparison_goals} : null;
         return plan;
@@ -253,7 +266,7 @@ async function exactPlanJsonOnce(pkg, payload, step = () => {}, first = () => {}
     const stageUpperBounds=new Map(initialSeed?.upperBounds||[]);
     const search = comparison?.solve || (deadline == null ? solveModel : (p,o,message,seed)=>solveModel(p,o,message,seed,true));
     const searchModel = (model, settings, message, seed) => search(model,
-        model.switchIncome ? {...settings, mip_rel_gap:CURRENCY_RELATIVE_GAP} : settings, message, seed);
+        model.finalSwitchIncome ? {...settings, mip_rel_gap:CURRENCY_RELATIVE_GAP} : settings, message, seed);
     const runModel = async (problem,...args)=>{
         if(deadline!=null){
             const remaining=(deadline-performance.now())/1000;
@@ -560,10 +573,10 @@ async function exactPlanJsonOnce(pkg, payload, step = () => {}, first = () => {}
         const finalCurrency = priorityIndex === priorities.length-1 && target === (input.currency || 'coins');
         // Price raw income at the fixed upgrade pace during discovery as well.
         // Its dual bound remains valid when later passes constrain more recipes.
-        const switchIncome = finalCurrency && input.recipe_switching_relaxation && input.roster
+        const switchIncome = target === (input.currency || 'coins') && input.recipe_switching_relaxation && input.roster
             && input.always_running && !comparison && stage.pace > 0;
         const pricePriority = model => {
-            if (switchIncome) return {...productionObjective(model), switchIncome:true};
+            if (switchIncome) return {...productionObjective(model,{prune:!finalCurrency}), switchIncome:true, finalSwitchIncome:finalCurrency};
             return finalCurrency ? model : productionObjective(model,{prune:!comparison});
         };
         priority = pricePriority(priority);
@@ -580,7 +593,9 @@ async function exactPlanJsonOnce(pkg, payload, step = () => {}, first = () => {}
             if (Number.isFinite(dual) && dual >= most.objective - 1e-9)
                 currencyCeiling = Math.min(currencyCeiling, dual);
         }
-        if (target === (input.currency || 'coins') && (most.proven || most.searchProven || discoveryPass || nearCertifiedCurrencyCeiling || nearDiscoveryIncome) && priority.production_only) {
+        const closedSwitchBound = switchIncome && !most.restricted && Number.isFinite(most.upper)
+            && most.upper >= most.objective && most.upper-most.objective <= 1e-8*Math.max(1,most.objective);
+        if (target === (input.currency || 'coins') && (most.proven || most.searchProven || discoveryPass || nearCertifiedCurrencyCeiling || nearDiscoveryIncome || closedSwitchBound) && priority.production_only) {
             retainedCurrency = most.objective;
             currencyMaximumGlobal = most.proven;
             retainedCurrencyPace = stage.pace;

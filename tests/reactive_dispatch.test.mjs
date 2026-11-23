@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {buildReactiveDispatch,permanentWorkers,measuredDispatchWork,attachDeliveryFlows} from '../web/reactive-dispatch.js';
+import {measureRosterDispatch,buildReactiveDispatch,permanentWorkers,measuredDispatchWork,attachDeliveryFlows} from '../web/reactive-dispatch.js';
 
 const layout={pieces:[{members:[{facility:'Chimney Kiln',crop:'ore',x:0,y:0,w:2,h:2,weight:1},
     {facility:'Farmland',crop:'crop',x:20,y:0,w:2,h:2,weight:1,stockLimit:40}]}],storages:[{x:24,y:0,w:2,h:2}]};
@@ -57,7 +57,7 @@ test('unexpected crop pickup conserves requests and starts at previous productio
     assert.equal(crop.find(e=>e.member===1).travel_seconds,0);
 });
 test('only permanent shifts exclude copies; no imaginary workplace reservation',()=>{
-    const fixed=permanentWorkers({staffing:[['Heat Furnace',0,1]],workplace_anchors:[[0,1]]},members,new Set());
+    const fixed=permanentWorkers({staffing:[['Heat Furnace',0,1.0000000000000009]],workplace_anchors:[[0,1]]},members,new Set());
     assert.deepEqual(fixed,[1,0]);
     const p=buildReactiveDispatch({layout,recipes,members,routes,busy:[2,1],permanent:fixed});
     assert.ok(p['Farmland|crop|Dark'].length===2,'busy workers queue jobs instead of deleting all demand');
@@ -116,4 +116,22 @@ test('resident Leisure work and inactive recipes cannot invent a second job for 
  members:[{count:1,abilities:{Water:4,Leisure:4,Artisanship:4}}],busy:[1],routes:[{member:0,facility:'Well',item:'water',job_rate:1/60,jobs:[['',1]],walking:0}]});
  assert.equal(p['Tidewhisper Sandcastle|pearl|Production'],undefined);
  assert.equal(p['Well|water|Production'][0].travel_seconds,0);
+});
+
+
+test('a delivery reserve is priced only for real overload within the roster limit',()=>{
+    const context={layout,recipes,members:[{count:1,abilities:{Fire:3,Hauling:3}}],
+        busy:[1],permanent:[0],routes:[]};
+    const plan={coin_items:[{facility:'Chimney Kiln',item_name:'ore',status:'producing',
+        busy_units:1,cycle_time:30}]};
+    const key='Chimney Kiln|ore|Hauling';
+    const proposal=measureRosterDispatch(context,plan,null,2);
+    assert.ok(proposal.delivery.some(([id,load])=>id===1 && load>0));
+    assert.deepEqual(proposal.context.busy,[1,0]);
+    assert.equal(context.members.length,1);
+    assert.deepEqual(buildReactiveDispatch({...proposal.context,previous:proposal.policy})[key],proposal.policy[key]);
+    for(const limit of [0,1])assert.equal(measureRosterDispatch(context,plan,null,limit).context,context);
+    assert.equal(measureRosterDispatch(context,{},null,2).context,context);
+    const spare={...context,busy:[0]};
+    assert.equal(measureRosterDispatch(spare,plan,null,2).context,spare);
 });

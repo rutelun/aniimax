@@ -230,9 +230,9 @@ export function searchGroupPackings(pieces,cells,variants,{storageCount=1,poleLi
         if(seed.unplaced.length)continue;
         // Reject rotated block footprints; reading order and climate offsets must
         // remain unchanged. Repack in the same storage field with fixed orientation.
-        const macro=layOut(proxies,{cells,storages:seed.storages,fast:true,passes:0,accountForWorkers:false,
+        const macro=layOut(proxies,{cells,storages:seed.storages,fast:true,passes:0,accountForWorkers:false,fixedOrientation:true,
             placementPriority:blocks.map(b=>['processing','extraction'].includes(b.theme)?10:0),
-            canPlace:(i,_,rs)=>rs[0].w===blocks[i].w&&rs[0].h===blocks[i].h&&Number.isInteger(rs[0].x*2)&&Number.isInteger(rs[0].y*2)});
+            canPlace:(_,__,rs)=>Number.isInteger(rs[0].x*2)&&Number.isInteger(rs[0].y*2)});
         if(macro.unplaced.length)continue;
         let layout=expand(pieces,blocks,macro);
         if(!alphabetical(layout)){onCandidate?.({width,rejected:'alphabet'});continue;}

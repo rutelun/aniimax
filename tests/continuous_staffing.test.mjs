@@ -258,3 +258,25 @@ test('a measured kiln shift releases either Fire worker only when the deployed t
         }else assert.equal(result,null);
     }
 });
+
+test('a harvest worker can lend an idle copy to a resident post while preserving every recipe rate',async()=>{
+    const highs=await highsModule({wasmBinary:fs.readFileSync(new URL('../web/vendor/highs/highs.wasm',import.meta.url)),print(){},printErr(){}});
+    const keys=['rate:crop','rate:pearl:owned','rate:pearl:reserve','units:pearl:owned','units:pearl:reserve'];
+    const problem={variables:5,variable_keys:keys,
+        lp:['Maximize',' obj: x0','Subject To',' owned: x1 - x3 = 0',' reserve: x2 - x4 = 0',
+            ' residence: x3 + x4 = 1','Bounds',...keys.map((_,i)=>' 0 <= x'+i+' <= 1'),'General',' x3',' x4','End'].join('\n'),
+        recipe_options:[[0,'crop','Farmland',true,false,1],[1,'pearl','Sandcastle',true,false,1],[2,'pearl','Sandcastle',true,false,1]],
+        recipe_variables:[[0,'crop'],[1,'pearl'],[2,'pearl'],[3,'pearl'],[4,'pearl']],
+        staffing_groups:[[0],[1,2],[3,4]],
+        staffing_pools:[{work:[[0,.25],[3,1]],crop:[0],anchors:[3],reserve:false},
+            {work:[[4,1]],crop:[],anchors:[4],reserve:true}]};
+    const solve=async model=>{
+        const solution=highs.solve(model.lp);assert.equal(solution.Status,'Optimal');
+        return {values:model.variable_keys.map((_,v)=>solution.Columns['x'+v].Primal)};
+    };
+    for(const helpers of [0,1]){
+        const before={values:[1,0,1,0,1]},input={roster:{dispatch:{measured:[]},members:[{count:2}]},crop_peak_helpers:[helpers]};
+        const after=await refineElectricStaffing(problem,before,solve,{input});
+        assert.deepEqual(after.values,helpers?before.values:[1,1,0,1,0]);
+    }
+});
