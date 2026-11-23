@@ -385,9 +385,12 @@ async function exactPlanJsonOnce(pkg, payload, step = () => {}, first = () => {}
             // objective for these exact priority floors. A feasible witness
             // within the search tolerance needs no second branch-and-bound
             // pass. Never promote its local proof to a global one.
-            result = nearCertifiedCurrencyCeiling
-                ? {...bestSeed, proven:false, searchProven:false, upper:knownUpper}
-                : keepProductionWitness(await runModel(protectedProblem, options, message, bestSeed?.values ?? seed), bestSeed);
+            if (nearCertifiedCurrencyCeiling) {
+                result = {...bestSeed, proven:false, searchProven:false, upper:knownUpper};
+            } else {
+                const full = problem.switchIncome ? (await boundTightening).withWorkshopCapacityCuts(protectedProblem) : protectedProblem;
+                result = keepProductionWitness(await runModel(full, options, message, bestSeed?.values ?? seed), bestSeed);
+            }
             if (result && Number.isFinite(knownUpper) && knownUpper >= result.objective)
                 result.upper = Math.min(result.upper ?? Infinity, knownUpper);
         }else {
