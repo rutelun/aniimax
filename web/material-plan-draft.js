@@ -177,7 +177,18 @@ export function draftMaterialPlans(pkg,highs,input,base,check,modes=[false],cata
         const fit=highs.solve(lp,{mip_rel_gap:0,mip_abs_gap:0,mip_feasibility_tolerance:1e-10,primal_feasibility_tolerance:1e-10});
         if(fit.Status!=='Optimal'||!fit.Columns)continue;
         const values=model.variable_keys.map((_,v)=>fit.Columns['x'+v]?.Primal??0);
-        const plan=JSON.parse(pkg.exact_plan(payload,stageJson,JSON.stringify({values,verify_only:true,proven:false,bound:base.upper_bound})));
+        const verify=solution=>JSON.parse(pkg.exact_plan(payload,stageJson,
+            JSON.stringify({values:solution,verify_only:true,proven:false,bound:base.upper_bound})));
+        // Income is the fit's objective, so the zero-cost pace column can sit
+        // at its slackened floor even when these exact flows support the target.
+        const pace=model.variable_keys.indexOf('pace#0');
+        let plan;
+        if(pace>=0 && values[pace]<goal.pace){
+            const atTarget=values.slice();
+            atTarget[pace]=goal.pace;
+            plan=verify(atTarget);
+        }
+        if(!plan?.success)plan=verify(values);
         if(!plan.success||plan.rate_per_second<base.rate_per_second-1e-8)continue;
         plan.comparison_scores={crop_variety:stage.crop_variety};
         plan.upper_bound=null;
