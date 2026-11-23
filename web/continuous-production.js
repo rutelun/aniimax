@@ -1,3 +1,19 @@
+// A competing recipe can take a scarce ingredient as soon as the original
+// consumers' operating rules are enforced. Check those alternatives together.
+export function withCompetingConsumers(catalog, checked) {
+    const names = new Set(checked), consumers = new Map();
+    for (const recipe of catalog) {
+        if (!names.has(recipe.name)) continue;
+        for (const ingredient of new Set(recipe.raw_materials ?? [])) {
+            consumers.set(ingredient, (consumers.get(ingredient) ?? 0) + 1);
+        }
+    }
+    for (const recipe of catalog) {
+        if (recipe.raw_materials?.some(ingredient => consumers.get(ingredient) > 1)) names.add(recipe.name);
+    }
+    return [...names];
+}
+
 // Constraint generation: unused recipes need no availability/count products.
 // Each pass solves a relaxation of the full always-running model. A result is
 // executable only once every recipe it actually uses was constrained in that pass.

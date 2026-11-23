@@ -56,6 +56,20 @@ test('validated schedule produces map jobs and time profiles without changing pr
     assert.equal(result.recipe_switching_candidate,undefined);
     assert.deepEqual(result.coin_items,plan.coin_items);
 });
+
+test('an independent fixed recipe keeps its operator when the shared pool covers peak work',()=>{
+    const kiln=source('ore');
+    const fixed=source('syrup',{turns:false,facility:'Pot',inputs:[['fruit',2]]});
+    const candidate={...plan,schedule_sources:[kiln,fixed],roster_workload:[.4],
+        coin_items:[{facility:'Pot',item_name:'syrup',status:'producing',facility_count:1}]};
+    const setup={...input,always_running:true,roster:{members:[{count:3}]}};
+    assert.equal(scheduleInputForPlan(setup,candidate).fixedProduction.length,0);
+    const reject=(settings,p)=>assert.throws(()=>scheduleInputForPlan(settings,p),/phase production is not verified/);
+    reject({...setup,roster:{members:[{count:1}]}},candidate);
+    reject(setup,{...candidate,schedule_sources:[kiln,{...fixed,inputs:[['ore',2]]}]});
+    reject(setup,{...candidate,roster_routes:[{member:0,item:'crop',jobs:[['Sowing',1]]}]});
+    reject(setup,{...candidate,roster_routes:[{member:0,facility:kiln.facility,item:kiln.item,jobs:[],walking:.2}]});
+});
 import {materialChainSchedule} from '../web/recipe-schedule-plan.js';
 test('material template implements two raw buildings then moves one to tier 3',()=>{
  const p=materialChainSchedule({maxSwitches:2,jobs:['rough_lumber','standard_planks','laminated_beams','densified_timber_component'].map(recipe=>({facility:'Woodworking Bench',recipe})),buildings:Array.from({length:4},(_,i)=>({id:String(i),facility:'Woodworking Bench'}))});

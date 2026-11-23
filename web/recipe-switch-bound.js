@@ -17,7 +17,7 @@ export function suggestsMaterialFlow(problem, values, input) {
         if(electric || chain[tier]>0)return false;
         chain[tier]=rate*cycle;
         if(tier===0 && input.roster){
-            const crew=/__by(\d+)/.exec(problem.variable_keys[v]);
+            const crew=/__by(?:owned:)?(\d+)#/.exec(problem.variable_keys[v]);
             if(crew && input.roster.members?.[Number(crew[1])]?.count<2)return false;
         }
     }

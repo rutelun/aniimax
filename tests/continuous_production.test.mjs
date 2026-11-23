@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {continuousProduction} from '../web/continuous-production.js';
+import {continuousProduction,withCompetingConsumers} from '../web/continuous-production.js';
 const plan = names => ({success:true,coin_items:names.map(item_name=>({item_name,status:'producing'}))});
 test('newly selected recipes are constrained before accepting a plan',async()=>{
     const seen=[];
@@ -27,4 +27,16 @@ test('a failed constrained solve cannot fall back to the optimistic previous res
 
 test('a summary without active recipes cannot certify a constrained plan',async()=>{
     await assert.rejects(continuousProduction({always_running:true},async()=>({success:true})),/Missing active recipes/);
+});
+
+test('check direct competitors of two active consumers of the same ingredient', () => {
+    const catalog = [
+        {name:'syrup', raw_materials:['flower', 'sugar', 'sugar']},
+        {name:'incense', raw_materials:['flower']},
+        {name:'dew', raw_materials:['flower', 'water']},
+        {name:'candy', raw_materials:['sugar']},
+        {name:'juice', raw_materials:['water']},
+    ];
+    const checked = ['syrup', 'incense', 'ore'];
+    assert.deepEqual(withCompetingConsumers(catalog, checked), [...checked, 'dew']);
 });

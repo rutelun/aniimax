@@ -231,7 +231,7 @@ export function selectCropPeakTeam({members,counts,permanent=[],jobs,outside=[],
 
 // Generated teams retain each shift's real production allocation. Peak helpers
 // duplicate eligible crop pools; permanent posts are never treated as free staff.
-export function plannedCropPeakTeam({layout,recipes,pools,limit=Infinity}) {
+export function plannedCropPeakTeam({layout,recipes,pools,limit=Infinity,recommend=true}) {
     const locations=dispatchLocations(layout);
     const members=pools.map(p=>({count:p.count,abilities:p.abilities}));
     const permanent=pools.map(p=>Math.round((p.allocations||[]).filter(a=>a.fixed).reduce((n,a)=>n+a.busy,0)));
@@ -296,5 +296,5 @@ export function plannedCropPeakTeam({layout,recipes,pools,limit=Infinity}) {
         outside[i].peakOrigins=jobs.filter(j=>(pool.abilities[j.ability]||0)>=j.level).map(j=>({point:j.point,weight:j.weight||1}));
         if(!outside[i].origins.length)outside[i].origins=outside[i].peakOrigins;
     });
-    return selectCropPeakTeam({members,counts:pools.map(p=>p.count),permanent,outside,jobs,limit});
+    return selectCropPeakTeam({members,counts:pools.map(p=>p.count),permanent,outside,jobs,limit,recommend});
 }

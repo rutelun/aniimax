@@ -11,4 +11,8 @@ test('generated support considers real multi-role forms outside the base team',(
  assert.ok(result.peak.additions.some(a=>a.member>=pools.length));
  assert.ok(result.peak.additions.every(a=>a.member<pools.length||result.pools[a.member].entry));
  assert.deepEqual(pools.map(p=>p.count),[1,1,1]);
+ const baseOnly=withCropSupport({pools,layout,recipes,limit:10,recommend:false}).peak;
+ assert.equal(baseOnly.completion,result.peak.beforeCompletion);
+ assert.equal(baseOnly.recommendedTargetMet,false);
+ assert.deepEqual(baseOnly.additions,[]);
 });

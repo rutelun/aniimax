@@ -66,7 +66,7 @@ export async function proveFirstSwitch(input, boundsFor, candidate, progress=()=
 
 // Each speculative worker owns one solver. A failed start or reply leaves the
 // original candidate available to solve inline when its turn comes.
-function speculate(trial,createWorker,active) {
+function speculate(trial,createWorker,active,workshopBaseline) {
     return new Promise(resolve=>{
         let worker;
         const finish=plan=>{
@@ -81,17 +81,18 @@ function speculate(trial,createWorker,active) {
                 catch{finish(null);}
             };
             worker.onerror=worker.onmessageerror=()=>finish(null);
-            worker.postMessage({type:'switch_candidate',id:1,payload:JSON.stringify(trial)});
+            worker.postMessage({type:'switch_candidate',id:1,payload:JSON.stringify(trial),workshopBaseline});
         }catch{finish(null);}
     });
 }
 
-export async function searchRecipeSwitches(input,baseline,{candidate,solve,progress=()=>{},createWorker,parallel=1,firstProposal,canFillWorkshop}) {
+export async function searchRecipeSwitches(input,baseline,{candidate,solve,progress=()=>{},createWorker,parallel=1,firstProposal,canFillWorkshop,workshopBaseline}) {
     const limits=input.recipe_switching;
     if(!limits?.max_buildings||!limits.max_switches )return baseline;
     if(input.fixed_homeland)return {...baseline,recipe_switching_note:'Recipe switching requires an automatically generated layout.'};
     progress('recipe_switching','start');
     const active=new Set();
+    let searching=true;
     try {
         const groups=new Map();
         for(const row of baseline.coin_items||[])if(row.status==='producing'&&!row.is_grower){
@@ -104,26 +105,44 @@ export async function searchRecipeSwitches(input,baseline,{candidate,solve,progr
         const facilities=eligible.slice(0,Math.max(1,limits.max_buildings));
         let detail=null;
         const choices=[...(materialFirst?[materialChoice(input)]:[]),{facilities},...facilities.slice(0,2).map(f=>({facilities:[f]}))].filter((v,i,a)=>a.findIndex(x=>JSON.stringify(x)===JSON.stringify(v))===i);
+        // Each worker can check its own workshop while the earlier choices run.
+        // A previously solved proposal and an inline retry still need the same check.
+        const workerBound=createWorker && parallel>1 && choices.length>1 ? workshopBaseline : null;
+        const fits=async trial=>{
+            try { return !canFillWorkshop || await canFillWorkshop(trial); }
+            catch { return true; }
+        };
         const trials=[];
         for(const [index,choice] of choices.entries()) {
             const trial=switchTrial(input,choice);
-            try { if(canFillWorkshop && !await canFillWorkshop(trial))continue; }
-            catch { /* An unavailable bound leaves the original search eligible. */ }
-            trials.push({choice,trial,proposal:index===0?firstProposal:null});
+            const proposal=index===0?firstProposal:null;
+            if(canFillWorkshop && (!workerBound || proposal) && !await fits(trial)) continue;
+            trials.push({choice,trial,proposal});
         }
         const width=createWorker?Math.min(trials.length,Math.max(1,parallel)):1;
         const pending=new Map();
+        let next=0, current=0;
+        const startNext=()=>{
+            while(next<trials.length && trials[next].proposal)next++;
+            if(!searching || next===trials.length || active.size>=width)return;
+            const index=next++;
+            const reply=speculate(trials[index].trial,createWorker,active,workerBound);
+            pending.set(index,reply);
+            // Results are consumed in order below. A later choice that has
+            // already finished can release its slot before the earlier one does.
+            reply.then(plan=>{if(plan && index>current)startNext();});
+        };
+        if(width>1)for(let slot=0;slot<width;slot++)startNext();
         for(const [index,{choice:chosen,proposal}] of trials.entries()){
-            if(width>1 && index%width===0 && index+1<trials.length){
-                // Keep the parent responsive: nested workers need its event
-                // loop during startup. Accept replies in the original order.
-                for(let j=index;j<Math.min(index+width,trials.length);j++){
-                    if(trials[j].proposal)continue;
-                    pending.set(j,speculate(trials[j].trial,createWorker,active));
-                }
-            }
+            current=index;
+            if(width>1 && index>0)startNext();
             try{
-                const proposed=proposal ?? (await pending.get(index)) ?? await candidate(trials[index].trial);
+                const trial=trials[index].trial;
+                let proposed=proposal ?? await pending.get(index);
+                if (!proposed) {
+                    if (workerBound && !await fits(trial)) continue;
+                    proposed=await candidate(trial);
+                }
                 if(!improvesPlan(proposed,baseline))continue;
                 const scheduleInput=scheduleInputForPlan(input,proposed);
                 if(chosen.normal){
@@ -146,6 +165,7 @@ export async function searchRecipeSwitches(input,baseline,{candidate,solve,progr
     } catch(error) {
         return {...baseline,recipe_switching_note:'No verified switching improvement found; keeping the ordinary plan.',recipe_switching_detail:String(error.message||error)};
     } finally {
+        searching=false;
         for(const worker of active)worker.terminate();
         active.clear();
         progress('recipe_switching','done',false);

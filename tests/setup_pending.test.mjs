@@ -108,6 +108,50 @@ test('failed refinement retains results and releases the calculate button',()=>{
     assert.deepEqual(p.steps.at(-1),['refine','fail']);
 });
 
+function pendingRoute(page) {
+    page.run(`let finishPreview, cancelled=false;
+        const previous={continuous_production_checked:true, active_continuous_recipes:['rice'],
+            comparison_seed:{keys:['rate:rice'],values:[1]}};
+        routePreview={runId:planRunId, setup:selectedAniimoSetup(), controller:{abort(){cancelled=true;}},
+            request:JSON.stringify(setupPlanRequest(selectedAniimoSetup(),previous)),
+            measured:new Promise(resolve=>{finishPreview=resolve;})};`);
+}
+
+test('an identical measured request joins the search already running for this map',async()=>{
+    const p=page();
+    pendingRoute(p);
+    p.run('ensurePlanFor(selectedAniimoSetup(),true,previous)');
+    assert.equal(p.workers.length,0);
+    assert.equal(p.shown.length,0);
+    p.run('finishPreview({success:true,rate_per_second:12})');
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(p.shown[0].rate_per_second,12);
+    assert.equal(p.state.keepLayout,true);
+});
+
+test('a different production seed discards the preview and starts the measured search',()=>{
+    const p=page();
+    pendingRoute(p);
+    p.run('previous.comparison_seed.values=[2];ensurePlanFor(selectedAniimoSetup(),true,previous)');
+    assert.equal(p.run('cancelled'),true);
+    assert.equal(p.workers.length,1);
+    assert.deepEqual([...p.workers[0].request.routeWitness.seed.values],[2]);
+});
+
+test('a failed preview retries normally and a cancelled preview cannot update a newer setup',async()=>{
+    for (const cancel of [false,true]) {
+        const p=page();
+        pendingRoute(p);
+        p.run('ensurePlanFor(selectedAniimoSetup(),true,previous)');
+        if(cancel)p.run('stopSetupSolve()');
+        p.run(cancel?'finishPreview({success:true})':'finishPreview(null)');
+        await new Promise(resolve=>setImmediate(resolve));
+        assert.equal(p.workers.length,cancel?0:1);
+        assert.equal(p.run('cancelled'),cancel);
+        assert.equal(p.shown.length,0);
+    }
+});
+
 test('a roster always accounts for walking and a corrected distance restarts its solve', () => {
     const p = page();
     p.run('showSelectedPlan();');

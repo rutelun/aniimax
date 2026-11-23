@@ -74,3 +74,46 @@ test('a failed switch worker retries its choice inline; a single choice stays in
     assert.equal(starts,2);
     assert.equal(retries,2);
 });
+
+test('a free switch worker starts the next choice while the first choice is still running', async()=>{
+    const started=[];
+    const base={...baseline,coin_items:['Kiln','Mill'].flatMap(facility=>
+        ['a','b'].map(item_name=>({status:'producing',facility,item_name})))};
+    const result=searchRecipeSwitches({...input,recipe_switching:{max_buildings:2,max_switches:1}},base,{
+        parallel:2,createWorker:()=>({
+            postMessage({payload}){started.push([JSON.parse(payload).recipe_switching_facilities,this]);},
+            terminate(){},
+        }),
+        candidate:()=>assert.fail('unexpected inline solve'),solve:async model=>highs.solve(model.lp),
+    });
+    assert.deepEqual(started.map(([facilities])=>facilities),[['Kiln','Mill'],['Kiln']]);
+    started[1][1].onmessage({data:{ok:true,result:JSON.stringify(baseline)}});
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.deepEqual(started.map(([facilities])=>facilities),[['Kiln','Mill'],['Kiln'],['Mill']]);
+    started[2][1].onmessage({data:{ok:true,result:JSON.stringify({...candidate,rate_per_second:4})}});
+    started[0][1].onmessage({data:{ok:true,result:JSON.stringify(candidate)}});
+    assert.equal((await result).rate_per_second,2);
+});
+
+test('parallel workers check their own workshop and an inline retry checks it again',async()=>{
+    const starts=[],checks=[];
+    const base={...baseline,coin_items:['Kiln','Mill'].flatMap(facility=>
+        ['a','b'].map(item_name=>({status:'producing',facility,item_name})))};
+    const workshopBaseline={success:true,priorities:[],level_up_preview:{}};
+    const result=searchRecipeSwitches({...input,recipe_switching:{max_buildings:2,max_switches:1}},base,{
+        parallel:3,workshopBaseline,createWorker:()=>({
+            postMessage(message){assert.deepEqual(message.workshopBaseline,workshopBaseline);starts.push(this);},
+            terminate(){},
+        }),
+        canFillWorkshop(trial){checks.push(trial.recipe_switching_facilities);return false;},
+        candidate:()=>assert.fail('an infeasible workshop should skip the income search'),
+        solve:async model=>highs.solve(model.lp),
+    });
+    assert.equal(starts.length,3);
+    assert.deepEqual(checks,[]);
+    starts[0].onmessage({data:{ok:true,result:JSON.stringify({success:false})}});
+    starts[1].onerror();
+    starts[2].onmessage({data:{ok:true,result:JSON.stringify(candidate)}});
+    assert.equal((await result).rate_per_second,2);
+    assert.deepEqual(checks,[['Kiln']]);
+});

@@ -15,6 +15,7 @@ const {values:args} = parseArgs({options:{
     timeout:{type:'string',default:'Infinity'}, out:{type:'string',default:'target/qa-planner-matrix'},
     season:{type:'string',default:'off'}, 'reference-origin':{type:'string'}, repeats:{type:'string',default:'1'},
     variant:{type:'string',multiple:true,default:[]},
+    foreground:{type:'boolean',default:false},
     'switch-upgrade':{type:'boolean',default:false}, 'plan-only':{type:'boolean',default:false}, 'save-inputs':{type:'boolean',default:false},
 }});
 const catalog = JSON.parse(await readFile(new URL('../web/aniimo-catalog.json',import.meta.url))).entries;
@@ -93,12 +94,12 @@ const observe = config => {
                 if(this.requests.get(data.id)==='get_version'){qa.version=data.result??data.error;return}
                 if (!this.requests.has(data.id)) return;
                 if (data.type==='progress') {
-                    if(data.count?.step) qa.stages.push([data.count.step,data.count.state,Math.round(performance.now())]);
+                    if(data.count?.step) qa.stages.push([data.count.step,data.count.state,Math.round(performance.now()),this.requests.get(data.id)]);
                     return;
                 }
                 if(!data.ok) {qa.errors.push(String(data.error));return}
                 const p=JSON.parse(data.result);
-                qa.plans.push({at:performance.now(),success:p.success,error:p.error,rate:p.rate_per_second,
+                qa.plans.push({inputIndex:this.requests.get(data.id),at:performance.now(),success:p.success,error:p.error,rate:p.rate_per_second,
                     upper:p.upper_bound,goals:p.comparison_goals,scores:p.comparison_scores,eta:p.level_up_preview?.seconds,
                     checked:p.continuous_production_checked,priorities:p.priorities,scheduled:!!p.recipe_schedule,
                     climate:p.staffing, unverified:p.unverified,fallback:p.fallback_reason,
@@ -115,7 +116,7 @@ const observe = config => {
                     season:p.season,seasonMinimums:p.season_crop_minimums,switching:p.recipe_switching,
                     members:p.roster?.members?.length,continuous:p.always_running,
                     dispatch:Object.keys(p.roster?.dispatch||{}).length,priorities:p.priorities});
-                this.requests.set(msg.id,true);
+                this.requests.set(msg.id,qa.inputs.length-1);
             }
             super.postMessage(msg,...rest);
         }
@@ -164,17 +165,24 @@ async function run(rv,profile,season,origin,reportName) {
             await wait(`Object.entries(${expected}).every(([crop,count]) =>
                 Number(document.getElementById('season-minimum-'+crop)?.value)===count)`,30000);
         }
+        if(args.foreground) {
+            await send('Page.bringToFront',{},sessionId);
+            assert.equal(await evaluate('document.visibilityState'),'visible');
+        }
         await evaluate(`{
             const button=document.querySelector('#optimize-btn');
             new MutationObserver(()=>{if(!button.disabled)plannerQa.ready=performance.now()})
                 .observe(button,{attributes:true,attributeFilter:['disabled']});
+            plannerQa.visibility = [document.visibilityState];
+            document.addEventListener('visibilitychange',()=>plannerQa.visibility.push(document.visibilityState));
             plannerQa.clicked=performance.now();
             button.click();
         }`);
-        await wait("plannerQa.plans.length || plannerQa.errors.length || document.querySelector('#error-message')?.innerText.trim()",1000*Number(args.timeout));
+        await wait("plannerQa.plans.some(plan=>plan.inputIndex===0) || plannerQa.errors.length || document.querySelector('#error-message')?.innerText.trim()",1000*Number(args.timeout));
         if(!args['plan-only']) await wait("!document.querySelector('#optimize-btn').disabled",1000*Number(args.timeout));
         const readyAt=await evaluate('performance.now()');
         const qa=await evaluate('window.plannerQa');
+        if(args.foreground)assert.ok(qa.visibility.every(state=>state==='visible'),'Benchmark tab lost visibility during the solve');
         await saveInputs();
         assert.deepEqual(qa.errors,[]);
         assert.ok(qa.plans.length,await evaluate("document.querySelector('#error-message').innerText"));
@@ -191,14 +199,17 @@ async function run(rv,profile,season,origin,reportName) {
             assert.deepEqual(actual.facilities.Farmland,config.facilityTiers.Farmland);
             if(rosters[profile])assert.equal(actual.members,config.roster.length);
         }
-        for(const [index,plan] of qa.plans.entries()){
-            const phase=qa.inputs[index]?.dispatch ? 'measured delivery routes' : 'initial production';
+        for(const plan of qa.plans){
+            const phase=qa.inputs[plan.inputIndex]?.dispatch ? 'measured delivery routes' : 'initial production';
             assert.ok(plan.success,phase+' — '+(plan.error || 'no plan'));
             assert.equal(plan.checked,true);
             assert.ok(plan.rate>0 && Number.isFinite(plan.rate) && plan.producing>0);
             assert.ok(!plan.fallback,plan.fallback);
         }
-        const final=qa.plans.at(-1),first=qa.clicked;
+        // The measured solve can finish before the ordinary workshop search.
+        // Compare the final requested setup and time when both results were available.
+        const ordered=qa.plans.toSorted((a,b)=>a.inputIndex-b.inputIndex);
+        const final=args['plan-only']?ordered[0]:ordered.at(-1),first=qa.clicked;
         const displayedCoinsPerDay=args['plan-only']?null:await evaluate(`(() => {
             const unit=document.querySelector('#rate-unit');
             unit.value='day';
@@ -207,12 +218,13 @@ async function run(rv,profile,season,origin,reportName) {
             return digits ? Number(digits) : null;
         })()`);
         if(!args['plan-only'])assert.ok(Number.isFinite(displayedCoinsPerDay));
-        const report={rv,profile,season,origin,displayedCoinsPerDay,firstSeconds:(qa.plans[0].at-first)/1000,finalSeconds:(final.at-first)/1000,
+        const report={rv,profile,season,origin,displayedCoinsPerDay,firstSeconds:(ordered[0].at-first)/1000,finalSeconds:(Math.max(final.at,ordered[0].at)-first)/1000,
             visibleMap:await evaluate("!!document.querySelector('#layout-diagram .layout-svg')"),
             readySeconds:args['plan-only']?null:((qa.ready??readyAt)-first)/1000,
-            ...qa};
+            ...qa,plans:args['plan-only']?[final]:ordered};
         await writeFile(args.out+'/'+reportName+'.json',JSON.stringify(report,null,2));
-        console.log(reportName,'coins/day',final.rate*86400,'first',report.firstSeconds,'final',report.finalSeconds,
+        console.log(reportName, args['plan-only']?'production coins/day':'displayed coins/day',
+            displayedCoinsPerDay ?? final.rate*86400,'first',report.firstSeconds,'final',report.finalSeconds,
             'button ready',report.readySeconds,'map',report.visibleMap);
         return report;
     } finally {

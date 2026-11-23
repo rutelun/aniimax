@@ -108,41 +108,66 @@ export function connectPower(layout, cells, maximum, repack = true, canRelocate 
     // Free half-tile locations for poles, never on facilities, storage or locked land.
     const blocked = obstacleTest(cells,[...members, ...layout.storages]);
     const candidates = [];
-    const seen = new Set();
+    const overlapped = cells.some((cell, i) => cells.some((other, j) => j > i
+        && cell.x < other.x + other.w && other.x < cell.x + cell.w
+        && cell.y < other.y + other.h && other.y < cell.y + cell.h));
+    const seen = overlapped ? new Set() : null;
+    const rows = new Map();
     const needsRoute = connected.size && maximum > 0 && targets.some(t => !connected.has(t));
     for (const c of needsRoute ? cells : []) for (let y = c.y; y < c.y + c.h; y += 0.5) for (let x = c.x; x < c.x + c.w; x += 0.5) {
-        const key = `${x},${y}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
+        if (seen) {
+            const key = `${x},${y}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+        }
         const r = { x, y, w: 1.5, h: 1.5, pole: true, facility: 'Crackle Power Pole' };
         if (canPlacePole && !canPlacePole(r)) continue;
         if (!inside(r) || blocked.blocked(r)) continue;
+        if (!rows.has(y)) rows.set(y, []);
+        rows.get(y).push(r);
         candidates.push(r);
     }
+    // Terrain and consumers stay put while this network grows. Query nearby
+    // rows once per endpoint and keep the original site order for routing ties.
+    const neighbors = new Map();
+    const linkedSites = target => {
+        if (neighbors.has(target)) return neighbors.get(target);
+        const sites = [], c = center(target);
+        const horizontal = Math.max(3.5 + target.w / 2, powerRadius(target) + .75);
+        const vertical = Math.max(3.5 + target.h / 2, powerRadius(target) + .75);
+        for (const [y, row] of rows) {
+            if (Math.abs(y + .75 - c.y) > vertical + EPS) continue;
+            for (const site of row) {
+                if (Math.abs(site.x + .75 - c.x) <= horizontal + EPS && powerLinked(site, target)) sites.push(site);
+            }
+        }
+        neighbors.set(target, sites);
+        return sites;
+    };
+    const order = new Map(candidates.map((site, i) => [site, i]));
+    const occupied = new Set();
+    let indexedPoles = 0;
     // BFS finds a route with the fewest extra poles to one of the remaining targets.
     // A spatial index bounds each expansion to nearby candidates rather than all land.
     const bucket = r => { const c = center(r); return [Math.floor(c.x / 4), Math.floor(c.y / 4)]; };
     while (connected.size && targets.some(t => !connected.has(t)) && poles.length < maximum) {
-        const available = candidates.filter(r => !poles.some(p => overlap(r, p, EPS * 2)));
+        for (; indexedPoles < poles.length; indexedPoles++) {
+            const pole = poles[indexedPoles];
+            for (const site of linkedSites(pole)) if (overlap(site, pole, EPS * 2)) occupied.add(site);
+        }
         const remaining = targets.filter(t => !connected.has(t));
-        const relays = [...connected].filter(relaysPower);
-        const starts = new Set();
-        const goals = new Map();
+        const starts = new Set(), goals = new Map();
+        for (const relay of connected) {
+            if (relaysPower(relay)) for (const site of linkedSites(relay)) if (!occupied.has(site)) starts.add(site);
+        }
         let direct = null, directScore = 0;
-        for (const site of available) {
-            const start = relays.some(relay => powerLinked(relay, site));
-            if (start) starts.add(site);
-            let score = 0;
-            for (const target of remaining) if (powerLinked(site, target)) {
-                score++;
-                if (!preferCoverage) break;
-            }
-            if (!score) continue;
+        for (const target of remaining) for (const site of linkedSites(target)) {
+            if (occupied.has(site)) continue;
+            const score = preferCoverage ? (goals.get(site) ?? 0) + 1 : 1;
             goals.set(site, score);
-            if (start && score > directScore) {
+            if (starts.has(site) && (score > directScore || (score === directScore && order.get(site) < order.get(direct)))) {
                 direct = site;
                 directScore = score;
-                if (!preferCoverage || score === remaining.length) break;
             }
         }
         // The old breadth-first order checks every one-pole route before
@@ -153,6 +178,7 @@ export function connectPower(layout, cells, maximum, repack = true, canRelocate 
             continue;
         }
         if (!goals.size || !starts.size || maximum - poles.length < 2) break;
+        const available = candidates.filter(site => !occupied.has(site));
         if (preferCoverage) available.sort((a, b) => (goals.get(b) || 0) - (goals.get(a) || 0));
         const buckets = new Map();
         for (const r of available) { const key = bucket(r).join(','); if (!buckets.has(key)) buckets.set(key, new Set()); buckets.get(key).add(r); }
@@ -164,9 +190,8 @@ export function connectPower(layout, cells, maximum, repack = true, canRelocate 
             buckets.get(bucket(r).join(',')).delete(r);
         }
         let end = null;
-        for (let head = 0; head < queue.length; head++) {
+        routes: for (let head = 0; head < queue.length; head++) {
             const r = queue[head];
-            if (goals.has(r)) { end = r; break; }
             if (depth.get(r) >= maximum - poles.length) continue;
             const [bx, by] = bucket(r);
             // Half-tile pole sites link only within four tiles per axis, one bucket away.
@@ -180,7 +205,11 @@ export function connectPower(layout, cells, maximum, repack = true, canRelocate 
                         if (overlap(previous, next, EPS * 2)) { blockedByRoute = true; break; }
                     }
                     if (blockedByRoute) continue;
-                    parents.set(next, r); depth.set(next, depth.get(r) + 1); queue.push(next);
+                    parents.set(next, r);
+                    // The first goal enqueued is also the first dequeued.
+                    // All one-pole goals were handled above.
+                    if (goals.has(next)) { end = next; break routes; }
+                    depth.set(next, depth.get(r) + 1); queue.push(next);
                     unvisited.delete(next);
                 }
             }

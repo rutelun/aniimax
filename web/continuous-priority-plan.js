@@ -259,11 +259,22 @@ export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},fi
         // Price income at the attainable pace in the same relaxation. An
         // optimum that also works in the full catalogue closes both searches.
         const model=scopedModel(witnessNames);
-        const solution=highs.solve(model.lp,{mip_rel_gap:0,mip_abs_gap:0,mip_feasibility_tolerance:1e-9});
+        const exactOptions={mip_rel_gap:0,mip_abs_gap:0,mip_feasibility_tolerance:1e-9};
+        const solution=highs.solve(model.lp,exactOptions);
         if(solution.Status!=='Optimal' || !solution.Columns || !Number.isFinite(solution.ObjectiveValue))return null;
         const values=model.variable_keys.map((_,v)=>solution.Columns['x'+v]?.Primal??0);
         fullIncome=priority(fullPayload,currencyStage,currency);
-        const actual=await restoreCatalogue(highs,solveModel,fullIncome,{keys:model.variable_keys,values});
+        let actual=await restoreCatalogue(highs,solveModel,fullIncome,{keys:model.variable_keys,values});
+        if(!actual?.values) {
+            // Tied shifts can use different recipes. Enforce the operating
+            // rules for this shift and try to realize the same income.
+            const recipes=new Set([...witnessNames,...active(model,values)]);
+            const compact=priority(payloadFor(recipes,true),currencyStage,currency);
+            const refit=highs.solve(compact.lp,exactOptions);
+            if(refit.Status!=='Optimal' || !refit.Columns || !close(refit.ObjectiveValue,solution.ObjectiveValue))return null;
+            const rates=compact.variable_keys.map((_,v)=>refit.Columns['x'+v]?.Primal??0);
+            actual=await restoreCatalogue(highs,solveModel,fullIncome,{keys:compact.variable_keys,values:rates});
+        }
         if(!actual?.values)return null;
         const earned=sum(fullIncome.primary_objective,actual.values);
         if(!close(earned,solution.ObjectiveValue))return null;

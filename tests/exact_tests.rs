@@ -1555,6 +1555,34 @@ fn idle_dedicated_posts_are_removed_together_with_idle_machines() {
 }
 
 #[test]
+fn switching_recipe_keeps_only_the_dedicated_posts_its_active_sites_can_use() {
+    use aniimax::models::{crew_variants, AniimoRequirements, GrowerSteps};
+    let ore = walking_item("shared_ore", "Chimney Kiln", 10.0, "coins");
+    let mut requirements = AniimoRequirements::default();
+    requirements.insert(&ore.name, "Fire", 1);
+    let crew = crew_of(&[(3, &[("Fire", 1)])]);
+    let items = crew_variants(vec![ore], &crew, &requirements, &GrowerSteps::default());
+    let mut counts = FacilityCounts::only(&[("Chimney Kiln", 3, 1)]);
+    counts.set_crew(crew);
+    counts.set_movement_seconds(5.0);
+    counts.set_recipe_switching_relaxation(true);
+    let modules = ModuleLevels::default();
+    let goal = Goal::Earn { floors: &[] };
+    let problem = aniimax::exact::write_lp(&items, "coins", &counts, &modules, goal);
+    let values: Vec<f64> = problem.variable_keys.iter().map(|key| {
+        if key.starts_with("units:") { 1.3 }
+        else if key.starts_with("post:") { 3.0 }
+        else if key.starts_with("rate:") || key.starts_with("sold:") || key.ends_with(":false#0") { 0.13 }
+        else { 0.0 }
+    }).collect();
+    let plan = aniimax::exact::plan_from_values(&items, "coins", &counts, &modules, goal, &values, false, 0.13).unwrap();
+    assert_eq!(plan.work_posts.len(), 1);
+    assert_eq!(plan.work_posts[0].2, 2.0);
+    assert!((plan.work_routes.iter().map(|route| route.rate).sum::<f64>() - 0.13).abs() < 1e-9);
+    check_plan(&plan, &items, "coins", &counts, &modules, None).unwrap();
+}
+
+#[test]
 fn consolidates_light_crop_work_for_reserves_when_they_can_walk() {
     use aniimax::models::{crew_variants, AniimoRequirements, GrowerStep, GrowerSteps};
     let mut crop = walking_item("reserve_crop", "Farmland", 200.0, "coins");

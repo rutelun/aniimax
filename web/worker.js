@@ -8,7 +8,7 @@
 // The message handler below is installed right away and waits on this, so no request can arrive
 // before there's a handler for it.
 import { autoMaximizeSeasonPoints, hasSeasonCropMinimums } from './season-planning.js?v=optional-season-points';
-import {continuousProduction} from './continuous-production.js';
+import {continuousProduction,withCompetingConsumers} from './continuous-production.js';
 import {continuousNeighborhood, incomeRepairNeighborhood, neighborhoodResult, keepProductionWitness} from './continuous-neighborhood.js';
 import {comparisonConcurrency} from './comparison-queue.js';
 import {proveFirstSwitch,searchRecipeSwitches} from './recipe-switch-search.js?v=validated-upgrade';
@@ -97,7 +97,7 @@ async function solveModel(problem, options = SOLVE_OPTIONS, infeasibleMessage, i
     }
     if (result.Status === 'Infeasible' && infeasibleMessage) throw new Error(infeasibleMessage);
     const proven = result.Status === 'Optimal';
-    if (!proven && result.Status !== 'Time limit reached' && result.Status !== 'Search limit reached') return null;
+    if (!proven && result.Status !== 'Gap target reached' && result.Status !== 'Time limit reached' && result.Status !== 'Search limit reached') return null;
     // Out of time before finding any plan at all.
     if (!Number.isFinite(result.ObjectiveValue) || !result.Columns) return null;
     const values = columnValues(problem, result);
@@ -227,6 +227,11 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
 async function exactPlanJsonOnce(pkg, payload, step = () => {}, first = () => {}, comparison = null, deadline = null, initialSeed = null) {
     const { exact_byproduct_problems, exact_priority_problem, exact_level_up_problem, exact_problem, exact_plan } = pkg;
     const input = JSON.parse(payload);
+    if (input.recipe_switching_relaxation && input.roster && input.always_running_recipes?.length
+        && !comparison && deadline == null) {
+        input.always_running_recipes = withCompetingConsumers(JSON.parse(pkg.get_all_items()), input.always_running_recipes);
+        payload = JSON.stringify(input);
+    }
     const discoveryPass = input.always_running && input.always_running_recipes?.length === 0;
     const maximizeBenchAndKiln = !discoveryPass && (input.maximize_material_work ?? !input.fixed_homeland);
     const stage = { floors: [] };
@@ -244,7 +249,9 @@ async function exactPlanJsonOnce(pkg, payload, step = () => {}, first = () => {}
     const certificates = [];
     let nearCertifiedCurrencyCeiling = false, nearDiscoveryIncome = false;
     const stageUpperBounds=new Map(initialSeed?.upperBounds||[]);
-    const searchModel = comparison?.solve || (deadline == null ? solveModel : (p,o,message,seed)=>solveModel(p,o,message,seed,true));
+    const search = comparison?.solve || (deadline == null ? solveModel : (p,o,message,seed)=>solveModel(p,o,message,seed,true));
+    const searchModel = (model, settings, message, seed) => search(model,
+        model.switchIncome ? {...settings, mip_rel_gap:CURRENCY_RELATIVE_GAP} : settings, message, seed);
     const runModel = async (problem,...args)=>{
         if(deadline!=null){
             const remaining=(deadline-performance.now())/1000;
@@ -424,6 +431,28 @@ async function exactPlanJsonOnce(pkg, payload, step = () => {}, first = () => {}
         // A relaxed candidate may use a new recipe. Keep the previous priority's
         // physical shift until the newly occupied recipes pass their full constraints.
         const previous = incumbent?.values && incumbentKeys ? {keys:incumbentKeys, values:incumbent.values} : null;
+        if (problem.switchIncome && input.always_running_recipes?.length && deadline == null) {
+            try {
+                // Price the checked recipes first. Refit their shift against the
+                // unrestricted model before offering it as a starting solution.
+                const compactPayload = JSON.stringify({...input, restrict_to_checked_recipes:true});
+                const compact = JSON.parse(pkg.exact_priority_problem(compactPayload, JSON.stringify(stage), goal));
+                // This restricted solve only supplies a starting shift for the
+                // full currency model. Price its raw earnings at the same gap.
+                const local = await solveModel(productionObjective(compact), {...options,mip_rel_gap:CURRENCY_RELATIVE_GAP});
+                if (local?.values) {
+                    const {restoreCatalogue} = await loadPriorityPlanner();
+                    const restored = await restoreCatalogue(await newHighs(), solveModel, problem,
+                        {keys:compact.variable_keys, values:local.values});
+                    if (restored?.polished) {
+                        incumbent = restored;
+                        incumbentKeys = problem.variable_keys;
+                    }
+                }
+            } catch (error) {
+                console.warn('Continuing the full switching search after a failed warm start.', error);
+            }
+        }
         for(let pass=0;;pass++) {
             let result=await solveOnce(problem,goal);
             if (!result && pass > 0 && previous && !comparison && deadline == null) {
@@ -507,11 +536,19 @@ async function exactPlanJsonOnce(pkg, payload, step = () => {}, first = () => {}
         // Earlier priorities get their true production maximum; the final solve chooses
         // owned workers, E-mode and compact layouts while retaining all those maxima.
         const finalCurrency = priorityIndex === priorities.length-1 && target === (input.currency || 'coins');
-        if (!finalCurrency) priority = productionObjective(priority,{prune:!comparison});
+        // Price raw income at the fixed upgrade pace during discovery as well.
+        // Its dual bound remains valid when later passes constrain more recipes.
+        const switchIncome = finalCurrency && input.recipe_switching_relaxation && input.roster
+            && input.always_running && !comparison && stage.pace > 0;
+        const pricePriority = model => {
+            if (switchIncome) return {...productionObjective(model), switchIncome:true};
+            return finalCurrency ? model : productionObjective(model,{prune:!comparison});
+        };
+        priority = pricePriority(priority);
         // The final currency needs an actual feasible vector for the subsequent material solve.
         const most = await solve(priority, target,()=>{
             const rebuilt=JSON.parse(exact_priority_problem(payload,JSON.stringify(stage),target));
-            return finalCurrency?rebuilt:productionObjective(rebuilt,{prune:!comparison});
+            return pricePriority(rebuilt);
         });
         lastCurrencySolve = finalCurrency ? most : null;
         step(`priority:${target}`, 'done', most?.proven);
@@ -879,13 +916,17 @@ async function repairDispatchPlan(pkg, input, witness) {
         material_work_note:'unproven'};
 }
 
+async function canFillWorkshop(pkg,trial,baseline) {
+    const {canFillSwitchingWorkshop}=await import('./recipe-switch-bound.js'+load);
+    return canFillSwitchingWorkshop(pkg,await newHighs(),trial,baseline);
+}
+
 async function withRecipeSwitches(pkg,input,baseline,progress=()=>{},timed=false,firstProposal) {
     const deadline=timed ? performance.now()+10000 : null;
-    return searchRecipeSwitches(input,baseline,{firstProposal,
-        canFillWorkshop:timed || !input.always_running ? null : async trial=>{
-            const {canFillSwitchingWorkshop}=await import('./recipe-switch-bound.js'+load);
-            return canFillSwitchingWorkshop(pkg,await newHighs(),trial,baseline);
-        },
+    const workshopBaseline=!timed && input.always_running ? {success:baseline.success,
+        priorities:baseline.priorities?.slice(0,1),level_up_preview:{seconds:baseline.level_up_preview?.seconds}} : null;
+    return searchRecipeSwitches(input,baseline,{firstProposal,workshopBaseline,
+        canFillWorkshop:workshopBaseline ? trial=>canFillWorkshop(pkg,trial,workshopBaseline) : null,
         parallel:globalThis.navigator?.hardwareConcurrency>=8 && globalThis.navigator?.deviceMemory>=8
             ? 4 : comparisonConcurrency(globalThis.navigator,4),
         createWorker:!timed && typeof Worker==='function'?()=>new Worker(plannerWorkerUrl,{type:'module'}):null,
@@ -941,6 +982,16 @@ self.onmessage = async (event) => {
     try {
         const pkg = await ready;
         if (type === 'switch_candidate') {
+            if (event.data.workshopBaseline) {
+                let possible=true;
+                try {
+                    possible=await canFillWorkshop(pkg,JSON.parse(payload),event.data.workshopBaseline);
+                } catch { /* A missing bound leaves the full search eligible. */ }
+                if (!possible) {
+                    self.postMessage({id,ok:true,result:JSON.stringify({success:false})});
+                    return;
+                }
+            }
             self.postMessage({id,ok:true,result:await exactPlanJson(pkg,payload)});
             return;
         }
@@ -1015,7 +1066,14 @@ self.onmessage = async (event) => {
                 result = JSON.stringify(plan);
             }
             if(switchingInput.recipe_switching?.max_buildings>0){
-                const selected=await withRecipeSwitches(pkg,switchingInput,JSON.parse(result),step,false,firstSwitch?.proposed);
+                const ordinary=JSON.parse(result);
+                if (ordinary.success && ordinary.continuous_production_checked && switchingInput.map_dispatch_pending
+                    && switchingInput.recipe_switching.max_switches > 0
+                    && switchingInput.roster && !switchingInput.fixed_homeland && switchingInput.priorities?.[0]==='level_up'
+                    && comparisonConcurrency(globalThis.navigator,2)>1) {
+                    self.postMessage({id,type:'progress',count:{ordinaryForMap:result}});
+                }
+                const selected=await withRecipeSwitches(pkg,switchingInput,ordinary,step,false,firstSwitch?.proposed);
                 result=JSON.stringify(selected);
             }
             self.postMessage({ id, ok: true, result });

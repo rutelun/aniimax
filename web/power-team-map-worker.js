@@ -31,7 +31,11 @@ self.onmessage = ({data}) => {
             const team=packMappedTeam(plan,jobs,layout,hauling,hauling.busy,recipes);
             const lower=mappedTeamScore(team,grid,limit,plan.rate_per_second);
             if (!lower || !improvesMeasuredTeam(lower,best)) continue;
-            addHarvestHelpers(team,layout,recipes,limit);
+            // The current shifts can still win without help. Once they need
+            // one more Aniimo, even a helper with zero distractions must win
+            // the comparison for any expanded roster to be worth evaluating.
+            const recommend=lower.people<limit && improvesMeasuredTeam({...lower,people:lower.people+1},best);
+            addHarvestHelpers(team,layout,recipes,limit,recommend);
             const score=mappedTeamScore(team,grid,limit,plan.rate_per_second);
             if (score && improvesMeasuredTeam(score,best)) {
                 best=score;

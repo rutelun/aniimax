@@ -32,6 +32,24 @@ test('continuous polishing repairs rates without moving a workplace or inventing
     assert.equal(polishSolution(highs,impossible,seed),seed);
 });
 
+test('a certified income tolerance retains the dual ceiling and the open proof gap',async()=>{
+    const highs=await highsModule({wasmBinary:await readFile(new URL('../web/vendor/highs/highs.wasm',import.meta.url)),print(){},printErr(){}});
+    const items=Array.from({length:24},(_,i)=>i+1);
+    const terms=(factor,modulus)=>items.map(i=>(1+i*factor%modulus)+' x'+i).join(' + ');
+    const lp=['Maximize',' obj: 1000000 x0 + '+terms(17,31),'Subject To',
+        ...[7,13,19].map((a,i)=>' cap'+i+': '+terms(a,23+i*3)+' <= '+(130+i*15)),
+        'Bounds',' 1 <= x0 <= 1',...items.map(i=>' 0 <= x'+i+' <= 1'),
+        'General',...items.map(i=>' x'+i),'End'].join('\n');
+    const p={variables:25,lp};
+    const approximate=solveWithIncumbent(highs,p,{mip_rel_gap:.002});
+    const exact=solveWithIncumbent(highs,p,{mip_rel_gap:0});
+    assert.equal(approximate.Status,'Gap target reached');
+    assert.ok(approximate.UpperBound>approximate.ObjectiveValue);
+    assert.ok(approximate.UpperBound<=approximate.ObjectiveValue*1.002);
+    assert.ok(approximate.ObjectiveValue<=exact.ObjectiveValue && exact.ObjectiveValue<=approximate.UpperBound);
+    assert.equal(exact.Status,'Optimal');
+});
+
 test('production search uses repeatable work limits and keeps early exits distinct from proofs',()=>{
     const options=planSearchOptions({time_limit:2,mip_rel_gap:0});
     assert.equal(options.time_limit,undefined);

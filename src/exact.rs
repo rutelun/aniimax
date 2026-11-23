@@ -1900,6 +1900,14 @@ fn plan_from(model: &Model, upper_bound: f64, proven_optimal: bool, nodes: u32, 
     // a later objective replaces its staffing tie-break. Idle machines are omitted above;
     // omit posts with no local work too, rather than inventing a worker at a missing machine.
     work_posts.retain(|(station, member, _)| local_used.get(&(station.clone(), *member)).copied().unwrap_or(0.0) > 0.0);
+    // A switching recipe can occupy 1.3 site-days while the solver reserves
+    // three whole posts. Its two physical sites suffice for the assigned
+    // visits. Leave the routes intact for the independent workload check.
+    for (station, _, posts) in &mut work_posts {
+        if let Some(sites) = station.strip_prefix("recipe:").and_then(|name| units.get(name)) {
+            *posts = posts.min(f64::from(*sites));
+        }
+    }
     let rate_per_second = model.earnings.iter().zip(values).map(|(c, v)| c * v).sum();
     let movement_staffing = travel.into_iter().filter(|(_, seconds)| *seconds > 1e-9).collect();
     ExactPlan {

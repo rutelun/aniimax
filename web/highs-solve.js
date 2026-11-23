@@ -59,11 +59,20 @@ export function solveWithIncumbent(highs, problem, options, incumbent, reuseMode
             return { Status: 'No solution' };
         }
         const solution = model.getSolution();
+        const objective = model.getObjectiveValue();
+        const integerModel = /\nGeneral\n\s*x\d/.test(problem.lp);
+        // HiGHS also reports optimal when the requested relative gap is met.
+        // Later priorities need the actual dual bound until the gap closes.
+        const dual = integerModel && (status !== statuses.optimal || options.mip_rel_gap > 0)
+            ? model.info.get('mip_dual_bound') : undefined;
+        const rounding = 32 * Number.EPSILON * Math.max(1, Math.abs(objective));
+        const openGap = status === statuses.optimal && integerModel && options.mip_rel_gap > 0
+            && (!Number.isFinite(dual) || Math.abs(dual - objective) > rounding);
         return {
-            Status: status === statuses.optimal ? 'Optimal' : status === statuses.timeLimit ? 'Time limit reached' : 'Search limit reached',
-            ObjectiveValue: model.getObjectiveValue(),
-            UpperBound: status === statuses.optimal ? model.getObjectiveValue()
-                : /\nGeneral\n\s*x\d/.test(problem.lp) ? model.info.get('mip_dual_bound') : undefined,
+            Status: openGap ? 'Gap target reached' : status === statuses.optimal ? 'Optimal'
+                : status === statuses.timeLimit ? 'Time limit reached' : 'Search limit reached',
+            ObjectiveValue: objective,
+            UpperBound: status === statuses.optimal && !openGap ? objective : dual,
             Columns: Object.fromEntries(names.map((name, i) => [name, { Primal: solution.colValue[i] }])),
         };
     } catch (error) {

@@ -18,9 +18,9 @@ export function packMappedTeam(plan, jobs, layout, hauling, haulingBusy, recipes
         });
 }
 
-export function addHarvestHelpers(team, layout, recipes, limit) {
+export function addHarvestHelpers(team, layout, recipes, limit, recommend=true) {
     const pools = team.shifts.map(shift => ({...shift, busy:Math.max(shift.busy,...(shift.phaseBusy ?? [])), count:1}));
-    const {pools:choices, peak} = withCropSupport({layout, recipes, pools, limit});
+    const {pools:choices, peak} = withCropSupport({layout, recipes, pools, limit, recommend});
     team.cropPeaks = peak;
     for (const {member,count} of peak.additions) for (let i=0; i<count; i++) {
         const helper=choices[member];

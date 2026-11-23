@@ -17,6 +17,28 @@ function privateFeed(source,sources,inputs,outputs) {
     return null;
 }
 
+// Even if all of this operator's processors run flat out together, a spare
+// copy can cover a switch. Charge the entire background shift as well. Crop
+// visits and hauling can have additional peaks, so leave their pools tracked.
+function operatorsWithSpareCapacity(plan, sources, buildings, siteCounts, capacity, productionSeconds) {
+    const peak = new Map();
+    for (const source of sources) {
+        if (source.crew == null || source.rate <= EPS || !(capacity[source.crew] > 1)) continue;
+        const sites = source.turns ? buildings.filter(b => b.facility === source.facility).length
+            : siteCounts.get(`${source.facility}|${source.item}`);
+        const load = sites > 0 && source.cycle > 0 ? sites * productionSeconds(source) / source.cycle : Infinity;
+        peak.set(source.crew, (peak.get(source.crew) ?? 0) + load);
+    }
+    const spare = new Set();
+    for (const [crew, load] of peak) {
+        if (plan.roster_routes?.some(r => r.member === crew && r.jobs.some(([name]) => name))
+            || plan.crop_assignments?.some(([, , member, work]) => member === crew && work > 0)
+            || plan.hauling_staffing?.some(([member, work]) => member === crew && work > 0)) continue;
+        if (plan.roster_workload?.[crew] + load < capacity[crew] - EPS) spare.add(crew);
+    }
+    return spare;
+}
+
 // Convert effective solver recipes (including crew speed and electric tiers),
 // not the catalog's nominal recipe times, into physical daily scheduling work.
 export function scheduleInputForPlan(input,plan) {
@@ -52,13 +74,14 @@ export function scheduleInputForPlan(input,plan) {
         }
         for(const tier of owned)site(tier,null);
     }
+    const productionSeconds=j=>{
+        const matches=plan.roster_routes?.filter(r=>r.member===j.crew&&r.item===j.item&&r.facility===j.facility&&!r.jobs.some(([name])=>name));
+        const matchingRate=sources.filter(s=>s.crew===j.crew&&s.item===j.item&&s.facility===j.facility).reduce((v,s)=>v+s.rate,0);
+        const walking=(matches||[]).reduce((v,r)=>v+(r.walking||0),0);
+        return j.cycle+(matchingRate>0?walking/matchingRate:0);
+    };
     const assignRosterWork=j=>{
-        if(j.crew!=null) {
-            const matches=plan.roster_routes?.filter(r=>r.member===j.crew&&r.item===j.item&&r.facility===j.facility&&!r.jobs.some(([name])=>name));
-            const matchingRate=sources.filter(s=>s.crew===j.crew&&s.item===j.item&&s.facility===j.facility).reduce((v,s)=>v+s.rate,0);
-            const walking=(matches||[]).reduce((v,r)=>v+(r.walking||0),0);
-            add(j.workers,String(j.crew),j.cycle+(matchingRate>0?walking/matchingRate:0));
-        }
+        if(j.crew!=null)add(j.workers,String(j.crew),productionSeconds(j));
         for(const [member,load] of plan.hauling_staffing||[]) {
             const total=sources.reduce((v,s)=>v+s.rate*(s.hauling_seconds?.[member]||0),0);
             if(total>EPS){const seconds=load*(j.hauling_seconds?.[member]||0)/total;add(j.workers,String(member),seconds);j.haulingWorkers[member]=seconds;}
@@ -99,13 +122,14 @@ export function scheduleInputForPlan(input,plan) {
             const key=`${row.facility}|${row.item_name}`;
             siteCounts.set(key,(siteCounts.get(key)||0)+row.facility_count);
         }
+        const spare = operatorsWithSpareCapacity(plan,sources,buildings,siteCounts,workerCapacity,productionSeconds);
         const affected=new Set();
         let changed=true;
         while(changed) {
             changed=false;
             for(const [key,group] of groups) {
                 if(affected.has(key))continue;
-                const sharedWorkers=group.some(s=>(s.crew!=null&&members.has(String(s.crew)))
+                const sharedWorkers=group.some(s=>(s.crew!=null&&!spare.has(s.crew)&&members.has(String(s.crew)))
                     || (s.hauling_seconds||[]).some((seconds,i)=>seconds>0&&members.has(String(i))));
                 // A change in the downstream demand for a product cannot stall
                 // its producer when its own ingredients and crew are unchanged.

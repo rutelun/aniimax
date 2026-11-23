@@ -106,6 +106,11 @@ test('eager switching follows a plausible four-tier workload on the available cr
     assert.ok(!suggestsMaterialFlow(problem,[.25,.02,.01,.005],{}));
     assert.ok(!suggestsMaterialFlow(problem,[.15,.02,0,.005],{}));
     assert.ok(!suggestsMaterialFlow(problem,[.15,.02,.01,.005],{roster:{members:[{count:1}]}}));
+    const stable = {...problem, variable_keys:names.map(n=>'rate:'+n+'__byowned:0#0')};
+    assert.equal(suggestsMaterialFlow(stable,[.15,.02,.01,.005],{roster:{members:[{count:1}]}}),false);
+    assert.equal(suggestsMaterialFlow(stable,[.15,.02,.01,.005],{roster:{members:[{count:2}]}}),true);
+    const reserve = {...problem, variable_keys:names.map(n=>'rate:'+n+'__byreserve:{"Artisanship": 3}:None#0')};
+    assert.equal(suggestsMaterialFlow(reserve,[.15,.02,.01,.005],{roster:{members:[{count:1}]}}),true);
 });
 
 test('a relaxed workshop workload below one full site skips the integer candidate',async()=>{

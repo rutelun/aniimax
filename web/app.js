@@ -199,23 +199,36 @@ let lastPlanInput = null;
 // edits don't queue a solve each. A run id guards against a newer Find the best plan click.
 let setupSolve = null;
 let mainSolve = null;
+let routePreview = null;
+let pendingPreviewLayout = null;
 const SETUP_TIMEOUT = 300_000;
+function discardRoutePreview() {
+    routePreview?.controller.abort();
+    routePreview = null;
+}
+
 function ensurePlanFor(setup, refining = false, previousPlan = null) {
     if (plansBySetup[setup] || !lastPlanInput || setupSolve?.setup === setup
         || (mainSolve?.runId === planRunId && mainSolve.setup === setup)) return;
     stopSetupSolve();
     const runId = planRunId;
-    const solver = new Worker(WORKER_URL, { type: 'module' });
-    setupSolve = { setup, worker: solver, refining };
+    const request = setupPlanRequest(setup, previousPlan);
+    const preview = refining && routePreview?.runId === runId && routePreview.request === JSON.stringify(request)
+        ? routePreview : null;
+    if (preview) routePreview = null;
+    else if (refining) discardRoutePreview();
+    const job = {setup, refining, worker: null, preview};
+    setupSolve = job;
     if (refining && progress?.runId === runId) {
         if (!progress.steps.some(s => s.key === 'refine')) progress.steps.push({key:'refine',label:'Refining deliveries and worker loads',state:'pending'});
         setStep('refine','start');
     } else startProgress({ ...lastPlanInput, ...aniimoInput(setup) }, runId);
     if (!refining) document.getElementById('aniimo-pending').textContent = translate('Updating Aniimo setup...');
     const done = (plan) => {
-        solver.terminate();
-        if (setupSolve?.worker === solver) setupSolve = null;
-        if (runId !== planRunId) return;
+        job.worker?.terminate();
+        if (setupSolve !== job || runId !== planRunId) return;
+        setupSolve = null;
+        if (!plan.success) discardRoutePreview();
         plansBySetup[setup] = plan;
         if (selectedAniimoSetup() === setup) {
             if (!plan.success) resetPlanButton();
@@ -228,33 +241,47 @@ function ensurePlanFor(setup, refining = false, previousPlan = null) {
             showSelectedPlan(refining);
         }
     };
-    solver.onmessage = (event) => {
-        const { type, ok, result, error, count } = event.data;
-        if (type === 'progress') {
-            if (!refining && setupSolve?.worker === solver && runId === planRunId && count && typeof count === 'object') {
-                setStep(count.step, count.state, undefined, count.proven);
+    const start = () => {
+        const solver = new Worker(WORKER_URL, { type: 'module' });
+        job.worker = solver;
+        solver.onmessage = (event) => {
+            const { type, ok, result, error, count } = event.data;
+            if (type === 'progress') {
+                if (!refining && setupSolve === job && runId === planRunId && count && typeof count === 'object') {
+                    if (count.ordinaryForMap) prepareOrdinaryRoute(count.ordinaryForMap, setup, runId);
+                    else setStep(count.step, count.state, undefined, count.proven);
+                }
+                return;
             }
-            return;
-        }
-        let plan;
-        try {
-            plan = ok ? JSON.parse(result) : { success: false, error };
-        } catch (error) {
-            plan = { success: false, error: error.message };
-        }
-        done(plan);
+            let plan;
+            try {
+                plan = ok ? JSON.parse(result) : { success: false, error };
+            } catch (error) {
+                plan = { success: false, error: error.message };
+            }
+            done(plan);
+        };
+        solver.onerror = (event) => done({ success: false, error: event.message || 'The planner stopped' });
+        solver.onmessageerror = () => done({ success: false, error: 'The planner returned an unreadable response.' });
+        solver.postMessage(request);
     };
-    solver.onerror = (event) => done({ success: false, error: event.message || 'The planner stopped' });
-    solver.onmessageerror = () => done({ success: false, error: 'The planner returned an unreadable response.' });
-    // The levels are read afresh: the player may have changed which abilities they have since
-    // the plan this input came from.
+    if (preview) {
+        preview.measured.then(plan => {
+            if (setupSolve !== job || runId !== planRunId) return;
+            if (plan?.success) done(plan);
+            else start();
+        });
+    } else start();
+}
+
+function setupPlanRequest(setup, previousPlan, teamInput = aniimoInput(setup)) {
     const routeWitness = previousPlan?.continuous_production_checked && !previousPlan.recipe_schedule
         ? {recipes:previousPlan.active_continuous_recipes, counts:previousPlan.continuous_site_counts, seed:previousPlan.comparison_seed,
             goals:previousPlan.comparison_goals, scores:previousPlan.comparison_scores} : null;
     const peak=previousPlan?.crop_peaks;
     const peakHelpers=peak?.counts?.map((count,i)=>Math.max(0,count-peak.baseCounts[i]));
-    solver.postMessage({ id: 1, type: 'find_plan', routeWitness, payload: JSON.stringify({ ...lastPlanInput, ...aniimoInput(setup),
-        crop_peak_helpers:peakHelpers, map_dispatch_pending:setup.startsWith('roster') && !previousPlan }) });
+    return { id: 1, type: 'find_plan', routeWitness, payload: JSON.stringify({ ...lastPlanInput, ...teamInput,
+        crop_peak_helpers:peakHelpers, map_dispatch_pending:setup.startsWith('roster') && !previousPlan }) };
 }
 
 function stopSetupSolve() {
@@ -262,12 +289,14 @@ function stopSetupSolve() {
         progress = null;
         renderProgress();
     }
-    setupSolve?.worker.terminate();
+    setupSolve?.worker?.terminate();
+    setupSolve?.preview?.controller.abort();
     setupSolve = null;
 }
 
 // Shows the selected setup, and works it out first if this is the first time it's been asked for.
 function switchAniimoSetup() {
+    if (routePreview && routePreview.setup!==selectedAniimoSetup()) discardRoutePreview();
     if (setupSolve && setupSolve.setup !== selectedAniimoSetup()) stopSetupSolve();
     if (mainSolve?.runId === planRunId && mainSolve.setup !== selectedAniimoSetup()) {
         mainSolve = null;
@@ -1809,10 +1838,45 @@ function runMapWorker(url,message,signal) {
         };
         const cancel=()=>{ close(); reject(signal.reason); };
         signal?.addEventListener('abort',cancel,{once:true});
-        solver.onmessage=({data})=>{close(); if(data.error)reject(new Error(data.error));else resolve(data);};
+        solver.onmessage=({data})=>{
+            if (data.type==='progress') return;
+            close();
+            if (data.error) reject(new Error(data.error));
+            else resolve(data);
+        };
         solver.onerror=solver.onmessageerror=event=>{close();reject(new Error(event.message||'The planner worker stopped'));};
         try {solver.postMessage(message);} catch(error){close();reject(error);}
     });
+}
+
+// While the worker checks alternative workshop schedules, measure the ordinary
+// plan's routes. Both its map and its measured solve are conditional on the
+// corresponding full request still matching when the ordered search finishes.
+function prepareOrdinaryRoute(planJson, setup, runId) {
+    if (runId !== planRunId || selectedAniimoSetup() !== setup) return;
+    discardRoutePreview();
+    const preview = {runId, setup, controller: new AbortController()};
+    routePreview = preview;
+    const prepare = async () => {
+        const plan = JSON.parse(planJson);
+        const {key, ...options} = layoutOptionsFor(plan, layoutHomeLevel());
+        const {pieces} = homelandPieces(plan, lastPlanInput);
+        const message = {pieces, ...options};
+        preview.layoutInput = JSON.stringify(message);
+        preview.layout = runMapWorker(WORKER_URL.replace('worker.js', 'layout-worker.js'), message, preview.controller.signal);
+        const layout = await preview.layout;
+        if (routePreview !== preview || runId !== planRunId || selectedAniimoSetup() !== setup) return;
+        const dispatch = measureRosterRoutes(layout, plan, null);
+        if (!Object.keys(dispatch).length) return;
+        const team = aniimoInput(setup);
+        team.roster.dispatch = dispatch;
+        const request = setupPlanRequest(setup, plan, team);
+        preview.request = JSON.stringify(request);
+        const reply = await runMapWorker(WORKER_URL, request, preview.controller.signal);
+        if (reply.ok) return JSON.parse(reply.result);
+    };
+    // A failed preview leaves the normal layout and measured solve available.
+    preview.measured = prepare().catch(() => null);
 }
 
 async function refineMappedPowerTeam(plan,layout,input,signal,onMeasured,isCurrent=()=>true) {
@@ -2078,6 +2142,25 @@ function renderHomelandLayout(plan, keepLayout = false) {
             rankImprovementsFor(selectedAniimoSetup());
         }
     };
+    if (!keepLayout && routePreview) {
+        const preview = routePreview;
+        if (preview.runId === planRunId && preview.setup === selectedAniimoSetup() && !plan.recipe_schedule
+            && preview.layoutInput === JSON.stringify({pieces, ...layoutOptions})) {
+            pendingPreviewLayout = runId;
+            preview.layout.then(layout => {
+                if (runId !== layoutRunId) return;
+                pendingPreviewLayout = null;
+                applyLayout(layout);
+            }, () => {
+                if (runId !== layoutRunId) return;
+                pendingPreviewLayout = null;
+                discardRoutePreview();
+                renderHomelandLayout(plan);
+            });
+            return;
+        }
+        discardRoutePreview();
+    }
     const cached = layoutsByPlan.get(plan)?.get(layoutKey);
     if (cached) {
         // Keep the same asynchronous boundary as a worker response while displayPlan renders.
@@ -2843,14 +2926,19 @@ let haulingRefinements = 0;
 const haulingBaseByPlan = new WeakMap();
 const HAULING_ESTIMATE_HINT = 'Deliveries start at 40% output storage, rounded up to a complete batch. Carrying capacity and travel are included; pickup timing is approximate.';
 
-function refineReactiveDispatch(layout, plan) {
+function measureRosterRoutes(layout,plan,previous) {
     const { members, busy } = rosterWorkload(plan);
     const permanent = permanentWorkers(plan, members, RESIDENT_FACILITIES);
-    const existing = Object.keys(reactiveDispatch).length > 0;
     const context={layout, recipes:recipeIndex, members, busy, permanent, routes:plan.roster_routes || []};
-    const policy = buildReactiveDispatch({...context, previous:existing ? reactiveDispatch : null});
+    const policy = buildReactiveDispatch({...context, previous});
     const delivery=measuredDispatchWork(plan,policy,recipeIndex).delivery;
     plan.crop_peaks=selectCropPeakTeam(cropPeakInput({...context,delivery,limit:ANIIMO_MAX[layoutHomeLevel()-1]}));
+    return policy;
+}
+
+function refineReactiveDispatch(layout, plan) {
+    const existing = Object.keys(reactiveDispatch).length > 0;
+    const policy=measureRosterRoutes(layout,plan,existing ? reactiveDispatch : null);
     if (!existing && Object.keys(policy).length) {
         reactiveDispatch = policy;
         stopRanking();
@@ -2859,6 +2947,7 @@ function refineReactiveDispatch(layout, plan) {
         ensurePlanFor(selectedAniimoSetup(), true, plan);
         return true;
     }
+    if (!existing && routePreview) discardRoutePreview();
     if(plan.recipe_schedule){
         // The certificate already allocates both production and hauling by phase.
         // A daily-average postpass must not move that hauling to another worker.
@@ -6149,6 +6238,7 @@ function displayGoal(goalResult) {
 // Solve for the best achievable plan (facilities + currency + modules); the heavier computation,
 // triggered explicitly by the Calculate button or Enter in a facility/module field.
 async function runFindPlan() {
+    discardRoutePreview();
     reactiveDispatch = {};
     travelRefinements = 0;
     movementDistances = {};
@@ -6226,6 +6316,10 @@ async function runFindPlan() {
         const bestJson = await callWorker('find_plan', JSON.stringify({ ...input, aniimo: bestSetup,
             map_dispatch_pending:bestSetup.startsWith('roster') }), (count) => {
             // The exact planner reports each solve; the backup planner counts its trials.
+            if (count?.ordinaryForMap) {
+                prepareOrdinaryRoute(count.ordinaryForMap,bestSetup,runId);
+                return;
+            }
             if (typeof count === 'object') {
                 setStep(count.step, count.state, undefined, count.proven);
                 return;
@@ -6238,6 +6332,7 @@ async function runFindPlan() {
         if (runId !== planRunId) return;
         finishSolveSteps();
         plansBySetup[bestSetup] = JSON.parse(bestJson);
+        if (!plansBySetup[bestSetup].success) discardRoutePreview();
         mainSolve = null;
         showSelectedPlan();
         // With no plan there's nothing to lay out or improve on.
@@ -6251,6 +6346,7 @@ async function runFindPlan() {
         // A run a newer one cancelled leaves the screen to it.
         if (runId !== planRunId) return;
         if (requestedSetup && requestedSetup !== selectedAniimoSetup()) return;
+        discardRoutePreview();
         if (progress) {
             progress.steps.forEach(s => { if (s.state === 'running') s.state = 'fail'; else if (s.state === 'pending') s.state = 'skipped'; });
             renderProgress();
@@ -6261,7 +6357,7 @@ async function runFindPlan() {
         showError(`Plan calculation failed: ${error.message}`);
     } finally {
         if (mainSolve?.runId === runId) mainSolve = null;
-        if (runId === planRunId && !layoutWorker && !setupSolve) resetPlanButton();
+        if (runId === planRunId && pendingPreviewLayout !== layoutRunId && !layoutWorker && !setupSolve) resetPlanButton();
     }
 }
 
@@ -6281,6 +6377,7 @@ function resetPlanButton() {
 // would be shown under the new one's names). Bumping `planRunId` makes a run in flight drop its
 // results when they land.
 function clearPlanResults() {
+    discardRoutePreview();
     planRunId++;
     plansBySetup = {};
     rankingsBySetup = {};

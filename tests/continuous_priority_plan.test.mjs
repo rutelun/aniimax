@@ -29,11 +29,21 @@ test('measured dispatch proves the attainable whole-post pace before optimizing 
     };
     const input={always_running:true,priorities:['level_up','coins'],roster:{dispatch:{crop:[1]}}};
     const initialWitness={recipes:['crop'],seed:{keys,values:[1,1,.75]}};
-    const solve=()=>tryPriorityPlan(pkg,input,{highs,solveModel,initialWitness});
+    const solve=(solver=solveModel)=>tryPriorityPlan(pkg,input,{highs,solveModel:solver,initialWitness});
     const plan=await solve();
     assert.equal(plan.comparison_goals.pace,.5);
     assert.equal(plan.rate_per_second,1);
     assert.equal(plan.continuous_production_checked,true);
+    // A tied relaxed shift may fail the first full-catalogue check. The
+    // checked recipes can still supply another shift at the same income.
+    let restores=0;
+    const alternate=await solve((problem,...args)=>{
+        if(problem.lp.includes('actual_shift_') && ++restores===1)return null;
+        return solveModel(problem,...args);
+    });
+    assert.ok(restores>1);
+    assert.equal(alternate.rate_per_second,1);
+    assert.equal(alternate.continuous_production_checked,true);
     fullCapacity=.5;
     assert.equal(await solve(),null);
 });

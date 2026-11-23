@@ -8,7 +8,7 @@ const residents = new Set(FACILITIES.filter(f => f.category === 'Aniimo Material
 
 // Compare distinct crop ability profiles, not hundreds of near-identical forms.
 // Production remains unchanged: these are additional crop-support candidates.
-export function withCropSupport({pools,layout,recipes,limit,haulingBusy=pools.some(p=>p.allocations?.some(a=>a.ability==='Hauling' && a.busy>0))}) {
+export function withCropSupport({pools,layout,recipes,limit,recommend=true,haulingBusy=pools.some(p=>p.allocations?.some(a=>a.ability==='Hauling' && a.busy>0))}) {
     const sites=dispatchLocations(layout);
     const active=recipes.filter(r=>sites.has(`${r.facility}|${r.name}`));
     const skills=[...new Set(active.flatMap(r=>(r.jobs||[]).filter(([name])=>criticalCropJob(name)).map(([,ability])=>ability)))].sort();
@@ -27,6 +27,6 @@ export function withCropSupport({pools,layout,recipes,limit,haulingBusy=pools.so
     const choices=[...profiles.values()].filter(c=>![...profiles.values()].some(other=>other!==c&&other.distractions<=c.distractions&&other.levels.every((n,i)=>n>=c.levels[i])&&other.levels.some((n,i)=>n>c.levels[i])));
     const candidates=choices.map(({entry,distractions})=>({entry,distractions,abilities:entry.abilities,family:entry.family,count:0,busy:0,allocations:[],tasks:new Map(),personalities:new Set(),peakSupport:true}));
     const all=[...pools.map(p=>({...p,helperDistractions:distractionCount(p.entry ?? p,outside)})),...candidates];
-    const peak=plannedCropPeakTeam({layout,recipes,pools:all,limit});
+    const peak=plannedCropPeakTeam({layout,recipes,pools:all,limit,recommend});
     return {peak,pools:all};
 }
