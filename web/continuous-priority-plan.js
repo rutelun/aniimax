@@ -1,5 +1,6 @@
 // Fast path for the explicit priority list. Global ceilings use all unlocked
 // recipes. Candidate models check work conservation on every occupied site.
+import {excludesIncomeFloor} from './bound-tightening.js';
 import {cachedEconomicBound} from './economic-bound-cache.js';
 import {priorityCeiling,requiredSiteCapacity,applyRequiredSites} from './priority-ceilings.js';
 import {productionObjective, CURRENCY_RELATIVE_GAP, CURRENCY_GAP_FACTOR} from './priority-search.js';
@@ -615,7 +616,7 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
                 const target=(counts.upper??0)/CURRENCY_GAP_FACTOR;
                 for(const floor of target>0 ? [target,0] : [0]){
                     const local=economicCountNeighborhood(highs,compact,counts,floor);
-                    if(!local)continue;
+                    if(!local || (floor>0 && excludesIncomeFloor(highs,local,floor)))continue;
                     const found=await solveModel(local,{time_limit:2,mip_rel_gap:0});
                     if(!found?.values)continue;
                     const fit=polishSolution(highs,local,found);

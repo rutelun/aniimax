@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import highsModule from '../web/vendor/highs/highs.mjs';
-import {tightenIntegerBounds} from '../web/bound-tightening.js';
+import {excludesIncomeFloor,tightenIntegerBounds} from '../web/bound-tightening.js';
 import {withProductionBounds} from '../web/priority-search.js';
 
 const highs=await highsModule({wasmBinary:await readFile(new URL('../web/vendor/highs/highs.wasm',import.meta.url)),print(){},printErr(){}});
@@ -64,4 +64,17 @@ test('a feasible zero/capacity witness skips only probes that cannot tighten a b
             assert.ok(cut.lower==null?value<=cut.upper:value>=cut.lower);
         }
     }
+});
+
+
+test('a fractional staffing choice cannot earn income unavailable at either whole site',()=>{
+    const model={variables:2,lp:[
+        'Maximize',' obj: x1','Subject To',' left: x1 - x0 <= 1',' right: x1 + x0 <= 2',
+        'Bounds',' 0 <= x0 <= 1',' 0 <= x1 <= 2','General',' x0','End',
+    ].join('\n')};
+    assert.equal(excludesIncomeFloor(highs,model,1.25),true);
+    assert.equal(excludesIncomeFloor(highs,model,1),false);
+    assert.equal(excludesIncomeFloor(highs,model,1+1e-9),false);
+    const continuous={...model,lp:model.lp.replace('\nGeneral\n x0','')};
+    assert.equal(excludesIncomeFloor(highs,continuous,1.25),false);
 });

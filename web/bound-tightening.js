@@ -1,5 +1,63 @@
 import {parseLinearLp} from './highs-reuse.js';
 
+// Test whether this site pattern can meet its income floor. The LP is a
+// superset of the integer model. A binary choice whose LP ceiling misses the
+// floor forces its opposite for every integer plan earning that income.
+export function excludesIncomeFloor(highs, problem, floor) {
+    if (!(floor > 0) || !Number.isFinite(floor) || !highs?.createModel) return false;
+    const parsed = parseLinearLp(problem.lp,problem.variables,false);
+    if (!parsed) return false;
+    const lp = problem.lp.replace(/^ local_income: [^\n]+\n/m,'').replace(/\nGeneral\n[\s\S]*?\nEnd/,'\nEnd');
+    const model = highs.createModel({format:'lp',data:lp});
+    const {optimal,infeasible} = highs.constants.modelStatus;
+    const tolerance = 1e-7 * Math.max(1,Math.abs(floor));
+    const solve = () => { model.run(); return model.getModelStatus(); };
+    const set = (column,lower,upper) => model.changeColsBounds({kind:'set',indices:[column]},[lower],[upper]);
+    try {
+        const binary = new Set();
+        const {numCols} = model.getDimensions();
+        for (let i=0; i<numCols; i++) {
+            const v = Number(model.getColName(i).slice(1));
+            if (parsed.integers[v] && parsed.bounds[v][0]===0 && parsed.bounds[v][1]===1) binary.add(i);
+        }
+        for (;;) {
+            const status = solve();
+            if (status===infeasible) return true;
+            if (status!==optimal) return false;
+            const gap = model.getObjectiveValue() - floor;
+            if (gap < -tolerance) return true;
+            const {colValue,colDual} = model.getSolution();
+            const fractional = [];
+            for (const i of binary) {
+                const value = colValue[i], cost = colDual[i];
+                // At a bound, the reduced cost prices a full move to the other
+                // endpoint. Leave enough slack for the LP's numerical tolerance.
+                if (value<1e-8 && -cost*(1-value)>gap+tolerance) {
+                    set(i,0,0); binary.delete(i);
+                } else if (value>1-1e-8 && cost*value>gap+tolerance) {
+                    set(i,1,1); binary.delete(i);
+                } else if (value>1e-7 && value<1-1e-7) fractional.push(i);
+            }
+            fractional.sort((a,b)=>Math.abs(.5-colValue[b])-Math.abs(.5-colValue[a]));
+            let forced = false;
+            for (const i of fractional) {
+                const branch = colValue[i]<.5 ? 1 : 0;
+                set(i,branch,branch);
+                const status = solve();
+                if (status===infeasible || (status===optimal && model.getObjectiveValue()<floor-tolerance)) {
+                    set(i,1-branch,1-branch);
+                    binary.delete(i);
+                    forced = true;
+                    break;
+                }
+                set(i,0,1);
+                if (status!==optimal) return false;
+            }
+            if (!forced) return false;
+        }
+    } finally { model.dispose(); }
+}
+
 // Optimization-based bound tightening (OBBT). One reusable LP basis bounds whole
 // recipe/building counts. Rounded bounds are valid integer cuts, never guesses
 // based on what happened to be idle in a previous solution.
