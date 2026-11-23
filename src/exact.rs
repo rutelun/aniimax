@@ -2960,7 +2960,7 @@ fn production_staff_zeros(model: &Model<'_>, counts: &FacilityCounts) -> Vec<usi
             p.generator_output(crew.members[chosen].level(ability))
                 < p.generator_output(crew.members[*member].level(ability))
         }) {
-            // A reserve Lightning Lv.3 cannot replace an owned Lv.4 at full Lv.5 output.
+            // An underqualified reserve cannot replace the generator's operator.
             return None;
         }
         (chosen != *member).then_some(v)

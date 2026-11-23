@@ -26,7 +26,6 @@ pub struct PowerPlan {
 }
 
 /// RV permits up to this many generators, upgraded as far as the Power Module allows.
-/// Output/workload are the five generator recipes in game build 3584014.
 #[derive(Debug, Clone, Copy)]
 pub struct GeneratorLimits {
     pub count: u32,
@@ -34,10 +33,10 @@ pub struct GeneratorLimits {
     lightning: u32,
 }
 
-const GENERATOR_TIERS: [(u32, u32, u32, u32); 5] = [
-    // RV unlock, minimum Lightning, watts, workload
-    (12, 1, 600, 60), (14, 2, 800, 60), (16, 3, 1000, 75),
-    (18, 3, 1200, 90), (20, 4, 1500, 105),
+const GENERATOR_TIERS: [(u32, u32, u32); 5] = [
+    // RV unlock, minimum Lightning, watts from a qualified operator.
+    (12, 1, 600), (14, 2, 800), (16, 3, 1000),
+    (18, 3, 1200), (20, 3, 1500),
 ];
 
 impl GeneratorLimits {
@@ -53,13 +52,11 @@ impl GeneratorLimits {
     }
 
     pub fn generator(self, lightning: u32) -> (u32, u32) {
-        let (_, required, watts, workload) = GENERATOR_TIERS[self.tier];
+        let (_, required, watts) = GENERATOR_TIERS[self.tier];
         if lightning < required {
             return (0, 0);
         }
-        let work_rate = 45 + 15 * lightning.min(4);
-        // Round down so the planner never budgets more power than is generated.
-        (self.tier as u32 + 1, watts * work_rate.min(workload) / workload)
+        (self.tier as u32 + 1, watts)
     }
 
     pub fn max_output(self) -> u32 { self.generator(self.lightning).1 }

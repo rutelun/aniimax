@@ -101,23 +101,23 @@ test('the shortlist can electrify a competing workshop even if the incumbent use
     assert.ok(candidates.some(p=>p.schedule_sources[1].electric_level===1 && p.power_used===18));
 });
 
-test('RV21 powers even a small load only with max-tier generators and Lightning 4', () => {
+test('RV21 can power a small load with a level 5 generator and Lightning 3', () => {
     const facility='Mine', item='ore';
     const source={facility,id:item,item,cycle:1,rate:.5,inputs:[],outputs:[[item,1]]};
-    const plan={schedule_sources:[source],generator_tiers_by_lightning:[0,0,0,5],
-        generator_watts_by_lightning:[0,0,0,1500],
+    const plan={schedule_sources:[source],generator_tiers_by_lightning:[0,0,5,5],
+        generator_watts_by_lightning:[0,0,1500,1500],
         coin_items:[{facility,item_name:item,status:'producing',facility_count:1,busy_units:.5,aniimo:{ability:'Earth',level:1}}]};
     const problem={recipe_options:[[0,item,facility,false,false,1],[1,item,facility,false,true,1]],
         variable_keys:['rate:ore#0','rate:ore__electric1#0']};
     const recipes=[{name:item,facility,facility_level:1,aniimo:['Earth',1]}];
-    for (const lightning of [3,4]) {
+    for (const lightning of [2,3,4]) {
         const candidates=[...powerTeamCandidates(plan,{e_mode_rv:21,aniimo_levels:{Lightning:lightning},
             facilities:{Mine:[{level:1,count:1}]}},problem,recipes)];
         const pairs=candidates.flatMap(c=>c.power_generator_levels);
-        if (lightning === 3) assert.equal(pairs.length,0);
+        if (lightning === 2) assert.equal(pairs.length,0);
         else {
-            assert.ok(pairs.length);
-            assert.ok(pairs.every(([tier,skill])=>tier===5 && skill===4));
+            assert.ok(pairs.some(([,skill])=>skill===3));
+            assert.ok(pairs.every(([tier,skill])=>tier===5 && skill>=3 && skill<=lightning));
         }
     }
 });
