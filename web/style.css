@@ -3948,8 +3948,9 @@ html { scroll-padding-top: 0.8rem; }
 .product-flow-total strong { color: var(--accent); }
 .product-flow-content .flow-category { margin: .25rem 0 0; font-size: .95rem; }
 .flow-node-head { display: flex; align-items: center; gap: .35rem; }
-.flow-facilities { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: .2rem .45rem; margin-inline-start: auto; max-width: 13rem; }
-.flow-tight .flow-facilities { max-width: 9rem; }
+.flow-node-head:has(.flow-badge + .flow-badge) { flex-wrap: wrap; width: min-content; min-width: 100%; }
+.flow-facilities { display: flex; flex: none; align-items: center; justify-content: flex-end; gap: .45rem; width: max-content; margin-inline-start: auto; }
+.flow-tight .flow-facilities { gap: .3rem; }
 .product-flow-node > .flow-facilities { margin-top: .15rem; }
 .flow-switch { display: flex; align-items: center; gap: .35rem; border-top: 1px solid var(--border); margin-top: .2rem; padding-top: .2rem; font-size: .74rem; }
 .flow-switch-site, .flow-switch-recipes { display: inline-flex; align-items: center; gap: .15rem; }
