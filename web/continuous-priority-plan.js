@@ -113,8 +113,12 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
     // bound and full-catalogue audit as ordinary production. The caller then
     // verifies the daily schedule before comparing it with the fixed plan.
     const compactSwitch=!input.roster && priorities.length===1 && priorities[0]===currency;
+    // A measured roster can also price the material-first switch proposal.
+    // The caller compares the checked plan only after constructing its actual
+    // schedule. A missing certificate falls back to the ordinary search.
+    const measuredSwitch=input.roster && priorities[0]==='level_up' && Object.keys(input.roster.dispatch??{}).length>0;
     if (!input.always_running || input.level_up_strategy || input.prioritize_byproducts
-        || (input.recipe_switching_relaxation && !compactSwitch) || input.level_up || !highs || !solveModel) return null;
+        || (input.recipe_switching_relaxation && !compactSwitch && !measuredSwitch) || input.level_up || !highs || !solveModel) return null;
     const witnessSeed=initialWitness?.seed??initialWitness?.comparison_seed;
     const oldGoals=initialWitness?.goals??initialWitness?.comparison_goals;
     const oldScores=initialWitness?.scores??initialWitness?.comparison_scores;
@@ -276,7 +280,32 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
         const occupied=new Map(Object.entries(counts).filter(([,n])=>n>0));
         const proposal=priceIdleWorkshop(highs,p,occupied,Math.max(0,best.objective-1e-8));
         if(!proposal || proposal.estimatedIncome<=best.objective+1e-7)return false;
-        const result=await solveModel(proposal.model,options(1.5));
+        // If both the incumbent and the relaxed shift use the same whole
+        // post or pairing, keep it in the first fit of this workshop pattern.
+        // Other assignments remain available if the fit cannot realize it.
+        const local=proposal.model;
+        const relaxed=highs.solve(local.lp.replace(/\nGeneral\n[\s\S]*?\nEnd/,'\nEnd'));
+        const incumbent=new Map(best.keys.map((key,i)=>[key,best.values[i]]));
+        const fixed=[];
+        if(relaxed.Status==='Optimal' && relaxed.Columns){
+            const integers=local.lp.match(/\nGeneral\n([\s\S]*?)\nEnd/)?.[1]??'';
+            for(const [column] of integers.matchAll(/\bx\d+\b/g)){
+                const v=Number(column.slice(1)),key=p.variable_keys[v];
+                if(!key.startsWith('post:') && !key.startsWith('pair:'))continue;
+                const value=relaxed.Columns[column]?.Primal;
+                if(Number.isFinite(value) && Math.abs(value-Math.round(value))<1e-8
+                    && Math.abs(value-(incumbent.get(key)??0))<1e-8)
+                    fixed.push(' keep_post_'+v+': '+column+' = '+Math.round(value));
+            }
+        }
+        // Keep each reserve pool within the number of copies already in the shift.
+        for(const [id,pool] of (p.staffing_pools??[]).entries()){
+            if(!pool.reserve || !pool.work.length)continue;
+            const n=Math.ceil(pool.work.reduce((n,[v,c])=>n+c*(incumbent.get(p.variable_keys[v])??0),0)-1e-6);
+            fixed.push(' within_reserve_'+id+': '+expression(pool.work)+' <= '+n);
+        }
+        let result=await solveModel(addRows(local,fixed),options(1.5));
+        if(!result?.values && fixed.length)result=await solveModel(local,options(1.5));
         if(!result?.values)return false;
         const polished=polishSolution(highs,p,result);
         if(!polished.polished)return false;
@@ -424,6 +453,16 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
                         }
                     }
                 }
+            }
+            // Refitting the physical shift can raise the income we need to
+            // certify. If that target now lies inside the narrow master's open
+            // gap, close that same model before adding more recipe constraints.
+            const target=earned*CURRENCY_GAP_FACTOR;
+            if(initialScope && witness && earned>0 && bound.objective<=target && target<bound.upper
+                && (proofOptions.incomeTarget==null || target>proofOptions.incomeTarget+1e-7)){
+                const precise=await exactBound(model,{scope:[...proofScope],exact:true});
+                if(Number.isFinite(precise?.upper) && precise.upper>=Math.max(earned,bound.objective)-1e-7 && precise.upper<bound.upper)
+                    bound={...bound,upper:precise.upper};
             }
             if(witness && earned > 0 && bound.upper >= earned - 1e-7 && bound.upper <= earned*CURRENCY_GAP_FACTOR){
                 for(const name of active(fullIncome,witness.values))names.add(name);

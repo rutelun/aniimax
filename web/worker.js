@@ -966,15 +966,23 @@ async function withRecipeSwitches(pkg,input,baseline,progress=()=>{},timed=false
             baseline=draftMaterialPlans(pkg,await newHighs(),input,baseline,checkMaterialDraft);
         }catch(error){console.warn('Continuing workshop search after a material draft failed.',error);}
     }
+    // A switch changes the workshop constraints while preserving the measured
+    // routes. Refit the ordinary shift in each trial; its previous upper bound
+    // cannot certify income with the new constraints.
+    const routeWitness=!timed && Object.keys(input.roster?.dispatch??{}).length
+        && baseline.continuous_production_checked && baseline.comparison_seed ? {
+            recipes:baseline.active_continuous_recipes,counts:baseline.continuous_site_counts,
+            seed:baseline.comparison_seed,goals:baseline.comparison_goals,scores:baseline.comparison_scores,
+        } : null;
     const workshopBaseline=!timed && input.always_running ? {success:baseline.success,
-        workshopProof, comparison_scores:{crop_variety:baseline.comparison_scores?.crop_variety},
+        workshopProof,routeWitness,comparison_scores:{crop_variety:baseline.comparison_scores?.crop_variety},
         priorities:baseline.priorities?.slice(0,1),level_up_preview:{seconds:baseline.level_up_preview?.seconds}} : null;
     return searchRecipeSwitches(input,baseline,{firstProposal,workshopBaseline,
         canFillWorkshop:workshopBaseline ? trial=>canFillWorkshop(pkg,trial,workshopBaseline) : null,
         parallel:globalThis.navigator?.hardwareConcurrency>=8 && globalThis.navigator?.deviceMemory>=8
             ? 4 : comparisonConcurrency(globalThis.navigator,4),
         createWorker:!timed && typeof Worker==='function'?()=>new Worker(plannerWorkerUrl,{type:'module'}):null,
-        candidate:async trial=>JSON.parse(await exactPlanJson(pkg,JSON.stringify(trial),undefined,undefined,null,deadline,null,workshopProof)),
+        candidate:async trial=>JSON.parse(await exactPlanJson(pkg,JSON.stringify(trial),undefined,undefined,null,deadline,routeWitness,workshopProof)),
         solve:async model=>(await newHighs()).solve(model.lp,timed ? {time_limit:Math.max(.05,Math.min(3,(deadline-performance.now())/1000)),mip_rel_gap:0} : {mip_max_nodes:128,mip_rel_gap:0}),progress,
     });
 }
@@ -1036,8 +1044,8 @@ self.onmessage = async (event) => {
                     return;
                 }
             }
-            const workshopProof=event.data.workshopBaseline?.workshopProof;
-            self.postMessage({id,ok:true,result:await exactPlanJson(pkg,payload,undefined,undefined,null,null,null,workshopProof)});
+            const {workshopProof,routeWitness}=event.data.workshopBaseline??{};
+            self.postMessage({id,ok:true,result:await exactPlanJson(pkg,payload,undefined,undefined,null,null,routeWitness,workshopProof)});
             return;
         }
         if (type === 'protect_crops') {

@@ -37,6 +37,13 @@ test('measured dispatch proves the attainable whole-post pace before optimizing 
     assert.equal(deferred.rate_per_second,plan.rate_per_second);
     assert.equal(plan.rate_per_second,1);
     assert.equal(plan.continuous_production_checked,true);
+    const switched=await tryPriorityPlan(pkg,{...input,recipe_switching_relaxation:true},{
+        highs,solveModel,initialWitness,
+    });
+    assert.equal(switched.continuous_production_checked,true);
+    assert.deepEqual(switched.comparison_goals,plan.comparison_goals);
+    assert.equal(await tryPriorityPlan(pkg,{...input,roster:{dispatch:{}},recipe_switching_relaxation:true},
+        {highs,solveModel,initialWitness}),null);
     // A tied relaxed shift may fail the first full-catalogue check. The
     // checked recipes can still supply another shift at the same income.
     let restores=0;
@@ -257,6 +264,24 @@ test('a fully audited shift within the measured bound can finish without an exac
     assert.equal(plan?.rate_per_second,.25);
     assert.equal(plan.upper_bound ?? plan.continuous_upper_bounds[0][1],.2501);
     assert.ok(plan.continuous_production_checked);
+
+    // After a physical refit raises the initial zero income, a tighter bound
+    // on this same scope suffices without adding another recipe.
+    const scoped=[];
+    const newModel=payload=>build(payload).replace(' shift:',' scoped_shift:');
+    const refined=await tryPriorityPlan({...pkg,exact_priority_problem:newModel},{
+        currency:'coins',always_running:true,roster:{dispatch:{work:[1]}},
+    },{
+        highs,solveModel,initialWitness:{recipes:['crop'],seed:{keys,values:[0,0]}},
+        evaluateBound:(model,settings)=>{
+            const result=solveEconomicBound(highs,model,settings);
+            scoped.push(settings.scope);
+            return settings.relativeGap?{...result,proven:false,upper:.26}:result;
+        },
+    });
+    assert.deepEqual(scoped,[[],[]]);
+    assert.equal(refined?.rate_per_second,.25);
+    assert.equal(refined.continuous_upper_bounds[0][1],.2501);
 });
 
 test('measured income certification omits a redundant incumbent floor', async () => {
