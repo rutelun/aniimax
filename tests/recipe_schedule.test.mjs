@@ -116,3 +116,16 @@ test('a fixed jar sharing the kiln worker can finish its daily batches in the la
     assert.throws(()=>solve(busyBothPhases),/cannot sustain its daily batches/);
     assert.equal(validateRecipeSchedule(busyBothPhases,schedule).valid,false);
 });
+
+test('bench and kiln have independent daily changes, with at most one per workshop',()=>{
+    const input={daySeconds:100,approximate:true,alwaysRunning:true,maxBuildings:2,maxSwitches:2,
+        oneChangePerFacility:true,buildings:[{id:'bench',facility:'Woodworking Bench',recipes:['a','b']},
+            {id:'kiln',facility:'Chimney Kiln',recipes:['c','d']}],
+        jobs:[20,80,40,60].map((batches,i)=>({id:'abcd'[i],recipe:'abcd'[i],batches,seconds:1}))};
+    const schedule=solve(input);
+    assert.ok(schedule);
+    assert.equal(schedule.switches.length,2);
+    const sameFacility={...input,buildings:input.buildings.map(b=>({...b,facility:'Chimney Kiln'}))};
+    assert.equal(validateRecipeSchedule(sameFacility,schedule).valid,false);
+    assert.equal(solve(sameFacility),null);
+});

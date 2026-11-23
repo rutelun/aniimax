@@ -57,7 +57,8 @@ export function scheduleInputForPlan(input,plan) {
     for(const s of plan.income_streams||[])add(backgroundInputs,s.item_name,s.units_per_second||0);
     // A powered site's tier and mode are fixed throughout the day. It cannot
     // silently turn into an extra normal site in another interval.
-    for(const facility of new Set(selected.map(s=>s.facility))) {
+    const workshops=new Set(selected.map(s=>s.facility));
+    for(const facility of workshops) {
         const owned=(input.facilities?.[facility]||[]).flatMap(t=>Array.from({length:t.count},()=>({level:t.level}))).sort((a,b)=>a.level-b.level);
         const group=jobs.filter(j=>j.facility===facility), powered=new Map();
         for(const j of group)if(j.electric_level!=null)powered.set(j.electric_level,(powered.get(j.electric_level)||0)+j.rate*j.cycle);
@@ -169,8 +170,8 @@ export function scheduleInputForPlan(input,plan) {
             if(critical)workerCapacity[member]=Math.min(workerCapacity[member],backgroundWorkers[member]+(daily[member]||0));
         }
     }
-    // All eligible sites may change recipes together at one point during the day.
-    return {powerPercent:input.e_mode_rv>=12?120:Math.min(120,Math.max(1,input.electricity?.percent??120)),alwaysRunning:!!input.always_running,daySeconds:DAY,approximate:true,maxBuildings:buildings.length,maxSwitches:1,
+    // Each workshop type can change its recipes once, at its own time.
+    return {powerPercent:input.e_mode_rv>=12?120:Math.min(120,Math.max(1,input.electricity?.percent??120)),alwaysRunning:!!input.always_running,daySeconds:DAY,approximate:true,maxBuildings:buildings.length,maxSwitches:workshops.size,oneChangePerFacility:true,
         buildings,jobs,fixedProduction,workerCapacity,backgroundWorkers,backgroundInputs,backgroundOutputs,haulingLoads:Object.fromEntries(plan.hauling_staffing||[])};
 }
 
@@ -238,11 +239,20 @@ export function haulingScheduleProfile(plan,hauling,level=3) {
 export function materialChainSchedule(input) {
     if(!input.maxSwitches||input.buildings.some(b=>b.electric_level!=null)||input.jobs.some(j=>!materialChains[j.facility]?.includes(j.recipe)))return null;
     const buildings=input.buildings.map(b=>({...b}));
-    for(const facility of new Set(input.jobs.map(j=>j.facility))){
+    const facilities=new Set(input.jobs.map(j=>j.facility));
+    const maxSwitches=Math.min(input.maxSwitches,facilities.size);
+    for(const facility of facilities){
         const chain=materialChains[facility],sites=buildings.filter(b=>b.facility===facility);
         const hasLast=input.jobs.some(j=>j.facility===facility&&j.recipe===chain[3]);
         if(sites.length<(hasLast?4:3))return null;
-        sites.forEach((b,i)=>b.phaseRecipes=i===1?[[chain[0]],[chain[2]]]:i===2?[[chain[1]],[chain[1]]]:i===3&&hasLast?[[chain[3]],[chain[3]]]:[[chain[0]],[chain[0]]]);
+        sites.forEach((b,i)=>{
+            const fixed=i===2?chain[1]:i===3&&hasLast?chain[3]:chain[0];
+            b.phaseRecipes=Array.from({length:maxSwitches+1},(_,phase)=>{
+                if(i!==1)return [fixed];
+                if(phase===0)return [chain[0]];
+                return phase===maxSwitches?[chain[2]]:[chain[0],chain[2]];
+            });
+        });
     }
-    return {...input,buildings,maxSwitches:1};
+    return {...input,buildings,maxSwitches};
 }

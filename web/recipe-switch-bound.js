@@ -85,27 +85,33 @@ function fitsWholeSites(highs, problem, trial) {
         const key = problem.variable_keys[Number(column.slice(1))];
         return key?.startsWith('post:') && recipes.has(key.slice(5).split(/__|:/,1)[0]);
     });
-    // With one common daily change, each recipe runs on a whole number
+    // With one daily change per workshop, each recipe runs on a whole number
     // of sites before and after the same fraction of the day. Pool all
     // worker variants: a site may hand the same recipe to another operator.
     // Encode the signed change in site count as binary digits times that
     // shared fraction. Resource, staffing and tier compatibility remain relaxed.
     if (!scheduleFeasible(highs,problem,rows,[...sites,...posts])) return false;
     const phaseIntegers=[];
-    rows.push(' shared_fraction: switch_fraction <= 1');
+    const fractions=new Map();
     for (const {facility,tier,rates} of loads.values()) {
         const stock=trial.facilities?.[facility];
         if (!Array.isArray(stock)) continue;
         const cap=stock.reduce((sum,t)=>sum+(tier==null || t.level===tier ? t.count : 0),0);
         if (!Number.isSafeInteger(cap) || cap<=0) continue;
+        if (!fractions.has(facility)) {
+            const name='switch_fraction'+fractions.size;
+            fractions.set(facility,name);
+            rows.push(' duration_'+name+': '+name+' <= 1');
+        }
+        const fraction=fractions.get(facility);
         const id=phaseIntegers.length, after='after'+id;
         const count=[], products=[];
         for (let weight=1; weight<=2*cap; weight*=2) {
             const bit='bit'+id+'_'+weight, part='part'+id+'_'+weight;
             rows.push(' bin_'+bit+': '+bit+' <= 1',
                 ' use_'+bit+': '+part+' - '+bit+' <= 0',
-                ' time_'+bit+': '+part+' - switch_fraction <= 0',
-                ' on_'+bit+': '+part+' - switch_fraction - '+bit+' >= -1');
+                ' time_'+bit+': '+part+' - '+fraction+' <= 0',
+                ' on_'+bit+': '+part+' - '+fraction+' - '+bit+' >= -1');
             phaseIntegers.push(bit);
             count.push(weight+' '+bit);
             products.push(weight+' '+part);
@@ -116,7 +122,7 @@ function fitsWholeSites(highs, problem, trial) {
             ' first_lo_'+id+': '+before+' >= '+cap,
             ' first_hi_'+id+': '+before+' <= '+(2*cap));
         const work=rates.map(([v,c])=>c+' x'+v).join(' + ');
-        const residual=work+' - '+after+' + '+cap+' switch_fraction - '+products.join(' - ');
+        const residual=work+' - '+after+' + '+cap+' '+fraction+' - '+products.join(' - ');
         const slack=1e-5*(1+cap)+rates.reduce((n,[,c])=>n+c*1.1e-7,0);
         rows.push(' phase_lo_'+id+': '+residual+' >= -'+slack,
             ' phase_hi_'+id+': '+residual+' <= '+slack);
@@ -146,13 +152,11 @@ function fitsMaterialFlow(highs, problem) {
         // afterwards. An unselected chain need only allow omitted trace rates.
         rows.push(' chain_bit_'+active+': '+active+' <= 1',
             ' chain_on_'+active+': '+work+' - 2 '+active+' <= '+slack,
-            ' chain_lo_'+active+': '+work+' - flow_fraction - 2 '+active+' >= '+(-1-slack),
-            ' chain_hi_'+active+': '+work+' - flow_fraction <= '+(1+slack));
+            ' chain_lo_'+active+': '+work+' - '+active+' >= -'+slack);
         rawLoads.push(active);
     }
     if (rawLoads.length) {
-        rows.push(' flow_duration: flow_fraction <= 1',
-            ' flow_active: '+rawLoads.join(' + ')+' >= 1');
+        rows.push(' flow_active: '+rawLoads.join(' + ')+' >= 1');
         selectors.push(...rawLoads);
     }
     for (const variants of groups.values()) {

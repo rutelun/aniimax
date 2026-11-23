@@ -12,6 +12,13 @@ test('adapter uses actual physical tiers, worker identity and daily rates',()=>{
     assert.equal(p.jobs[0].batches,1728);assert.equal(p.jobs[0].workers['0'],10);
     assert.equal(p.workerCapacity['0'],1);assert.equal(p.backgroundWorkers['0'],0);
 });
+test('a joint candidate gets one daily change for each workshop',()=>{
+    const facility='Woodworking Bench', wood=source('wood',{facility});
+    const data=scheduleInputForPlan({...input,facilities:{...input.facilities,[facility]:[{count:1,level:1}]}},
+        {...plan,schedule_sources:[...plan.schedule_sources,wood]});
+    assert.equal(data.maxSwitches,2);
+    assert.equal(data.oneChangePerFacility,true);
+});
 test('electric and normal recipes never share a physical site',()=>{
     const p=scheduleInputForPlan({...input,facilities:{'Chimney Kiln':[{count:2,level:1}]}},
         {...plan,schedule_sources:[source('ore',{electric_level:1,crew:null}),source('brick')]});

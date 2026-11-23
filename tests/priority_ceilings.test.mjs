@@ -155,7 +155,7 @@ test('a measured material trial survives if either scheduling method can run it'
     assert.equal(canFillSwitchingWorkshop(model(1.5,8e-8),highs,trial),true,'unreported trace rates do not require a second job');
 });
 
-test('bench and kiln can fill whole days separately yet require incompatible switch times',()=>{
+test('whole-site bounds permit different change times for bench and kiln',()=>{
     const facilities=['Woodworking Bench','Chimney Kiln'];
     const trial={always_running:true,recipe_switching_facilities:facilities,
         facilities:Object.fromEntries(facilities.map(f=>[f,[{count:1,level:3}]]))};
@@ -168,6 +168,8 @@ test('bench and kiln can fill whole days separately yet require incompatible swi
             lp:['Maximize',' obj: x0','Subject To',...loads.map((x,v)=>' work'+v+': x'+v+' = '+x),
                 'Bounds',...loads.map((_,v)=>' x'+v+' >= 0'),'End'].join('\n')})};
     }
+    assert.equal(canFillSwitchingWorkshop(model(.4),highs,trial),true);
+    facilities[1]=facilities[0];
     assert.equal(canFillSwitchingWorkshop(model(.4),highs,trial),false);
     assert.equal(canFillSwitchingWorkshop(model(.8),highs,trial),true);
 });
@@ -201,7 +203,7 @@ test('a switch may earn less when its crop variety beats the ordinary plan',()=>
     }
 });
 
-test('direct raw processors in two chains require the same change time',()=>{
+test('direct raw processors in two chains can use independent change times',()=>{
     const facilities=['Woodworking Bench','Chimney Kiln'];
     const trial={always_running:true,recipe_switching_normal_only:true,e_mode_rv:21,
         recipe_switching_facilities:facilities,facilities:Object.fromEntries(facilities.map(f=>[f,[{count:4,level:4}]]))};
@@ -210,7 +212,8 @@ test('direct raw processors in two chains require the same change time',()=>{
         recipe_options:[[0,'rough_lumber',facilities[0],false,false,1],[1,'coarse_sifted_ore',facilities[1],false,false,1]],
         switching_rates:[[0,null],[1,null]],
         lp:'Maximize\n obj: x0\nSubject To\n bench: x0 = 1.25\n kiln: x1 = '+second+'\nBounds\n x0 >= 0\n x1 >= 0\nEnd'})});
-    assert.equal(canFillSwitchingWorkshop(model(1.5),highs,trial),false);
+    assert.equal(canFillSwitchingWorkshop(model(1.5),highs,trial),true);
+    assert.equal(canFillSwitchingWorkshop(model(2.1),highs,trial),false);
     assert.equal(canFillSwitchingWorkshop(model(1.25),highs,trial),true);
     assert.equal(canFillSwitchingWorkshop(model(0),highs,trial),true);
 });

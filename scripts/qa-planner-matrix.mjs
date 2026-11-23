@@ -200,7 +200,7 @@ async function run(rv,profile,season,origin,reportName) {
             const phase=qa.inputs[plan.inputIndex]?.dispatch ? 'measured delivery routes' : 'initial production';
             assert.ok(plan.success,phase+' — '+(plan.error || 'no plan'));
             assert.equal(plan.checked,true);
-            assert.ok(plan.switches<=1);
+            assert.ok(plan.switches<=new Set(plan.switchingFacilities).size);
             assert.ok(plan.switchingFacilities.every(f => ['Woodworking Bench','Chimney Kiln'].includes(f)));
             assert.ok(plan.rate>0 && Number.isFinite(plan.rate) && plan.producing>0);
             assert.ok(!plan.fallback,plan.fallback);

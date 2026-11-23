@@ -64,7 +64,14 @@ export function buildRecipeSchedule(input) {
     const row=(terms,op,rhs)=>constraints.push({terms,op,rhs});
     const durations=Array.from({length:phases},()=>add(D));
     row(durations.map(v=>[v,1]),'=',D);
-    const changed=[], cells=[];
+    const changed=[], cells=[], facilityChanges=new Map();
+    if(input.oneChangePerFacility && phases>2) {
+        for(const facility of new Set(input.buildings.map(b=>b.facility))) {
+            const changes=Array.from({length:phases-1},()=>add(1,true));
+            row(changes.map(v=>[v,1]),'<=',1);
+            facilityChanges.set(facility,changes);
+        }
+    }
     for(const b of input.buildings) {
         const allowed=input.jobs.filter(j=>b.recipes.includes(j.recipe)&&(!b.jobs||b.jobs.includes(j.id))&&j.batches>0);
         if(!allowed.length)continue;
@@ -76,6 +83,8 @@ export function buildRecipeSchedule(input) {
             const selected=new Map(recipes.map(r=>[r,add(1,true)])); selections.push(selected);
             row([...selected.values()].map(v=>[v,1]).concat(active==null?[]:[[active,-1]]),'=',active==null?1:0);
             if(p) for(const recipe of recipes) {
+                const boundary=facilityChanges.get(b.facility)?.[p-1];
+                if(boundary!=null)row([[selected.get(recipe),1],[selections[p-1].get(recipe),-1],[boundary,-1]],'<=',0);
                 row([[selected.get(recipe),1],[selections[0].get(recipe),-1],[switched,-1]],'<=',0);
                 row([[selected.get(recipe),-1],[selections[0].get(recipe),1],[switched,-1]],'<=',0);
             }
@@ -180,6 +189,7 @@ export function validateRecipeSchedule(input,schedule) {
     if(fixed && input.fixedProduction.some(j=>Math.abs((initialStock?.[j.feed]||0)-fixed.initialStock[j.feed])>EPS))errors.push('Incorrect replenishing stock for fixed production');
     const inventory={...initialStock},totals=new Map(),seen=new Map(),last=new Map(),switches=[],execution=[];
     if(entries(inventory).some(([,v])=>!Number.isFinite(v)||v<0))errors.push('Invalid initial stock');
+    const changedAt=new Map();
     let elapsed=0;
     for(const [phaseIndex,phase] of phases.entries()) {
         const backgroundInputs=fixed?.periods[phaseIndex].inputs??input.backgroundInputs;
@@ -205,7 +215,13 @@ export function validateRecipeSchedule(input,schedule) {
         }
         for(const [b,r] of recipes) {
             if(!seen.has(b))seen.set(b,new Set());seen.get(b).add(r);
-            if(last.has(b)&&last.get(b)!==r)changed=true;
+            if(last.has(b)&&last.get(b)!==r) {
+                changed=true;
+                const facility=buildings.get(b).facility;
+                if(input.oneChangePerFacility && changedAt.has(facility) && changedAt.get(facility)!==elapsed)
+                    errors.push('Workshop changes recipes more than once');
+                changedAt.set(facility,elapsed);
+            }
             last.set(b,r);
         }
         if(changed)switches.push(elapsed);

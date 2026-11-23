@@ -1047,7 +1047,7 @@ self.onmessage = async (event) => {
             const step = (key, state, proven) => self.postMessage({ id, type: 'progress', count: { step: key, state, proven } });
             const switchingInput = JSON.parse(payload);
             // A roster's provisional plan exists to place its buildings and
-            // measure the actual routes. Search the shared daily change with
+            // measure the actual routes. Search the daily workshop changes with
             // those routes once they are known, including an empty dispatch.
             const measureFirst = switchingInput.map_dispatch_pending && switchingInput.roster
                 && !Object.keys(switchingInput.roster.dispatch || {}).length
