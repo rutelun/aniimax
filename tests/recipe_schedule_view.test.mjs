@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {facilitySchedule, renderRecipeSchedule} from '../web/recipe-schedule-view.js';
+import {facilitySchedule, recipeTransitions, renderRecipeSchedule} from '../web/recipe-schedule-view.js';
 
 const schedule = {
     phases: [
@@ -73,4 +73,13 @@ test('event total comes from actual switches even when a phase boundary changes 
     const html = renderRecipeSchedule({...schedule, switches: [21600]});
     assert.match(html, /1 switch\/day/);
     assert.doesNotMatch(html, /2 switches/);
+});
+
+test('flow cards get only the transitions of the building that changed, including a switch to idle', () => {
+    const plan = {...schedule, switchedBuildings: ['a', 'a', 'b']};
+    assert.deepEqual(recipeTransitions(plan), [
+        {site: schedule.buildings[0], start: 21600, from: ['Bread'], to: ['Jam']},
+        {site: schedule.buildings[0], start: 50400, from: ['Jam'], to: []},
+    ]);
+    assert.deepEqual(recipeTransitions(null), []);
 });

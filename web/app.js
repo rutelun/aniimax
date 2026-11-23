@@ -1,3 +1,4 @@
+import { attachProductionFlow, flowBuildings } from './production-flow.js';
 import {siteSchedule,scheduledRate} from './recipe-timeline.js';
 import {elapsed as scheduleTime, facilitySchedule, renderRecipeSchedule} from './recipe-schedule-view.js';
 import {scheduleProfiles} from './recipe-schedule-plan.js';
@@ -4960,7 +4961,7 @@ function scheduledProductionUnit({site, periods}, plan) {
         <span class="production-unit-load">${escapeText(translate('Daily load'))} · ${daily}%</span></h5>${tiles}</div>`;
 }
 
-function productionWorkers(step, recipe, plan) {
+function productionCrew(step, recipe, plan) {
     if (selectedSetupTab() !== 'custom' || step.electric_level != null) return [];
     const actual = (plan.roster_routes || []).filter(route => route.facility === step.facility
         && route.item === step.item_name && route.jobs.some(([, share]) => share > 1e-9));
@@ -4977,6 +4978,12 @@ function productionWorkers(step, recipe, plan) {
         const name = member ? rosterTileLabel(member, id)
             : [translate('Assumed Aniimo'), ability && translate(ability)].filter(Boolean).join(' · ');
         const form = member && rosterCatalogId(member.catalogId, member.name);
+        return {id, ability, name, form};
+    });
+}
+
+function productionWorkers(step, recipe, plan) {
+    return productionCrew(step, recipe, plan).map(({id, ability, name, form}) => {
         const portrait = aniimoPortrait(form);
         const fallback = abilityGlyph(ability);
         return {
@@ -5370,7 +5377,39 @@ function aniimoTeam(plan) {
     return team;
 }
 
+// Use the same assignments as the active team panel. Minimum plans may specify an
+// ability and level without assigning a named Aniimo.
+function productionFlowBuildings(plan) {
+    const setup = selectedSetupTab();
+    const assignments = new Map();
+    function assign(key, name, entry, ability) {
+        if (!assignments.has(key)) assignments.set(key, []);
+        assignments.get(key).push({name, form:entry?.id, ability});
+    }
+    if (setup === 'best' || (setup !== 'custom' && plan.recipe_schedule)) {
+        for (const shift of bestPlanTeam(plan).shifts) {
+            for (const job of shift.allocations) {
+                if (job.item && job.busy > 0) assign(job.facility + '|' + job.item,
+                    shift.entry ? rosterFormName(shift.entry) : taskLabel(job, job.facility), shift.entry, job.ability);
+            }
+        }
+    } else if (setup === 'minimum') {
+        for (const group of aniimoTeam(plan).kept) {
+            for (const job of group.allocations || []) {
+                if (job.siteKey && job.busy > 0) assign(job.siteKey,
+                    group.entry ? rosterFormName(group.entry) : group.label, group.entry, group.ability);
+            }
+        }
+    }
+    const recipes = new Map(recipeIndex.map(recipe => [recipe.name, recipe]));
+    const workers = step => setup === 'custom'
+        ? productionCrew(step, recipes.get(step.item_name), plan)
+        : assignments.get(step.facility + '|' + step.item_name) || [];
+    return flowBuildings(plan, recipeTerms, workers, lastLayout?.plan === plan ? lastLayout.layout : null);
+}
+
 function renderAniimoSummary(plan) {
+    renderProductionFlow(plan, planContext, recipeIndex.length ? recipeTerms : null, lastPlanInput, () => productionFlowBuildings(plan));
     const setup = selectedSetupTab();
     const custom = setup === 'custom';
     const workloadNote = document.getElementById('aniimo-workload-note');
@@ -5988,6 +6027,13 @@ function updateRateUnitDisplays() {
         renderProductBreakdown(lastGoalResult);
     }
 }
+
+const renderProductionFlow = attachProductionFlow(document.getElementById('product-flow-card'), {
+    itemName: prettyItem, formatDuration, translate, facilityIconUrl, aniimoPortrait,
+    formatRevenue: n => n >= 10000 ? n.toLocaleString(currentLocale(), { notation: 'compact', maximumFractionDigits: 2 }) : formatRate(n),
+    formatPercent: ratio => formatNumber(Math.min(100, 100 * ratio)) + '%',
+    formatAmount: n => n >= 10 ? formatRate(n) : n.toLocaleString(currentLocale(), { maximumSignificantDigits: 2 }),
+});
 
 // Render a successfully computed plan: rate summary + facility plan table. Goal-independent,
 // called once per Calculate click (or facility/currency/module change), not on every goal

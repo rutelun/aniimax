@@ -42,33 +42,57 @@ export function facilitySchedule(schedule, facility) {
     });
 }
 
+// Daily table and flow cards use the same phase boundaries and selected recipes.
+function scheduleColumns(schedule, switched) {
+    const jobs = new Map((schedule.jobs || []).map(job => [job.id, job.recipe ?? job.id]));
+    const columns = [];
+    let start = 0;
+    for (const phase of schedule.phases) {
+        const recipes = new Map(switched.map(id => [id, new Set()]));
+        for (const assignment of phase.assignments || []) {
+            recipes.get(assignment.building)?.add(jobs.get(assignment.job) ?? assignment.job);
+        }
+        const selected = new Map([...recipes].map(([id, values]) => [id, [...values].sort()]));
+        const previous = columns.at(-1);
+        const changed = new Set(switched.filter(id => previous &&
+            JSON.stringify(selected.get(id)) !== JSON.stringify(previous.selected.get(id))));
+        if (!previous || changed.size) columns.push({start, title: previous ? elapsed(start) : 'Morning', selected, changed});
+        start += Number(phase.duration) || 0;
+    }
+    return columns;
+}
+
+export function recipeTransitions(schedule) {
+    if (!schedule?.phases?.length || !schedule.switchedBuildings?.length) return [];
+    const buildings = new Map((schedule.buildings || []).map(site => [site.id, site]));
+    const columns = scheduleColumns(schedule, [...new Set(schedule.switchedBuildings)]);
+    const transitions = [];
+    for (let i = 1; i < columns.length; i++) {
+        const {start, selected, changed} = columns[i];
+        for (const id of changed) transitions.push({
+            site: buildings.get(id) ?? {id}, start, from: columns[i - 1].selected.get(id), to: selected.get(id),
+        });
+    }
+    return transitions;
+}
+
 export function renderRecipeSchedule(schedule, {
     itemName = name => name,
     buildingName = building => `${building.facility || 'Building'} ${building.id}`,
     buildingIcon = () => '',
 } = {}) {
     if (!schedule?.phases?.length) return '';
-    const jobs = new Map((schedule.jobs || []).map(job => [job.id, job]));
     const buildings = new Map((schedule.buildings || []).map(building => [building.id, building]));
     const switched = [...new Set(schedule.switchedBuildings || [])];
     const events = schedule.switches || [];
-    const recipes = (phase, id) => [...new Set((phase.assignments || [])
-        .filter(a => a.building === id).map(a => jobs.get(a.job)?.recipe ?? a.job))].sort();
+    const columns = scheduleColumns(schedule, switched);
     const label = values => values.length ? values.map(r => escape(itemName(r))).join(', ') : 'Idle';
-    let time = 0;
-    const columns = [{phase: schedule.phases[0], title: 'Morning'}];
-    schedule.phases.slice(1).forEach((phase, index) => {
-        time += Number(schedule.phases[index].duration) || 0;
-        if (switched.some(id => JSON.stringify(recipes(schedule.phases[index], id)) !== JSON.stringify(recipes(phase, id)))) {
-            columns.push({phase, title: elapsed(time)});
-        }
-    });
     const rows = switched.map(id => {
         const building = buildings.get(id) || {id};
         const icon = buildingIcon(building.facility);
-        const cells = columns.map(({phase, title}, index) => {
-            const current = recipes(phase, id);
-            const changed = index > 0 && JSON.stringify(current) !== JSON.stringify(recipes(columns[index - 1].phase, id));
+        const cells = columns.map(({selected, title, changed: changes}) => {
+            const current = selected.get(id);
+            const changed = changes.has(id);
             return `<td data-time="${escape(title)}"${changed ? ' class="recipe-schedule-changed"' : ''}>${changed ? '<span class="recipe-schedule-arrow" aria-hidden="true">→</span>' : ''}${label(current)}</td>`;
         }).join('');
         return `<tr><th scope="row"><span class="recipe-schedule-building">${icon ? `<img src="${escape(icon)}" alt="" width="32" height="32">` : ''}<span>${escape(buildingName(building))}</span></span></th>${cells}</tr>`;

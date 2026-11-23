@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Aniimax - Aniimo Production Optimizer</title>
-    <link rel="stylesheet" href="style.css?v=roster-four-skills">
+    <link rel="stylesheet" href="style.css?v=product-flow">
     <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
 </head>
 <body>
@@ -350,6 +350,25 @@
                         <p class="hint small" id="material-work-hint" hidden></p>
                         <p class="plan-unverified" id="plan-unverified" style="display: none;"></p>
                         <p class="plan-skipped" id="plan-skipped" style="display: none;"></p>
+                    </section>
+
+                    <section class="card production-steps" id="product-flow-card" aria-labelledby="product-flow-title">
+                        <header class="plan-results-header">
+                            <h2 id="product-flow-title">
+                                <button type="button" class="collapse-toggle" aria-expanded="true" aria-controls="product-flow-periods product-flow-body">
+                                    <span class="chevron" aria-hidden="true"></span><span>Production flow map</span>
+                                </button>
+                            </h2>
+                            <div id="product-flow-periods" class="product-flow-periods" role="group" aria-label="Map period">
+                                <button type="button" class="skip-add-btn" data-flow-period="hour" aria-pressed="true">Per hour</button>
+                                <button type="button" class="skip-add-btn" data-flow-period="day" aria-pressed="false">Per day</button>
+                                <button type="button" class="skip-add-btn" data-flow-period="rv" aria-pressed="false">Until RV upgrade</button>
+                            </div>
+                        </header>
+                        <div id="product-flow-body">
+                            <p class="hint small product-flow-note" role="status"></p>
+                            <div class="product-flow-content"></div>
+                        </div>
                     </section>
 
                     <div class="card production-steps" id="improve-card" style="display: none;">
