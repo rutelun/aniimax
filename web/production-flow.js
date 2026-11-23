@@ -454,8 +454,7 @@ export function attachProductionFlow(card, { itemName, formatAmount, formatReven
             return badge;
         }
         function facilityBadge(group, baseResource) {
-            const detail = text('details', '', 'flow-facility');
-            const summary = text('summary', '', 'flow-badge');
+            const badge = text('span', '', 'flow-badge');
             const load = formatPercent(group.buildingBusy / group.count);
             const count = `×${group.count}`;
             const building = translate(group.facility) + (baseResource || group.count > 1 ? ' ' + count : '');
@@ -463,27 +462,22 @@ export function attachProductionFlow(card, { itemName, formatAmount, formatReven
             const crew = group.powered ? translate('E-mode')
                 : workers.map(w => translate(w.name)).join(', ') || translate('Assignment unavailable');
             const description = (baseResource ? [building, crew] : [building, translate('Building load') + ' ' + load, crew]).join(' · ');
-            summary.setAttribute('aria-label', description);
-            summary.title = description;
-            summary.append(badgeImage(facilityIconUrl(group.facility), building), text('strong', baseResource ? count : load));
+            const recipeLoad = !baseResource && group.buildingBusy - group.busy > 1e-6
+                ? translate('On this recipe') + ' ' + formatPercent(group.busy / group.count) : '';
+            badge.setAttribute('role', 'img');
+            badge.title = [description, recipeLoad].filter(Boolean).join(' · ');
+            badge.setAttribute('aria-label', badge.title);
+            badge.append(badgeImage(facilityIconUrl(group.facility), building), text('strong', baseResource ? count : load));
             if (group.powered) {
                 const electric = text('span', '', 'production-electric');
                 electric.title = translate('E-mode');
                 electric.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${abilityGlyph('Lightning')}</svg>`;
-                summary.append(electric);
+                badge.append(electric);
             } else for (const worker of workers.slice(0, 3)) {
-                summary.append(badgeImage(aniimoPortrait(worker.form), translate(worker.name), worker.ability));
+                badge.append(badgeImage(aniimoPortrait(worker.form), translate(worker.name), worker.ability));
             }
-            if (workers.length > 3) summary.append(text('small', '+' + (workers.length - 3)));
-            const info = text('div', '', 'flow-badge-detail');
-            info.append(text('strong', building));
-            if (!baseResource) info.append(field('Building load', load, 'flow-load'));
-            if (!baseResource && group.buildingBusy - group.busy > 1e-6) {
-                info.append(field('On this recipe', formatPercent(group.busy / group.count), 'flow-load'));
-            }
-            info.append(text('div', group.powered ? crew : translate('Aniimo') + ' · ' + crew, 'flow-crew'));
-            detail.append(summary, info);
-            return detail;
+            if (workers.length > 3) badge.append(text('small', '+' + (workers.length - 3)));
+            return badge;
         }
         function switchRow({site, start, from, to}) {
             const row = text('div', '', 'flow-switch');
@@ -510,13 +504,14 @@ export function attachProductionFlow(card, { itemName, formatAmount, formatReven
             el.dataset.depth = n.depth;
             const head = text('div', '', 'flow-node-head');
             const baseResource = !n.inputs.size;
-            const crew = baseResource ? text('div', '', 'flow-base-crew') : head;
+            const crew = text('div', '', 'flow-facilities');
             const heading = text('h4', '');
             const produced = text('strong', amount(n.made), 'flow-produced');
             produced.setAttribute('aria-label', translate('Produced') + ' ' + produced.textContent);
             heading.append(icon(n.item, itemName(n.item)), produced);
             head.append(heading);
             for (const group of buildings?.get(n.item)?.values() || []) crew.append(facilityBadge(group, baseResource));
+            if (!baseResource && crew.childElementCount) head.append(crew);
             el.append(head);
             if (n.sold > 0) {
                 const sale = text('span', '', 'flow-sale');
@@ -608,14 +603,6 @@ export function attachProductionFlow(card, { itemName, formatAmount, formatReven
             render();
         }
     });
-    // Opening a card may change both the space available to its peers and its center.
-    card.addEventListener('toggle', event => {
-        const board = event.target.closest('.product-flow-board');
-        if (board) {
-            fitBoard(board);
-            drawLinks(board);
-        }
-    }, true);
     card.addEventListener('click', e => {
         const button = e.target.closest('[data-flow-period]');
         if (button && !button.disabled) {

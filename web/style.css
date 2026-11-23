@@ -3929,8 +3929,6 @@ html { scroll-padding-top: 0.8rem; }
 }
 .flow-sale-key { display: inline-flex; align-items: center; gap: .33rem; margin-inline-start: .5rem; }
 .flow-sale-key::before { content: ''; width: .7rem; height: .7rem; border-radius: .2rem; }
-.product-flow-column .flow-node-head { max-width: 15rem; }
-.flow-tight .flow-node-head { max-width: 11.5rem; }
 .product-flow-node h4 { display: inline-flex; align-items: center; gap: .15rem; margin: 0; }
 .flow-produced { font-size: 1.15rem; line-height: 1; letter-spacing: -.035em; white-space: nowrap; }
 .product-flow-icon { display: inline-block; flex: none; width: 32px; height: 32px; background: url('./product-icons.webp') no-repeat; background-size: 512px auto; }
@@ -3949,29 +3947,18 @@ html { scroll-padding-top: 0.8rem; }
 .product-flow-total { border-top: 1px solid var(--border); padding: .65rem 0 0; }
 .product-flow-total strong { color: var(--accent); }
 .product-flow-content .flow-category { margin: .25rem 0 0; font-size: .95rem; }
-.flow-node-head { display: flex; align-items: center; flex-wrap: wrap; gap: .1rem .35rem; }
-.flow-base-crew { display: flex; align-items: center; flex-wrap: wrap; gap: .2rem; margin-top: .15rem; max-width: 15rem; }
+.flow-node-head { display: flex; align-items: center; gap: .35rem; }
+.flow-facilities { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: .2rem .45rem; margin-inline-start: auto; max-width: 13rem; }
+.flow-tight .flow-facilities { max-width: 9rem; }
+.product-flow-node > .flow-facilities { margin-top: .15rem; }
 .flow-switch { display: flex; align-items: center; gap: .35rem; border-top: 1px solid var(--border); margin-top: .2rem; padding-top: .2rem; font-size: .74rem; }
 .flow-switch-site, .flow-switch-recipes { display: inline-flex; align-items: center; gap: .15rem; }
 .flow-switch-site { max-width: 7.5rem; line-height: 1.15; }
 .flow-switch-recipes { flex-wrap: wrap; max-width: 9rem; }
 .flow-switch-recipes .product-flow-icon { zoom: .72; }
 .flow-switch-time { color: var(--success); margin-left: auto; white-space: nowrap; }
-.flow-facility { min-width: 0; max-width: 100%; }
-.flow-facility[open] { flex-basis: 100%; }
-.flow-badge {
-    display: inline-flex; align-items: center; flex-wrap: wrap; gap: 3px; max-width: 100%; min-height: 24px;
-    padding: 1px 5px; border: 1px solid var(--border); border-radius: 6px; cursor: pointer;
-    color: var(--text); background: var(--surface-2); font-size: .74rem; list-style: none;
-}
-.flow-badge::-webkit-details-marker { display: none; }
-.flow-badge::after { content: ''; width: 4px; height: 4px; margin: 0 2px 2px; border: solid var(--text-muted); border-width: 0 1px 1px 0; transform: rotate(45deg); }
-.flow-facility[open] .flow-badge::after { transform: rotate(225deg); margin-bottom: -2px; }
+.flow-badge { display: inline-flex; align-items: center; gap: 3px; font-size: .74rem; white-space: nowrap; }
 .flow-badge strong { font-variant-numeric: tabular-nums; }
 .flow-badge-icon { display: inline-grid; place-items: center; width: 20px; height: 20px; flex: none; font-size: .65rem; }
 .flow-badge-icon img, .flow-badge-icon svg { width: 100%; height: 100%; object-fit: contain; }
 .flow-badge-icon svg { padding: 3px; }
-.flow-badge-detail { margin-top: .25rem; padding: .3rem .4rem; border-left: 2px solid var(--border); font-size: .75rem; }
-.flow-load { display: flex; align-items: baseline; justify-content: space-between; gap: .35rem; }
-.flow-load span, .flow-crew { color: var(--text-muted); }
-.flow-crew { overflow-wrap: anywhere; }
