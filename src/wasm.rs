@@ -2251,7 +2251,11 @@ impl PreparedInput {
                     crew.add_reserve_workers(jobs, capacity);
                     crew.add_reserve_families(available.filter_map(|item| requirements.family(&item.name)), capacity);
                 }
-                if input.fixed_homeland.is_none() && (roster.hauling_default_seconds > 0.0 || roster.hauling_seconds.values().any(|&s| s > 0.0)) {
+                let has_hauling = roster.hauling_default_seconds > 0.0
+                    || roster.hauling_seconds.values().any(|&s| s > 0.0)
+                    || roster.dispatch.iter().any(|(key, routes)| key.ends_with("|Hauling")
+                        && routes.iter().any(|r| r.share > 0.0 && r.travel_seconds > 0.0));
+                if input.fixed_homeland.is_none() && has_hauling {
                     crew.assumed_from.get_or_insert(crew.members.len());
                     crew.members.push(crate::models::RosterAniimo {
                         count: capacity.saturating_mul(100).max(1),

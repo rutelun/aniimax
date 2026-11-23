@@ -117,6 +117,27 @@ test('a fixed jar sharing the kiln worker can finish its daily batches in the la
     assert.equal(validateRecipeSchedule(busyBothPhases,schedule).valid,false);
 });
 
+test('a powered fixed recipe can catch up on its private feed when its courier leaves the kiln',async()=>{
+    const {scheduleInputForPlan,attachRecipeSchedule}=await import('../web/recipe-schedule-plan.js');
+    const source=(item,facility,crew,rate,cycle,inputs,turns)=>({id:item,item,facility,facility_level:1,
+        electric_level:crew==null?1:null,crew,rate,cycle,inputs,outputs:[[item,1]],turns});
+    const dust=source('dust','Crafting Table',null,.1,2,[['gem',1]],false);
+    dust.hauling_seconds=[2,0];
+    const sources=[source('ore','Chimney Kiln',0,.05,10,[],true),
+        source('brick','Chimney Kiln',1,.05,10,[['ore',1]],true),
+        source('gem','Mining',null,.1,10,[],false),dust];
+    const config={always_running:true,roster:{members:[{count:1},{count:1}]},
+        facilities:{'Chimney Kiln':[{count:1,level:1}]}};
+    const plan={schedule_sources:sources,roster_workload:[.5,.5],hauling_staffing:[[0,.2]],
+        coin_items:[{facility:'Crafting Table',item_name:'dust',status:'producing',facility_count:1}]};
+    const input=scheduleInputForPlan(config,plan);
+    const schedule=attachRecipeSchedule(plan,input,solve(input)).recipe_schedule;
+    const batches=schedule.phases.map(p=>p.fixedRates.dust*p.duration);
+    assert.ok(batches.includes(0));
+    assert.ok(Math.abs(batches.reduce((a,b)=>a+b,0)-8640)<1e-6);
+    assert.ok(schedule.workerProfiles[0].every(load=>load<=1+1e-8));
+});
+
 test('bench and kiln have independent daily changes, with at most one per workshop',()=>{
     const input={daySeconds:100,approximate:true,alwaysRunning:true,maxBuildings:2,maxSwitches:2,
         oneChangePerFacility:true,buildings:[{id:'bench',facility:'Woodworking Bench',recipes:['a','b']},

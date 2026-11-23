@@ -1,5 +1,5 @@
 import { attachProductionFlow, flowBuildings } from './production-flow.js?v=hex-load';
-import {siteSchedule,scheduledRate} from './recipe-timeline.js';
+import {siteSchedule,scheduledRate,scheduledRates} from './recipe-timeline.js';
 import {elapsed as scheduleTime, facilitySchedule, renderRecipeSchedule} from './recipe-schedule-view.js';
 import {switchingWorkshops} from './material-flow-schedule.js';
 import {scheduleProfiles} from './recipe-schedule-plan.js';
@@ -29,7 +29,7 @@ import { createShareUrl, readShareHash, urlWithoutShare } from './share-config.j
 import { nearestStorage } from './layout.js?v=logic-audit';
 import { projectLayoutWork, layoutWalkingAdjustments, workerTravelDistances, workerTravelSeconds, measuredMovementEstimates } from './worker-travel.js?v=finite-movement';
 import { assignFacilityStock, bufferedBatches, haulingLevelFor, haulingWorkload, allocateHauling, haulingBatchTrips,
-    haulingTravelSeconds, haulingWorkSeconds, pickupStockLimit } from './hauling.js?v=base-travel';
+    haulingTravelSeconds, haulingWorkSeconds, siteHaulingTrips, pickupStockLimit } from './hauling.js?v=base-travel';
 import { personalityInput, replacementCandidates, compareRecommendations, usefulUpgrade, keepBetterComparison, workerUsage } from './opportunity-comparison.js?v=logic-audit';
 import { comparisonConcurrency, startComparisonQueue } from './comparison-queue.js?v=parallel-comparisons';
 import { prepareOpportunities } from './opportunity-effects.js?v=auto-e-mode';
@@ -116,7 +116,7 @@ function callWorker(type, payload, onProgress) {
     return new Promise((resolve, reject) => {
         if (!worker) initWorker();
         const id = ++nextRequestId;
-        const timer = type === 'find_plan' || type === 'get_version' ? null : setTimeout(() => {
+        const timer = type === 'find_plan' || type === 'mapped_material_plan' || type === 'get_version' ? null : setTimeout(() => {
             pendingWorkerRequests.delete(id);
             reject(new Error('This setup took too long. Try simplifying the priorities.'));
             if (!pendingWorkerRequests.size) restartWorker();
@@ -1448,7 +1448,7 @@ function homelandPieces(plan, input) {
         member.batchWeight = member.weight;
         const limit = pickupStockLimit(member);
         member.weight = member.jobs ? member.jobs.reduce((sum, job) => sum + job.rate * 3600
-            * haulingBatchTrips(recipesByName.get(job.item), courierLevel, limit, member.facility), 0)
+            * siteHaulingTrips(member,job.item,recipesByName.get(job.item),courierLevel), 0)
             : member.weight * haulingBatchTrips(recipesByName.get(member.crop), courierLevel, limit, member.facility);
     }
     if(selectedSetupTab()==='custom'&&Object.keys(reactiveDispatch).length){
@@ -1477,6 +1477,7 @@ const measuredPowerPlans = new WeakMap();
 const powerTeamSeeds = new WeakMap();
 const layoutsByPlan = new WeakMap();
 const compactedLayouts = new WeakSet();
+const measuredMaterialLayouts = new WeakMap();
 
 function updateLayoutStaffing(layout,plan) {
     const planned = homelandPieces(plan,lastPlanInput).pieces.flatMap(piece=>
@@ -1992,6 +1993,13 @@ function renderHomelandLayout(plan, keepLayout = false) {
     layoutWorker = null;
     const applyLayout = async layout => {
         if (runId !== layoutRunId) return;
+        const measured=measuredMaterialLayouts.get(plan);
+        if(measured && measured.layout!==layout){
+            reactiveDispatch=measured.ordinary.roster_dispatch;
+            plansBySetup[selectedAniimoSetup()]=measured.ordinary;
+            showSelectedPlan();
+            return;
+        }
         rememberLayout(plan, layoutKey, layout);
         const storages = layout.storages;
         // Buildings carry nothing themselves.
@@ -2071,6 +2079,22 @@ function renderHomelandLayout(plan, keepLayout = false) {
                     permanent:permanentWorkers(plan,members,RESIDENT_FACILITIES), routes:plan.roster_routes};
                 const setup = selectedAniimoSetup();
                 const calculation = planRunId;
+                if(lastPlanInput.priorities?.[0]==='level_up' && Number.isFinite(plan.crop_peaks?.completion) && lastPlanInput.e_mode_rv>=12){
+                    try{
+                        const switched=await callWorker('mapped_material_plan',{plan,context,limit:ANIIMO_MAX[homeLevel-1],
+                            input:{...lastPlanInput,...aniimoInput(setup)}});
+                        if(runId!==layoutRunId || calculation!==planRunId || selectedAniimoSetup()!==setup)return;
+                        if(switched){
+                            compactedLayouts.add(switched.layout);
+                            measuredMaterialLayouts.set(switched.plan,{layout:switched.layout,ordinary:plan});
+                            rememberLayout(switched.plan,layoutKey,switched.layout);
+                            reactiveDispatch=switched.plan.roster_dispatch;
+                            plansBySetup[selectedAniimoSetup()]=switched.plan;
+                            showSelectedPlan(true);
+                            return;
+                        }
+                    }catch(error){console.warn('Continuing with the measured workshop plan.',error);}
+                }
                 let compact;
                 try {
                     compact = await callWorker('compact_team',{plan,context,limit:ANIIMO_MAX[homeLevel-1],
@@ -2645,6 +2669,8 @@ const simDue = job => job.pace >= 1 - 1e-9;
 
 // Starts the first job of `unit` that's due and has its materials, at game time `at`.
 function simStart(sim, unit, at) {
+    const rates=scheduledRates(unit.flow.schedulePhases,at);
+    if(unit.buffered && rates && !Object.hasOwn(rates,unit.bufferedRecipe))flushSimOutput(sim,unit,0);
     const job = unit.jobs.find(j => (scheduledRate(unit.flow.schedulePhases,j.item,at)??j.rate)>0 && simDue(j) && simHas(sim, j));
     if (!job) return;
     job.terms.takes.forEach(([item, n]) => {
@@ -2654,6 +2680,13 @@ function simStart(sim, unit, at) {
     unit.job = job;
     unit.started = at;
     unit.until = at + job.cycle;
+}
+
+function flushSimOutput(sim,unit,age){
+    for(const [item,count] of unit.pending)sim.store.set(item,(sim.store.get(item)||0)+count);
+    unit.pending.clear();
+    unit.buffered=0;
+    deliver(sim,unit,age);
 }
 
 function stepLayoutSim(sim, dt) {
@@ -2673,11 +2706,9 @@ function stepLayoutSim(sim, dt) {
             unit.pending.set(makes, (unit.pending.get(makes) || 0) + amount);
             if (byproduct) unit.pending.set(byproduct[0], (unit.pending.get(byproduct[0]) || 0) + byproduct[1]);
             unit.buffered++;
+            unit.bufferedRecipe=unit.job.item;
             if (unit.buffered >= bufferedBatches({ name: unit.job.item, yieldAmount: amount, byproductAmount: byproduct?.[1] }, unit.flow.stockLimit, unit.flow.facility)) {
-                for (const [item, count] of unit.pending) sim.store.set(item, (sim.store.get(item) || 0) + count);
-                unit.pending.clear();
-                unit.buffered = 0;
-                deliver(sim, unit, (sim.game - unit.until) / sim.speed);
+                flushSimOutput(sim,unit,(sim.game-unit.until)/sim.speed);
             }
             unit.free = unit.until;
             unit.until = null;
@@ -2930,6 +2961,7 @@ function measureRosterRoutes(layout,plan,previous) {
 }
 
 function refineReactiveDispatch(layout, plan) {
+    if(measuredMaterialLayouts.get(plan)?.layout===layout)return false;
     const existing = Object.keys(reactiveDispatch).length > 0;
     const policy=measureRosterRoutes(layout,plan,existing ? reactiveDispatch : null);
     if (plan.pending_workshop_routes || (!existing && Object.keys(policy).length)) {

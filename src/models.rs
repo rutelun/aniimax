@@ -1556,6 +1556,7 @@ impl FacilityCounts {
     pub fn uses_work_routes(&self) -> bool { self.movement_seconds > 0.0 || self.has_dispatch() }
 
     pub fn dispatch(&self, recipe: &ProductionItem, ability: &str) -> Option<&[DispatchAssignment]> {
+        if self.dispatch.is_empty() { return None; }
         self.dispatch.get(&format!("{}|{}|{ability}", recipe.facility, base_item_name(&recipe.name))).map(Vec::as_slice)
     }
 

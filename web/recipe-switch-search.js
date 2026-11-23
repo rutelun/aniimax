@@ -1,4 +1,4 @@
-import {materialFlowSchedule,switchingWorkshops} from './material-flow-schedule.js';
+import {materialFlowSchedules,switchingWorkshops} from './material-flow-schedule.js';
 import {buildRecipeSchedule,readRecipeSchedule} from './recipe-schedule.js';
 import {scheduleInputForPlan,attachRecipeSchedule,materialChainSchedule} from './recipe-schedule-plan.js';
 
@@ -37,6 +37,40 @@ export function improvesPlan(candidate,baseline) {
 const switchTrial = (input, choice) => ({...input, recipe_switching_relaxation:true,
     recipe_switching_facilities:choice.facilities, recipe_switching_normal_only:!!choice.normal});
 
+// Prefer a timetable that the existing shift can cover before adding assumed
+// copies for simultaneous work. Worker profiles include background production.
+function chooseMaterialSchedule(plan,data,baseline,onError) {
+    const previous=new Map();
+    for(const [member,ability,level,,family] of baseline?.assumed_aniimo??[]){
+        const load=(baseline.roster_workload?.[member]??0)
+            +(baseline.hauling_staffing?.find(([id])=>id===member)?.[1]??0);
+        const peak=Math.max(load,...(baseline.recipe_schedule?.workerProfiles?.[member]??[]));
+        previous.set(JSON.stringify([ability,level,family]),Math.max(Math.ceil(peak-1e-6),
+            baseline.crop_peaks?.counts?.[member]??0));
+    }
+    let best=null,minimum=Infinity;
+    for(const flow of materialFlowSchedules(data)){
+        let candidate;
+        try{candidate=attachRecipeSchedule(plan,data,flow);}
+        catch(error){onError?.(error);continue;}
+        let additional=0;
+        for(const [member,ability,level,,family] of plan.assumed_aniimo??[]){
+            const profile=candidate.recipe_schedule.workerProfiles[member]??[];
+            const needed=Math.ceil(Math.max(0,...profile)-1e-6);
+            additional+=Math.max(0,needed-(previous.get(JSON.stringify([ability,level,family]))??0));
+        }
+        if(additional===0)return candidate;
+        if(additional<minimum){best=candidate;minimum=additional;}
+    }
+    return best;
+}
+
+export function checkMaterialDraft(input,plan,baseline){
+    if(!improvesPlan(plan,baseline))return null;
+    try{return chooseMaterialSchedule(plan,scheduleInputForPlan(input,plan,{materialSites:true}),baseline);}
+    catch{return null;}
+}
+
 export async function proveFirstSwitch(input, boundsFor, candidate, progress=()=>{}) {
     if (!input.always_running || input.fixed_homeland || input.level_up || input.level_up_strategy || input.prioritize_byproducts
         || input.priorities?.[0] !== 'level_up' || !input.level_up_preview) return null;
@@ -61,8 +95,8 @@ export async function proveFirstSwitch(input, boundsFor, candidate, progress=()=
             && seconds < bound.seconds - 2e-5 * Math.max(1,bound.seconds)
             && (bound.crop == null || proposed.comparison_scores?.crop_variety === bound.crop)) {
             const data = scheduleInputForPlan(input,proposed);
-            const schedule = materialFlowSchedule(data);
-            if (schedule) return {winner:attachRecipeSchedule(proposed,data,schedule)};
+            const winner=chooseMaterialSchedule(proposed,data,proposed);
+            if(winner)return {winner};
         }
     } catch {
         // A missing proof or a rejected schedule still permits the ordinary search.
@@ -148,11 +182,9 @@ export async function searchRecipeSwitches(input,baseline,{candidate,solve,progr
                 if(!improvesPlan(proposed,baseline))continue;
                 const scheduleInput=scheduleInputForPlan(input,proposed);
                 if(chosen.normal){
-                    const flow=materialFlowSchedule(scheduleInput);
-                    if(flow){
-                        try{return attachRecipeSchedule(proposed,scheduleInput,flow);}
-                        catch(error){detail=String(error.message||error);}
-                    }
+                    const candidate=chooseMaterialSchedule(proposed,scheduleInput,baseline,
+                        error=>{detail=String(error.message||error);});
+                    if(candidate)return candidate;
                 }
                 const pattern=chosen.normal?materialChainSchedule(scheduleInput):null;
                 for(const attempt of [pattern,scheduleInput].filter(Boolean)){
@@ -163,8 +195,10 @@ export async function searchRecipeSwitches(input,baseline,{candidate,solve,progr
                 }
             }catch(error){detail=String(error.message||error);}
         }
+        if(baseline.recipe_schedule)return baseline;
         return {...baseline,recipe_switching_note:detail?'No verified switching improvement found; keeping the ordinary plan.':'No improvement found; keeping the ordinary plan.',...(detail?{recipe_switching_detail:detail}:{})};
     } catch(error) {
+        if(baseline.recipe_schedule)return baseline;
         return {...baseline,recipe_switching_note:'No verified switching improvement found; keeping the ordinary plan.',recipe_switching_detail:String(error.message||error)};
     } finally {
         searching=false;

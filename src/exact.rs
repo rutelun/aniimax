@@ -2985,8 +2985,8 @@ fn warm_start_keys(model: &Model<'_>, items: &[ProductionItem], counts: &Facilit
     let mut duplicates = BTreeMap::<String, usize>::new();
     model.kinds.iter().map(|kind| {
         let key = match kind {
-            VarKind::Rate(r) => format!("rate:{}", recipe_key(r)),
-            VarKind::Units(r) => format!("units:{}", recipe_key(r)),
+            VarKind::Rate(r) => format!("rate:{}", names[r.name.as_str()]),
+            VarKind::Units(r) => format!("units:{}", names[r.name.as_str()]),
             VarKind::Sold(name) => format!("sold:{name}"),
             VarKind::Pace => "pace".into(),
             VarKind::MaterialPace => "material_pace".into(),
@@ -3008,10 +3008,10 @@ fn warm_start_keys(model: &Model<'_>, items: &[ProductionItem], counts: &Facilit
                 format!("post:{station}:{}", member_key(*member))
             }
             VarKind::WorkRoute { recipe, member, crop, mobile, .. } =>
-                format!("route:{}:{}:{crop:?}:{mobile}", recipe_key(recipe), member_key(*member)),
+                format!("route:{}:{}:{crop:?}:{mobile}", names[recipe.name.as_str()], member_key(*member)),
             VarKind::ActiveAniimo { member } => format!("active:{}", member_key(*member)),
-            VarKind::HaulingStaff { recipe, member, .. } => format!("haul:{}:{}", recipe_key(recipe), member_key(*member)),
-            VarKind::FixedSite { recipe, group } => format!("site:{group}:{}", recipe_key(recipe)),
+            VarKind::HaulingStaff { recipe, member, .. } => format!("haul:{}:{}", names[recipe.name.as_str()], member_key(*member)),
+            VarKind::FixedSite { recipe, group } => format!("site:{group}:{}", names[recipe.name.as_str()]),
             VarKind::FixedTurnUnits { group, electric } => format!("site_turns:{group}:{electric}"),
         };
         let ordinal = duplicates.entry(key.clone()).or_default();

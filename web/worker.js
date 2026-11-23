@@ -12,7 +12,7 @@ import {continuousProduction,withCompetingConsumers} from './continuous-producti
 import {continuousNeighborhood, incomeRepairNeighborhood, neighborhoodResult, keepProductionWitness} from './continuous-neighborhood.js';
 import {comparisonConcurrency} from './comparison-queue.js';
 import {switchingWorkshops} from './material-flow-schedule.js';
-import {proveFirstSwitch,searchRecipeSwitches} from './recipe-switch-search.js?v=validated-upgrade';
+import {proveFirstSwitch,searchRecipeSwitches,checkMaterialDraft} from './recipe-switch-search.js?v=validated-upgrade';
 import {refineStaffing} from './staffing-search.js';
 import {economicWorkers} from './economic-parallel.js';
 import {comparePlans} from './opportunity-comparison.js';
@@ -945,6 +945,12 @@ async function canFillWorkshop(pkg,trial,baseline) {
 
 async function withRecipeSwitches(pkg,input,baseline,progress=()=>{},timed=false,firstProposal,workshopProof) {
     const deadline=timed ? performance.now()+10000 : null;
+    if(!timed && input.roster && input.priorities?.[0]==='level_up'){
+        try{
+            const {draftMaterialPlans}=await import('./material-plan-draft.js');
+            baseline=draftMaterialPlans(pkg,await newHighs(),input,baseline,checkMaterialDraft);
+        }catch(error){console.warn('Continuing workshop search after a material draft failed.',error);}
+    }
     const workshopBaseline=!timed && input.always_running ? {success:baseline.success,
         workshopProof, comparison_scores:{crop_variety:baseline.comparison_scores?.crop_variety},
         priorities:baseline.priorities?.slice(0,1),level_up_preview:{seconds:baseline.level_up_preview?.seconds}} : null;
@@ -1029,6 +1035,11 @@ self.onmessage = async (event) => {
             const {shortlistPowerTeams}=await import('./power-team-search.js');
             const result=await shortlistPowerTeams(pkg,await newHighs(),payload.plan,payload.input);
             self.postMessage({id,ok:true,result});
+            return;
+        }
+        if (type === 'mapped_material_plan') {
+            const {mappedMaterialPlan}=await import('./mapped-material-schedule.js');
+            self.postMessage({id,ok:true,result:mappedMaterialPlan(pkg,await newHighs(),payload)});
             return;
         }
         if (type === 'compact_team') {

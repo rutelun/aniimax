@@ -231,3 +231,17 @@ test('disjoint short-phase workloads reject a workshop before integer search',()
     }};
     assert.equal(canFillSwitchingWorkshop({exact_priority_problem:()=>JSON.stringify(problem)},observed,trial),false);
 });
+
+test('a repeating direct ore schedule must process yesterday’s replenished intermediate stock',()=>{
+    const facility='Chimney Kiln', names=['coarse_sifted_ore','sintered_ore_brick'];
+    const config={always_running:true,recipe_switching_normal_only:true,facilities:{[facility]:[{count:4,level:4}]}};
+    const items=[{name:names[0],yield_amount:1},{name:names[1],raw_materials:[names[0]],required_amount:[8]}];
+    const model=rate=>({get_all_items:()=>JSON.stringify(items),exact_priority_problem:()=>JSON.stringify({
+        variables:2,variable_keys:names.map(n=>'rate:'+n+'#0'),
+        recipe_options:names.map((n,v)=>[v,n,facility,false,false,1]),switching_rates:[[0,null],[1,null]],
+        lp:'Maximize\n obj: x0\nSubject To\n raw: x0 = 1.5\n brick: x1 = '+rate+'\nBounds\n x0 >= 0\n x1 >= 0\nEnd',
+    })});
+    assert.equal(canFillSwitchingWorkshop(model(1.5/8),highs,config),true);
+    assert.equal(canFillSwitchingWorkshop(model(1.46/8),highs,config),false);
+    assert.equal(canFillSwitchingWorkshop(model(.5),highs,config),true,'whole sites can switch even with surplus');
+});

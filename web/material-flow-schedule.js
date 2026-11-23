@@ -64,57 +64,90 @@ export function processStage(supply,capacity,quantity) {
     return {initial,intervals};
 }
 
-function scheduleChain(input,facility,jobs,initialStock) {
+function scheduleChain(input,facility,jobs,switchTier,extraRaw) {
+    const initialStock={};
     const day=input.daySeconds,raw=jobs[0];
-    const change=raw.batches*raw.seconds-day;
+    const extra=extraRaw??raw;
+    if(extraRaw && Math.abs(raw.batches*raw.seconds-day)>EPS*day)return null;
+    const change=extraRaw?extra.batches*extra.seconds:raw.batches*raw.seconds-day;
     if(change<=EPS||change>=day-EPS)return null;
-    const sites=input.buildings.filter(b=>b.facility===facility&&b.electric_level==null);
-    const accepts=(b,j)=>b.recipes.includes(j.recipe)&&(!b.jobs||b.jobs.includes(j.id));
+    const sites=input.buildings.filter(b=>b.facility===facility);
+    const accepts=(b,j)=>(b.electric_level??null)===(j.electric_level??null)&&b.recipes.includes(j.recipe)&&(!b.jobs||b.jobs.includes(j.id));
     // Reserve the most restrictive (high-tier) jobs first.
     const assigned=[];
     for(const tier of [3,2,1,0]) {
-        const at=sites.findIndex(b=>accepts(b,jobs[tier])&&(tier!==2||accepts(b,raw)));
+        const at=sites.findIndex(b=>accepts(b,jobs[tier])&&(tier!==switchTier||accepts(b,extra)));
         if(at<0)return null;
         assigned[tier]=sites.splice(at,1)[0];
     }
     const rawInput=Object.keys(raw.inputs)[0],quantity=raw.inputs[rawInput];
     const income=input.backgroundOutputs?.[rawInput]||0;
-    if(income*day+EPS<raw.batches*quantity)return null;
-    const reserve=Math.max(0,(2*quantity/raw.seconds-income)*change);
+    const batches=raw.batches+(extraRaw?.batches??0);
+    if(income*day+EPS<batches*quantity)return null;
+    const peak=1/raw.seconds+1/extra.seconds;
+    const reserve=Math.max(0,(peak*quantity-income)*change);
     if(reserve>EPS)initialStock[rawInput]=reserve;
-    const profiles=[[{start:0,end:change,rate:2/raw.seconds},{start:change,end:day,rate:1/raw.seconds}]];
+    const profiles=[[{start:0,end:change,rate:peak},{start:change,end:day,rate:1/raw.seconds}]];
     for(let i=1;i<jobs.length;i++) {
         const j=jobs[i],ingredient=jobs[i-1].recipe;
-        const next=processStage(profiles[i-1],p=>i===2&&p.start<change?0:1/j.seconds,j.inputs[ingredient]);
+        const next=processStage(profiles[i-1],p=>i===switchTier&&p.start<change?0:1/j.seconds,j.inputs[ingredient]);
         if(!next)return null;
         if(next.initial>EPS)initialStock[ingredient]=next.initial;
         profiles.push(next.intervals);
     }
-    return {assigned,jobs,profiles,change};
+    return {assigned,jobs,profiles,change,switchTier,initialStock,extra};
+}
+
+// Construct the two physical chains independently. Crew and hauling are checked
+// against their combined phases, after each workshop has its own timetable.
+export function* materialFlowSchedules(input) {
+    const groups=independentMaterialChains(input,true);
+    if(!groups||groups.size>input.maxBuildings)return;
+    const choices=[];
+    for(const [facility,jobs] of groups) {
+        const sources=input.jobs.filter(j=>j.facility===facility);
+        const raw=sources.filter(j=>j.recipe===jobs[0].recipe);
+        if(sources.length!==3+raw.length || raw.length>2)return;
+        let extra;
+        if(raw.length===2){
+            const steady=raw.find(j=>Math.abs(j.seconds*j.batches-input.daySeconds)<=EPS*input.daySeconds);
+            if(!steady)return;
+            jobs[0]=steady;
+            extra=raw.find(j=>j!==steady);
+        }
+        const options=[2,1,3].map(tier=>scheduleChain(input,facility,jobs,tier,extra)).filter(Boolean);
+        if(!options.length)return;
+        choices.push(options);
+    }
+    const combinations=choices.reduce((partial,options)=>partial.flatMap(chains=>
+        options.map(option=>[...chains,option])),[[]]);
+    for(const chains of combinations){
+        const schedule=combineChains(input,chains);
+        if(schedule)yield schedule;
+    }
 }
 
 export function materialFlowSchedule(input) {
-    const groups=independentMaterialChains(input);
-    if(!groups||groups.size>input.maxBuildings)return null;
-    const initialStock={},chains=[];
-    for(const [facility,jobs] of groups) {
-        const chain=scheduleChain(input,facility,jobs,initialStock);
-        if(!chain)return null;
-        chains.push(chain);
-    }
+    return materialFlowSchedules(input).next().value??null;
+}
+
+function combineChains(input,chains) {
+    const initialStock=Object.assign({},...chains.map(chain=>chain.initialStock));
     if(new Set(chains.map(c=>c.change)).size>input.maxSwitches)return null;
     const cuts=[...new Set(chains.flatMap(c=>c.profiles.flatMap(profile=>profile.map(p=>p.end))))].sort((a,b)=>a-b);
     const phases=[];
     let start=0;
     for(const end of cuts) {
         const duration=end-start,mid=start+duration/2,assignments=[];
-        for(const {jobs,profiles,assigned,change} of chains) {
+        for(const {jobs,profiles,assigned,change,switchTier,extra} of chains) {
             for(let tier=0;tier<4;tier++) {
-                if(tier===2&&mid<change)continue;
+                if(tier===switchTier&&mid<change)continue;
                 const rate=profiles[tier].find(p=>mid>=p.start&&mid<=p.end)?.rate;
                 if(rate==null)return null;
-                const sites=tier===0&&mid<change?[assigned[0],assigned[2]]:[assigned[tier]];
-                for(const site of sites)assignments.push({building:site.id,job:jobs[tier].id,batches:rate*duration/sites.length});
+                if(tier===0 && mid<change){
+                    assignments.push({building:assigned[0].id,job:jobs[0].id,batches:duration/jobs[0].seconds},
+                        {building:assigned[switchTier].id,job:extra.id,batches:duration/extra.seconds});
+                }else assignments.push({building:assigned[tier].id,job:jobs[tier].id,batches:rate*duration});
             }
         }
         phases.push({duration,assignments});

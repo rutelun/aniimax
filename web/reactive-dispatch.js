@@ -1,5 +1,5 @@
 import { dispatchLocations } from './task-switching.js';
-import { haulingBatchTrips, pickupStockLimit } from './hauling.js';
+import { siteHaulingTrips } from './hauling.js';
 import { workerTravelSeconds } from './worker-travel.js';
 import { deliveryRouting, deliveryApproach } from './delivery-routing.js';
 import { FACILITIES, FACILITY_CATEGORY_BY_NAME } from './facility-config.js';
@@ -212,12 +212,15 @@ export function buildReactiveDispatch({layout,recipes,members,busy=[],permanent=
                 :targets.reduce((sum,target)=>sum+approach(e.member,center(target)),0)/targets.length;
         }
         for(const e of policy[dispatchKey(recipe.facility,recipe.name,'Hauling')]||[]){
-            e.travel_seconds=targets.reduce((sum,target)=>{
+            const rates=exact.some(s=>s.schedulePhases?.length)?targets.map(s=>s.jobs?s.jobs.filter(j=>j.item===recipe.name).reduce((n,j)=>n+j.rate,0)
+                :(s.batchWeight??s.weight??0)/3600):[];
+            const total=rates.reduce((n,r)=>n+r,0);
+            e.travel_seconds=targets.reduce((sum,target,index)=>{
                 const point=center(target),walk=deliveryApproach(flow,e.member,point);
                 const loaded=(layout.storages||[]).length?Math.min(...layout.storages.map(s=>distance(point,center(s)))):0;
                 return sum+((walk==null?approach(e.member,point):workerTravelSeconds(walk))+workerTravelSeconds(loaded))
-                    *haulingBatchTrips(recipe,members[e.member].abilities.Hauling,pickupStockLimit(target),recipe.facility);
-            },0)/targets.length;
+                    *siteHaulingTrips(target,recipe.name,recipe,members[e.member].abilities.Hauling)*(total>0?rates[index]/total:1/targets.length);
+            },0);
         }
     }
     return policy;
@@ -236,7 +239,7 @@ export function attachDeliveryFlows(layout,policy,recipes,members,routes=[],focu
             const recipe=recipeOf.get(job.item);
             const entries=policy[dispatchKey(s.facility,job.item,'Hauling')];
             for(const e of entries||[]){
-                const trips=job.rate*3600*e.share*haulingBatchTrips(recipe,members[e.member]?.abilities.Hauling||3,pickupStockLimit(s),s.facility);
+                const trips=job.rate*3600*e.share*siteHaulingTrips(s,job.item,recipe,members[e.member]?.abilities.Hauling||3);
                 weights.set(e.member,(weights.get(e.member)||0)+trips);
             }
         }

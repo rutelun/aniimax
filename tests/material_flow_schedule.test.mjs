@@ -121,3 +121,37 @@ test('a relaxed workshop workload below one full site skips the integer candidat
     await searchRecipeSwitches(request,base,{canFillWorkshop:()=>false,candidate:()=>{trials++;return null;}});
     assert.equal(trials,0);
 });
+
+test('the same timber output can use the two assumed workers already on shift',async()=>{
+    const {checkMaterialDraft}=await import('../web/recipe-switch-search.js');
+    const sample=setup(),facility='Woodworking Bench';
+    const sources=sample.jobs.map((j,i)=>({id:j.id,item:j.recipe,facility,facility_level:1,
+        crew:i<2?1:0,cycle:1,rate:j.batches/sample.daySeconds,turns:true,
+        inputs:Object.entries(j.inputs),outputs:Object.entries(j.outputs)}));
+    sources.push({id:'wood',item:'tree',facility:'Woodland',cycle:1,rate:1,turns:false,
+        inputs:[],outputs:[['wood_block',2.5]]});
+    const input={always_running:true,facilities:{[facility]:[{count:4,level:4}]},roster:{members:[{count:2}]}};
+    const base={success:true,rate_per_second:1,assumed_aniimo:[[1,'Artisanship',3,20,null]],
+        roster_workload:[.45,1.8],coin_items:[],priorities:[]};
+    const result=checkMaterialDraft(input,{...base,rate_per_second:2,schedule_sources:sources},base);
+    assert.ok(result);
+    assert.equal(Math.max(...result.recipe_schedule.workerProfiles[1]),2);
+    assert.equal(result.recipe_schedule.switches.length,1);
+    const switched=result.recipe_schedule.sites.find(s=>s.jobs.length===2);
+    assert.deepEqual(switched.jobs.map(j=>j.item),recipes.slice(0,2));
+});
+
+test('one manual raw site stays on shift while a slower electric processor switches recipes',()=>{
+    const input=setup();
+    const [raw,...downstream]=input.jobs;
+    input.jobs=[{...raw,batches:100},{...raw,id:'electric raw',seconds:2,batches:20,electric_level:4,workers:{}},
+        ...downstream.map(j=>({...j,electric_level:4,workers:{}}))];
+    input.buildings=input.buildings.map((b,i)=>({...b,level:4,electric_level:i?4:null}));
+    input.workerCapacity={crew:1};
+    const schedule=materialFlowSchedule(input);
+    const checked=validateRecipeSchedule(input,schedule);
+    assert.deepEqual(checked.errors,[]);
+    assert.deepEqual(checked.switches,[40]);
+    assert.ok(schedule.phases.every(p=>p.assignments.some(a=>a.job===raw.id&&a.batches===p.duration)));
+    assert.equal(schedule.phases.flatMap(p=>p.assignments).filter(a=>a.job==='electric raw').reduce((s,a)=>s+a.batches,0),20);
+});

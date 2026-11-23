@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { assignFacilityStock, bufferedBatches, haulingBatchTrips, haulingTravelSeconds, haulingWorkSeconds,
+import { assignFacilityStock, bufferedBatches, haulingBatchTrips, siteHaulingTrips, haulingTravelSeconds, haulingWorkSeconds,
     haulingWorkload, allocateHauling } from '../web/hauling.js';
 import { buildDispatch, estimateJobSwitching, rosterJobSwitching } from '../web/task-switching.js';
 
@@ -192,4 +192,13 @@ test('Best courier capacity drives the counted trips, workload and dispatch stop
         assert.equal(three.busy,ratio*four.busy);
         assert.equal(three.tripSites[0].rate,ratio*four.tripSites[0].rate);
     }
+});
+
+test('a scheduled workshop fills one buffer per recipe run and flushes the remainder at a change',()=>{
+    const site={facility:'Chimney Kiln',stockLimit:20,jobs:[{item:'ore'},{item:'brick'}],
+        schedulePhases:[{duration:10,rates:{ore:.5}},{duration:10,rates:{ore:.5}},
+            {duration:10,rates:{brick:1}},{duration:10,rates:{ore:.1}}]};
+    assert.equal(siteHaulingTrips(site,'ore',{yieldAmount:1},3),3/11);
+    assert.equal(siteHaulingTrips(site,'brick',{yieldAmount:1},3),2/10);
+    assert.equal(siteHaulingTrips({...site,schedulePhases:undefined},'ore',{yieldAmount:1},3),1);
 });

@@ -52,7 +52,28 @@ export function assignFacilityStock(members, facilities, recipeOf) {
 }
 
 // A machine switching recipes does not fill a separate full buffer for each.
-export const pickupStockLimit = member => member.jobs?.length > 1 ? 0 : member.stockLimit ?? 0;
+export const pickupStockLimit = member => member.jobs?.length > 1 && !member.schedulePhases?.length ? 0 : member.stockLimit ?? 0;
+
+// Flush the remainder when a scheduled recipe changes. Between changes its
+// output can accumulate in the same physical buffer across several phases.
+export function siteHaulingTrips(site,item,recipe,level){
+    if(!site.schedulePhases?.length || !(site.jobs?.length>1))
+        return haulingBatchTrips(recipe,level,pickupStockLimit(site),site.facility);
+    const buffer=bufferedBatches(recipe,site.stockLimit,site.facility);
+    const fullTrips=Math.ceil(batchOutput(recipe)*buffer/HAULING_CAPACITY[level]);
+    let trips=0,batches=0,run=0;
+    const finish=()=>{
+        const full=Math.floor(run/buffer),left=run-full*buffer;
+        trips+=full*fullTrips+Math.ceil(Math.max(0,left-1e-9)*batchOutput(recipe)/HAULING_CAPACITY[level]);
+        batches+=run;run=0;
+    };
+    for(const phase of site.schedulePhases){
+        if(Object.hasOwn(phase.rates,item))run+=phase.duration*phase.rates[item];
+        else if(run>0)finish();
+    }
+    finish();
+    return batches>0 ? trips/batches : haulingBatchTrips(recipe,level,0,site.facility);
+}
 
 function fallbackTrips(step, recipe, level, facilities) {
     const tiers = (facilities?.[step.facility] ?? []).filter(tier => tier.count > 0 && (step.electric_level != null
@@ -79,7 +100,7 @@ export function haulingWorkload(layout, steps, fallbackSeconds = 0, recipes = []
             const loaded = haulingWorkSeconds(distance, accountForTravel);
             const cargo = member.jobs?.map(job => [job.item, job.rate * 3600]) || [[member.crop, member.batchWeight ?? member.weight]];
             for (const [item, batches] of cargo) {
-                const trips = batches * haulingBatchTrips(recipeOf.get(item), level, pickupStockLimit(member), member.facility);
+                const trips = batches * siteHaulingTrips(member,item,recipeOf.get(item),level);
                 pickups.push({key:`${member.facility}|${item}`, member, storage, loaded, trips, batches});
                 if (level === courierLevel) tripSites.push({
                     point: [member.x + member.w / 2, member.y + member.h / 2],

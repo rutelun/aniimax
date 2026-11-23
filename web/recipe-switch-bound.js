@@ -187,7 +187,7 @@ function fitsWholeSites(highs, problem, trial) {
 // recipe in a chain. If several variants must all produce that recipe, only
 // the general phase scheduler can cover it. Leave electric jobs unrestricted
 // here, which can only make this preliminary feasibility test more permissive.
-function fitsMaterialFlow(highs, problem) {
+function fitsMaterialFlow(pkg, highs, problem, trial) {
     const switching = new Set(problem.switching_rates.map(([column])=>column));
     const groups = new Map();
     for (const [v,recipe,facility,,electric,cycle] of problem.recipe_options) {
@@ -197,6 +197,7 @@ function fitsMaterialFlow(highs, problem) {
         groups.get(recipe).push([v,cycle]);
     }
     const rows=[], selectors=[], rawLoads=[];
+    const columns=new Map(problem.variable_keys.map((key,v)=>[key,v]));
     for (const [recipe,variants] of groups) {
         if (!Object.values(materialChains).some(chain=>chain[0]===recipe)) continue;
         const active='chain'+rawLoads.length,work=variants.map(([v,c])=>c+' x'+v).join(' + ');
@@ -206,11 +207,48 @@ function fitsMaterialFlow(highs, problem) {
         rows.push(' chain_bit_'+active+': '+active+' <= 1',
             ' chain_on_'+active+': '+work+' - 2 '+active+' <= '+slack,
             ' chain_lo_'+active+': '+work+' - '+active+' >= -'+slack);
+        // The direct schedule assigns two sites to this exact raw recipe
+        // variant at dawn. Leave reserve and unknown worker counts free.
+        for (const [v,cycle] of variants) {
+            const owned=/^rate:(.+__byowned:(\d+))#0$/.exec(problem.variable_keys[v]);
+            if (!owned) continue;
+            const member=Number(owned[2]), count=trial.roster?.members?.[member]?.count;
+            const route='route:'+owned[1]+':owned:'+member+':None:';
+            // On a measured route the native worker-time coefficient includes
+            // travel per batch. A local route, if available, can avoid it.
+            const mobile=columns.get(route+'true#0');
+            const assigned=mobile!=null && !columns.has(route+'false#0')
+                ? problem.staffing_pools?.[member]?.work.find(([v])=>v===mobile) : null;
+            const seconds=assigned?.[1]??cycle;
+            if (2*seconds/cycle>count+1e-7) {
+                rows.push(' flow_single_worker_'+v+': x'+v+' <= 1.1e-7');
+            }
+        }
         rawLoads.push(active);
     }
     if (rawLoads.length) {
         rows.push(' flow_active: '+rawLoads.join(' + ')+' >= 1');
         selectors.push(...rawLoads);
+    }
+    // Each downstream processor drains all arrivals over the repeating day.
+    // Compare only switching columns: fixed electric jobs keep their own rates.
+    if (pkg.get_all_items) {
+        const items=new Map(JSON.parse(pkg.get_all_items()).map(item=>[item.name,item]));
+        for(const chain of Object.values(materialChains))for(let i=1;i<chain.length;i++){
+            const before=groups.get(chain[i-1]), after=groups.get(chain[i]);
+            if(!before || !after)continue;
+            const next=items.get(chain[i]),prev=items.get(chain[i-1]);
+            if(prev?.yield_amount!==1 || next?.raw_materials?.length!==1 || next.raw_materials[0]!==prev.name)continue;
+            const quantity=next.required_amount?.[0];
+            if(!(quantity>0))continue;
+            const net=before.map(([v])=>'x'+v).join(' + ')+' - '+after.map(([v])=>quantity+' x'+v).join(' - ');
+            // The daily validator accepts a relative error of 1e-6 for each
+            // job. Bound it by the largest rate allowed on two processor sites.
+            const slack=variants=>variants.reduce((sum,[,cycle])=>sum+1.1e-7+1.1e-6*(2/cycle+1/86400),0);
+            const tolerance=slack(before)+quantity*slack(after);
+            rows.push(' feed_lo_'+after[0][0]+': '+net+' >= -'+tolerance,
+                ' feed_hi_'+after[0][0]+': '+net+' <= '+tolerance);
+        }
     }
     for (const variants of groups.values()) {
         if (variants.length<2) continue;
@@ -287,7 +325,7 @@ export function canFillSwitchingWorkshop(pkg, highs, trial, baseline) {
     const options=problem.recipe_options;
     if(!options?.length || !problem.lp.startsWith('Maximize\n'))return true;
     if (Array.isArray(problem.switching_rates) && problem.variable_keys?.length===problem.variables) {
-        if (flow && fitsMaterialFlow(highs,problem)) return true;
+        if (flow && fitsMaterialFlow(pkg,highs,problem,trial)) return true;
         return fitsWholeSites(highs,problem,trial);
     }
     if (powered || flow || !facilities.length) return true;

@@ -137,6 +137,17 @@ pub(super) fn constrain<'a>(model: &mut Model<'a>, rates: &[(&'a ProductionItem,
             }
         }
     }
+    // Dispatched worker variants share a site. Index the production rates once
+    // and retain their input order when building each site's load constraints.
+    let mut rates_by_site = HashMap::<(&str, &str, bool), Vec<_>>::new();
+    let site_key = |r: &'a ProductionItem| {
+        let dispatched = counts.dispatch_production(r);
+        let name = if dispatched { crate::models::base_item_name(&r.name) } else { r.name.as_str() };
+        (r.facility.as_str(), name, dispatched)
+    };
+    for &(recipe, rate) in rates {
+        rates_by_site.entry(site_key(recipe)).or_default().push((recipe, rate));
+    }
     for &(recipe, units) in sites {
         if !counts.checks_continuous_recipe(&recipe.name) { continue; }
         // Fractional recipe-switching reservations are relaxed proposals, not
@@ -144,11 +155,7 @@ pub(super) fn constrain<'a>(model: &mut Model<'a>, rates: &[(&'a ProductionItem,
         if !model.integer[units] { continue; }
         let max = model.bounds[units].1;
         if max <= 0.0 { continue; }
-        let selected: Vec<_> = if counts.dispatch_production(recipe) {
-            rates.iter().copied().filter(|(r,_)| counts.dispatch_production(r)
-                && r.facility == recipe.facility
-                && crate::models::base_item_name(&r.name) == crate::models::base_item_name(&recipe.name)).collect()
-        } else { rates.iter().copied().filter(|(r,_)| r.name == recipe.name).collect() };
+        let selected = &rates_by_site[&site_key(recipe)];
         let load: Vec<_> = selected.iter().map(|(r,v)|(*v,r.production_time)).collect();
         let mut factors: Vec<usize> = recipe.raw_materials.iter().flatten()
             .filter_map(|name|resources.get(name.as_str()).copied()).collect();
@@ -167,7 +174,7 @@ pub(super) fn constrain<'a>(model: &mut Model<'a>, rates: &[(&'a ProductionItem,
             }
         }
         let mut support=BTreeMap::<String,Vec<usize>>::new();
-        for &(variant,_) in &selected {
+        for &(variant,_) in selected {
             for (ability,factor) in support_by_recipe.get(variant.name.as_str()).into_iter().flatten() {
                 support.entry(ability.clone()).or_default().push(*factor);
             }

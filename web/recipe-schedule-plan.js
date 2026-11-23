@@ -41,7 +41,7 @@ function operatorsWithSpareCapacity(plan, sources, buildings, siteCounts, capaci
 
 // Convert effective solver recipes (including crew speed and electric tiers),
 // not the catalog's nominal recipe times, into physical daily scheduling work.
-export function scheduleInputForPlan(input,plan) {
+export function scheduleInputForPlan(input,plan,{materialSites=false,steadyMaterialCrew=false}={}) {
     const sources=plan.schedule_sources||[], selected=sources.filter(s=>s.turns&&s.rate>EPS);
     if(!selected.length)throw new Error('No workshop recipes to schedule');
     const buildings=[],workerCapacity={},backgroundWorkers={};
@@ -62,6 +62,18 @@ export function scheduleInputForPlan(input,plan) {
         const owned=(input.facilities?.[facility]||[]).flatMap(t=>Array.from({length:t.count},()=>({level:t.level}))).sort((a,b)=>a.level-b.level);
         const group=jobs.filter(j=>j.facility===facility), powered=new Map();
         for(const j of group)if(j.electric_level!=null)powered.set(j.electric_level,(powered.get(j.electric_level)||0)+j.rate*j.cycle);
+        if(materialSites){
+            const chain=materialChains[facility];
+            // A downstream processor that is waiting for ore or lumber still
+            // occupies its own site. The extra raw lane shares one of these.
+            if(chain && group.some(j=>j.recipe===chain[0]&&j.electric_level==null)
+                && group.some(j=>j.recipe===chain[0]&&j.electric_level!=null)){
+                for(const [tier,load] of powered){
+                    const dedicated=new Set(group.filter(j=>j.electric_level===tier&&chain.slice(1).includes(j.recipe)).map(j=>j.recipe));
+                    powered.set(tier,Math.max(load,dedicated.size));
+                }
+            }
+        }
         let serial=0;
         const site=(tier,electric)=>{
             const allowed=group.filter(j=>electric!=null?j.electric_level===electric:j.electric_level==null&&j.facility_level<=tier.level);
@@ -84,6 +96,7 @@ export function scheduleInputForPlan(input,plan) {
     const assignRosterWork=j=>{
         if(j.crew!=null)add(j.workers,String(j.crew),productionSeconds(j));
         for(const [member,load] of plan.hauling_staffing||[]) {
+            if (!(load>0 && j.hauling_seconds?.[member]>0)) continue;
             const total=sources.reduce((v,s)=>v+s.rate*(s.hauling_seconds?.[member]||0),0);
             if(total>EPS){const seconds=load*(j.hauling_seconds?.[member]||0)/total;add(j.workers,String(member),seconds);j.haulingWorkers[member]=seconds;}
         }
@@ -110,7 +123,9 @@ export function scheduleInputForPlan(input,plan) {
         // Trace interference through shared ingredients and operators. Fixed
         // recipes that can be fed and staffed per phase enter the schedule.
         const resources=new Set(jobs.flatMap(j=>[...Object.keys(j.inputs),...Object.keys(j.outputs)]));
-        const members=new Set(jobs.flatMap(j=>Object.keys(j.workers)));
+        // The mapped mixed-mode verifier separately checks constant manual
+        // production, strictly spare courier capacity and every crop phase.
+        const members=new Set(steadyMaterialCrew?[]:jobs.flatMap(j=>Object.keys(j.workers)));
         const groups=new Map(), siteCounts=new Map();
         for(const source of sources) {
             if(source.turns||source.rate<=EPS)continue;
@@ -124,6 +139,7 @@ export function scheduleInputForPlan(input,plan) {
             siteCounts.set(key,(siteCounts.get(key)||0)+row.facility_count);
         }
         const spare = operatorsWithSpareCapacity(plan,sources,buildings,siteCounts,workerCapacity,productionSeconds);
+        const haulers=new Set((plan.hauling_staffing||[]).filter(([,load])=>load>0).map(([member])=>member));
         const affected=new Set();
         let changed=true;
         while(changed) {
@@ -131,14 +147,14 @@ export function scheduleInputForPlan(input,plan) {
             for(const [key,group] of groups) {
                 if(affected.has(key))continue;
                 const sharedWorkers=group.some(s=>(s.crew!=null&&!spare.has(s.crew)&&members.has(String(s.crew)))
-                    || (s.hauling_seconds||[]).some((seconds,i)=>seconds>0&&members.has(String(i))));
+                    || (s.hauling_seconds||[]).some((seconds,i)=>seconds>0&&haulers.has(i)&&members.has(String(i))));
                 // A change in the downstream demand for a product cannot stall
                 // its producer when its own ingredients and crew are unchanged.
                 if(!sharedWorkers&&!group.some(s=>s.inputs.some(([r])=>resources.has(r))))continue;
                 const work=group.reduce((n,s)=>n+s.rate*s.cycle,0), sites=siteCounts.get(key)||0;
                 if(!sites||work<sites-EPS*Math.max(1,sites)) {
                     const source=group[0];
-                    const feed=input.roster && sites>0 && group.length===1 && source.crew!=null
+                    const feed=input.roster && sites>0 && group.length===1 && (source.crew!=null || source.electric_level!=null)
                         && privateFeed(source,sources,backgroundInputs,backgroundOutputs);
                     if(!feed)throw new Error(`Switching changes availability for ${source.item}; its phase production is not verified.`);
                     const job=makeJob(source);
@@ -167,7 +183,7 @@ export function scheduleInputForPlan(input,plan) {
             // Keep the same availability for critical crop work as in the
             // original candidate; workshop bursts may not eat that headroom.
             const critical=plan.roster_routes?.some(r=>String(r.member)===member&&r.jobs.some(([name])=>name&&name!=='Watering'));
-            if(critical)workerCapacity[member]=Math.min(workerCapacity[member],backgroundWorkers[member]+(daily[member]||0));
+            if(critical && !steadyMaterialCrew)workerCapacity[member]=Math.min(workerCapacity[member],backgroundWorkers[member]+(daily[member]||0));
         }
     }
     // Each workshop type can change its recipes once, at its own time.
