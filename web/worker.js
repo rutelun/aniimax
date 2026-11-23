@@ -102,7 +102,8 @@ async function solveModel(problem, options = SOLVE_OPTIONS, infeasibleMessage, i
     // Out of time before finding any plan at all.
     if (!Number.isFinite(result.ObjectiveValue) || !result.Columns) return null;
     const values = columnValues(problem, result);
-    return { values, proven, objective: result.ObjectiveValue + tiebreakOf(problem, values), upper:result.UpperBound };
+    return { values, proven, objective: result.ObjectiveValue + tiebreakOf(problem, values), upper:result.UpperBound,
+        ...(Number.isFinite(options.primaryCeiling) && result.Status==='Objective target reached' ? {atPrimaryCeiling:true} : {}) };
 }
 
 function hasMaterialProcessors(input) {

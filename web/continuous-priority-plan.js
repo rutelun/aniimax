@@ -793,22 +793,35 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
         const warm=align(p,seed);
         const commitments=local.material_fixed?.map(v=>` material_commit_${v}: x${v} = ${Math.round(warm[v])}`)??[];
         const committed=commitments.length?addRows(local,commitments):fixPhysical(local,warm);
-        let fixedSeed=null,r=null;
-        if(routeDraft && seed===best && request.maximize_material_work && commitments.length && target?.length) {
-            // Keep the income plan's physical team if it already fills as much
-            // material work as any assignment. The measured map prices staffing
-            // again once actual travel and crop service are available.
+        let fixedSeed=null,r=null,ceiling=null,polished=null;
+        const draftMaterial=routeDraft && request.maximize_material_work && commitments.length && target?.length;
+        // Seasonal reservations can distinguish shifts with the same output
+        // through their climate crew. Retain that staffing tie-break.
+        const finishAtCeiling=draftMaterial && !hasSeasonCropMinimums(input);
+        if(draftMaterial && seed===best) {
             fixedSeed=await solveModel(fixPhysical(local,warm),options(1),undefined,warm);
-            if(fixedSeed?.values) {
-                const ceiling=priorityCeiling(highs,productionObjective(committed),'material_work');
+            if(fixedSeed?.values){
+                ceiling=priorityCeiling(highs,productionObjective(committed),'material_work');
                 if(Number.isFinite(ceiling) && Math.abs(sum(target,fixedSeed.values)-ceiling)<=1e-9)r=fixedSeed;
             }
         }
-        if(!r)r=await solveModel(committed,options(commitments.length?2:1),undefined,warm);
+        const settings=options(commitments.length?2:1);
+        if(!r && finishAtCeiling){
+            ceiling??=priorityCeiling(highs,productionObjective(committed),'material_work');
+            if(Number.isFinite(ceiling)){
+                r=await solveModel(committed,{...settings,primaryCeiling:ceiling},undefined,warm);
+                if(r?.atPrimaryCeiling){
+                    const checked=polishSolution(highs,local,r);
+                    if(checked.polished && Math.abs(sum(target,checked.values)-ceiling)<=1e-9)polished=checked;
+                    else r=null;
+                }
+            }
+        }
+        if(!r)r=await solveModel(committed,settings,undefined,warm);
         if(!r?.values)r=fixedSeed??await solveModel(fixPhysical(local,warm),options(1),undefined,warm);
         if(!r?.values)r=await solveModel(local,options(2),undefined,warm);
         if(!r?.values)return null;
-        r=polishSolution(highs,local,r);
+        r=polished??polishSolution(highs,local,r);
         seed={keys:p.variable_keys,values:r.values};
         last={request,local,p,r};
         return target?.length?sum(target,r.values):r.objective;

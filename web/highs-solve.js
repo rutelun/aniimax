@@ -13,11 +13,17 @@ export function planSearchOptions({time_limit: effort = FULL_PLAN_EFFORT, ...opt
 
 // A single MIP node may itself solve many LPs. Count their iterations as well
 // as nodes so two equally large trees cannot differ arbitrarily in cost.
-export function runPlanModel(model, highs, mipIterations) {
-    if (!mipIterations) return model.run();
-    return model.run({[highs.constants.callbackType.mipInterrupt]: event => {
-        if (event.data.mip_total_lp_iterations >= mipIterations) event.interrupt();
-    }});
+export function runPlanModel(model, highs, mipIterations, reachesCeiling) {
+    if (!mipIterations && !reachesCeiling) return model.run();
+    let attained=false;
+    const callback=highs.constants.callbackType;
+    const events={[callback.mipInterrupt]:event=>{
+        if(attained || (mipIterations && event.data.mip_total_lp_iterations>=mipIterations))event.interrupt();
+    }};
+    if(reachesCeiling)events[callback.mipImprovingSolution]=({data})=>{
+        attained=reachesCeiling(data.mip_solution);
+    };
+    return model.run(events);
 }
 
 export function searchStopped(status, statuses) {
@@ -28,7 +34,12 @@ function applyOptions(model, options) {
     let state = configuredOptions.get(model);
     if (!state) { state={defaults:new Map(),previous:[]}; configuredOptions.set(model,state); }
     const next = {...options};
-    for (const name of state.previous) if (!(name in next)) next[name]=state.defaults.get(name);
+    for (const name of state.previous) if (!(name in next)) {
+        const value=state.defaults.get(name);
+        // The JS setter rejects non-finite numbers. HiGHS accepts its native
+        // option spelling when restoring an unbounded target on a reused model.
+        next[name]=value===-Infinity?'-inf':value===Infinity?'inf':value;
+    }
     for (const name of Object.keys(options)) if (!state.defaults.has(name)) state.defaults.set(name,model.options.get(name));
     // Reset only caller-controlled options. resetOptions() would also reset the WASM
     // wrapper's protected single-thread settings and change subsequent search behavior.
@@ -41,19 +52,31 @@ function applyOptions(model, options) {
 export function solveWithIncumbent(highs, problem, options, incumbent, reuseModel = true) {
     const {model,names,persistent} = reuse.acquireModel(highs,problem,reuseModel);
     try {
-        if (/\nGeneral\n\s*x\d/.test(problem.lp)) model.clearSolver();
+        const integerModel = /\nGeneral\n\s*x\d/.test(problem.lp);
+        if (integerModel) model.clearSolver();
         model.zeroAllClocks();
-        const {mipIterations,...nativeOptions} = options;
+        const {mipIterations,primaryCeiling,...nativeOptions} = options;
         applyOptions(model,nativeOptions);
         if (incumbent?.length === problem.variables) {
             const values = names.map(name => incumbent[Number(name.slice(1))] ?? 0);
             if (values.every(Number.isFinite)) model.setSolution({ colValue: values });
         }
-        runPlanModel(model,highs,mipIterations);
+        let reachesCeiling, primaryAttained=false;
+        if(Number.isFinite(primaryCeiling) && problem.primary_objective?.length && integerModel){
+            const indices=new Map(names.map((name,i)=>[Number(name.slice(1)),i]));
+            const terms=problem.primary_objective.map(([v,c])=>[indices.get(v),c]);
+            reachesCeiling=values=>{
+                const produced=terms.reduce((sum,[i,c])=>sum+c*values[i],0);
+                primaryAttained=Math.abs(produced-primaryCeiling)<=1e-9;
+                return primaryAttained;
+            };
+        }
+        runPlanModel(model,highs,mipIterations,reachesCeiling);
         const status = model.getModelStatus();
         const statuses = highs.constants.modelStatus;
         if (status === statuses.infeasible) return { Status: 'Infeasible' };
-        const reachedTarget = Number.isFinite(options.objective_target) && status === statuses.objectiveTarget;
+        const reachedTarget = (Number.isFinite(options.objective_target) && status === statuses.objectiveTarget)
+            || (primaryAttained && status === statuses.interrupted);
         if (status !== statuses.optimal && !reachedTarget && !searchStopped(status,statuses)) return { Status: 'No solution' };
         // A timeout without a feasible incumbent must never be treated as a production plan.
         if (model.info.get('primal_solution_status') !== highs.constants.solutionStatus.feasible) {
@@ -61,7 +84,6 @@ export function solveWithIncumbent(highs, problem, options, incumbent, reuseMode
         }
         const solution = model.getSolution();
         const objective = model.getObjectiveValue();
-        const integerModel = /\nGeneral\n\s*x\d/.test(problem.lp);
         // HiGHS also reports optimal when the requested relative gap is met.
         // Later priorities need the actual dual bound until the gap closes.
         const dual = integerModel && (status !== statuses.optimal || options.mip_rel_gap > 0)

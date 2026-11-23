@@ -52,6 +52,14 @@ test('a certified income tolerance retains the dual ceiling and the open proof g
     assert.ok(approximate.UpperBound<=approximate.ObjectiveValue*1.002);
     assert.ok(approximate.ObjectiveValue<=exact.ObjectiveValue && exact.ObjectiveValue<=approximate.UpperBound);
     assert.equal(exact.Status,'Optimal');
+    const primary={...p,primary_objective:[[0,1]]};
+    const filled=solveWithIncumbent(highs,primary,{primaryCeiling:1,mip_rel_gap:0});
+    assert.equal(filled.Columns.x0.Primal,1);
+    assert.equal(filled.Status,'Objective target reached');
+    assert.ok(filled.UpperBound>=exact.ObjectiveValue);
+    const unreachable=solveWithIncumbent(highs,primary,{primaryCeiling:2,mip_rel_gap:0});
+    assert.equal(unreachable.Status,'Optimal');
+    assert.equal(unreachable.ObjectiveValue,exact.ObjectiveValue);
 });
 
 test('production search uses repeatable work limits and keeps early exits distinct from proofs',()=>{
