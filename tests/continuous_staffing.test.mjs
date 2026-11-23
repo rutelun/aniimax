@@ -84,9 +84,9 @@ test('a quicker workshop worker keeps the slack needed for its existing harvest 
 
 import {refineElectricStaffing} from '../web/electric-staffing.js';
 test('a draft replays a proved staffing optimum and falls back when either proof is missing',async()=>{
-    const problem={variables:2,variable_keys:['rate:ore','rate:ore:electric'],
+    const problem={variables:3,variable_keys:['rate:ore','rate:ore:electric','extra#0'],
         recipe_options:[[0,'ore','Chimney Kiln',false,false,1],[1,'ore','Chimney Kiln',false,true,1]],
-        lp:'Maximize\n obj: x0\nSubject To\nBounds\nGeneral\nEnd',
+        lp:'Maximize\n obj: x0\nSubject To\nBounds\n 0 <= x2 <= 1\nGeneral\n x2\nEnd',
         staffing_pools:[{work:[[0,1]],anchors:[],crop:[]}]};
     const input={roster:{members:[]},always_running:true,map_dispatch_pending:true,
         facilities:{'Chimney Kiln':[{count:1,level:2}]}};
@@ -96,12 +96,15 @@ test('a draft replays a proved staffing optimum and falls back when either proof
             const phase=settings.objective_target!=null?'replay':model.lp.includes('minimum_team:')?'work':
                 model.primary_objective.length===1?'count':'original';
             calls.push(phase);
-            if(phase==='replay')assert.deepEqual(seed,[1,0,1]);
-            if(phase===fail)return {proven:false,values:[1,0,1],objective:-1};
-            return {proven:true,objective:0,values:[0,1,0]};
+            const integers=model.lp.split('\nGeneral\n')[1].split('\nEnd')[0].trim().split(/\s+/);
+            assert.equal(integers.includes('x2'),phase==='replay'||phase==='original');
+            assert.ok(integers.includes('x3'));
+            if(phase==='replay')assert.deepEqual(seed,[1,0,0,1]);
+            if(phase===fail)return {proven:false,values:[1,0,0,1],objective:-1};
+            return {proven:true,objective:0,values:[0,1,0,0]};
         };
-        const result=await refineElectricStaffing(problem,{values:[1,0]},solve,{input});
-        assert.deepEqual(result.values,[0,1]);
+        const result=await refineElectricStaffing(problem,{values:[1,0,0]},solve,{input});
+        assert.deepEqual(result.values,[0,1,0]);
         assert.deepEqual(calls,fail==='count'?['count','original']:fail==='work'?['count','work','original']:
             fail==='replay'?['count','work','replay','original']:['count','work','replay']);
     }

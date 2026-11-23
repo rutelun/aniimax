@@ -17,13 +17,23 @@ async function certifiedDraftShift(model, settings, solve, warm, counts, workloa
         return {...model, primary_objective: objective,
             lp: model.lp.replace(/^Maximize\n[^\n]+/, 'Maximize\n obj: ' + expression(objective))};
     };
-    const minimum = await solve(minimize(counts), settings, undefined, warm);
+    // Price the two objectives with auxiliary integer selectors relaxed.
+    // The final replay must attain their combined bound in the original
+    // model, including all availability and worker assignments.
+    const countModel=minimize(counts);
+    const relaxSelectors=lp=>lp.replace(/\nGeneral\n([\s\S]*?)\nEnd/,(_,section)=>{
+        const kept=section.trim().split(/\s+/).filter(name=>
+            !model.variable_keys[Number(name.slice(1))]?.startsWith('extra#'));
+        return (kept.length?'\nGeneral\n '+kept.join('\n '):'')+'\nEnd';
+    });
+    countModel.lp=relaxSelectors(countModel.lp);
+    const minimum = await solve(countModel, settings, undefined, warm);
     if (!minimum?.proven || !minimum.values) return null;
     const team = Math.round(-minimum.objective);
     if (!Number.isSafeInteger(team) || team < 0 || team >= headWeight
         || Math.abs(team + minimum.objective) > 1e-7) return null;
     const workModel = minimize(workload);
-    workModel.lp = workModel.lp.replace('\nBounds\n',
+    workModel.lp = relaxSelectors(workModel.lp).replace('\nBounds\n',
         '\n minimum_team: ' + expression(counts) + ' <= ' + team + '\nBounds\n');
     const work = await solve(workModel, settings, undefined, minimum.values);
     if (!work?.proven || !work.values || !Number.isFinite(work.objective)
