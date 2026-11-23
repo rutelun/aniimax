@@ -59,6 +59,50 @@ export function discardReusableModel(highs) {
 
 export const reuseStatistics = highs => ({...(runtimes.get(highs)?.stats || {})});
 
+// Polish a catalogue shift on its original rows. A freshly parsed native
+// matrix has those rows in file order, followed by any temporary cover rows.
+export function refitNativeShift(highs, problem, integers, fixed, trailingRows) {
+    const state = runtimes.get(highs);
+    if (!state?.model || state.parsed || state.names.length !== problem.variables) return null;
+    if (!trailingRows.length && state.lp !== problem.lp) return null;
+    const boundary = problem.lp.indexOf('\nBounds\n');
+    if (boundary < 0) return null;
+    const prefix = problem.lp.slice(0, boundary);
+    const tail = problem.lp.slice(boundary);
+    if (trailingRows.length && state.lp !== prefix + '\n' + trailingRows.join('\n') + tail) return null;
+
+    // Adding integer equalities before Bounds can change first-seen column
+    // order. Keep the original LP's tie-breaking in that case.
+    const seen = new Set();
+    function sameColumn(name) {
+        if (seen.has(name)) return true;
+        if (state.names[seen.size] !== name) return false;
+        seen.add(name);
+        return true;
+    }
+    for (const match of prefix.matchAll(/\bx\d+\b/g)) if (!sameColumn(match[0])) return null;
+    for (const v of integers) if (!sameColumn('x' + v)) return null;
+    if (seen.size < state.names.length) {
+        for (const match of tail.matchAll(/\bx\d+\b/g)) if (!sameColumn(match[0])) return null;
+    }
+    const model = highs.createModel();
+    try {
+        const lp = state.model.getLp();
+        lp.integrality.fill(0);
+        model.passModel(lp);
+        if (trailingRows.length) model.deleteRows({kind:'range',from:lp.numRows-trailingRows.length,to:lp.numRows-1});
+        model.addRows({lower:fixed,upper:fixed,matrix:{format:'csr',numRows:integers.length,numCols:lp.numCols,
+            starts:integers.map((_,i)=>i).concat(integers.length),indices:integers.map(v=>state.index.get(v)),values:integers.map(()=>1)}});
+        model.options.set({primal_feasibility_tolerance:1e-10,dual_feasibility_tolerance:1e-10});
+        model.run();
+        if (model.getModelStatus() !== highs.constants.modelStatus.optimal) return null;
+        const native = model.getSolution().colValue;
+        return {score:model.getObjectiveValue(),values:Array.from({length:problem.variables},(_,v)=>native[state.index.get(v)])};
+    } finally {
+        model.dispose();
+    }
+}
+
 export function acquireModel(highs, problem, reuse = true) {
     let state = runtimes.get(highs);
     if (!state) { state = {stats:{created:0,reused:0,addedRows:0,removedRows:0}}; runtimes.set(highs,state); }

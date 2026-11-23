@@ -110,19 +110,25 @@ export function solveWithIncumbent(highs, problem, options, incumbent, reuseMode
 // its continuous rates with the selected whole buildings/workplaces fixed. This cheap LP
 // avoids restarting the much slower native simplex solely to repair MIP rounding noise.
 // It supplies no new global proof, and the native bounds/flow/workplace checks still run.
-export function polishSolution(highs, problem, result) {
+export function polishSolution(highs, problem, result, trailingRows = []) {
     if (!result?.values || result.values.length !== problem.variables) return result;
     const section = problem.lp.match(/\nGeneral\n([\s\S]*?)\nEnd/);
     if (!section) return result;
     const integers = [...section[1].matchAll(/\bx(\d+)\b/g)].map(m=>Number(m[1]));
     if (!integers.every(v=>Number.isFinite(result.values[v]) && Math.abs(result.values[v]-Math.round(result.values[v]))<=1e-7)) return result;
-    const fixed = integers.map(v=>` final_fix_${v}: x${v} = ${Math.round(result.values[v])}`).join('\n');
-    const lp = problem.lp.replace('\nBounds\n',`\n${fixed}\nBounds\n`).replace(/\nGeneral\n[\s\S]*\nEnd/,'\nEnd');
-    const refined = highs.solve(lp,{primal_feasibility_tolerance:1e-10,dual_feasibility_tolerance:1e-10});
-    if (refined.Status !== 'Optimal' || !Number.isFinite(refined.ObjectiveValue) || !refined.Columns) return result;
-    const values = Array.from({length:problem.variables},(_,i)=>refined.Columns['x'+i]?.Primal ?? 0);
+    let refit = reuse.refitNativeShift(highs, problem, integers,
+        integers.map(v=>Math.round(result.values[v])), trailingRows);
+    if (!refit) {
+        const fixed = integers.map(v=>` final_fix_${v}: x${v} = ${Math.round(result.values[v])}`).join('\n');
+        const lp = problem.lp.replace('\nBounds\n',`\n${fixed}\nBounds\n`).replace(/\nGeneral\n[\s\S]*\nEnd/,'\nEnd');
+        const refined = highs.solve(lp,{primal_feasibility_tolerance:1e-10,dual_feasibility_tolerance:1e-10});
+        if (refined.Status !== 'Optimal' || !Number.isFinite(refined.ObjectiveValue) || !refined.Columns) return result;
+        refit = {score:refined.ObjectiveValue,values:Array.from({length:problem.variables},(_,i)=>refined.Columns['x'+i]?.Primal ?? 0)};
+    }
+    const {values,score} = refit;
+    if (!Number.isFinite(score)) return result;
     if (!integers.every(v=>Math.abs(values[v]-Math.round(values[v]))<=1e-7)) return result;
-    const objective = refined.ObjectiveValue+(problem.tiebreak || []).reduce((sum,[v,w])=>sum+w*values[v],0);
+    const objective = score+(problem.tiebreak || []).reduce((sum,[v,w])=>sum+w*values[v],0);
     return {...result,values,objective,polished:true};
 }
 

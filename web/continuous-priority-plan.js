@@ -80,9 +80,10 @@ export async function restoreCatalogue(highs,solveModel,problem,seed) {
             ? [` shift_cover_${v}: x${v} = ${Math.round(warm[v])}`] : []);
     let result;
     if(cover.length) result=await solveModel(addRows(fixed,cover),options(1),undefined,warm);
-    if(!result?.values) result=await solveModel(fixed,options(1),undefined,warm);
+    const covered=!!result?.values;
+    if(!covered) result=await solveModel(fixed,options(1),undefined,warm);
     if(!result?.values)return null;
-    return polishSolution(highs,fixed,result);
+    return polishSolution(highs,fixed,result,covered?cover:[]);
 }
 
 function fixPhysical(problem,warm,recipeSitesOnly=false) {

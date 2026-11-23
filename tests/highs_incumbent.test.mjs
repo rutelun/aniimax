@@ -32,6 +32,19 @@ test('continuous polishing repairs rates without moving a workplace or inventing
     assert.equal(polishSolution(highs,impossible,seed),seed);
 });
 
+test('catalogue polishing uses the original constraints and leaves the covered model intact',async()=>{
+    const highs=await highsModule({wasmBinary:await readFile(new URL('../web/vendor/highs/highs.wasm',import.meta.url)),print(){},printErr(){}});
+    const problem={variables:2,lp:'Maximize\n obj: x1\nSubject To\n capacity: x1 - x0 <= 0\nBounds\n 0 <= x1 <= 2\n 0 <= x0 <= 2\nGeneral\n x0\nEnd'};
+    const cover=[' temporary: x1 <= 1'];
+    const covered={...problem,lp:problem.lp.replace('\nBounds\n','\n'+cover.join('\n')+'\nBounds\n')};
+    assert.equal(solveWithIncumbent(highs,covered,{}).ObjectiveValue,1);
+    const seed={values:[2,1],proven:false};
+    const expected=polishSolution(highs,problem,seed);
+    assert.deepEqual(expected.values,[2,2]);
+    assert.deepEqual(polishSolution(highs,problem,seed,cover),expected);
+    assert.equal(solveWithIncumbent(highs,covered,{}).ObjectiveValue,1);
+});
+
 test('a certified income tolerance retains the dual ceiling and the open proof gap',async()=>{
     const highs=await highsModule({wasmBinary:await readFile(new URL('../web/vendor/highs/highs.wasm',import.meta.url)),print(){},printErr(){}});
     const items=Array.from({length:24},(_,i)=>i+1);
