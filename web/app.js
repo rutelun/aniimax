@@ -209,7 +209,8 @@ function discardRoutePreview() {
 }
 
 function ensurePlanFor(setup, refining = false, previousPlan = null) {
-    if (plansBySetup[setup] || !lastPlanInput || setupSolve?.setup === setup
+    const finishingWorkshopPlan=refining && previousPlan?.pending_workshop_routes && plansBySetup[setup]===previousPlan;
+    if ((plansBySetup[setup] && !finishingWorkshopPlan) || !lastPlanInput || setupSolve?.setup === setup
         || (mainSolve?.runId === planRunId && mainSolve.setup === setup)) return;
     stopSetupSolve();
     const runId = planRunId;
@@ -2180,6 +2181,10 @@ function renderHomelandLayout(plan, keepLayout = false) {
         stopLayout();
         document.getElementById('layout-summary').textContent = 'The layout couldn\'t be worked out.';
         setStep(layoutStep, 'fail');
+        if (plan.pending_workshop_routes) {
+            ensurePlanFor(selectedAniimoSetup(), true, plan);
+            return;
+        }
         if (!setupSolve && !mainSolve) resetPlanButton();
         if (selectedSetupTab() === 'best') renderBestTeam(plan, translate('Unavailable'));
         if (!setupSolve && !mainSolve) rankImprovementsFor(selectedAniimoSetup());
@@ -2927,7 +2932,7 @@ function measureRosterRoutes(layout,plan,previous) {
 function refineReactiveDispatch(layout, plan) {
     const existing = Object.keys(reactiveDispatch).length > 0;
     const policy=measureRosterRoutes(layout,plan,existing ? reactiveDispatch : null);
-    if (!existing && Object.keys(policy).length) {
+    if (plan.pending_workshop_routes || (!existing && Object.keys(policy).length)) {
         reactiveDispatch = policy;
         stopRanking();
         // This is the same calculation with measured routes, not a team change.

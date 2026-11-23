@@ -52,9 +52,9 @@ export function upgradeSwitchBounds(pkg, highs, input, trial) {
 // phase. Its facility and power mode never change. Summed over a day, the
 // workload for each such group must equal its whole number of active sites.
 // Relax all other integer decisions except the selected recipes' worker posts.
-function fitsWholeSites(highs, problem) {
+function fitsWholeSites(highs, problem, trial) {
     const options = new Map(problem.recipe_options.map(option=>[option[0],option]));
-    const groups = new Map(), recipes = new Set();
+    const groups = new Map(), recipes = new Set(), loads = new Map();
     for (const [column,tier] of problem.switching_rates) {
         const option = options.get(column);
         if (!option || !Number.isFinite(option[5]) || option[5]<=0) return true;
@@ -63,6 +63,9 @@ function fitsWholeSites(highs, problem) {
         if (!groups.has(key)) groups.set(key,[]);
         groups.get(key).push([column,cycle]);
         recipes.add(recipe);
+        const recipeKey = JSON.stringify([facility,tier,recipe]);
+        if (!loads.has(recipeKey)) loads.set(recipeKey,{facility,tier,rates:[]});
+        loads.get(recipeKey).rates.push([column,cycle]);
     }
     if (!groups.size) return false;
     const rows = [], sites = [];
@@ -82,7 +85,43 @@ function fitsWholeSites(highs, problem) {
         const key = problem.variable_keys[Number(column.slice(1))];
         return key?.startsWith('post:') && recipes.has(key.slice(5).split(/__|:/,1)[0]);
     });
-    return scheduleFeasible(highs,problem,rows,[...sites,...posts]);
+    // With one common daily change, each recipe runs on a whole number
+    // of sites before and after the same fraction of the day. Pool all
+    // worker variants: a site may hand the same recipe to another operator.
+    // Encode the signed change in site count as binary digits times that
+    // shared fraction. Resource, staffing and tier compatibility remain relaxed.
+    if (!scheduleFeasible(highs,problem,rows,[...sites,...posts])) return false;
+    const phaseIntegers=[];
+    rows.push(' shared_fraction: switch_fraction <= 1');
+    for (const {facility,tier,rates} of loads.values()) {
+        const stock=trial.facilities?.[facility];
+        if (!Array.isArray(stock)) continue;
+        const cap=stock.reduce((sum,t)=>sum+(tier==null || t.level===tier ? t.count : 0),0);
+        if (!Number.isSafeInteger(cap) || cap<=0) continue;
+        const id=phaseIntegers.length, after='after'+id;
+        const count=[], products=[];
+        for (let weight=1; weight<=2*cap; weight*=2) {
+            const bit='bit'+id+'_'+weight, part='part'+id+'_'+weight;
+            rows.push(' bin_'+bit+': '+bit+' <= 1',
+                ' use_'+bit+': '+part+' - '+bit+' <= 0',
+                ' time_'+bit+': '+part+' - switch_fraction <= 0',
+                ' on_'+bit+': '+part+' - switch_fraction - '+bit+' >= -1');
+            phaseIntegers.push(bit);
+            count.push(weight+' '+bit);
+            products.push(weight+' '+part);
+        }
+        phaseIntegers.push(after);
+        const before=[after,...count].join(' + ');
+        rows.push(' last_'+id+': '+after+' <= '+cap,
+            ' first_lo_'+id+': '+before+' >= '+cap,
+            ' first_hi_'+id+': '+before+' <= '+(2*cap));
+        const work=rates.map(([v,c])=>c+' x'+v).join(' + ');
+        const residual=work+' - '+after+' + '+cap+' switch_fraction - '+products.join(' - ');
+        const slack=1e-5*(1+cap)+rates.reduce((n,[,c])=>n+c*1.1e-7,0);
+        rows.push(' phase_lo_'+id+': '+residual+' >= -'+slack,
+            ' phase_hi_'+id+': '+residual+' <= '+slack);
+    }
+    return !phaseIntegers.length || scheduleFeasible(highs,problem,rows,[...sites,...posts,...phaseIntegers]);
 }
 
 // The direct material-flow constructor chooses one production job for each
@@ -98,7 +137,24 @@ function fitsMaterialFlow(highs, problem) {
         if (!groups.has(recipe)) groups.set(recipe,[]);
         groups.get(recipe).push([v,cycle]);
     }
-    const rows=[], selectors=[];
+    const rows=[], selectors=[], rawLoads=[];
+    for (const [recipe,variants] of groups) {
+        if (!Object.values(materialChains).some(chain=>chain[0]===recipe)) continue;
+        const active='chain'+rawLoads.length,work=variants.map(([v,c])=>c+' x'+v).join(' + ');
+        const slack=1e-5+variants.reduce((n,[,c])=>n+c*1.1e-7,0);
+        // The raw processor has two sites before the change and one
+        // afterwards. An unselected chain need only allow omitted trace rates.
+        rows.push(' chain_bit_'+active+': '+active+' <= 1',
+            ' chain_on_'+active+': '+work+' - 2 '+active+' <= '+slack,
+            ' chain_lo_'+active+': '+work+' - flow_fraction - 2 '+active+' >= '+(-1-slack),
+            ' chain_hi_'+active+': '+work+' - flow_fraction <= '+(1+slack));
+        rawLoads.push(active);
+    }
+    if (rawLoads.length) {
+        rows.push(' flow_duration: flow_fraction <= 1',
+            ' flow_active: '+rawLoads.join(' + ')+' >= 1');
+        selectors.push(...rawLoads);
+    }
     for (const variants of groups.values()) {
         if (variants.length<2) continue;
         const group=[];
@@ -146,24 +202,38 @@ export function canFillSwitchingWorkshop(pkg, highs, trial, baseline) {
     const flow = trial.recipe_switching_normal_only && Object.keys(materialChains).some(facility=>
         (!facilities.length || facilities.includes(facility))
         && (trial.facilities?.[facility]||[]).reduce((n,t)=>n+t.count,0)>=4);
-    const measuredFlow=flow && powered && Object.keys(trial.roster?.dispatch||{}).length>0;
-    if (flow && powered && !measuredFlow) return true;
+
+    const payload=JSON.stringify({...trial,always_running_recipes:[],restrict_to_checked_recipes:false});
     const seconds = baseline?.level_up_preview?.seconds;
     const stage = {floors:[]};
-    if (baseline?.success && baseline.priorities?.[0]?.target==='level_up'
+    let cropCanImprove=!!(trial.season || trial.crop_variety);
+    const crop=baseline?.comparison_scores?.crop_variety;
+    if (cropCanImprove && baseline?.success && Number.isSafeInteger(crop) && crop>=0) {
+        stage.crop_variety=crop;
+        const variety=JSON.parse(pkg.exact_crop_variety_problem(payload));
+        const upper=priorityCeiling(highs,variety,'crop_variety');
+        cropCanImprove=upper==null || upper>crop;
+    }
+    if (!cropCanImprove && baseline?.success && baseline.priorities?.[0]?.target==='level_up'
         && trial.priorities?.[0]==='level_up' && trial.level_up_preview && seconds>0 && Number.isFinite(seconds)) {
         // A slower upgrade can tie within improvesPlan's relative tolerance.
         stage.pace = 86400 / (seconds + 2e-5*Math.max(1,seconds));
     }
-    const payload=JSON.stringify({...trial,always_running_recipes:[],restrict_to_checked_recipes:false});
+    const first=baseline?.priorities?.[0], currency=trial.currency||'coins';
+    if (baseline?.success && !cropCanImprove && first?.target===currency
+        && trial.priorities?.[0]===currency && Number.isFinite(first.per_second) && first.per_second>0) {
+        // Material work can win an income tie, including one just inside the
+        // ranking tolerance. Keep that entire interval in this relaxation.
+        stage.floors.push([currency,Math.max(0,first.per_second-2e-5*Math.max(1,first.per_second))]);
+    }
     const problem=JSON.parse(pkg.exact_priority_problem(payload,JSON.stringify(stage),trial.currency||'coins'));
     const options=problem.recipe_options;
     if(!options?.length || !problem.lp.startsWith('Maximize\n'))return true;
-    if ((!flow || measuredFlow) && Array.isArray(problem.switching_rates) && problem.variable_keys?.length===problem.variables) {
-        if (measuredFlow && fitsMaterialFlow(highs,problem)) return true;
-        return fitsWholeSites(highs,problem);
+    if (Array.isArray(problem.switching_rates) && problem.variable_keys?.length===problem.variables) {
+        if (flow && fitsMaterialFlow(highs,problem)) return true;
+        return fitsWholeSites(highs,problem,trial);
     }
-    if (powered || !facilities.length) return true;
+    if (powered || flow || !facilities.length) return true;
     const sites=new Set(facilities);
     const work=options.filter(([, ,facility])=>sites.has(facility)).map(([v,,,,,cycle])=>[v,cycle]);
     if(!work.length || work.some(([,cycle])=>!Number.isFinite(cycle)||cycle<=0))return true;

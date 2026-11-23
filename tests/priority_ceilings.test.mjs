@@ -154,3 +154,63 @@ test('a measured material trial survives if either scheduling method can run it'
     assert.equal(canFillSwitchingWorkshop(model(1.5,0),highs,trial),true,'direct material flow may use a partial site-day');
     assert.equal(canFillSwitchingWorkshop(model(1.5,8e-8),highs,trial),true,'unreported trace rates do not require a second job');
 });
+
+test('bench and kiln can fill whole days separately yet require incompatible switch times',()=>{
+    const facilities=['Woodworking Bench','Chimney Kiln'];
+    const trial={always_running:true,recipe_switching_facilities:facilities,
+        facilities:Object.fromEntries(facilities.map(f=>[f,[{count:1,level:3}]]))};
+    function model(second){
+        const loads=[.2,.8,second,1-second];
+        return {exact_priority_problem:()=>JSON.stringify({variables:4,
+            variable_keys:loads.map((_,v)=>'rate:recipe'+v+'#0'),
+            switching_rates:loads.map((_,v)=>[v,null]),
+            recipe_options:loads.map((_,v)=>[v,'recipe'+v,facilities[Math.floor(v/2)],false,false,1]),
+            lp:['Maximize',' obj: x0','Subject To',...loads.map((x,v)=>' work'+v+': x'+v+' = '+x),
+                'Bounds',...loads.map((_,v)=>' x'+v+' >= 0'),'End'].join('\n')})};
+    }
+    assert.equal(canFillSwitchingWorkshop(model(.4),highs,trial),false);
+    assert.equal(canFillSwitchingWorkshop(model(.8),highs,trial),true);
+});
+
+test('income-first switching retains schedules within the first priority tolerance',()=>{
+    const trial={always_running:true,priorities:['coins'],recipe_switching_facilities:['Kiln']};
+    const baseline={success:true,priorities:[{target:'coins',per_second:10}]};
+    const pkg={exact_priority_problem:(_input,stage)=>{
+        const [[currency,floor]]=JSON.parse(stage).floors;
+        assert.equal(currency,'coins');
+        assert.ok(floor<9.9999 && floor>9.999);
+        return JSON.stringify({lp:''});
+    }};
+    assert.equal(canFillSwitchingWorkshop(pkg,highs,trial,baseline),true);
+});
+
+test('a switch may earn less when its crop variety beats the ordinary plan',()=>{
+    const trial={always_running:true,season:'test',priorities:['coins'],recipe_switching_facilities:['Kiln']};
+    const base={success:true,comparison_scores:{crop_variety:2},priorities:[{target:'coins',per_second:10}]};
+    for (const ceiling of [2,3]) {
+        const pkg={
+            exact_crop_variety_problem:()=>JSON.stringify({lp:'Maximize\n obj: x0\nSubject To\n crop: x0 <= '+ceiling+'\nBounds\n x0 >= 0\nEnd'}),
+            exact_priority_problem:(_input,stage)=>{
+                const data=JSON.parse(stage);
+                assert.equal(data.crop_variety,2);
+                assert.equal(data.floors.length,ceiling===2?1:0);
+                return JSON.stringify({lp:''});
+            }
+        };
+        assert.ok(canFillSwitchingWorkshop(pkg,highs,trial,base));
+    }
+});
+
+test('direct raw processors in two chains require the same change time',()=>{
+    const facilities=['Woodworking Bench','Chimney Kiln'];
+    const trial={always_running:true,recipe_switching_normal_only:true,e_mode_rv:21,
+        recipe_switching_facilities:facilities,facilities:Object.fromEntries(facilities.map(f=>[f,[{count:4,level:4}]]))};
+    const model=second=>({exact_priority_problem:()=>JSON.stringify({variables:2,
+        variable_keys:['rate:rough_lumber#0','rate:coarse_sifted_ore#0'],
+        recipe_options:[[0,'rough_lumber',facilities[0],false,false,1],[1,'coarse_sifted_ore',facilities[1],false,false,1]],
+        switching_rates:[[0,null],[1,null]],
+        lp:'Maximize\n obj: x0\nSubject To\n bench: x0 = 1.25\n kiln: x1 = '+second+'\nBounds\n x0 >= 0\n x1 >= 0\nEnd'})});
+    assert.equal(canFillSwitchingWorkshop(model(1.5),highs,trial),false);
+    assert.equal(canFillSwitchingWorkshop(model(1.25),highs,trial),true);
+    assert.equal(canFillSwitchingWorkshop(model(0),highs,trial),true);
+});

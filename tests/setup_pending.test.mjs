@@ -189,3 +189,17 @@ test('returning to a cached setup cancels the old worker and removes its unfinis
     assert.equal(p.element('aniimo-pending').style.display,'none');
     assert.equal(p.timers.size,0);
 });
+
+test('an empty measured dispatch still finishes the pending workshop plan exactly once', () => {
+    const p=page();
+    p.run(`const provisional={success:true,pending_workshop_routes:true};
+        const setup=selectedAniimoSetup();
+        plansBySetup[setup]=provisional;
+        ensurePlanFor(setup,true,provisional);
+        ensurePlanFor(setup,true,provisional);`);
+    assert.equal(p.workers.length,1);
+    assert.equal(JSON.parse(p.workers[0].request.payload).map_dispatch_pending,false);
+    p.workers[0].onmessage({data:{ok:true,result:JSON.stringify({success:true})}});
+    p.run('ensurePlanFor(setup,true,provisional)');
+    assert.equal(p.workers.length,1);
+});

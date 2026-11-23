@@ -945,6 +945,7 @@ async function canFillWorkshop(pkg,trial,baseline) {
 async function withRecipeSwitches(pkg,input,baseline,progress=()=>{},timed=false,firstProposal) {
     const deadline=timed ? performance.now()+10000 : null;
     const workshopBaseline=!timed && input.always_running ? {success:baseline.success,
+        comparison_scores:{crop_variety:baseline.comparison_scores?.crop_variety},
         priorities:baseline.priorities?.slice(0,1),level_up_preview:{seconds:baseline.level_up_preview?.seconds}} : null;
     return searchRecipeSwitches(input,baseline,{firstProposal,workshopBaseline,
         canFillWorkshop:workshopBaseline ? trial=>canFillWorkshop(pkg,trial,workshopBaseline) : null,
@@ -1045,7 +1046,13 @@ self.onmessage = async (event) => {
             // Each solve's start and end go to the page as progress, as `{ step, state, proven }`.
             const step = (key, state, proven) => self.postMessage({ id, type: 'progress', count: { step: key, state, proven } });
             const switchingInput = JSON.parse(payload);
-            const firstSwitch = await proveFirstSwitch(switchingInput, async trial => {
+            // A roster's provisional plan exists to place its buildings and
+            // measure the actual routes. Search the shared daily change with
+            // those routes once they are known, including an empty dispatch.
+            const measureFirst = switchingInput.map_dispatch_pending && switchingInput.roster
+                && !Object.keys(switchingInput.roster.dispatch || {}).length
+                && switchingInput.always_running && switchingWorkshops(switchingInput).length>0;
+            const firstSwitch = !measureFirst && await proveFirstSwitch(switchingInput, async trial => {
                 const {upgradeSwitchBounds} = await import('./recipe-switch-bound.js');
                 return upgradeSwitchBounds(pkg,await newHighs(),switchingInput,trial);
             }, async trial => JSON.parse(await exactPlanJson(pkg,JSON.stringify({...trial,prove_early_switch:true}))), step);
@@ -1088,6 +1095,10 @@ self.onmessage = async (event) => {
             }
             if(switchingWorkshops(switchingInput).length){
                 const ordinary=JSON.parse(result);
+                if(measureFirst && ordinary.success){
+                    self.postMessage({id,ok:true,result:JSON.stringify({...ordinary,pending_workshop_routes:true})});
+                    return;
+                }
                 if (ordinary.success && ordinary.continuous_production_checked && switchingInput.map_dispatch_pending
                     && switchingInput.roster && !switchingInput.fixed_homeland && switchingInput.priorities?.[0]==='level_up'
                     && comparisonConcurrency(globalThis.navigator,2)>1) {
