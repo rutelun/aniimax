@@ -226,24 +226,61 @@ function icon(item, name) {
 const cardClearance = 14;
 const laneSpacing = 8;
 
-// Candidate lanes through a column, with clearance from cards, headings and earlier routes.
-function openLanes(column, height, preferred) {
-    const lanes = [];
+// Open intervals for the center of a line through this column.
+function openPassages(column, height) {
+    const passages = [];
     let top = cardClearance;
-    function addGap(bottom) {
-        if (bottom >= top) lanes.push(Math.max(top, Math.min(bottom, preferred)));
+    function add(bottom, below) {
+        if (bottom >= top) passages.push({top, bottom, below});
     }
     for (const obstacle of column.occupied) {
         const clearance = obstacle.lane ? laneSpacing : cardClearance;
-        addGap(obstacle.top - clearance);
+        add(obstacle.top - clearance, obstacle);
         top = Math.max(top, obstacle.bottom + clearance);
     }
-    addGap(height - cardClearance);
-    return lanes;
+    add(height - cardClearance);
+    return passages;
 }
 
-// Reserve direct connections first. In every gap the curves have the same horizontal
-// control points, so reversed vertical order at its two ends means they intersect.
+function nearestLane({top, bottom}, preferred) {
+    const steps = Math.floor((bottom - top) / laneSpacing);
+    const first = (top + bottom - steps * laneSpacing) / 2;
+    return first + laneSpacing * Math.max(0, Math.min(steps, Math.round((preferred - first) / laneSpacing)));
+}
+
+function preferredHeight(edge, tracks, i) {
+    const x = (tracks[i].left + tracks[i].right) / 2;
+    const fraction = (x - tracks[edge.start].right) / (tracks[edge.end].left - tracks[edge.start].right);
+    return edge.y + (edge.ty - edge.y) * fraction;
+}
+
+// Count nearby bypasses before reserving their lanes. Otherwise the first
+// arrow can consume the only slot in a gap and force the rest around the board.
+export function crowdedPassages(edges, tracks, height) {
+    const required = new Map();
+    for (let i = 1; i < tracks.length - 1; i++) {
+        const passages = openPassages(tracks[i], height);
+        const demand = new Map();
+        for (const edge of edges) {
+            if (edge.start >= i || edge.end <= i) continue;
+            const y = preferredHeight(edge, tracks, i);
+            let best, distance = Infinity;
+            for (const p of passages) {
+                const d = Math.abs(nearestLane(p, y) - y);
+                if (d < distance) { best = p; distance = d; }
+            }
+            if (best) demand.set(best, (demand.get(best) || 0) + 1);
+        }
+        for (const [p, count] of demand) {
+            const span = (count - 1) * laneSpacing;
+            if (p.below && p.bottom - p.top < span) required.set(p.below, 2 * cardClearance + span);
+        }
+    }
+    return required;
+}
+
+// Reserve direct connections first, then balance the extra vertical travel of
+// each orthogonal path against the crossings in the gutters it passes through.
 export function routeFlowEdges(edges, tracks, height) {
     const gaps = tracks.map(() => []);
     const routes = new Map();
@@ -253,10 +290,8 @@ export function routeFlowEdges(edges, tracks, height) {
         let states = [{y, cost: 0, previous: null}];
         for (let i = start + 1; i <= end; i++) {
             const track = tracks[i];
-            const fraction = ((track.left + track.right) / 2 - tracks[start].right) /
-                (tracks[end].left - tracks[start].right);
-            const lanes = i === end ? [ty] : openLanes(track, height, y + (ty - y) * fraction);
-            const width = track.left - tracks[i - 1].right;
+            const lanes = i === end ? [ty] : openPassages(track, height)
+                .map(p => nearestLane(p, preferredHeight(edge, tracks, i)));
             states = lanes.map(lane => {
                 let previous, cost = Infinity;
                 for (const state of states) {
@@ -264,7 +299,7 @@ export function routeFlowEdges(edges, tracks, height) {
                         (state.y - other.from) * (lane - other.to) < 0).length;
                     // Allow a small detour to eliminate a crossing without sending the edge
                     // around an entire unrelated chain to save one intersection.
-                    const total = state.cost + Math.hypot(width, lane - state.y) + crossings * 160;
+                    const total = state.cost + Math.abs(lane - state.y) + crossings * (4 * laneSpacing);
                     if (total < cost) { cost = total; previous = state; }
                 }
                 return {y: lane, cost, previous};
@@ -382,12 +417,12 @@ function alignRecipes(board) {
                 const desired = inputs.length && inputs.every(Number.isFinite)
                     ? inputs.reduce((sum, y) => sum + y, 0) / inputs.length
                     : bounds.top + el.offsetTop + rect.height / 2;
-                return {el, height: rect.height, desired};
+                return {el, height: rect.height, desired, margin: parseFloat(el.style.marginTop) || 0};
             });
             const gap = parseFloat(getComputedStyle(stack).rowGap);
             let floor = bounds.top;
             for (const card of cards) {
-                card.top = Math.max(floor, card.desired - card.height / 2);
+                card.top = Math.max(floor + card.margin, card.desired - card.height / 2);
                 floor = card.top + card.height + gap;
             }
             let ceiling = bounds.bottom;
@@ -396,7 +431,7 @@ function alignRecipes(board) {
                 const shift = card.top - bounds.top - card.el.offsetTop;
                 card.el.style.transform = `translateY(${shift}px)`;
                 centers.set(card.el.dataset.output, card.top + card.height / 2);
-                ceiling = card.top - gap;
+                ceiling = card.top - gap - card.margin;
             }
         }
     }
@@ -420,7 +455,7 @@ function drawLinks(board) {
             }
             const column = columns.get(left);
             column.right = Math.max(column.right, rect.right - origin.left);
-            column.occupied.push({top: rect.top - origin.top, bottom: rect.bottom - origin.top});
+            column.occupied.push({top: rect.top - origin.top, bottom: rect.bottom - origin.top, element: card});
         }
     }
     const tracks = [...columns.values()].sort((a, b) => a.left - b.left);
@@ -450,6 +485,19 @@ function drawLinks(board) {
         source.right - origin.left < column.left && column.right < target.left - origin.left).length;
     board.style.setProperty('--flow-route-space', (2 * cardClearance + laneSpacing * Math.max(0, ...tracks.map(skipped))) + 'px');
     const height = board.getBoundingClientRect().height;
+    let expanded = false;
+    for (const [obstacle, required] of crowdedPassages(edges, tracks, height)) {
+        const card = obstacle.element;
+        if (!card?.previousElementSibling) continue;
+        const base = parseFloat(getComputedStyle(card.parentElement).rowGap);
+        // Allow one pixel for subpixel placement of the two cards.
+        const extra = Math.ceil(required + 1 - base);
+        if (extra > (parseFloat(card.style.marginTop) || 0)) {
+            card.style.marginTop = extra + 'px';
+            expanded = true;
+        }
+    }
+    if (expanded) return drawLinks(board);
     const lines = document.createDocumentFragment();
     const routes = routeFlowEdges(edges, tracks, height);
     const {slots, widths, tones} = gutterLanes(edges, routes, tracks.length - 1);

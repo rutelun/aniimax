@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { allOutputSold, productionFlow, upgradeHorizon, flowSections, flowBuildings, routeFlowEdges, gutterLanes } from '../web/production-flow.js';
+import { allOutputSold, productionFlow, upgradeHorizon, flowSections, flowBuildings, routeFlowEdges, gutterLanes, crowdedPassages } from '../web/production-flow.js';
 
 test('combines quick and normal output, retains real sales and routes byproducts to their consumers', () => {
     const row = (item_name, busy_units) => ({ item_name, busy_units, facility_count: 2, cycle_time: 10, status: 'producing' });
@@ -139,4 +139,21 @@ test('overlapping vertical connections get separate lanes and colors, even when 
     assert.equal(new Set(edges.slice(0,3).map(e => slots.get(e)[0])).size, 3);
     assert.equal(new Set(edges.slice(0,3).map(e => tones.get(e))).size, 3);
     assert.equal(slots.get(edges[3])[0], 0);
+});
+
+test('three bypasses share the nearest interior gap with clearance on both sides', () => {
+    const lower = {top:130, bottom:210};
+    const tracks = [
+        {left:0, right:80, occupied:[]},
+        {left:130, right:240, occupied:[{top:30, bottom:100}, lower]},
+        {left:290, right:400, occupied:[]},
+    ];
+    const edges = [116, 119, 122].map(y => ({start:0, end:2, y, ty:y+6}));
+    const crowded = crowdedPassages(edges, tracks, 270);
+    assert.deepEqual([...crowded], [[lower, 44]]);
+    lower.top = 100 + crowded.get(lower);
+    assert.equal(crowdedPassages(edges, tracks, 270).size, 0);
+    const routes = routeFlowEdges(edges, tracks, 270);
+    const lanes = edges.map(e => routes.get(e)[1]).sort((a,b) => a-b);
+    assert.deepEqual(lanes, [114, 122, 130]);
 });
