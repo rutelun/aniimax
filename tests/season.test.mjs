@@ -6,6 +6,18 @@ import { readFile } from 'node:fs/promises';
 import { runInNewContext } from 'node:vm';
 
 import { SEASONS, RUNNING_SEASONS, DEFAULT_SEASON, runningSeason, seasonById } from '../web/facility-config.js';
+import { reservedSeasonScore } from '../web/season-planning.js';
+
+test('required plots certify variety only when they cover every distinct event crop',()=>{
+    const crops=['fruit','root'].map(name=>({name,season:'event',facility:'Farmland'}));
+    const pkg={get_all_items:()=>JSON.stringify(crops)};
+    const input={season:'event',season_crop_minimums:{fruit:3,root:1}};
+    assert.equal(reservedSeasonScore(pkg,input),2);
+    assert.equal(reservedSeasonScore(pkg,{...input,crop_variety:true}),null);
+    assert.equal(reservedSeasonScore(pkg,{...input,season_crop_minimums:{fruit:3}}),null);
+    crops.push({name:'quick_root',season:'event',facility:'Woodland'});
+    assert.equal(reservedSeasonScore(pkg,{...input,season_crop_minimums:{...input.season_crop_minimums,quick_root:1}}),null);
+});
 
 const appSource = await readFile(new URL('../web/app.js', import.meta.url), 'utf8');
 

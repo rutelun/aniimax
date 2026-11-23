@@ -3,6 +3,7 @@
 import {priorityCeiling,requiredSiteRows} from './priority-ceilings.js';
 import {materialChains} from './material-flow-schedule.js';
 import {productionObjective} from './priority-search.js';
+import {reservedSeasonScore} from './season-planning.js';
 
 // The direct schedule runs two raw processors at dawn, then one. Use the
 // already-solved relaxation to decide whether trying this schedule first is
@@ -38,14 +39,15 @@ export function upgradeSwitchBounds(pkg, highs, input, trial) {
             plausible=suggestsMaterialFlow(problem,values,input);
         } : undefined);
     };
+    const switched = pace(payload(trial),true);
+    if (!plausible || !(switched > 0) || !Number.isFinite(switched)) return null;
     const ordinary = payload(input), fixed = pace(ordinary);
     if (!(fixed > 0) || !Number.isFinite(fixed)) return null;
-    const switched = pace(payload(trial),true);
     // A relaxation already too slow to beat the fixed-plan bound cannot
     // furnish this proof. Leave the ordinary comparison to rank those plans.
-    if (!plausible || !(switched > fixed * (1 + 2e-5))) return null;
+    if (!(switched > fixed * (1 + 2e-5))) return null;
     const crop = input.crop_variety || input.season
-        ? priorityCeiling(highs, JSON.parse(pkg.exact_crop_variety_problem(ordinary)), 'crop_variety') : null;
+        ? reservedSeasonScore(pkg,input) ?? priorityCeiling(highs, JSON.parse(pkg.exact_crop_variety_problem(ordinary)), 'crop_variety') : null;
     if ((input.crop_variety || input.season) && !Number.isFinite(crop)) return null;
     return {seconds:86400 / fixed, crop};
 }
@@ -375,8 +377,8 @@ export function canFillSwitchingWorkshop(pkg, highs, trial, baseline) {
     const crop=baseline?.comparison_scores?.crop_variety;
     if (cropCanImprove && baseline?.success && Number.isSafeInteger(crop) && crop>=0) {
         stage.crop_variety=crop;
-        const variety=JSON.parse(pkg.exact_crop_variety_problem(payload));
-        const upper=priorityCeiling(highs,variety,'crop_variety');
+        const upper=reservedSeasonScore(pkg,trial) ??
+            priorityCeiling(highs,JSON.parse(pkg.exact_crop_variety_problem(payload)),'crop_variety');
         cropCanImprove=upper==null || upper>crop;
     }
     if (!cropCanImprove && baseline?.success && baseline.priorities?.[0]?.target==='level_up'

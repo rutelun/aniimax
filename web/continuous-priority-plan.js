@@ -11,7 +11,7 @@ import {continuousNeighborhood} from './continuous-neighborhood.js';
 import {economicRecipeCounts,economicCountNeighborhood,priceIdleWorkshop} from './economic-recipe-counts.js';
 import {switchingWorkshops} from './material-flow-schedule.js';
 import {searchProductionSites,fitWorkshopIncome} from './production-site-search.js';
-import {hasSeasonCropMinimums} from './season-planning.js';
+import {hasSeasonCropMinimums,reservedSeasonScore} from './season-planning.js';
 import {measuredProductionShift} from './measured-production.js';
 
 const options = seconds => ({time_limit:seconds,mip_rel_gap:0,mip_abs_gap:0,mip_feasibility_tolerance:1e-9});
@@ -137,10 +137,13 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
     let integerPace=false;
     const prefix=[...(input.crop_variety||input.season?['crop_variety']:[]),...priorities.slice(0,pos)];
     for(const key of prefix){
-        const p=priority(relaxed,stage,key);
-        if(!p.lp && key==='level_up')continue;
-        if(!p.lp)return null;
-        let upper=priorityCeiling(highs,p,key);
+        let p,upper=key==='crop_variety'?reservedSeasonScore(pkg,input):null;
+        if(upper==null){
+            p=priority(relaxed,stage,key);
+            if(!p.lp && key==='level_up')continue;
+            if(!p.lp)return null;
+            upper=priorityCeiling(highs,p,key);
+        }
         if(!Number.isFinite(upper))return null;
         if(key==='level_up' && dispatched && witnessSeed && witnessNames.length && upper>0) {
             // Walking can make the fractional upgrade pace impossible with
@@ -186,6 +189,11 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
     }
     const currencyStage=structuredClone(stage), raw=priority(relaxed,stage,currency);
     if(!raw.production_only || !raw.recipe_variables?.length)return null;
+    // The first roster layout needs both the whole-site proposal and the
+    // income ceiling. The proposal depends only on this same completed model.
+    const priceSitesFirst=input.roster && stage.pace && !witnessSeed && !dispatched;
+    const countOptions={input,timeLimit:2};
+    let countJob=priceSitesFirst && evaluateCounts ? evaluateCounts(raw,countOptions) : null;
     const lpCeiling=priorityCeiling(highs,raw,currency);
     const ceilings=Number.isFinite(lpCeiling)?[lpCeiling]:[];
     let upper=Number.isFinite(lpCeiling)?lpCeiling:Infinity;
@@ -561,10 +569,7 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
         const initialModel=scope.length ? priority(payloadFor(scope),currencyStage,currency) : raw;
         const discovery=scope.length>0 && !witnessSeed;
         const masterOptions={seed:witnessSeed,scope,timeLimit:discovery?3:2,discovery};
-        const priceSitesFirst = input.roster && stage.pace && !witnessSeed && !dispatched;
         let pending=!priceSitesFirst && evaluateBound?{model:initialModel,result:bound(initialModel,masterOptions)}:null;
-        const countOptions={input,timeLimit:2};
-        let countJob;
         const startCounts=()=>{countJob??=evaluateCounts(raw,countOptions);};
         // With measured shares the strict master can settle the income stage on
         // its first solve. Try its actual staffing before searching alternative
@@ -848,6 +853,9 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
         const {key,terms}=entry;
         let earned=terms.length&&terms.every(([name])=>verified.has(name))
             ?terms.reduce((total,[name,c])=>total+c*verified.get(name),0):null;
+        // The full catalogue just verified the integer crop score as a hard
+        // minimum. Unlike the pace and sales floors, it has no priority slack.
+        if(key==='crop_variety' && request.crop_variety===entry.upper)earned=entry.upper;
         // Later priorities use the native floor slack. Recover the earlier
         // score with the checked sites before claiming it reaches its ceiling.
         if(!close(earned,entry.upper)){
