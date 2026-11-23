@@ -3920,9 +3920,12 @@ html { scroll-padding-top: 0.8rem; }
 .product-flow-column + .product-flow-column .flow-chain-stack { justify-content: flex-start; gap: max(1.75rem, 30px); }
 .product-flow-node { min-width: 0; width: fit-content; max-width: 100%; padding: .32rem .5rem; background: var(--surface); border: 1px solid var(--border); border-radius: 9px; font-size: .8rem; font-variant-numeric: tabular-nums; }
 .product-flow-column .product-flow-node { width: 100%; }
-.flow-sale-only, .flow-sale-key::before {
-    background: color-mix(in srgb, var(--warning) 12%, var(--surface));
-    border: 1px solid color-mix(in srgb, var(--warning) 52%, var(--border));
+.flow-sale-only { --sale-color: var(--warning); }
+.flow-sale-partial { --sale-color: #85b9f2; }
+.light .flow-sale-partial { --sale-color: #3474b8; }
+.product-flow-node:is(.flow-sale-only, .flow-sale-partial), .flow-sale-key::before {
+    background: color-mix(in srgb, var(--sale-color) 12%, var(--surface));
+    border: 1px solid color-mix(in srgb, var(--sale-color) 52%, var(--border));
 }
 .flow-sale-key { display: inline-flex; align-items: center; gap: .33rem; margin-inline-start: .5rem; }
 .flow-sale-key::before { content: ''; width: .7rem; height: .7rem; border-radius: .2rem; }

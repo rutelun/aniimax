@@ -502,11 +502,10 @@ export function attachProductionFlow(card, { itemName, formatAmount, formatReven
             row.append(building, recipes, text('strong', elapsed(start), 'flow-switch-time'));
             return row;
         }
+        const saleLabels = new Map([['flow-sale-only', 'All output sold'], ['flow-sale-partial', 'Part of output sold']]);
         function product(n) {
             const el = text('article', '', 'product-flow-node');
             const req = requirements.find(r => r.name === n.item);
-            const saleOnly = allOutputSold(n, req);
-            if (saleOnly) el.classList.add('flow-sale-only');
             el.dataset.output = n.item;
             el.dataset.depth = n.depth;
             const head = text('div', '', 'flow-node-head');
@@ -523,7 +522,13 @@ export function attachProductionFlow(card, { itemName, formatAmount, formatReven
                 const sale = text('span', '', 'flow-sale');
                 sale.tabIndex = 0;
                 sale.setAttribute('role', 'img');
-                sale.dataset.tip = translate(saleOnly ? 'All output sold' : 'For sale') + ' · ' + amount(n.sold);
+                let label = 'For sale';
+                if (n.made > 0) {
+                    const saleClass = allOutputSold(n, req) ? 'flow-sale-only' : 'flow-sale-partial';
+                    el.classList.add(saleClass);
+                    label = saleLabels.get(saleClass);
+                }
+                sale.dataset.tip = translate(label) + ' · ' + amount(n.sold);
                 sale.dataset.tipDetail = translate('Sales revenue (coins)') + ' · ' + amount(n.grossSales);
                 sale.setAttribute('aria-label', sale.dataset.tip + '. ' + sale.dataset.tipDetail);
                 const coin = text('img', '', 'flow-coin');
@@ -592,7 +597,9 @@ export function attachProductionFlow(card, { itemName, formatAmount, formatReven
             fitBoard(board);
             observer.observe(board);
         }
-        if (content.querySelector('.flow-sale-only')) note.append(' ', text('span', translate('All output sold'), 'flow-sale-key'));
+        for (const [saleClass, label] of saleLabels) {
+            if (content.querySelector('.' + saleClass)) note.append(' ', text('span', translate(label), 'flow-sale-key ' + saleClass));
+        }
         content.append(field('Gross sales (Home Coins)', amount(flow.grossSales), 'product-flow-total'));
     }
     document.addEventListener('aniimax-language-change', () => {
