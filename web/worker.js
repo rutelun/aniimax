@@ -146,7 +146,8 @@ function tiebreakOf(problem, values) {
 // nothing before it, `{ measure, objective, proven }`: the most of its first priority, its
 // level-up pace, or its Home Coins. The page's Opportunities solve that same model for the plan
 // as it stands, so they take it from here.
-async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, comparison = null, deadline = null, routeWitness = null) {
+async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, comparison = null,
+    deadline = null, routeWitness = null, workshopProof = null) {
     const input = JSON.parse(payload);
     if (input.always_running && !pkg.supports_continuous_production?.()) {
         throw new Error('The production solver is outdated. Reload the page to load the current version.');
@@ -163,7 +164,7 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
         try {
             const {tryPriorityPlan} = await loadPriorityPlanner();
             accelerated = await tryPriorityPlan(pkg,input,{
-                highs:await newHighs(), solveModel, step, first, initialWitness:routeWitness, ...workers.callbacks,
+                highs:await newHighs(), solveModel, step, first, initialWitness:routeWitness, workshopProof, ...workers.callbacks,
                 onIncumbent:plan=>{ checkedShift=plan; },
             });
             if (!accelerated && routeWitness) accelerated = await repairDispatchPlan(pkg,input,routeWitness);
@@ -942,17 +943,17 @@ async function canFillWorkshop(pkg,trial,baseline) {
     return canFillSwitchingWorkshop(pkg,await newHighs(),trial,baseline);
 }
 
-async function withRecipeSwitches(pkg,input,baseline,progress=()=>{},timed=false,firstProposal) {
+async function withRecipeSwitches(pkg,input,baseline,progress=()=>{},timed=false,firstProposal,workshopProof) {
     const deadline=timed ? performance.now()+10000 : null;
     const workshopBaseline=!timed && input.always_running ? {success:baseline.success,
-        comparison_scores:{crop_variety:baseline.comparison_scores?.crop_variety},
+        workshopProof, comparison_scores:{crop_variety:baseline.comparison_scores?.crop_variety},
         priorities:baseline.priorities?.slice(0,1),level_up_preview:{seconds:baseline.level_up_preview?.seconds}} : null;
     return searchRecipeSwitches(input,baseline,{firstProposal,workshopBaseline,
         canFillWorkshop:workshopBaseline ? trial=>canFillWorkshop(pkg,trial,workshopBaseline) : null,
         parallel:globalThis.navigator?.hardwareConcurrency>=8 && globalThis.navigator?.deviceMemory>=8
             ? 4 : comparisonConcurrency(globalThis.navigator,4),
         createWorker:!timed && typeof Worker==='function'?()=>new Worker(plannerWorkerUrl,{type:'module'}):null,
-        candidate:async trial=>JSON.parse(await exactPlanJson(pkg,JSON.stringify(trial),()=>{},()=>{},null,deadline)),
+        candidate:async trial=>JSON.parse(await exactPlanJson(pkg,JSON.stringify(trial),undefined,undefined,null,deadline,null,workshopProof)),
         solve:async model=>(await newHighs()).solve(model.lp,timed ? {time_limit:Math.max(.05,Math.min(3,(deadline-performance.now())/1000)),mip_rel_gap:0} : {mip_max_nodes:128,mip_rel_gap:0}),progress,
     });
 }
@@ -1014,7 +1015,8 @@ self.onmessage = async (event) => {
                     return;
                 }
             }
-            self.postMessage({id,ok:true,result:await exactPlanJson(pkg,payload)});
+            const workshopProof=event.data.workshopBaseline?.workshopProof;
+            self.postMessage({id,ok:true,result:await exactPlanJson(pkg,payload,undefined,undefined,null,null,null,workshopProof)});
             return;
         }
         if (type === 'protect_crops') {
@@ -1046,6 +1048,7 @@ self.onmessage = async (event) => {
             // Each solve's start and end go to the page as progress, as `{ step, state, proven }`.
             const step = (key, state, proven) => self.postMessage({ id, type: 'progress', count: { step: key, state, proven } });
             const switchingInput = JSON.parse(payload);
+            const workshopProof={};
             // A roster's provisional plan exists to place its buildings and
             // measure the actual routes. Search the daily workshop changes with
             // those routes once they are known, including an empty dispatch.
@@ -1062,7 +1065,8 @@ self.onmessage = async (event) => {
             }
             try {
                 let top = null;
-                result = await exactPlanJson(pkg, payload, step, found => { top ||= found; },null,null,event.data.routeWitness);
+                result = await exactPlanJson(pkg, payload, step, found => { top ||= found; },
+                    null,null,event.data.routeWitness,workshopProof);
                 if (top) {
                     const plan = JSON.parse(result);
                     plan.measure_top = top;
@@ -1104,7 +1108,7 @@ self.onmessage = async (event) => {
                     && comparisonConcurrency(globalThis.navigator,2)>1) {
                     self.postMessage({id,type:'progress',count:{ordinaryForMap:result}});
                 }
-                const selected=await withRecipeSwitches(pkg,switchingInput,ordinary,step,false,firstSwitch?.proposed);
+                const selected=await withRecipeSwitches(pkg,switchingInput,ordinary,step,false,firstSwitch?.proposed,workshopProof);
                 result=JSON.stringify(selected);
             }
             self.postMessage({ id, ok: true, result });

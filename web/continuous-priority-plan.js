@@ -8,7 +8,8 @@ import {polishSolution} from './highs-solve.js';
 import {refineStaffing} from './staffing-search.js';
 import {continuousNeighborhood} from './continuous-neighborhood.js';
 import {economicRecipeCounts,economicCountNeighborhood} from './economic-recipe-counts.js';
-import {searchProductionSites} from './production-site-search.js';
+import {switchingWorkshops} from './material-flow-schedule.js';
+import {searchProductionSites,fitWorkshopIncome} from './production-site-search.js';
 import {measuredProductionShift} from './measured-production.js';
 
 const options = seconds => ({time_limit:seconds,mip_rel_gap:0,mip_abs_gap:0,mip_feasibility_tolerance:1e-9});
@@ -95,7 +96,7 @@ function fixPhysical(problem,warm,recipeSitesOnly=false) {
 }
 
 export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=()=>{},initialWitness,
-    evaluateBound,evaluateCounts,onIncumbent} = {}) {
+    evaluateBound,evaluateCounts,onIncumbent,workshopProof} = {}) {
     const currency=input.currency||'coins', priorities=[...(input.priorities??[])];
     if(!priorities.includes(currency))priorities.push(currency);
     const pos=priorities.indexOf(currency);
@@ -374,8 +375,20 @@ export async function tryPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},fi
     const priceSitePatterns=async()=>{
         sitesAttempted=true;
         fullIncome??=priority(fullPayload,currencyStage,currency);
-        siteSearch=await searchProductionSites(highs,raw,fullIncome,scopedModel,
-            (model,settings)=>cachedEconomicBound(model,settings,localBound));
+        const solve=(model,settings)=>cachedEconomicBound(model,settings,localBound);
+        let shared;
+        if (workshopProof && compactSwitch && !input.season && !input.crop_variety
+            && (!input.recipe_switching_relaxation || workshopProof.assignment !== undefined)) {
+            const facilities=switchingWorkshops(input);
+            if (facilities.length) {
+                const broad={...input,recipe_switching_relaxation:true,
+                    recipe_switching_facilities:facilities,recipe_switching_normal_only:false};
+                const modelFor=recipes=>priority(JSON.stringify({...broad,always_running_recipes:recipes,
+                    restrict_to_checked_recipes:false}),currencyStage,currency);
+                shared=await fitWorkshopIncome(highs,workshopProof,fullIncome,modelFor,solve);
+            }
+        }
+        siteSearch=shared ?? await searchProductionSites(highs,raw,fullIncome,scopedModel,solve);
         if (siteSearch) {
             const candidate=siteSearch.best;
             remember(candidate.keys,candidate.values,candidate.objective);

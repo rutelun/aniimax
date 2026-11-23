@@ -16,8 +16,13 @@ function recipesWithoutInputs(problem) {
     return [...sources];
 }
 
-function fixSiteCounts(full, proposal) {
-    const sites = new Map(proposal.keys.map((key, i) => [key, proposal.values[i]]));
+function siteAssignment(proposal) {
+    return proposal.keys.flatMap((key, i) => key.startsWith('units:') && proposal.values[i] > 0
+        ? [[key, proposal.values[i]]] : []);
+}
+
+function fixSiteCounts(full, assignment) {
+    const sites = new Map(assignment);
     const rows = full.recipe_variables.flatMap(([v]) => {
         const key = full.variable_keys[v];
         return key.startsWith('units:') ? [` selected_site_${v}: x${v} = ${Math.round(sites.get(key) ?? 0)}`] : [];
@@ -60,7 +65,7 @@ export async function searchProductionSites(highs, raw, full, scopedModel, solve
         const proposal = await solve(model, {seed, timeLimit:30});
         if (Number.isFinite(proposal?.upper)) upper = Math.min(upper, proposal.upper);
         if (!proposal?.values) break;
-        const checked = await solve(fixSiteCounts(full, proposal), {timeLimit:1});
+        const checked = await solve(fixSiteCounts(full, siteAssignment(proposal)), {timeLimit:1});
         if (checked?.objective > (best?.objective ?? 0)) best = checked;
         if (best && Math.abs(upper - best.objective) <= 1e-8 * Math.max(1, best.objective)) break;
         if (round === 0 && proposal.objective > 0 && Math.abs(upper - proposal.objective) <= 1e-8 * Math.max(1, upper)) {
@@ -81,4 +86,21 @@ export async function searchProductionSites(highs, raw, full, scopedModel, solve
     }
     if (!best || !Number.isFinite(upper) || upper < best.objective - 1e-7) return null;
     return {best, upper:Math.max(best.objective, upper)};
+}
+
+// A generated team's dedicated workshop counts are feasible in the model
+// that lets both workshops share staffed or electric capacity. Its income
+// ceiling therefore also bounds each individual scheduling choice. Only
+// the bound and a proposed site assignment travel to sibling workers.
+export async function fitWorkshopIncome(highs, proof, full, broadModel, solve) {
+    if (proof.assignment === undefined) {
+        const result = await searchProductionSites(highs, broadModel([]), broadModel(), broadModel, solve);
+        proof.assignment = result ? siteAssignment(result.best) : null;
+        proof.upper = result?.upper;
+    }
+    if (!proof.assignment || !Number.isFinite(proof.upper)) return null;
+    const best = await solve(fixSiteCounts(full, proof.assignment), {exact:true});
+    if (!best?.values || !Number.isFinite(best.objective)
+        || Math.abs(best.objective - proof.upper) > 1e-8 * Math.max(1, Math.abs(proof.upper))) return null;
+    return {best, upper:Math.max(best.objective, proof.upper)};
 }
