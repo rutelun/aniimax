@@ -3251,7 +3251,12 @@ details.explain p {
     padding: 0.17rem 0.3rem 0.17rem 0.45rem;
 }
 .roster-ability + .roster-ability { border-top: 1px solid var(--border); }
-.roster-ability .level-picker label { min-width: 1.7rem; min-height: 1.85rem; justify-content: center; padding-inline: 0.2rem; }
+.roster-edit-dialog .level-picker label {
+    display: grid;
+    place-items: center;
+    min-height: 1.85rem;
+}
+.roster-ability .level-picker label { min-width: 1.7rem; padding-inline: 0.2rem; }
 .roster-ability .roster-x {
     min-width: 1.9rem;
     height: 1.9rem;
@@ -3289,7 +3294,7 @@ details.explain p {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
 }
-.roster-personalities .roster-pair label { justify-content: center; min-height: 1.85rem; padding-inline: 0.12rem; }
+.roster-personalities .roster-pair label { padding-inline: 0.12rem; }
 #roster-edit-dialog .roster-edit-workload { margin: 0; }
 
 .roster-family { max-width: 100%; }
