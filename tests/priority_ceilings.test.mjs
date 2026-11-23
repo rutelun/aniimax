@@ -135,3 +135,22 @@ test('feasibility keeps discrete worker posts and a slower upgrade within compar
     assert.equal(canFillSwitchingWorkshop(model(false),highs,trial,base),true);
     assert.equal(canFillSwitchingWorkshop(model(true),highs,trial,base),false);
 });
+
+test('a measured material trial survives if either scheduling method can run it',()=>{
+    const facility='Woodworking Bench';
+    const trial={always_running:true,recipe_switching_normal_only:true,recipe_switching_facilities:[facility],
+        facilities:{[facility]:[{count:4,level:1}]},e_mode_rv:12,
+        roster:{dispatch:{'Woodworking Bench|rough_lumber|Production':[{member:0,share:1,travel_seconds:0}]}}};
+    function model(a,b){
+        return {exact_priority_problem:()=>JSON.stringify({variables:2,
+            variable_keys:['rate:rough_lumber__byowned:0#0','rate:rough_lumber__byowned:1#0'],
+            recipe_options:[[0,'rough_lumber',facility,false,false,1],[1,'rough_lumber',facility,false,false,1]],
+            switching_rates:[[0,null],[1,null]],
+            lp:['Maximize',' obj: x0','Subject To',' work_a: x0 = '+a,' work_b: x1 = '+b,
+                'Bounds',' x0 >= 0',' x1 >= 0','End'].join('\n')})};
+    }
+    assert.equal(canFillSwitchingWorkshop(model(.75,.75),highs,trial),false);
+    assert.equal(canFillSwitchingWorkshop(model(.75,.25),highs,trial),true,'whole-site phases can share a recipe');
+    assert.equal(canFillSwitchingWorkshop(model(1.5,0),highs,trial),true,'direct material flow may use a partial site-day');
+    assert.equal(canFillSwitchingWorkshop(model(1.5,8e-8),highs,trial),true,'unreported trace rates do not require a second job');
+});

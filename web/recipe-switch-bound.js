@@ -82,10 +82,44 @@ function fitsWholeSites(highs, problem) {
         const key = problem.variable_keys[Number(column.slice(1))];
         return key?.startsWith('post:') && recipes.has(key.slice(5).split(/__|:/,1)[0]);
     });
+    return scheduleFeasible(highs,problem,rows,[...sites,...posts]);
+}
+
+// The direct material-flow constructor chooses one production job for each
+// recipe in a chain. If several variants must all produce that recipe, only
+// the general phase scheduler can cover it. Leave electric jobs unrestricted
+// here, which can only make this preliminary feasibility test more permissive.
+function fitsMaterialFlow(highs, problem) {
+    const switching = new Set(problem.switching_rates.map(([column])=>column));
+    const groups = new Map();
+    for (const [v,recipe,facility,,electric,cycle] of problem.recipe_options) {
+        if (!switching.has(v) || electric || !materialChains[facility]?.includes(recipe)) continue;
+        if (!(cycle>0) || !Number.isFinite(cycle)) return true;
+        if (!groups.has(recipe)) groups.set(recipe,[]);
+        groups.get(recipe).push([v,cycle]);
+    }
+    const rows=[], selectors=[];
+    for (const variants of groups.values()) {
+        if (variants.length<2) continue;
+        const group=[];
+        for (const [v,cycle] of variants) {
+            const selected='flow'+v;
+            group.push(selected);
+            // Even the raw processor uses at most two sites at once. Allow
+            // rates omitted by scheduleInputForPlan and the daily audit slack.
+            rows.push(' flow_load_'+v+': '+cycle+' x'+v+' - 2.00001 '+selected+' <= '+(1e-5+cycle*1.1e-7));
+        }
+        rows.push(' flow_recipe_'+group[0]+': '+group.join(' + ')+' <= 1');
+        selectors.push(...group);
+    }
+    return !selectors.length || scheduleFeasible(highs,problem,rows,selectors);
+}
+
+function scheduleFeasible(highs,problem,rows,integers) {
     const relaxed = problem.lp.replace(/\nGeneral\n[\s\S]*?\nEnd/,'\nEnd');
     const lp = relaxed.replace(/Maximize\n[\s\S]*?\nSubject To\n/,'Maximize\n obj: 0 x0\nSubject To\n')
         .replace('\nBounds\n','\n'+rows.join('\n')+'\nBounds\n')
-        .replace('\nEnd','\nGeneral\n '+[...sites,...posts].join('\n ')+'\nEnd');
+        .replace('\nEnd','\nGeneral\n '+integers.join('\n ')+'\nEnd');
     const model = highs.createModel({format:'lp',data:lp});
     try {
         model.run();
@@ -112,7 +146,8 @@ export function canFillSwitchingWorkshop(pkg, highs, trial, baseline) {
     const flow = trial.recipe_switching_normal_only && Object.keys(materialChains).some(facility=>
         (!facilities.length || facilities.includes(facility))
         && (trial.facilities?.[facility]||[]).reduce((n,t)=>n+t.count,0)>=4);
-    if (flow && powered) return true;
+    const measuredFlow=flow && powered && Object.keys(trial.roster?.dispatch||{}).length>0;
+    if (flow && powered && !measuredFlow) return true;
     const seconds = baseline?.level_up_preview?.seconds;
     const stage = {floors:[]};
     if (baseline?.success && baseline.priorities?.[0]?.target==='level_up'
@@ -124,7 +159,8 @@ export function canFillSwitchingWorkshop(pkg, highs, trial, baseline) {
     const problem=JSON.parse(pkg.exact_priority_problem(payload,JSON.stringify(stage),trial.currency||'coins'));
     const options=problem.recipe_options;
     if(!options?.length || !problem.lp.startsWith('Maximize\n'))return true;
-    if (!flow && Array.isArray(problem.switching_rates) && problem.variable_keys?.length===problem.variables) {
+    if ((!flow || measuredFlow) && Array.isArray(problem.switching_rates) && problem.variable_keys?.length===problem.variables) {
+        if (measuredFlow && fitsMaterialFlow(highs,problem)) return true;
         return fitsWholeSites(highs,problem);
     }
     if (powered || !facilities.length) return true;
