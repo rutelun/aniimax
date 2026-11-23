@@ -29,7 +29,7 @@ export function deliveryRouteCost(layout){
     }
     return cost;
 }
-export function deliveryRouting(layout){
+export function deliveryOrigins(layout){
     const sites=layout.pieces.flatMap(p=>p.members),stores=layout.storages||[];
     const points=sites.map(center),depots=stores.map(center),pools=new Map();
     const pool=id=>{if(!pools.has(id))pools.set(id,{stores:new Map(),other:new Map(),total:0});return pools.get(id);};
@@ -53,6 +53,10 @@ export function deliveryRouting(layout){
         const ownTrips=[...p.stores.values()].reduce((s,n)=>s+n,0);
         if(ownTrips>0)p.stores=new Map([...globalStores].map(([s,rate])=>[s,ownTrips*rate/globalTrips]));
     }
+    return {sites,stores,points,depots,pools,nearest,crews};
+}
+export function deliveryRouting(layout){
+    const {sites,stores,points,depots,pools,nearest,crews}=deliveryOrigins(layout);
     let cost=0;
     const arrivals=sites.map((site,i)=>{
         const weights=Array(stores.length).fill(0),origins=new Map();
@@ -74,11 +78,11 @@ export function deliveryRouting(layout){
     return {cost,arrivals,pools,sites,stores};
 }
 
-export function deliveryApproach(flow,worker,point){
+export function deliveryApproach(flow,worker,point,storeDistances=[],siteDistances=[]){
     const p=flow.pools.get(worker);
     if(!p?.total)return null;
     let result=0;
-    for(const [i,rate] of p.stores)result+=rate*distance(point,center(flow.stores[i]));
-    for(const [i,rate] of p.other)result+=rate*distance(point,center(flow.sites[i]));
+    for(const [i,rate] of p.stores)result+=rate*(storeDistances[i]??=distance(point,center(flow.stores[i])));
+    for(const [i,rate] of p.other)result+=rate*(siteDistances[i]??=distance(point,center(flow.sites[i])));
     return result/p.total;
 }

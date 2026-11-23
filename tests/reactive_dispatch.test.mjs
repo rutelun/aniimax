@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {measureRosterDispatch,buildReactiveDispatch,permanentWorkers,measuredDispatchWork,attachDeliveryFlows} from '../web/reactive-dispatch.js';
+import {measureLayoutDispatch,measureRosterDispatch,buildReactiveDispatch,permanentWorkers,measuredDispatchWork,attachDeliveryFlows} from '../web/reactive-dispatch.js';
 
 const layout={pieces:[{members:[{facility:'Chimney Kiln',crop:'ore',x:0,y:0,w:2,h:2,weight:1},
     {facility:'Farmland',crop:'crop',x:20,y:0,w:2,h:2,weight:1,stockLimit:40}]}],storages:[{x:24,y:0,w:2,h:2}]};
@@ -9,6 +9,23 @@ const recipes=[{name:'ore',facility:'Chimney Kiln',aniimo:['Fire',2]},
 const members=[{count:2,abilities:{Fire:3,Dark:4,Hauling:3}},{count:1,abilities:{Dark:3}}];
 const routes=[{member:0,facility:'Chimney Kiln',item:'ore',job_rate:.1},
     {member:1,facility:'Farmland',item:'crop',job_rate:.1}];
+
+test('map scoring preserves measured work and delivery with unpriced jobs in the same worker pool',()=>{
+    const assignments=[{...routes[0],jobs:[['',1]],visits:.1,walking:.02},
+        {...routes[1],jobs:[['Reaping',1]],visits:.25,walking:.05}];
+    const plan={roster_routes:assignments,coin_items:[
+        {facility:'Farmland',item_name:'crop',status:'producing',cycle_time:10,busy_units:1},
+        {facility:'Chimney Kiln',item_name:'ore',status:'idle',cycle_time:20,busy_units:0},
+    ]};
+    const context={layout,recipes,members,routes:assignments,busy:[1.8,.5]};
+    const full=buildReactiveDispatch(context);
+    const measured=measureLayoutDispatch(context,plan);
+    assert.ok(full['Chimney Kiln|ore|Hauling'][0].travel_seconds>0);
+    const expected=measuredDispatchWork(plan,full,recipes);
+    assert.equal(expected.walking.length,2);
+    assert.ok(expected.delivery.length>0);
+    assert.deepEqual(measured,expected);
+});
 
 test('previous work origins follow actual production rates, not number of matching buildings',()=>{
  const m={pieces:[{members:[9,1,0].map(rate=>({facility:'Chimney Kiln',jobs:[{item:'ore',rate}]}))}]};

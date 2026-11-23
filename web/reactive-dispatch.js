@@ -1,7 +1,7 @@
 import { dispatchLocations } from './task-switching.js';
 import { siteHaulingTrips } from './hauling.js';
 import { workerTravelSeconds } from './worker-travel.js';
-import { deliveryRouting, deliveryApproach } from './delivery-routing.js';
+import { deliveryOrigins, deliveryApproach } from './delivery-routing.js';
 import { FACILITIES, FACILITY_CATEGORY_BY_NAME } from './facility-config.js';
 
 const center=r=>[r.x+r.w/2,r.y+r.h/2];
@@ -107,7 +107,16 @@ function taskSites(targets,member,facility,item,workers){
 // Expected random dispatch among eligible free workers. A policy allocates ONE
 // original request across workers; it never adds a second copy of its execution.
 // Arrival estimates start at previous work sites, not at the new request site.
-export function buildReactiveDispatch({layout,recipes,members,busy=[],permanent=[],routes=[],previous=null,deliveryCopies=[]}){
+export function buildReactiveDispatch(context){
+    return priceDispatch(context);
+}
+
+export function measureLayoutDispatch(context,plan){
+    const policy=priceDispatch(context,plan);
+    return measuredDispatchWork(plan,policy,context.recipes);
+}
+
+function priceDispatch({layout,recipes,members,busy=[],permanent=[],routes=[],previous=null,deliveryCopies=[]},measuredPlan){
     const locations=dispatchLocations(layout),sites=layout.pieces.flatMap(p=>p.members);
     const byFacility=new Map();
     for(const r of sites){
@@ -204,7 +213,7 @@ export function buildReactiveDispatch({layout,recipes,members,busy=[],permanent=
     const routed={storages:layout.storages,pieces:layout.pieces.map(p=>({...p,members:p.members.map(m=>({...m}))}))};
     const focused=focusedWorkers(sites,members,routes,policy);
     attachDeliveryFlows(routed,policy,recipes,members,routes,focused);
-    const flow=deliveryRouting(routed);
+    const flow=deliveryOrigins(routed);
     // A worker approaches a physical site from the same distribution of
     // origins for every recipe. Its loaded trip also ends at the same depot.
     const tripsBySite=new Map();
@@ -212,7 +221,7 @@ export function buildReactiveDispatch({layout,recipes,members,busy=[],permanent=
         let trip=tripsBySite.get(site);
         if(!trip){
             const point=center(site);
-            trip={point,walks:new Map()};
+            trip={point,walks:new Map(),storeDistances:[],siteDistances:[]};
             tripsBySite.set(site,trip);
         }
         return trip;
@@ -220,11 +229,25 @@ export function buildReactiveDispatch({layout,recipes,members,busy=[],permanent=
     const walkTo=(member,site)=>{
         const trip=tripTo(site);
         if(!trip.walks.has(member)){
-            const walk=deliveryApproach(flow,member,trip.point);
+            const walk=deliveryApproach(flow,member,trip.point,trip.storeDistances,trip.siteDistances);
             trip.walks.set(member,walk==null?null:workerTravelSeconds(walk));
         }
         return trip.walks.get(member);
     };
+    // Map scoring consumes travel only for assigned workers and producing
+    // deliveries. Keep every policy share above when deriving their origins.
+    const workRoutes = new Map(), deliveryKeys = new Set();
+    if (measuredPlan) {
+        for (const route of measuredPlan.roster_routes || []) {
+            const key = routeDispatchKey(route, recipes);
+            if (!workRoutes.has(key)) workRoutes.set(key, new Set());
+            workRoutes.get(key).add(route.member);
+        }
+        for (const step of measuredPlan.coin_items || []) {
+            if (step.status === 'producing' && step.cycle_time > 0)
+                deliveryKeys.add(dispatchKey(step.facility, step.item_name, 'Hauling'));
+        }
+    }
     for(const recipe of recipes){
         const physical=byFacility.get(recipe.facility);if(!physical?.length)continue;
         const exact=physical.filter(r=>r.crop===recipe.name||r.jobs?.some(j=>j.item===recipe.name));
@@ -232,16 +255,21 @@ export function buildReactiveDispatch({layout,recipes,members,busy=[],permanent=
         const workTargets=targets.filter(s=>s.jobs?s.jobs.some(j=>j.item===recipe.name&&j.electric_level==null):s.electric_level==null);
         const abilities=recipe.aniimo?['Production']:[...new Set((recipe.jobs||[]).map(([,ability])=>ability))];
         for(const ability of abilities)for(const e of policy[dispatchKey(recipe.facility,recipe.name,ability)]||[]){
+            if(measuredPlan && !workRoutes.get(dispatchKey(recipe.facility,recipe.name,ability))?.has(e.member))continue;
             const workerTargets=workTargets.length&&ability==='Production'?taskSites(workTargets,e.member,recipe.facility,recipe.name,focused):workTargets;
             const values=workerTargets.map(s=>walkTo(e.member,s));
             e.travel_seconds=values.length&&values.every(v=>v!=null)
                 ?values.reduce((sum,v)=>sum+v,0)/values.length
                 :targets.reduce((sum,target)=>sum+approach(e.member,center(target)),0)/targets.length;
         }
-        for(const e of policy[dispatchKey(recipe.facility,recipe.name,'Hauling')]||[]){
-            const rates=exact.some(s=>s.schedulePhases?.length)?targets.map(s=>s.jobs?s.jobs.filter(j=>j.item===recipe.name).reduce((n,j)=>n+j.rate,0)
+        const haulKey=dispatchKey(recipe.facility,recipe.name,'Hauling');
+        if(measuredPlan && !deliveryKeys.has(haulKey) && !workRoutes.has(haulKey))continue;
+        const haulers=policy[haulKey];
+        if(!haulers?.length)continue;
+        const rates=exact.some(s=>s.schedulePhases?.length)?targets.map(s=>s.jobs?s.jobs.filter(j=>j.item===recipe.name).reduce((n,j)=>n+j.rate,0)
                 :(s.batchWeight??s.weight??0)/3600):[];
-            const total=rates.reduce((n,r)=>n+r,0);
+        const total=rates.reduce((n,r)=>n+r,0);
+        for(const e of haulers){
             e.travel_seconds=targets.reduce((sum,target,index)=>{
                 const trip=tripTo(target),walk=walkTo(e.member,target);
                 trip.loaded??=workerTravelSeconds(layout.storages?.length

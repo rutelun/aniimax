@@ -4,7 +4,7 @@ import { alphabetScore, chainPurposes, productionDistance, productionGraph,
 import { miningRows, productionRows, productionZones, rawTheme, rawZones, rawZoneSpread, zoneLinkDistance } from './production-zones.js?v=workshop-blocks';
 import { allocateHauling, haulingWorkload } from './hauling.js?v=base-travel';
 import { workerTravelDistances, workerTravelSeconds } from './worker-travel.js?v=logic-audit';
-import {buildReactiveDispatch,measuredDispatchWork} from './reactive-dispatch.js';
+import {measureLayoutDispatch} from './reactive-dispatch.js';
 import { canMoveDistrictStorage, districtStorageIndices, improveDistrictStorage } from './district-storage.js?v=workshop-blocks';
 
 const placement = import('./layout.js');
@@ -141,9 +141,8 @@ export function incomeWalking(layout, staffing, recipes) {
     const walking = [], occupied = busy?.slice();
     if(staffing.dispatch&&members){
         const plan={roster_routes:staffing.routes||[],coin_items:steps};
-        const policy=buildReactiveDispatch({layout,recipes:staffing.dispatchRecipes,members,busy,permanent:staffing.permanent,
-            routes:staffing.routes,previous:staffing.dispatch});
-        const measured=measuredDispatchWork(plan,policy,staffing.dispatchRecipes);
+        const measured=measureLayoutDispatch({layout,recipes:staffing.dispatchRecipes,members,busy,permanent:staffing.permanent,
+            routes:staffing.routes,previous:staffing.dispatch},plan);
         for(const [member,extra] of [...measured.walking,...measured.delivery])occupied[member]+=extra;
         if(occupied.some((load,i)=>load>members[i].count+1e-6))return null;
         if(occupied.reduce((s,load,i)=>s+Math.max(staffing.permanent[i]||0,Math.ceil(load-1e-6)),0)>limit)return null;
