@@ -764,9 +764,20 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
         }
         const warm=align(p,seed);
         const commitments=local.material_fixed?.map(v=>` material_commit_${v}: x${v} = ${Math.round(warm[v])}`)??[];
-        let r=await solveModel(commitments.length?addRows(local,commitments):fixPhysical(local,warm),
-            options(commitments.length?2:1),undefined,warm);
-        if(!r?.values)r=await solveModel(fixPhysical(local,warm),options(1),undefined,warm);
+        const committed=commitments.length?addRows(local,commitments):fixPhysical(local,warm);
+        let fixedSeed=null,r=null;
+        if(routeDraft && seed===best && request.maximize_material_work && commitments.length && target?.length) {
+            // Keep the income plan's physical team if it already fills as much
+            // material work as any assignment. The measured map prices staffing
+            // again once actual travel and crop service are available.
+            fixedSeed=await solveModel(fixPhysical(local,warm),options(1),undefined,warm);
+            if(fixedSeed?.values) {
+                const ceiling=priorityCeiling(highs,productionObjective(committed),'material_work');
+                if(Number.isFinite(ceiling) && Math.abs(sum(target,fixedSeed.values)-ceiling)<=1e-9)r=fixedSeed;
+            }
+        }
+        if(!r)r=await solveModel(committed,options(commitments.length?2:1),undefined,warm);
+        if(!r?.values)r=fixedSeed??await solveModel(fixPhysical(local,warm),options(1),undefined,warm);
         if(!r?.values)r=await solveModel(local,options(2),undefined,warm);
         if(!r?.values)return null;
         r=polishSolution(highs,local,r);

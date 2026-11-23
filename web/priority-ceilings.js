@@ -130,8 +130,8 @@ export function applyRequiredSites(problem,capacity){
 export function priorityCeiling(highs, problem, goal, onOptimum) {
     if (!problem?.lp || !(goal==='crop_variety' || problem.production_only)) return null;
     let lp = problem.lp;
-    if (goal==='level_up' && problem.recipe_options?.length && problem.variable_keys?.length===problem.variables) {
-        const cuts = requiredSiteRows(problem,null,true);
+    if ((goal==='level_up' || goal==='material_work') && problem.recipe_options?.length && problem.variable_keys?.length===problem.variables) {
+        const cuts = requiredSiteRows(problem,null,goal==='level_up');
         if (cuts.length) lp = lp.replace('\nBounds\n','\n'+cuts.join('\n')+'\nBounds\n');
     }
     const model = highs.createModel({format:'lp',data:lp.replace(/\nGeneral\n[\s\S]*?\nEnd/,'\nEnd')});
@@ -139,7 +139,7 @@ export function priorityCeiling(highs, problem, goal, onOptimum) {
         model.options.set({primal_feasibility_tolerance:1e-9,dual_feasibility_tolerance:1e-9});
         model.run();
         const status = model.getModelStatus();
-        if (status===highs.constants.modelStatus.infeasible && lp!==problem.lp) return 0;
+        if (goal==='level_up' && status===highs.constants.modelStatus.infeasible && lp!==problem.lp) return 0;
         if (status!==highs.constants.modelStatus.optimal) return null;
         const upper = model.getObjectiveValue();
         if (!Number.isFinite(upper)) return null;

@@ -61,6 +61,15 @@ test('a positive upgrade pace reserves a whole site at every unstocked processin
     }
 });
 
+test('material work reserves downstream sites only when the retained pace needs them',()=>{
+    const base=chain();
+    const raw={...base,lp:base.lp.replace('obj: x0','obj: x1')};
+    const retained={...raw,lp:raw.lp.replace('\n x0 >= 0\n','\n 0.01 <= x0 <= 1\n')};
+    assert.equal(priorityCeiling(highs,raw,'material_work'),0.2);
+    assert.equal(priorityCeiling(highs,retained,'material_work'),0.1);
+    assert.equal(highs.solve(retained.lp).ObjectiveValue,0.1);
+});
+
 test('stock and alternative producers do not force the ordinary material recipe',()=>{
     for (const options of [{stock:true},{alternative:true}]) {
         const p = chain(options);
