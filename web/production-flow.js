@@ -385,7 +385,7 @@ function drawLinks(board) {
     svg.replaceChildren(lines);
 }
 
-export function attachProductionFlow(card, { itemName, formatAmount, formatRevenue, formatDuration, formatPercent, translate, facilityIconUrl, aniimoPortrait }) {
+export function attachProductionFlow(card, { itemName, formatAmount, formatRevenue, formatDuration, formatPercent, translate, aniimoPortrait }) {
     const content = card.querySelector('.product-flow-content');
     const buttons = [...card.querySelectorAll('[data-flow-period]')];
     const toggle = card.querySelector('.collapse-toggle');
@@ -440,7 +440,6 @@ export function attachProductionFlow(card, { itemName, formatAmount, formatReven
         }
         function badgeImage(src, label, ability) {
             const badge = text('span', '', 'flow-badge-icon');
-            badge.title = label;
             const glyph = abilityGlyph(ability);
             if (glyph) badge.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${glyph}</svg>`;
             else badge.textContent = label.slice(0, 2);
@@ -461,16 +460,17 @@ export function attachProductionFlow(card, { itemName, formatAmount, formatReven
             const workers = [...group.workers.values()];
             const crew = group.powered ? translate('E-mode')
                 : workers.map(w => translate(w.name)).join(', ') || translate('Assignment unavailable');
-            const description = (baseResource ? [building, crew] : [building, translate('Building load') + ' ' + load, crew]).join(' · ');
+            const assignment = baseResource ? crew : translate('Building load') + ' ' + load + ' · ' + crew;
             const recipeLoad = !baseResource && group.buildingBusy - group.busy > 1e-6
                 ? translate('On this recipe') + ' ' + formatPercent(group.busy / group.count) : '';
             badge.setAttribute('role', 'img');
-            badge.title = [description, recipeLoad].filter(Boolean).join(' · ');
-            badge.setAttribute('aria-label', badge.title);
-            badge.append(badgeImage(facilityIconUrl(group.facility), building), text('strong', baseResource ? count : load));
+            badge.tabIndex = 0;
+            badge.dataset.tip = building;
+            badge.dataset.tipDetail = [assignment, recipeLoad].filter(Boolean).join(' · ');
+            badge.setAttribute('aria-label', building + ' · ' + badge.dataset.tipDetail);
+            badge.append(text('strong', baseResource ? count : load));
             if (group.powered) {
                 const electric = text('span', '', 'production-electric');
-                electric.title = translate('E-mode');
                 electric.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${abilityGlyph('Lightning')}</svg>`;
                 badge.append(electric);
             } else for (const worker of workers.slice(0, 3)) {
@@ -482,9 +482,8 @@ export function attachProductionFlow(card, { itemName, formatAmount, formatReven
         function switchRow({site, start, from, to}) {
             const row = text('div', '', 'flow-switch');
             const name = site.facility ? translate(site.facility) + ' #' + site.id.split(':').at(-1) : site.id;
-            const building = text('span', '', 'flow-switch-site');
-            if (site.facility) building.append(badgeImage(facilityIconUrl(site.facility), name));
-            building.append(name);
+            row.tabIndex = 0;
+            row.dataset.tip = name;
             const recipes = text('span', '', 'flow-switch-recipes');
             function appendRecipes(items) {
                 if (!items.length) recipes.append(text('span', translate('Idle')));
@@ -493,7 +492,7 @@ export function attachProductionFlow(card, { itemName, formatAmount, formatReven
             appendRecipes(from);
             recipes.append(text('span', '→'));
             appendRecipes(to);
-            row.append(building, recipes, text('strong', elapsed(start), 'flow-switch-time'));
+            row.append(recipes, text('strong', elapsed(start), 'flow-switch-time'));
             return row;
         }
         const saleLabels = new Map([['flow-sale-only', 'All output sold'], ['flow-sale-partial', 'Part of output sold']]);

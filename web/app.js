@@ -1,4 +1,4 @@
-import { attachProductionFlow, flowBuildings } from './production-flow.js';
+import { attachProductionFlow, flowBuildings } from './production-flow.js?v=crew-sales';
 import {siteSchedule,scheduledRate} from './recipe-timeline.js';
 import {elapsed as scheduleTime, facilitySchedule, renderRecipeSchedule} from './recipe-schedule-view.js';
 import {scheduleProfiles} from './recipe-schedule-plan.js';
@@ -6029,7 +6029,7 @@ function updateRateUnitDisplays() {
 }
 
 const renderProductionFlow = attachProductionFlow(document.getElementById('product-flow-card'), {
-    itemName: prettyItem, formatDuration, translate, facilityIconUrl, aniimoPortrait,
+    itemName: prettyItem, formatDuration, translate, aniimoPortrait,
     formatRevenue: n => n >= 10000 ? n.toLocaleString(currentLocale(), { notation: 'compact', maximumFractionDigits: 2 }) : formatRate(n),
     formatPercent: ratio => formatNumber(Math.min(100, 100 * ratio)) + '%',
     formatAmount: n => n >= 10 ? formatRate(n) : n.toLocaleString(currentLocale(), { maximumSignificantDigits: 2 }),
