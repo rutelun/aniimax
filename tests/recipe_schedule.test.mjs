@@ -100,7 +100,7 @@ test('a fixed jar sharing the kiln worker can finish its daily batches in the la
     const make=(id,facility,crew,rate,cycle,inputs,turns)=>({id,item:id,facility,facility_level:1,electric_level:null,crew,rate,cycle,inputs,outputs:[[id,1]],turns});
     const sources=[make('ore','Chimney Kiln',0,.05,10,[],true),make('brick','Chimney Kiln',1,.05,10,[['ore',1]],true),
         make('fruit','Farmland',null,.1,10,[],false),make('candied','Pickling Jar',0,.1,2,[['fruit',1]],false)];
-    const config={always_running:true,roster:{members:[{count:1},{count:1}]},facilities:{'Chimney Kiln':[{count:1,level:1}],'Pickling Jar':[{count:1,level:1}]},recipe_switching:{max_switches:1,max_buildings:1}};
+    const config={always_running:true,roster:{members:[{count:1},{count:1}]},facilities:{'Chimney Kiln':[{count:1,level:1}],'Pickling Jar':[{count:1,level:1}]}};
     const plan={schedule_sources:sources,roster_workload:[.7,.5],coin_items:[{facility:'Pickling Jar',item_name:'candied',status:'producing',facility_count:1},{facility:'Farmland',item_name:'fruit',status:'producing',facility_count:1}]};
     const input=scheduleInputForPlan(config,plan);
     const schedule=solve(input);assert.ok(schedule);

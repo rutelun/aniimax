@@ -4,10 +4,12 @@ import {readFile} from 'node:fs/promises';
 import highsModule from '../web/vendor/highs/highs.mjs';
 import {searchRecipeSwitches,improvesPlan} from '../web/recipe-switch-search.js';
 const highs=await highsModule({wasmBinary:await readFile(new URL('../web/vendor/highs/highs.wasm',import.meta.url)),print(){},printErr(){}});
-const input={recipe_switching:{max_buildings:1,max_switches:1},facilities:{Kiln:[{count:1,level:1}]},roster:{members:[{count:1}]}};
+const input={facilities:{'Woodworking Bench':[{count:1,level:2}]},roster:{members:[{count:1}]}};
 const baseline={success:true,rate_per_second:1,priorities:[]};
 const candidate={...baseline,rate_per_second:2,recipe_switching_candidate:true,roster_workload:[.4],coin_items:[],
-    schedule_sources:['a','b'].map(item=>({id:item,item,facility:'Kiln',facility_level:1,cycle:10,rate:.02,crew:0,turns:true,inputs:[],outputs:[[item,1]]}))};
+    schedule_sources:['a','b'].map(item=>({id:item,item,facility:'Woodworking Bench',facility_level:1,cycle:10,rate:.02,crew:0,turns:true,inputs:[],outputs:[[item,1]]}))};
+const twoWorkshops={...input,facilities:{...input.facilities,'Chimney Kiln':[{count:1,level:2}],
+    'Crafting Table':[{count:3,level:1}]}};
 test('complete search returns a validated physical schedule and unchanged candidate rates',async()=>{
     const result=await searchRecipeSwitches(input,baseline,{candidate:async()=>candidate,solve:async m=>highs.solve(m.lp)});
     assert.ok(result.recipe_schedule,result.recipe_switching_detail);
@@ -15,9 +17,10 @@ test('complete search returns a validated physical schedule and unchanged candid
     assert.equal(result.recipe_schedule.switchedBuildings.length,1);
     assert.equal(result.recipe_switching_candidate,undefined);
 });
-test('disabled mode does not run an extra solve; failure never replaces a valid baseline',async()=>{
+test('other workshops skip the extra solve and failed material candidates keep the baseline',async()=>{
     let calls=0;const deps={candidate:async()=>{calls++;throw Error('timeout');},solve:async()=>null};
-    assert.equal(await searchRecipeSwitches({...input,recipe_switching:null},baseline,deps),baseline);
+    assert.equal(await searchRecipeSwitches({...input,facilities:{'Crafting Table':[{count:5}]}},baseline,deps),baseline);
+    assert.equal(await searchRecipeSwitches({...input,facilities:{'Chimney Kiln':[{count:2,level:1}]}},baseline,deps),baseline);
     assert.equal(calls,0);
     const result=await searchRecipeSwitches(input,baseline,deps);
     assert.equal(result.rate_per_second,1);assert.ok(result.recipe_switching_note);assert.equal(result.recipe_schedule,undefined);
@@ -49,11 +52,10 @@ test('parallel switch search starts alternatives together and accepts the first 
         };
         return worker;
     };
-    const twoSites={...baseline,coin_items:['Kiln','Mill'].flatMap(facility=>['a','b'].map(item_name=>({status:'producing',facility,item_name})))};
-    const found=searchRecipeSwitches({...input,recipe_switching:{max_buildings:2,max_switches:1}},twoSites,{
+    const found=searchRecipeSwitches(twoWorkshops,baseline,{
         createWorker,parallel:3,candidate:()=>assert.fail('unexpected inline retry'),solve:async m=>highs.solve(m.lp),
     });
-    assert.deepEqual(pending.map(p=>p.facilities),[['Kiln','Mill'],['Kiln'],['Mill']]);
+    assert.deepEqual(pending.map(p=>p.facilities),[['Woodworking Bench','Chimney Kiln'],['Woodworking Bench'],['Chimney Kiln']]);
     pending[1].worker.onmessage({data:{ok:true,result:JSON.stringify({...candidate,rate_per_second:3})}});
     pending[0].worker.onmessage({data:{ok:true,result:JSON.stringify(candidate)}});
     assert.equal((await found).rate_per_second,2);
@@ -67,9 +69,7 @@ test('a failed switch worker retries its choice inline; a single choice stays in
     const found=await searchRecipeSwitches(input,baseline,deps);
     assert.equal(found.rate_per_second,2);
     assert.equal(starts,0);
-    const facilities=['Kiln','Mill'];
-    const base={...baseline,coin_items:facilities.flatMap(facility=>['a','b'].map(item_name=>({status:'producing',facility,item_name})))};
-    const retried=await searchRecipeSwitches({...input,recipe_switching:{max_buildings:2,max_switches:1}},base,deps);
+    const retried=await searchRecipeSwitches(twoWorkshops,baseline,deps);
     assert.equal(retried.rate_per_second,2);
     assert.equal(starts,2);
     assert.equal(retries,2);
@@ -77,19 +77,17 @@ test('a failed switch worker retries its choice inline; a single choice stays in
 
 test('a free switch worker starts the next choice while the first choice is still running', async()=>{
     const started=[];
-    const base={...baseline,coin_items:['Kiln','Mill'].flatMap(facility=>
-        ['a','b'].map(item_name=>({status:'producing',facility,item_name})))};
-    const result=searchRecipeSwitches({...input,recipe_switching:{max_buildings:2,max_switches:1}},base,{
+    const result=searchRecipeSwitches(twoWorkshops,baseline,{
         parallel:2,createWorker:()=>({
             postMessage({payload}){started.push([JSON.parse(payload).recipe_switching_facilities,this]);},
             terminate(){},
         }),
         candidate:()=>assert.fail('unexpected inline solve'),solve:async model=>highs.solve(model.lp),
     });
-    assert.deepEqual(started.map(([facilities])=>facilities),[['Kiln','Mill'],['Kiln']]);
+    assert.deepEqual(started.map(([facilities])=>facilities),[['Woodworking Bench','Chimney Kiln'],['Woodworking Bench']]);
     started[1][1].onmessage({data:{ok:true,result:JSON.stringify(baseline)}});
     await new Promise(resolve=>setImmediate(resolve));
-    assert.deepEqual(started.map(([facilities])=>facilities),[['Kiln','Mill'],['Kiln'],['Mill']]);
+    assert.deepEqual(started.map(([facilities])=>facilities),[['Woodworking Bench','Chimney Kiln'],['Woodworking Bench'],['Chimney Kiln']]);
     started[2][1].onmessage({data:{ok:true,result:JSON.stringify({...candidate,rate_per_second:4})}});
     started[0][1].onmessage({data:{ok:true,result:JSON.stringify(candidate)}});
     assert.equal((await result).rate_per_second,2);
@@ -97,10 +95,8 @@ test('a free switch worker starts the next choice while the first choice is stil
 
 test('parallel workers check their own workshop and an inline retry checks it again',async()=>{
     const starts=[],checks=[];
-    const base={...baseline,coin_items:['Kiln','Mill'].flatMap(facility=>
-        ['a','b'].map(item_name=>({status:'producing',facility,item_name})))};
     const workshopBaseline={success:true,priorities:[],level_up_preview:{}};
-    const result=searchRecipeSwitches({...input,recipe_switching:{max_buildings:2,max_switches:1}},base,{
+    const result=searchRecipeSwitches(twoWorkshops,baseline,{
         parallel:3,workshopBaseline,createWorker:()=>({
             postMessage(message){assert.deepEqual(message.workshopBaseline,workshopBaseline);starts.push(this);},
             terminate(){},
@@ -113,7 +109,19 @@ test('parallel workers check their own workshop and an inline retry checks it ag
     assert.deepEqual(checks,[]);
     starts[0].onmessage({data:{ok:true,result:JSON.stringify({success:false})}});
     starts[1].onerror();
-    starts[2].onmessage({data:{ok:true,result:JSON.stringify(candidate)}});
+    const kilnPlan={...candidate,schedule_sources:candidate.schedule_sources.map(s=>({...s,facility:'Chimney Kiln'}))};
+    starts[2].onmessage({data:{ok:true,result:JSON.stringify(kilnPlan)}});
     assert.equal((await result).rate_per_second,2);
-    assert.deepEqual(checks,[['Kiln']]);
+    assert.deepEqual(checks,[['Woodworking Bench']]);
+});
+
+test('an upgrade material gain breaks a tie after the selected priorities and income',()=>{
+    const ordinary={...baseline,comparison_scores:{material_pace:3}};
+    const switched={...ordinary,comparison_scores:{material_pace:4}};
+    assert.equal(improvesPlan(switched,ordinary),true);
+    assert.equal(improvesPlan({...switched,rate_per_second:.5},ordinary),false);
+    const crops = (plan,count) => ({...plan,comparison_scores:{...plan.comparison_scores,crop_variety:count}});
+    assert.equal(improvesPlan(crops(switched,2),crops(ordinary,3)),false);
+    assert.equal(improvesPlan({...ordinary,comparison_scores:{material_pace:3,material_work:4}},
+        {...ordinary,comparison_scores:{material_pace:3,material_work:2}}),true);
 });

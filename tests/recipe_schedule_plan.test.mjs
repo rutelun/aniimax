@@ -2,10 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {scheduleInputForPlan, attachRecipeSchedule, scheduleProfiles} from '../web/recipe-schedule-plan.js';
 const source=(item,extra={})=>({id:item,item,facility:'Chimney Kiln',facility_level:1,cycle:10,rate:.02,crew:0,electric_level:null,turns:true,inputs:[],outputs:[[item,1]],...extra});
-const input={facilities:{'Chimney Kiln':[{count:1,level:1}]},recipe_switching:{max_buildings:1,max_switches:1},roster:{members:[{count:1}]}};
+const input={facilities:{'Chimney Kiln':[{count:1,level:1}]},roster:{members:[{count:1}]}};
 const plan={recipe_switching_candidate:true,schedule_sources:[source('ore'),source('brick')],roster_workload:[.4],coin_items:[]};
 test('adapter uses actual physical tiers, worker identity and daily rates',()=>{
     const p=scheduleInputForPlan(input,plan);
+    assert.equal(p.maxSwitches,1);
+    assert.equal(p.maxBuildings,1);
     assert.equal(p.buildings.length,1);assert.equal(p.jobs.length,2);
     assert.equal(p.jobs[0].batches,1728);assert.equal(p.jobs[0].workers['0'],10);
     assert.equal(p.workerCapacity['0'],1);assert.equal(p.backgroundWorkers['0'],0);

@@ -6,6 +6,13 @@ export const materialChains={
     'Woodworking Bench':['rough_lumber','standard_planks','laminated_beams','densified_timber_component'],
     'Chimney Kiln':['coarse_sifted_ore','sintered_ore_brick','refined_ore','microcrystalline_ore_plate'],
 };
+// Each material chain unlocks its second recipe at workshop level two.
+export function switchingWorkshops(input) {
+    if (input.fixed_homeland) return [];
+    return Object.keys(materialChains).filter(facility =>
+        input.facilities?.[facility]?.some(tier => tier.count > 0 && tier.level >= 2));
+}
+
 export function independentMaterialChains(input, allowMixed = false) {
     if(!input.alwaysRunning||!input.approximate||!input.jobs.length)return null;
     const groups=new Map();

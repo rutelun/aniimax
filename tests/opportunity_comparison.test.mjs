@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {changeOneMember,personalityInput,reserveLevelFourInputs,workerUsage,comparePlans,keepBetterComparison,
     compareRecommendations,replacementCandidates} from '../web/opportunity-comparison.js';
+import {switchingWorkshops} from '../web/material-flow-schedule.js';
 import {createComparisonSearch} from '../web/comparison-search.js';
 import {comparisonConcurrency,startComparisonQueue} from '../web/comparison-queue.js';
 
@@ -202,7 +203,7 @@ test('comparison worker runs the complete planner per change and reports progres
     const source=await readFile(new URL('../web/worker.js',import.meta.url),'utf8');
     const code=source.slice(source.indexOf('async function rankImprovements('),source.indexOf('self.onmessage ='));
     const calls=[],reports=[];
-    const run=new Function('exactPlanJson','comparisonSearch','solveModel',`${code};return rankImprovements;`)(async(_,payload,step)=>{
+    const run=new Function('switchingWorkshops','exactPlanJson','comparisonSearch','solveModel',`${code};return rankImprovements;`)(switchingWorkshops,async(_,payload,step)=>{
         const p=JSON.parse(payload);calls.push(p);
         step('priority:coins','start');
         if(p.fail)throw Error('Cannot check this change');
@@ -220,7 +221,7 @@ test('detailed comparison retries without baseline floors when an integer-feasib
     const code=source.slice(source.indexOf('async function rankImprovements('),source.indexOf('self.onmessage ='));
     const original={...plan(),comparison_goals:{floors:[['Wood Blocks',10]]}};
     let calls=0;const reports=[];
-    const run=new Function('exactPlanJson','comparisonSearch','solveModel',`${code};return rankImprovements;`)(
+    const run=new Function('switchingWorkshops','exactPlanJson','comparisonSearch','solveModel',`${code};return rankImprovements;`)(switchingWorkshops,
         async(_,payload,step,first,comparison)=>{
             calls++;
             const certified=await comparison.bound({variables:1,tiebreak:[],primary_objective:[[0,1]],

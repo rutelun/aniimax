@@ -135,25 +135,6 @@
                                 </div>
                             </div>
                             <div class="planner-editor-item">
-                                <button type="button" data-planner-editor="switching" aria-expanded="false" aria-controls="planner-edit-switching">
-                                    <strong>Recipe switching</strong><span id="recipe-switching-summary" class="skip-count"></span>
-                                </button>
-                                <div id="planner-edit-switching" class="planner-editor-panel" hidden>
-                                    <p class="hint small" id="recipe-switching-hint">Choose how many distinct buildings may change recipes over the whole day (0 = off). The optimizer picks common switch times; each building may keep its recipe at a switch. Morning setup is free and does not count.</p>
-                                    <div class="stock-grid">
-                                        <div class="input-field">
-                                            <label for="recipe-switching-buildings">Buildings that may switch</label>
-                                            <input type="number" id="recipe-switching-buildings" value="0" min="0" step="1" inputmode="numeric" aria-describedby="recipe-switching-hint">
-                                        </div>
-                                        <div class="input-field">
-                                            <label for="recipe-switching-switches">Switches per day</label>
-                                            <input type="number" id="recipe-switching-switches" value="2" min="0" max="24" step="1" inputmode="numeric" aria-describedby="recipe-switching-phases">
-                                        </div>
-                                    </div>
-                                    <p class="hint small" id="recipe-switching-phases">Two switches allow up to three production phases. Zero switches keeps the morning recipes all day.</p>
-                                </div>
-                            </div>
-                            <div class="planner-editor-item">
                                 <button type="button" data-planner-editor="recipes" aria-expanded="false" aria-controls="planner-edit-recipes">
                                     <strong>Recipes &amp; stock</strong><span id="recipe-count" class="skip-count"></span>
                                 </button>

@@ -1,4 +1,5 @@
 import {FACILITIES, opposedPersonality} from './facility-config.js';
+import {switchingWorkshops} from './material-flow-schedule.js';
 import {recommendBestTeam} from './best-team.js';
 import {permanentWorkers} from './reactive-dispatch.js';
 
@@ -94,7 +95,7 @@ export async function refineElectricStaffing(problem,incumbent,solve,{pkg,input,
     // The income solve already chose staffed and powered recipes. For a map
     // draft, optimize secondary power assignments once pickup shares exist.
     const provisional=input?.roster && !Object.keys(input.roster.dispatch??{}).length;
-    if(provisional && input.map_dispatch_pending && input.always_running && !input.recipe_switching?.max_buildings)return incumbent;
+    if(provisional && input.map_dispatch_pending && input.always_running && !switchingWorkshops(input).length)return incumbent;
     for(const option of options){
         const list=groups.get(option[1])??[];
         list.push(option);groups.set(option[1],list);

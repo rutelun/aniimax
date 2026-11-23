@@ -9,8 +9,7 @@ import {scheduleInputForPlan, attachRecipeSchedule} from '../web/recipe-schedule
 test('electrified workshop switches preserve every material rate, physical tier and daily stock cycle', () => {
     const facility = 'Woodworking Bench', items = materialChains[facility], ability = 'Artisanship';
     const input = {always_running:true, e_mode_rv:16, aniimo:'best', aniimo_levels:{Lightning:3,[ability]:3},
-        facilities:{[facility]:[{level:1,count:1},{level:4,count:3}],Woodland:[{level:1,count:1}]},
-        recipe_switching:{max_buildings:1,max_switches:1}};
+        facilities:{[facility]:[{level:1,count:1},{level:4,count:3}],Woodland:[{level:1,count:1}]}};
     const recipes = items.map((name,i) => ({name,facility_level:i+1,aniimo:[ability,1]}));
     const native = {recipe_options:[],variable_keys:[]};
     for (const [i,item] of items.entries()) {

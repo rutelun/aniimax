@@ -74,3 +74,21 @@ for (const [rv, maximum] of [[20,495670.6666666666],[21,644470.1777777778]]) {
         assert.ok(plan.upper_bound <= plan.rate_per_second * 1.002 + 1e-8);
     });
 }
+
+test('one shared daily recipe change supplies both RV materials from one bench and one kiln',
+    {skip:!existsSync(wasm)}, async () => {
+        const {simpleSetup} = await import('../web/facility-config.js');
+        const {facilities,modules} = simpleSetup(3);
+        const workshops = ['Woodworking Bench','Chimney Kiln'];
+        for (const facility of workshops) facilities[facility] = [{count:1,level:2}];
+        for (const priorities of [['level_up','coins'], ['coins']]) {
+            const plan = await bestPlan({facilities, modules, currency:'coins', always_running:true,
+                aniimo:'best', aniimo_levels:{Artisanship:4,Fire:4,Water:4,Earth:4,Wind:4,Lightning:4},
+                priorities, quest_income_per_day:{wood_block:86400,mineral_sand:86400},
+                level_up_preview:{cost:[['standard_planks',10],['sintered_ore_brick',10]],stock:[]}});
+            assert.ok(plan.success, plan.error);
+            assert.ok(plan.level_up_preview?.seconds > 0);
+            assert.deepEqual(plan.recipe_schedule.switchedBuildings.toSorted(),workshops.map(f => f + ':1').toSorted());
+            assert.equal(plan.recipe_schedule.switches.length,1);
+        }
+    });

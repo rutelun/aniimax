@@ -78,7 +78,7 @@ test('fast priority plan checks the occupied recipe and returns the actual shift
     assert.deepEqual(implicit.continuous_upper_bounds.map(([key])=>JSON.parse(key)[0]),['tokens','coins']);
     const generated=await tryPriorityPlan(pkg,{currency:'coins',priorities:['coins'],always_running:true},{highs,solveModel});
     assert.equal(generated.rate_per_second,.25);
-    const switching = {...input, recipe_switching:{max_buildings:5,max_switches:2}};
+    const switching = {...input, facilities:{'Chimney Kiln':[{count:5,level:2}]}};
     const fixedShift = await tryPriorityPlan(pkg,switching,{highs,solveModel});
     assert.equal(fixedShift?.rate_per_second,plan.rate_per_second);
     assert.equal(await tryPriorityPlan(pkg,{...switching,recipe_switching_relaxation:true},{highs,solveModel}),null);

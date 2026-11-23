@@ -44,7 +44,7 @@ function operatorsWithSpareCapacity(plan, sources, buildings, siteCounts, capaci
 export function scheduleInputForPlan(input,plan) {
     const sources=plan.schedule_sources||[], selected=sources.filter(s=>s.turns&&s.rate>EPS);
     if(!selected.length)throw new Error('No workshop recipes to schedule');
-    const settings=input.recipe_switching||{}, buildings=[],workerCapacity={},backgroundWorkers={};
+    const buildings=[],workerCapacity={},backgroundWorkers={};
     const backgroundInputs={},backgroundOutputs={};
     const makeJob=s=>({...s,recipe:s.item,batches:s.rate*DAY,seconds:s.cycle,
         inputs:Object.fromEntries(s.inputs),outputs:Object.fromEntries(s.outputs),workers:{},haulingWorkers:{}});
@@ -169,7 +169,8 @@ export function scheduleInputForPlan(input,plan) {
             if(critical)workerCapacity[member]=Math.min(workerCapacity[member],backgroundWorkers[member]+(daily[member]||0));
         }
     }
-    return {powerPercent:input.e_mode_rv>=12?120:Math.min(120,Math.max(1,input.electricity?.percent??120)),alwaysRunning:!!input.always_running,daySeconds:DAY,approximate:true,maxBuildings:settings.max_buildings||0,maxSwitches:settings.max_switches||0,
+    // All eligible sites may change recipes together at one point during the day.
+    return {powerPercent:input.e_mode_rv>=12?120:Math.min(120,Math.max(1,input.electricity?.percent??120)),alwaysRunning:!!input.always_running,daySeconds:DAY,approximate:true,maxBuildings:buildings.length,maxSwitches:1,
         buildings,jobs,fixedProduction,workerCapacity,backgroundWorkers,backgroundInputs,backgroundOutputs,haulingLoads:Object.fromEntries(plan.hauling_staffing||[])};
 }
 

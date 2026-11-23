@@ -2,7 +2,7 @@
 // E.g. node scripts/qa-planner-matrix.mjs --rv=3,12 --profile=best,my-small --plan-only
 // For a batch, use --rv=all --season=both --reference-origin=<published build>
 // --origin=<candidate> and optionally --variant=label=<another build>.
-// --switch-upgrade compares level-up then coins with five switching buildings.
+// --switch-upgrade compares level-up then coins with automatic RV workshop scheduling.
 import assert from 'node:assert/strict';
 import {mkdir, readFile, writeFile} from 'node:fs/promises';
 import {parseArgs} from 'node:util';
@@ -74,7 +74,6 @@ function configuration(profile,rv,season) {
         ...(season==='off'?{}:{'season-event':season,seasonBudgets:{[season]:2000},
             seasonCropMinimums:{magic_pumpkin:2,memory_lanternfruit:2}}),
         'electricity-on':rv>=12,'layout-sim-on':false,
-        ...(args['switch-upgrade']?{'recipe-switching-buildings':'5','recipe-switching-switches':'2'}:{}),
         priorities:[
             ...(args['switch-upgrade']?[{target:'level_up',on:true}]:[]),
             {target:'coins',on:true},{target:'Wood Blocks',on:profile==='my-mixed'},
@@ -102,6 +101,7 @@ const observe = config => {
                 qa.plans.push({inputIndex:this.requests.get(data.id),at:performance.now(),success:p.success,error:p.error,rate:p.rate_per_second,
                     upper:p.upper_bound,goals:p.comparison_goals,scores:p.comparison_scores,eta:p.level_up_preview?.seconds,
                     checked:p.continuous_production_checked,priorities:p.priorities,scheduled:!!p.recipe_schedule,
+                    switchingFacilities:p.recipe_schedule?.sites.map(site=>site.facility) ?? [], switches:p.recipe_schedule?.switches.length ?? 0,
                     climate:p.staffing, unverified:p.unverified,fallback:p.fallback_reason,
                     crops:p.coin_items?.filter(r=>r.is_grower&&r.status==='producing').length,
                     producing:p.coin_items?.filter(r=>r.status==='producing').length});
@@ -113,7 +113,7 @@ const observe = config => {
                 const p=JSON.parse(msg.payload);
                 window.plannerPayloads.push({input:p,routeWitness:msg.routeWitness});
                 qa.inputs.push({at:performance.now(),setup:p.aniimo.split(':')[0],facilities:p.facilities,
-                    season:p.season,seasonMinimums:p.season_crop_minimums,switching:p.recipe_switching,
+                    season:p.season,seasonMinimums:p.season_crop_minimums,
                     members:p.roster?.members?.length,continuous:p.always_running,
                     dispatch:Object.keys(p.roster?.dispatch||{}).length,priorities:p.priorities});
                 this.requests.set(msg.id,qa.inputs.length-1);
@@ -190,10 +190,7 @@ async function run(rv,profile,season,origin,reportName) {
         for(const actual of qa.inputs) {
             assert.equal(actual.setup,expected);
             assert.equal(actual.continuous,true);
-            if(args['switch-upgrade']){
-                assert.deepEqual(actual.switching,{max_buildings:5,max_switches:2});
-                if(rv<22)assert.equal(actual.priorities[0],'level_up');
-            }
+            if(args['switch-upgrade'] && rv<22)assert.equal(actual.priorities[0],'level_up');
             assert.equal(actual.season??null,season==='off'?null:season);
             if(season!=='off')assert.deepEqual(actual.seasonMinimums,config.seasonCropMinimums);
             assert.deepEqual(actual.facilities.Farmland,config.facilityTiers.Farmland);
@@ -203,6 +200,8 @@ async function run(rv,profile,season,origin,reportName) {
             const phase=qa.inputs[plan.inputIndex]?.dispatch ? 'measured delivery routes' : 'initial production';
             assert.ok(plan.success,phase+' — '+(plan.error || 'no plan'));
             assert.equal(plan.checked,true);
+            assert.ok(plan.switches<=1);
+            assert.ok(plan.switchingFacilities.every(f => ['Woodworking Bench','Chimney Kiln'].includes(f)));
             assert.ok(plan.rate>0 && Number.isFinite(plan.rate) && plan.producing>0);
             assert.ok(!plan.fallback,plan.fallback);
         }

@@ -1,10 +1,19 @@
-import {materialFlowSchedule} from './material-flow-schedule.js';
+import {materialFlowSchedule,switchingWorkshops} from './material-flow-schedule.js';
 import {buildRecipeSchedule,readRecipeSchedule} from './recipe-schedule.js';
 import {scheduleInputForPlan,attachRecipeSchedule,materialChainSchedule} from './recipe-schedule-plan.js';
+
+function compareScore(after, before) {
+    if (after == null || before == null) return 0;
+    const difference = after - before;
+    return Math.abs(difference) > 1e-5 * Math.max(1,Math.abs(after),Math.abs(before)) ? Math.sign(difference) : 0;
+}
 
 export function improvesPlan(candidate,baseline) {
     if(!candidate?.success)return false;
     if(!baseline?.success)return true;
+    const baseScores = baseline.comparison_scores, scores = candidate.comparison_scores;
+    const crops = compareScore(scores?.crop_variety,baseScores?.crop_variety);
+    if (crops) return crops > 0;
     for(const priority of baseline.priorities||[]) {
         if(priority.target==='level_up'&&baseline.level_up_preview){
             const before=baseline.level_up_preview.seconds??Infinity,after=candidate.level_up_preview?.seconds??Infinity;
@@ -16,23 +25,22 @@ export function improvesPlan(candidate,baseline) {
             continue;
         }
         const a=candidate.priorities?.find(p=>p.target===priority.target)?.per_second??0,b=priority.per_second;
-        const tolerance=1e-5*Math.max(1,Math.abs(a),Math.abs(b));
-        if(a>b+tolerance)return true;
-        if(a<b-tolerance)return false;
+        const priorityGain = compareScore(a,b);
+        if (priorityGain) return priorityGain > 0;
     }
-    return candidate.rate_per_second>baseline.rate_per_second+1e-5*Math.max(1,Math.abs(baseline.rate_per_second));
+    // RV materials break ties after the selected priorities and income, just as in the ordinary plan.
+    return (compareScore(candidate.rate_per_second,baseline.rate_per_second)
+        || compareScore(scores?.material_pace,baseScores?.material_pace)
+        || compareScore(scores?.material_work,baseScores?.material_work)) > 0;
 }
 
-const materialWorkshops = ['Woodworking Bench','Chimney Kiln'];
-const materialChoice = input => ({normal:true, facilities:materialWorkshops.filter(f=>input.facilities?.[f]?.some(t=>t.count>0))});
 const switchTrial = (input, choice) => ({...input, recipe_switching_relaxation:true,
-    recipe_switching_facilities:choice.facilities, recipe_switching_normal_only:!!choice.normal, maximize_material_work:false});
+    recipe_switching_facilities:choice.facilities, recipe_switching_normal_only:!!choice.normal});
 
 export async function proveFirstSwitch(input, boundsFor, candidate, progress=()=>{}) {
-    if (!input.always_running || !input.recipe_switching?.max_buildings || !input.recipe_switching.max_switches
-        || input.fixed_homeland || input.level_up || input.level_up_strategy || input.prioritize_byproducts
+    if (!input.always_running || input.fixed_homeland || input.level_up || input.level_up_strategy || input.prioritize_byproducts
         || input.priorities?.[0] !== 'level_up' || !input.level_up_preview) return null;
-    const choice = materialChoice(input);
+    const choice = {normal:true, facilities:switchingWorkshops(input)};
     // The direct material-flow proof assigns a distinct site to each of
     // four tiers in at least one chain. Smaller workshops still use the
     // ordinary schedule search, which also considers other switch patterns.
@@ -87,24 +95,18 @@ function speculate(trial,createWorker,active,workshopBaseline) {
 }
 
 export async function searchRecipeSwitches(input,baseline,{candidate,solve,progress=()=>{},createWorker,parallel=1,firstProposal,canFillWorkshop,workshopBaseline}) {
-    const limits=input.recipe_switching;
-    if(!limits?.max_buildings||!limits.max_switches )return baseline;
-    if(input.fixed_homeland)return {...baseline,recipe_switching_note:'Recipe switching requires an automatically generated layout.'};
+    const facilities = switchingWorkshops(input);
+    if (!facilities.length) return baseline;
     progress('recipe_switching','start');
     const active=new Set();
     let searching=true;
     try {
-        const groups=new Map();
-        for(const row of baseline.coin_items||[])if(row.status==='producing'&&!row.is_grower){
-            if(!groups.has(row.facility))groups.set(row.facility,new Set());
-            groups.get(row.facility).add(row.item_name);
-        }
-        const materialFirst=(input.priorities||[]).includes('level_up')||input.level_up;
-        const preferred=materialFirst?['Woodworking Bench','Chimney Kiln','Crafting Table','Carousel Mill']:['Crafting Table','Carousel Mill','Woodworking Bench','Chimney Kiln'];
-        const eligible=[...new Set([...preferred,...groups.keys()])].filter(f=>baseline.success?groups.get(f)?.size>1:input.facilities?.[f]?.some(t=>t.count>0));
-        const facilities=eligible.slice(0,Math.max(1,limits.max_buildings));
+        // Try both chains together, then each independently in case their schedules conflict.
+        const groups = [facilities];
+        if (facilities.length > 1) groups.push(...facilities.map(facility => [facility]));
+        const choices = groups.flatMap(facilities => input.e_mode_rv >= 12 || input.electricity
+            ? [{facilities,normal:true}, {facilities}] : [{facilities,normal:true}]);
         let detail=null;
-        const choices=[...(materialFirst?[materialChoice(input)]:[]),{facilities},...facilities.slice(0,2).map(f=>({facilities:[f]}))].filter((v,i,a)=>a.findIndex(x=>JSON.stringify(x)===JSON.stringify(v))===i);
         // Each worker can check its own workshop while the earlier choices run.
         // A previously solved proposal and an inline retry still need the same check.
         const workerBound=createWorker && parallel>1 && choices.length>1 ? workshopBaseline : null;

@@ -59,8 +59,8 @@ test('material search accepts the first independently verified roster schedule',
         rate:j.batches/sample.daySeconds,turns:true,inputs:Object.entries(j.inputs),outputs:Object.entries(j.outputs)}));
     const sourcesAndWood=[...sources,{id:'tree',item:'tree',facility:'Woodland',cycle:1,rate:1,turns:false,
         inputs:[],outputs:[['wood_block',2.5]]}];
-    const input={priorities:['level_up'],always_running:true,facilities:{[facility]:[{count:4,level:1}]},
-        roster:{members:[{count:4}]},recipe_switching:{max_buildings:1,max_switches:1}};
+    const input={priorities:['level_up'],always_running:true,facilities:{[facility]:[{count:4,level:4}]},
+        roster:{members:[{count:4}]}};
     const baseline={success:true,priorities:[{target:'level_up',per_second:0}],level_up_preview:{seconds:3*day},
         coin_items:[],rate_per_second:10};
     const proposed={...baseline,rate_per_second:9,level_up_preview:{seconds:2*day},schedule_sources:sourcesAndWood,
@@ -115,7 +115,7 @@ test('eager switching follows a plausible four-tier workload on the available cr
 
 test('a relaxed workshop workload below one full site skips the integer candidate',async()=>{
     const {searchRecipeSwitches}=await import('../web/recipe-switch-search.js');
-    const request={always_running:true,recipe_switching:{max_buildings:1,max_switches:1},facilities:{'Chimney Kiln':[{count:1}]}};
+    const request={always_running:true,facilities:{'Chimney Kiln':[{count:1,level:2}]}};
     const base={success:true,rate_per_second:10,coin_items:['a','b'].map(item_name=>({status:'producing',facility:'Chimney Kiln',item_name}))};
     let trials=0;
     await searchRecipeSwitches(request,base,{canFillWorkshop:()=>false,candidate:()=>{trials++;return null;}});

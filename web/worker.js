@@ -11,6 +11,7 @@ import { autoMaximizeSeasonPoints, hasSeasonCropMinimums } from './season-planni
 import {continuousProduction,withCompetingConsumers} from './continuous-production.js';
 import {continuousNeighborhood, incomeRepairNeighborhood, neighborhoodResult, keepProductionWitness} from './continuous-neighborhood.js';
 import {comparisonConcurrency} from './comparison-queue.js';
+import {switchingWorkshops} from './material-flow-schedule.js';
 import {proveFirstSwitch,searchRecipeSwitches} from './recipe-switch-search.js?v=validated-upgrade';
 import {refineStaffing} from './staffing-search.js';
 import {economicWorkers} from './economic-parallel.js';
@@ -187,7 +188,7 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
     let plan = await continuousProduction(searchInput, async (trial, pass) => {
         top = null;
         if (pass === 1 && seed?.goals && input.aniimo?.startsWith('roster') && !Object.keys(input.roster?.dispatch || {}).length
-            && !input.level_up_strategy && !input.prioritize_byproducts && !input.recipe_switching?.max_buildings) {
+            && !input.level_up_strategy && !input.prioritize_byproducts && !switchingWorkshops(input).length) {
             step('final','start');
             try {
                 const joint = await repairProductionPriorities(pkg,trial,seed);
@@ -865,7 +866,7 @@ async function repairProductionPriorities(pkg,input,seed) {
 async function repairDispatchPlan(pkg, input, witness) {
     if (!input.always_running || !pkg.supports_continuous_production?.() || !input.roster?.dispatch || !witness?.recipes?.length
         || !witness.seed?.keys?.length || !witness.goals?.pace || witness.scores?.material_work == null
-        || input.recipe_switching?.max_buildings || input.level_up_strategy || input.prioritize_byproducts) return null;
+        || switchingWorkshops(input).length || input.level_up_strategy || input.prioritize_byproducts) return null;
     const {productionObjective,CURRENCY_RELATIVE_GAP,CURRENCY_GAP_FACTOR} = await prioritySearch;
     const {pace, floors, crop_variety, currency} = witness.goals;
     if (!floors.some(([name]) => name === currency) || witness.scores.material_pace != null) return null;
@@ -971,7 +972,7 @@ async function rankImprovements(pkg, payload, report, memo) {
     for (const [index, input] of candidates.entries()) {
         try {
             comparison.begin(input);
-            if(input.recipe_switching?.max_buildings)comparison.disableBounds();
+            if(switchingWorkshops(input).length)comparison.disableBounds();
             const search = () => exactPlanJson(pkg, JSON.stringify(input),
                 (step, state, proven) => report({ index, step, state, proven }), () => {}, comparison);
             let json;
@@ -984,7 +985,7 @@ async function rankImprovements(pkg, payload, report, memo) {
                 comparison.disableBounds();
                 json = await search();
             }
-            const plan = input.recipe_switching?.max_buildings?await withRecipeSwitches(pkg,input,JSON.parse(json),undefined,true):JSON.parse(json);
+            const plan = switchingWorkshops(input).length?await withRecipeSwitches(pkg,input,JSON.parse(json),undefined,true):JSON.parse(json);
             if (plan.success && comparison.inconclusive(plan, base, input)) {
                 report({index, error:'The search did not match the current plan. This does not show that the upgrade reduces production. Use Detailed search.', detailed});
                 continue;
@@ -1085,10 +1086,9 @@ self.onmessage = async (event) => {
                 plan.fallback_reason = fallbackReason;
                 result = JSON.stringify(plan);
             }
-            if(switchingInput.recipe_switching?.max_buildings>0){
+            if(switchingWorkshops(switchingInput).length){
                 const ordinary=JSON.parse(result);
                 if (ordinary.success && ordinary.continuous_production_checked && switchingInput.map_dispatch_pending
-                    && switchingInput.recipe_switching.max_switches > 0
                     && switchingInput.roster && !switchingInput.fixed_homeland && switchingInput.priorities?.[0]==='level_up'
                     && comparisonConcurrency(globalThis.navigator,2)>1) {
                     self.postMessage({id,type:'progress',count:{ordinaryForMap:result}});

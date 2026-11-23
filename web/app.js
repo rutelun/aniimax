@@ -1,6 +1,7 @@
 import { attachProductionFlow, flowBuildings } from './production-flow.js?v=hex-load';
 import {siteSchedule,scheduledRate} from './recipe-timeline.js';
 import {elapsed as scheduleTime, facilitySchedule, renderRecipeSchedule} from './recipe-schedule-view.js';
+import {switchingWorkshops} from './material-flow-schedule.js';
 import {scheduleProfiles} from './recipe-schedule-plan.js';
 import {splitPhaseTasks} from './phase-work.js';
 // Aniimax Web Application
@@ -495,7 +496,7 @@ let rateUnitChosen = false;
 // element per facility).
 function getPersistedFieldIds() {
     return [
-        'target-amount', 'current-amount', 'recipe-switching-buildings', 'recipe-switching-switches',
+        'target-amount', 'current-amount',
         'crop-variety', 'level-up-target',
         'electricity-on',
         'home-level',
@@ -625,8 +626,6 @@ async function shareCurrentConfig() {
 }
 
 function loadInputsFromStorage(data) {
-    document.getElementById('recipe-switching-buildings').value='0';
-    document.getElementById('recipe-switching-switches').value='2';
     if (!data) return;
     customBuildings = Boolean(data.customBuildings);
     questIncomePerDay = questIncome(data.questIncomePerDay);
@@ -2769,7 +2768,7 @@ function startProgress(input, runId) {
         { key: 'plan', label: priorities.at(-1) === 'coins'
             ? 'Finish Production Plan' : priorities.length || seasonFirst || planting ? "Home Coins with What's Left" : 'Most Home Coins' },
         ...(input.always_running ? [{key:'continuous_production',label:'Continuous resource allocation'}] : []),
-        ...(input.recipe_switching?.max_buildings?[{key:'recipe_switching',label:'Daily recipe schedule'}]:[]),
+        ...(switchingWorkshops(input).length?[{key:'recipe_switching',label:'Daily recipe schedule'}]:[]),
         { key: 'layout', label: 'Homeland Layout' },
         ...(input.aniimo?.startsWith('best')&&input.e_mode_rv>=12?[{key:'power_team',label:'E-mode and generator teams'}]:[]),
     ];
@@ -2890,18 +2889,7 @@ function openPlannerEditor(panel) {
     if (panel === 'team' && selectedSetupTab() === 'custom') document.getElementById('roster-config').open = true;
 }
 
-function updateRecipeSwitchingSummary() {
-    const settings=recipeSwitchingInput();
-    document.getElementById('recipe-switching-summary').textContent=!settings?translate('Off'):
-        `${settings.max_buildings} ${settings.max_buildings===1?'building':'buildings'} · ${settings.max_switches} ${settings.max_switches===1?'switch':'switches'}/day`;
-}
-
 function attachPlannerEditor() {
-    updateRecipeSwitchingSummary();
-    for(const id of ['recipe-switching-buildings','recipe-switching-switches']){
-        document.getElementById(id).addEventListener('input',updateRecipeSwitchingSummary);
-        document.getElementById(id).addEventListener('change',updateRecipeSwitchingSummary);
-    }
     document.querySelector('.planner-editor-options').addEventListener('click', event => {
         const button = event.target.closest('[data-planner-editor]');
         if (!button) return;
@@ -4740,17 +4728,11 @@ function enteredInventory() {
     return { facilities, modules };
 }
 
-function recipeSwitchingInput() {
-    const count=id=>{const n=Number(document.getElementById(id)?.value);return Number.isFinite(n)?Math.max(0,Math.floor(n)):0;};
-    const max_buildings=count('recipe-switching-buildings');
-    return max_buildings?{max_buildings,max_switches:count('recipe-switching-switches')}:undefined;
-}
 function getPlanInputValues() {
     const { facilities, modules } = buildingInventory();
     return {
         currency: 'coins',
         always_running: true,
-        recipe_switching: recipeSwitchingInput(),
         priorities: activePriorities(),
         prioritize_byproducts: false,
         level_up_preview: levelUpInput(),
