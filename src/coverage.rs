@@ -1198,8 +1198,9 @@ pub fn pair_layout_for(sizes: PairSizes, types: &[&str], offset: Offset, counts:
 
 type PairLayoutKey = ((u64, u64), Offset, Vec<String>, [Vec<u32>; 3]);
 thread_local! {
-    static LAST_TIDY_PAIR: std::cell::RefCell<Option<(PairLayoutKey, [Vec<Placement>; 3])>> =
-        const { std::cell::RefCell::new(None) };
+    // Reports can alternate between several different pairs on the same map.
+    static TIDY_PAIRS: std::cell::RefCell<std::collections::VecDeque<(PairLayoutKey, [Vec<Placement>; 3])>> =
+        const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
 }
 
 /// A tidy arrangement of the same plots a [`PairOption`] holds: the same counts in the same zones,
@@ -1209,8 +1210,8 @@ thread_local! {
 /// this way, in which case the packing's own layout stands.
 pub fn tidy_pair_layout(sizes: PairSizes, types: &[&str], offset: Offset, counts: &[Vec<u32>; 3]) -> Option<[Vec<Placement>; 3]> {
     let key = (sizes.key(), offset, types.iter().map(|name| (*name).to_owned()).collect(), counts.clone());
-    if let Some(layout) = LAST_TIDY_PAIR.with(|cache| {
-        cache.borrow().as_ref().filter(|(previous, _)| *previous == key).map(|(_, layout)| layout.clone())
+    if let Some(layout) = TIDY_PAIRS.with(|cache| {
+        cache.borrow().iter().find(|(previous, _)| *previous == key).map(|(_, layout)| layout.clone())
     }) {
         return Some(layout);
     }
@@ -1301,7 +1302,11 @@ pub fn tidy_pair_layout(sizes: PairSizes, types: &[&str], offset: Offset, counts
     // A later request may improve a limited solve. Reuse only a proven
     // minimum for these exact footprints, counts, zones and offset.
     if solution.stop_reason() == &microlp::StopReason::Finished {
-        LAST_TIDY_PAIR.with(|cache| cache.replace(Some((key, layouts.clone()))));
+        TIDY_PAIRS.with(|cache| {
+            let mut entries = cache.borrow_mut();
+            if entries.len() == 16 { entries.pop_front(); }
+            entries.push_back((key, layouts.clone()));
+        });
     }
     Some(layouts)
 }
