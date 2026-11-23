@@ -53,7 +53,8 @@ export function solveWithIncumbent(highs, problem, options, incumbent, reuseMode
         const status = model.getModelStatus();
         const statuses = highs.constants.modelStatus;
         if (status === statuses.infeasible) return { Status: 'Infeasible' };
-        if (status !== statuses.optimal && !searchStopped(status,statuses)) return { Status: 'No solution' };
+        const reachedTarget = Number.isFinite(options.objective_target) && status === statuses.objectiveTarget;
+        if (status !== statuses.optimal && !reachedTarget && !searchStopped(status,statuses)) return { Status: 'No solution' };
         // A timeout without a feasible incumbent must never be treated as a production plan.
         if (model.info.get('primal_solution_status') !== highs.constants.solutionStatus.feasible) {
             return { Status: 'No solution' };
@@ -70,7 +71,7 @@ export function solveWithIncumbent(highs, problem, options, incumbent, reuseMode
             && (!Number.isFinite(dual) || Math.abs(dual - objective) > rounding);
         return {
             Status: openGap ? 'Gap target reached' : status === statuses.optimal ? 'Optimal'
-                : status === statuses.timeLimit ? 'Time limit reached' : 'Search limit reached',
+                : reachedTarget ? 'Objective target reached' : status === statuses.timeLimit ? 'Time limit reached' : 'Search limit reached',
             ObjectiveValue: objective,
             UpperBound: status === statuses.optimal && !openGap ? objective : dual,
             Columns: Object.fromEntries(names.map((name, i) => [name, { Primal: solution.colValue[i] }])),

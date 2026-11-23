@@ -8,6 +8,35 @@ const expression=terms=>terms.map(([v,c])=>(c<0?'- ':'+ ')+Math.abs(c)+' x'+v).j
 const facilities=new Map(FACILITIES.map(f=>[f.name,f]));
 const catalogs=new WeakMap();
 
+// The draft objective charges headWeight per worker plus total workload.
+// At the minimum headcount, each pool works at most its assigned headcount.
+// Once that workload is below headWeight, adding a worker cannot improve the score.
+async function certifiedDraftShift(model, settings, solve, warm, counts, workload, headWeight) {
+    const minimize = terms => {
+        const objective = terms.map(([v, cost]) => [v, -cost]);
+        return {...model, primary_objective: objective,
+            lp: model.lp.replace(/^Maximize\n[^\n]+/, 'Maximize\n obj: ' + expression(objective))};
+    };
+    const minimum = await solve(minimize(counts), settings, undefined, warm);
+    if (!minimum?.proven || !minimum.values) return null;
+    const team = Math.round(-minimum.objective);
+    if (!Number.isSafeInteger(team) || team < 0 || team >= headWeight
+        || Math.abs(team + minimum.objective) > 1e-7) return null;
+    const workModel = minimize(workload);
+    workModel.lp = workModel.lp.replace('\nBounds\n',
+        '\n minimum_team: ' + expression(counts) + ' <= ' + team + '\nBounds\n');
+    const work = await solve(workModel, settings, undefined, minimum.values);
+    if (!work?.proven || !work.values || !Number.isFinite(work.objective)
+        || Math.abs(sum(counts, work.values) - team) > 1e-7) return null;
+    const target = -headWeight * team + work.objective;
+    const tolerance = 64 * Number.EPSILON * Math.max(1, Math.abs(target));
+    // Replay the original search to preserve its choice between equally scoring
+    // physical layouts. That choice affects the next pass's measured routes.
+    const replay = await solve(model, {...settings, objective_target: target - tolerance}, undefined, warm);
+    return replay?.values && Math.abs(sum(model.primary_objective, replay.values) - target) <= tolerance
+        ? replay : null;
+}
+
 function contestedShifts(plan,catalog,roster){
     const members=roster.members.slice();
     for(const [i,ability,level,count] of plan.assumed_aniimo??[])members[i]={abilities:{[ability]:level},count};
@@ -209,6 +238,8 @@ export async function refineElectricStaffing(problem,incumbent,solve,{pkg,input,
     const weight=1+Math.ceil(Math.max(sum(working,original),baseline.work,baseline.people));
     const costs=new Map();
     for(const [v,c] of working)costs.set(v,(costs.get(v)||0)-c);
+    const draftProof=provisional && input.map_dispatch_pending && input.always_running && pools.length;
+    const workload=draftProof?[...costs].map(([v,c])=>[v,-c]):null;
     const headWeight=weight*(1+(provisional?0:baseline.reserves||0));
     for(const [v] of counts)costs.set(v,(costs.get(v)||0)-headWeight);
     if(!provisional)for(const [v] of reserveCounts)costs.set(v,(costs.get(v)||0)-weight);
@@ -240,7 +271,10 @@ export async function refineElectricStaffing(problem,incumbent,solve,{pkg,input,
     const model={...problem,lp,variables:warm.length,variable_keys:keys.concat(integer.map((_,i)=>'power_team:'+i)),
         tiebreak:[],primary_objective:objective};
     const precision=provisional?{}:{mip_feasibility_tolerance:1e-9,primal_feasibility_tolerance:1e-9};
-    const result=await solve(model,{mip_max_nodes:2147483647,mip_rel_gap:0,mip_abs_gap:0,...precision},undefined,warm);
+    const settings={mip_max_nodes:2147483647,mip_rel_gap:0,mip_abs_gap:0,...precision};
+    const certified=draftProof && workload.length && workload.every(([,c])=>c>=0)
+        ? await certifiedDraftShift(model,settings,solve,warm,counts,workload,headWeight) : null;
+    const result=certified ?? await solve(model,settings,undefined,warm);
     if(!result?.values)return incumbent;
     const values=result.values.slice(0,original.length);
     if(values.length!==original.length||!values.every(Number.isFinite))return incumbent;

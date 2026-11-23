@@ -43,6 +43,10 @@ test('a certified income tolerance retains the dual ceiling and the open proof g
     const p={variables:25,lp};
     const approximate=solveWithIncumbent(highs,p,{mip_rel_gap:.002});
     const exact=solveWithIncumbent(highs,p,{mip_rel_gap:0});
+    const targeted=solveWithIncumbent(highs,p,{objective_target:1000001,mip_rel_gap:0});
+    assert.equal(targeted.Status,'Objective target reached');
+    assert.ok(targeted.ObjectiveValue>=1000001 && targeted.ObjectiveValue<=exact.ObjectiveValue);
+    assert.ok(targeted.UpperBound>=exact.ObjectiveValue);
     assert.equal(approximate.Status,'Gap target reached');
     assert.ok(approximate.UpperBound>approximate.ObjectiveValue);
     assert.ok(approximate.UpperBound<=approximate.ObjectiveValue*1.002);

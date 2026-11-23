@@ -98,7 +98,7 @@ async function solveModel(problem, options = SOLVE_OPTIONS, infeasibleMessage, i
     }
     if (result.Status === 'Infeasible' && infeasibleMessage) throw new Error(infeasibleMessage);
     const proven = result.Status === 'Optimal';
-    if (!proven && result.Status !== 'Gap target reached' && result.Status !== 'Time limit reached' && result.Status !== 'Search limit reached') return null;
+    if (!proven && result.Status !== 'Objective target reached' && result.Status !== 'Gap target reached' && result.Status !== 'Time limit reached' && result.Status !== 'Search limit reached') return null;
     // Out of time before finding any plan at all.
     if (!Number.isFinite(result.ObjectiveValue) || !result.Columns) return null;
     const values = columnValues(problem, result);
