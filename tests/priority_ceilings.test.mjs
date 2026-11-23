@@ -217,3 +217,17 @@ test('direct raw processors in two chains can use independent change times',()=>
     assert.equal(canFillSwitchingWorkshop(model(1.25),highs,trial),true);
     assert.equal(canFillSwitchingWorkshop(model(0),highs,trial),true);
 });
+
+test('disjoint short-phase workloads reject a workshop before integer search',()=>{
+    const facility='Chimney Kiln',trial={always_running:true,facilities:{[facility]:[{count:2,level:4}]}};
+    const loads=[.19,.01,.8],names=['brick','plate','ore'];
+    const problem={variables:3,variable_keys:names.map(n=>'rate:'+n+'#0'),
+        recipe_options:names.map((n,v)=>[v,n,facility,false,false,1]),switching_rates:names.map((_,v)=>[v,null]),
+        lp:['Maximize',' obj: x0','Subject To',...loads.map((n,v)=>' recipe'+v+': x'+v+' = '+n),
+            'Bounds',...loads.map((_,v)=>' x'+v+' >= 0'),'End'].join('\n')};
+    const observed={constants:highs.constants,createModel(settings){
+        assert.ok(!settings.data.includes('\nGeneral\n'),'unnecessary integer search');
+        return highs.createModel(settings);
+    }};
+    assert.equal(canFillSwitchingWorkshop({exact_priority_problem:()=>JSON.stringify(problem)},observed,trial),false);
+});

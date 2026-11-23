@@ -1,6 +1,6 @@
 // The first material-switch trial has the same workshops regardless of the
 // ordinary plan's layout. Bound that plan before paying for its lower priorities.
-import {priorityCeiling} from './priority-ceilings.js';
+import {priorityCeiling,requiredSiteRows} from './priority-ceilings.js';
 import {materialChains} from './material-flow-schedule.js';
 import {productionObjective} from './priority-search.js';
 
@@ -48,6 +48,59 @@ export function upgradeSwitchBounds(pkg, highs, input, trial) {
     return {seconds:86400 / fixed, crop};
 }
 
+// A positive workload below half a site-day must run entirely in the
+// shorter phase: even one site in the longer phase would exceed it.
+// For N sites and a workload in [lo,hi], that phase lasts at least lo/N
+// and at most hi of the day. Intersect intervals only within one workshop.
+function fitsShortPhase(highs,problem,trial,options) {
+    const recipes=new Map();
+    for(const [column] of problem.switching_rates) {
+        const [,recipe,facility,,,cycle]=options.get(column);
+        const key=JSON.stringify([facility,recipe]);
+        if(!recipes.has(key))recipes.set(key,{facility,rates:[]});
+        recipes.get(key).rates.push([column,cycle]);
+    }
+    if(recipes.size<2)return true;
+    const cuts=requiredSiteRows(problem);
+    const lp=problem.lp.replace(/\nGeneral\n[\s\S]*?\nEnd/,'\nEnd')
+        .replace('\nBounds\n','\n'+cuts.join('\n')+'\nBounds\n');
+    const model=highs.createModel({format:'lp',data:lp});
+    try {
+        const count=model.getDimensions().numCols;
+        const native=new Map(Array.from({length:count},(_,i)=>[Number(model.getColName(i).slice(1)),i]));
+        model.options.set({primal_feasibility_tolerance:1e-9,dual_feasibility_tolerance:1e-9});
+        model.changeColsCost({kind:'range',from:0,to:count-1},Array(count).fill(0));
+        const intervals=new Map();
+        let previous=[];
+        for(const {facility,rates} of recipes.values()) {
+            const cap=trial.facilities?.[facility]?.reduce((n,t)=>n+t.count,0);
+            if(!Number.isSafeInteger(cap) || cap<=0)continue;
+            const terms=rates.map(([v,c])=>[native.get(v),c]).sort(([a],[b])=>a-b);
+            if(terms.some(([v])=>v==null))continue;
+            if(previous.length)model.changeColsCost({kind:'set',indices:previous},previous.map(()=>0));
+            const indices=terms.map(([v])=>v),cycles=terms.map(([,c])=>c);
+            previous=indices;
+            // Match the tolerance for ignored trace rates and physical workloads.
+            const slack=1e-5*(1+cap)+cycles.reduce((n,c)=>n+c*1.1e-7,0);
+            model.changeColsCost({kind:'set',indices},cycles.map(c=>-c));
+            model.run();
+            if(model.getModelStatus()!==highs.constants.modelStatus.optimal)continue;
+            const lo=-model.getObjectiveValue()-slack;
+            if(!(lo>0 && lo<0.5))continue;
+            model.changeColsCost({kind:'set',indices},cycles);
+            model.run();
+            if(model.getModelStatus()!==highs.constants.modelStatus.optimal)continue;
+            const hi=model.getObjectiveValue()+slack;
+            if(!(hi>=lo && hi<0.5))continue;
+            const [min,max]=intervals.get(facility)??[0,0.5];
+            const low=Math.max(min,lo/cap),high=Math.min(max,hi);
+            if(low>high)return false;
+            intervals.set(facility,[low,high]);
+        }
+        return true;
+    } finally {model.dispose();}
+}
+
 // In the ordinary always-running schedule an active site is busy for every
 // phase. Its facility and power mode never change. Summed over a day, the
 // workload for each such group must equal its whole number of active sites.
@@ -67,7 +120,7 @@ function fitsWholeSites(highs, problem, trial) {
         if (!loads.has(recipeKey)) loads.set(recipeKey,{facility,tier,rates:[]});
         loads.get(recipeKey).rates.push([column,cycle]);
     }
-    if (!groups.size) return false;
+    if (!groups.size || !fitsShortPhase(highs,problem,trial,options)) return false;
     const rows = [], sites = [];
     for (const rates of groups.values()) {
         const site = 'sw'+sites.length;
