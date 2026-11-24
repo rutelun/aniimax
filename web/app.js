@@ -6,7 +6,7 @@ import {scheduleProfiles} from './recipe-schedule-plan.js';
 import {splitPhaseTasks} from './phase-work.js';
 // Aniimax Web Application
 
-import { currentLocale, sourceAttribute, translate } from './i18n.js?v=recommendations';
+import { currentLocale, sourceAttribute, translate } from './i18n.js?v=roster-assignments';
 import './math-translation.js?v=results-columns';
 import { autoMaximizeSeasonPoints } from './season-planning.js?v=optional-season-points';
 import { normalizeMapStyle } from './map-style.js?v=production-groups';
@@ -40,7 +40,7 @@ import { scheduleRosterCopies } from './roster-work.js?v=measured-walking';
 import { buildDispatch, rosterJobSwitching, TASK_SWITCHING } from './task-switching.js?v=base-travel';
 import { measureRosterDispatch, buildReactiveDispatch, permanentWorkers, measuredDispatchWork, routeDispatchKey, attachDeliveryFlows } from './reactive-dispatch.js';
 import { recommendBestTeam, cropWorkshopItems } from './best-team.js?v=team-support';
-import { groupAniimoAssignments } from './aniimo-assignment-groups.js?v=generator-assignments';
+import { groupAniimoAssignments, groupRosterAssignments } from './aniimo-assignment-groups.js?v=roster-assignments';
 import facilityIcons from './facility-icons.json' with { type: 'json' };
 import { abilityGlyph, gameAbilityIcon } from './ability-icons.js?v=game-heads';
 
@@ -3165,7 +3165,7 @@ function emptyRosterCell(position) {
 }
 
 function rosterTileLabel(member, index) {
-    return member.name.trim() || Object.entries(member.abilities).map(([name, level]) => `${translate(name)} ${level}`).join(', ') || `Aniimo ${index + 1}`;
+    return member.name?.trim() || Object.entries(member.abilities).map(([name, level]) => `${translate(name)} ${level}`).join(', ') || `Aniimo ${index + 1}`;
 }
 
 function refreshRosterTileWorkloads(workloads = []) {
@@ -3735,12 +3735,17 @@ function rosterCopyShifts(plan, members, assigned, walking) {
     const fixed = members.map(() => []);
     const posts = members.map(() => []);
     const routes = members.map(() => []);
+    const facilityByTask = new Map();
+    const atFacility = (label, facility) => {
+        facilityByTask.set(label, facility);
+        return label;
+    };
     const addMobile = (member, label, share) => routes[member]?.push({ jobs: [[label, share]] });
     const walkingLabel = translate('Walking between jobs');
     const detailed = plan.roster_routes?.length > 0;
     for (const step of plan.coin_items || []) {
         if (step.status !== 'producing' || !members[step.crew]) continue;
-        const label = `${translate(step.facility)} (${prettyItem(step.item_name)})`;
+        const label = atFacility(`${translate(step.facility)} (${prettyItem(step.item_name)})`, step.facility);
         if (RESIDENT_FACILITIES.has(step.facility)) {
             fixed[step.crew].push([label, step.facility_count]);
         } else if (!detailed) {
@@ -3748,7 +3753,7 @@ function rosterCopyShifts(plan, members, assigned, walking) {
         }
     }
     for (const [building, member, share] of plan.staffing || []) {
-        fixed[member]?.push([translate(building), Math.round(share)]);
+        fixed[member]?.push([atFacility(translate(building), building), Math.round(share)]);
     }
     for (const [station, member, count] of plan.roster_posts || []) {
         posts[member]?.push([station, Math.round(count)]);
@@ -3760,14 +3765,14 @@ function rosterCopyShifts(plan, members, assigned, walking) {
         for (const route of plan.roster_routes) {
             const item = prettyItem(route.item);
             const jobs = route.jobs.map(([job, share]) => [
-                job ? `${translate(job)} · ${item}` : `${translate(route.facility)} (${item})`, share,
+                atFacility(job ? `${translate(job)} · ${item}` : `${translate(route.facility)} (${item})`, route.facility), share,
             ]);
             if (route.visits > 0) {
                 const extra = (extraWalking.get(route.member) || 0) * route.visits / visits[route.member];
                 const entry = plan.reactive_dispatch?.[routeDispatchKey(route, recipeIndex)]?.find(e => e.member === route.member);
                 const duration = entry ? entry.travel_seconds * route.visits : Math.max(0, route.walking + extra);
                 if (duration > 1e-6) jobs.push([
-                    `${walkingLabel} → ${translate(route.facility)} (${item})`, duration,
+                    atFacility(`${walkingLabel} → ${translate(route.facility)} (${item})`, route.facility), duration,
                 ]);
             }
             const key=routeDispatchKey(route,recipeIndex);
@@ -3790,7 +3795,7 @@ function rosterCopyShifts(plan, members, assigned, walking) {
     });
     const dedicated = new Map(plan.dedicated_delivery || []);
     return members.map((_, member) => {
-        const shifts = scheduleRosterCopies(assigned[member], fixed[member], posts[member], routes[member]);
+        let shifts = scheduleRosterCopies(assigned[member], fixed[member], posts[member], routes[member]);
         const hours = dedicated.get(member) || 0;
         if (hours > 1e-6) shifts.push(...scheduleRosterCopies(Math.ceil(hours - 1e-6), [], [],
             [{ jobs: [[translate('Hauling to Storage Units'), hours]] }]));
@@ -3799,9 +3804,10 @@ function rosterCopyShifts(plan, members, assigned, walking) {
             for(const [key,value] of profiles){const [facility,item]=key.split('|'),label=`${translate(facility)} (${prettyItem(item)})`;labels.set(label,value);labels.set(`${walkingLabel} → ${label}`,value);}
             labels.set(translate('Hauling to Storage Units'),plan.recipe_schedule.haulingProfiles?.[member]);
             for(const shift of shifts)for(const [label,busy] of shift.tasks)totals.set(label,(totals.get(label)||0)+busy);
-            return splitPhaseTasks([...totals].map(([label,busy])=>({label,busy,profile:labels.get(label),fixed:fixed[member].some(([name])=>name===label)})),plan.recipe_schedule.phases.map(p=>p.duration),assigned[member]);
+            shifts = splitPhaseTasks([...totals].map(([label,busy])=>({label,busy,profile:labels.get(label),fixed:fixed[member].some(([name])=>name===label)})),plan.recipe_schedule.phases.map(p=>p.duration),assigned[member]);
         }
-        return shifts;
+        return shifts.map(shift => ({ ...shift, allocations: [...shift.tasks].map(([label, busy]) =>
+            ({ facility: facilityByTask.get(label), busy })) }));
     });
 }
 
@@ -3844,11 +3850,23 @@ function renderRosterSummary(plan) {
     refreshRosterTileWorkloads(roster.map((member, i) =>
         Array.from({ length: member.count }, (_, copy) => copyWork(i, copy))
     ));
-    const buildTile = (i, _position, copy) => {
-        if (i == null) return emptyRosterCell();
-        const member = members[i];
+    const portraits = members.map(member => {
+        if (!member.assumed) return member;
+        const [ability, level] = Object.entries(member.abilities)[0];
+        const eligible = entry => !member.family || entry.family === member.family;
+        const entry = aniimoCatalog.entries.find(entry => eligible(entry) && entry.abilities[ability] === level)
+            ?? aniimoCatalog.entries.find(entry => eligible(entry) && entry.abilities[ability] > level);
+        return entry ? { ...member, catalogId: entry.id, name: rosterFormName(entry), abilities: entry.abilities } : member;
+    });
+    const renderTile = ({ member: i, copy, suggested, cropSuggestion, beyondLimit }) => {
+        const member = portraits[i];
+        const name = rosterTileLabel(member, i);
+        const label = suggested ? `${translate('Suggested Aniimo')} · ${name}` : name;
+        if (cropSuggestion) {
+            return assignmentTile(member, label, [], translate('Crop support'), true,
+                beyondLimit ? translate('Beyond the RV limit') : '', null, true);
+        }
         const work = copyWork(i, copy);
-        const label = member.assumed ? translate('Assumed Aniimo') : rosterTileLabel(member, i);
         const count = member.assumed ? assigned[i] : member.count;
         let context = count > 1
             ? translate('Copy {copy} of {total} · {assigned} assigned').replace('{copy}', copy + 1)
@@ -3859,17 +3877,14 @@ function renderRosterSummary(plan) {
             const without=plan.crop_peaks.withoutHelper?.[i];
             if(Number.isFinite(without))context+=' · '+translate('Average without this copy: {s} s').replace('{s}',formatNumber(without));
         }
-        return assignmentTile(member, label, work.tasks, work.summary, work.active, context, i);
+        return assignmentTile(member, label, work.tasks, work.summary, work.active, context, i, suggested);
     };
-    const additional = members.flatMap((member, i) => member.assumed && assigned[i] > 0 ? Array(assigned[i]).fill(i) : []);
     const summary = document.getElementById('roster-summary');
     const total = working + reserves;
     const cap = ANIIMO_MAX[layoutHomeLevel() - 1];
     const capNote = cap && total > cap ? `<p class="hint small">${translate('This RV level can host {n} Aniimo.').replace('{n}', cap)}</p>` : '';
-    summary.innerHTML = `${capNote}${cropPeakNote(plan.crop_peaks, members)}
-        <div class="roster-cards">${rosterBoard(rosterSlots, buildTile)}</div>
-        ${additional.length ? `<h3 class="roster-additional-title">Additional Aniimo</h3>
-            <div class="roster-cards">${rosterBoard(additional, buildTile)}</div>` : ''}`;
+    const groups = groupRosterAssignments(members, assigned, shifts, plan.crop_peaks);
+    summary.innerHTML = capNote + cropPeakNote(plan.crop_peaks, members) + assignmentGroupsHtml(summary, groups, renderTile);
     summary.hidden = false;
     const own = translate('{assigned} of {owned} assigned').replace('{assigned}', formatNumber(working)).replace('{owned}', formatNumber(have));
     const extra = translate('{n} assumed').replace('{n}', formatNumber(reserves));
@@ -3893,13 +3908,13 @@ function cropPeakNote(peak, members, generated = false) {
     return `<p class="hint small">${translate('Average time from ripening to resowing')} · <strong>${time}</strong> · ${target}.${additions}${!met&&(!additions||!peak.recommendedTargetMet)?' Target not met within the available team/RV limit.':''}${shortfall}<br>${translate('After the first hour. Each plot regrows from its own sowing time. Includes travel, deliveries and other ongoing jobs.')}</p>`;
 }
 
-function assignmentTile(member, label, detail, status, active = true, context = '', memberIndex = null) {
+function assignmentTile(member, label, detail, status, active = true, context = '', memberIndex = null, suggested = false) {
     const tasks = Array.isArray(detail) ? detail : detail.split('\n').filter(Boolean).map(line => [line, '']);
     const tip = tipAttrs(label, {
         detail: tasks.map(([job, share]) => share ? `${job} · ${share}` : job).join('\n'),
         stats: status, work: context,
     });
-    return `<button type="button" class="roster-tile${active ? ' is-assigned' : ' is-idle'}" data-roster-work ${memberIndex == null ? '' : `data-work-member="${memberIndex}"`}
+    return `<button type="button" class="roster-tile${suggested ? ' is-suggested' : ''}${active ? ' is-assigned' : ' is-idle'}" data-roster-work ${memberIndex == null ? '' : `data-work-member="${memberIndex}"`}
         data-roster-tasks="${escapeText(JSON.stringify(tasks))}" ${tip} aria-haspopup="dialog">
         ${portraitTile(member, label)}<small>${escapeText(status)}</small></button>`;
 }
@@ -5332,6 +5347,21 @@ function bestRosterMember(shift) {
     return member;
 }
 
+function assignmentGroupsHtml(container, groups, renderTile) {
+    const closedGroups = new Set([...container.querySelectorAll('details[data-assignment-group]:not([open])')]
+        .map(group => group.dataset.assignmentGroup));
+    return groups.map(([label, members]) => `
+        <details class="aniimo-assignment-group" data-assignment-group="${escapeText(label)}"${closedGroups.has(label) ? '' : ' open'}>
+            <summary>
+                <span>${escapeText(translate(label))}</span>
+                <span class="aniimo-assignment-count">${formatNumber(members.length)}</span>
+                <span class="aniimo-assignment-chevron" aria-hidden="true"></span>
+            </summary>
+            <div class="aniimo-assignment-portraits">${members.map(member =>
+                `<div class="roster-slot">${renderTile(member)}</div>`).join('')}</div>
+        </details>`).join('');
+}
+
 function renderBestTeam(plan, routeStatus = translate('Calculating…')) {
     const { shifts, cropPeaks } = bestPlanTeam(plan);
     const total = shifts.length;
@@ -5368,19 +5398,9 @@ function renderBestTeam(plan, routeStatus = translate('Calculating…')) {
         if(shift.phaseBusy?.length)tasks.unshift(['Peak during recipe schedule',percent(Math.max(...shift.phaseBusy))]);
         const status = shift.peakSupport ? translate('Crop support') : translate('{load} busy').replace('{load}', percent(shift.busy));
         const traits = [...shift.personalities].map(translate).join(' · ');
-        return `<div class="roster-slot">${assignmentTile(member, label, tasks, status, true, traits)}</div>`;
+        return assignmentTile(member, label, tasks, status, true, traits);
     };
-    const closedGroups = new Set([...container.querySelectorAll('details[data-assignment-group]:not([open])')]
-        .map(group => group.dataset.assignmentGroup));
-    const groups = groupAniimoAssignments(shifts).map(([label, members]) => `
-        <details class="aniimo-assignment-group" data-assignment-group="${escapeText(label)}"${closedGroups.has(label) ? '' : ' open'}>
-            <summary>
-                <span>${escapeText(translate(label))}</span>
-                <span class="aniimo-assignment-count">${formatNumber(members.length)}</span>
-                <span class="aniimo-assignment-chevron" aria-hidden="true"></span>
-            </summary>
-            <div class="aniimo-assignment-portraits">${members.map(renderShift).join('')}</div>
-        </details>`).join('');
+    const groups = assignmentGroupsHtml(container, groupAniimoAssignments(shifts), renderShift);
     container.innerHTML = total ? `${capNote}${cropPeakNote(cropPeaks, [], true)}${groups}` : '';
     if (!aniimoExpansionChosen) setAniimoExpanded(true);
 }

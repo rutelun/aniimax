@@ -4,7 +4,7 @@ const OTHER = 'Other Assignments';
 const GROUPS = ['Leisure', 'Mining', 'Water Extraction', 'Lighting & Climate', OTHER];
 
 function assignmentGroup({ ability, facility }) {
-    if (ability === 'Leisure') return 'Leisure';
+    if (ability === 'Leisure' || FACILITY_CATEGORY_BY_NAME.get(facility) === 'Aniimo Materials') return 'Leisure';
     if (facility === 'Mine') return 'Mining';
     if (facility === 'Well') return 'Water Extraction';
     if (facility === 'Crackle Generator' || FACILITY_CATEGORY_BY_NAME.get(facility) === 'Environment') {
@@ -34,4 +34,25 @@ export function groupAniimoAssignments(shifts) {
         groups.get(primary).push(shift);
     }
     return [...groups].filter(([, members]) => members.length > 0);
+}
+
+export function groupRosterAssignments(members, assigned, shifts, cropPeaks) {
+    const active = [];
+    const idle = [];
+    members.forEach((pool, member) => {
+        const count = pool.assumed ? assigned[member] : pool.count;
+        for (let copy = 0; copy < count; copy++) {
+            const tile = { member, copy, suggested: Boolean(pool.assumed), allocations: shifts[member][copy]?.allocations };
+            if (copy < assigned[member]) active.push(tile);
+            else idle.push(tile);
+        }
+    });
+    for (const [helpers, beyondLimit] of [[cropPeaks?.additions, false], [cropPeaks?.shortfall, true]]) {
+        for (const { member, count } of helpers || []) {
+            for (let n = 0; n < count; n++) active.push({ member, suggested: true, cropSuggestion: true, beyondLimit });
+        }
+    }
+    const groups = groupAniimoAssignments(active);
+    if (idle.length) groups.push(['Unassigned', idle]);
+    return groups;
 }

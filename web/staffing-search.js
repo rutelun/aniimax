@@ -14,7 +14,7 @@ export async function refineStaffing(problem, incumbent, solve, context) {
     // Keep the audited production shift for layout, then staff the measured map.
     if(input?.map_dispatch_pending && input.roster && !measured && input.always_running
         && input.priorities?.[0]==='level_up' && Object.values(input.season_crop_minimums??{}).some(n=>n>0))return incumbent;
-    if(!context?.report || !measured)
+    if(!context?.report || !input?.roster)
         return refineShift(problem,incumbent,solve,context);
     const reports=new Map();
     const report=values=>{
@@ -23,7 +23,7 @@ export async function refineStaffing(problem, incumbent, solve, context) {
     };
     let candidate=await refineShift(problem,incumbent,solve,{...context,report});
     if(candidate!==incumbent && !keepsProduction(report(incumbent.values),report(candidate.values)))candidate=incumbent;
-    return fillReservePosts(problem,candidate,context.input,report);
+    return preferOwnedPostWorkers(problem,candidate,context.input,report);
 }
 
 function keepsProduction(before,after){
@@ -39,10 +39,11 @@ function keepsProduction(before,after){
 
 // An owned pool can have a grower in the field and a second, completely idle
 // copy. Swap only full-time posts. The mobile crew and its routes stay intact.
-function fillReservePosts(problem,shift,input,report){
+function preferOwnedPostWorkers(problem,shift,input,report){
     const members=input.roster.members;
     if(!members?.length || !problem.variable_keys || !problem.staffing_pools)return shift;
     const pools=problem.staffing_pools,posts=new Map();
+    const climateSkills=new Map(problem.climate_skills);
     for(const [member,pool] of pools.entries())for(const v of pool.anchors){
         const key=problem.variable_keys[v];
         if(!key.startsWith('staff:'))continue;
@@ -52,10 +53,15 @@ function fillReservePosts(problem,shift,input,report){
     }
     const deployed=(pool,values)=>Math.max(Math.ceil(total(pool.work,values)-1e-6),
         Math.round(pool.anchors.reduce((n,v)=>n+values[v],0)));
+    for(const options of posts.values())options.sort((a,b)=>Number(a.pool.reserve)-Number(b.pool.reserve)
+        || (climateSkills.get(a.v)??0)-(climateSkills.get(b.v)??0));
     for(const options of posts.values())for(const source of options){
-        if(!source.pool.reserve || shift.values[source.v]<0.5)continue;
+        if(shift.values[source.v]<0.5)continue;
         for(const dest of options){
             if(dest.pool.reserve || !members[dest.member])continue;
+            // Climate output is fixed by the mode. Leave the more versatile
+            // owned worker free when a less skilled one can cover the same post.
+            if(!source.pool.reserve && !(climateSkills.get(dest.v)<climateSkills.get(source.v)))continue;
             const capacity=members[dest.member].count-(input.crop_peak_helpers?.[dest.member]??0);
             while(shift.values[source.v]>0.5 && deployed(dest.pool,shift.values)<capacity){
                 const values=shift.values.slice();
@@ -98,6 +104,13 @@ async function refineShift(problem, incumbent, solve, context) {
     }
     const climate = problem.climate_skills || [];
     const costs = new Map();
+    // Before routes are measured, the model can still move work between all
+    // eligible operators. Prefer an owned shift before measuring a reserve's route.
+    const workDays = total(work, original);
+    for (const pool of reserves) {
+        if (pool.active != null) costs.set(pool.active, -(1 + Math.ceil(workDays)));
+        for (const [v, days] of pool.work) costs.set(v, (costs.get(v) || 0) - days);
+    }
     for (const [v, days] of work) costs.set(v, (costs.get(v) || 0) - days);
     for (const [v, skills] of climate) costs.set(v, (costs.get(v) || 0) - 1e-6 * skills);
     const lp = problem.lp.replace(/^Maximize\n[^\n]+/, 'Maximize\n obj: '+expression([...costs]))
@@ -117,8 +130,9 @@ async function refineShift(problem, incumbent, solve, context) {
     if (!sameShift || total(reserve, values) > reserveTime + 1e-8) return incumbent;
     if (headcount(pools, values) > people || headcount(reserves, values) > extra
         || growers.some(pool => total(pool.work, values) > total(pool.work, original) + 1e-8)) return incumbent;
-    const saved = total(work, original) - total(work, values);
-    if (saved > 1e-8 || (saved >= -1e-9 && total(climate, original) - total(climate, values) > 0.5)) {
+    const saved = workDays - total(work, values);
+    if (headcount(reserves, values) < extra || saved > 1e-8 || (saved >= -1e-9 &&
+        (total(reserve, values) < reserveTime - 1e-8 || total(climate, original) - total(climate, values) > 0.5))) {
         // The secondary solve's score and bound concern staffing. Retain the production proof.
         return {...incumbent, values};
     }

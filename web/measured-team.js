@@ -44,12 +44,11 @@ function retirementSets(context,jobs,delivery){
         a.length&&sets.findIndex(b=>String(a)===String(b))===i).slice(0,5);
 }
 
-function redistribute(context,jobs,removed,previous,delivery,cycleTimes){
+function redistribute(context,jobs,removed,previous,delivery,cycleTimes,copies){
     const changed=jobs.filter(j=>j.routes.some(r=>removed.has(r.member)));
     const original=new Set(changed.flatMap(j=>j.routes));
     const routes=context.routes.filter(r=>!original.has(r));
     const loads=context.busy.map((n,i)=>n+(delivery.get(i)||0));
-    const copies=loads.map(slots);
     for(const r of original)loads[r.member]-=r.jobs.reduce((s,[,w])=>s+w,0)+r.walking;
     const policies=Object.fromEntries(Object.entries(previous).map(([key,entries])=>[key,entries.filter(e=>!removed.has(e.member))]));
     const shifts=[];
@@ -90,7 +89,7 @@ function redistribute(context,jobs,removed,previous,delivery,cycleTimes){
     return buildReactiveDispatch({...context,members,routes,previous:policies});
 }
 
-function fixedProduction(pkg,highs,input,plan,dispatch,retired){
+function fixedProduction(pkg,highs,input,plan,dispatch,retired,capacities){
     const {pace,floors,crop_variety}=plan.comparison_goals;
     const stage=JSON.stringify({pace,floors,crop_variety,material_pace:plan.comparison_scores?.material_pace,
         maximize_material_work:plan.comparison_scores?.material_work!=null});
@@ -117,7 +116,7 @@ function fixedProduction(pkg,highs,input,plan,dispatch,retired){
         // Keep the physical posts and the available copies of each pool. A
         // retired worker must be idle across every task including deliveries.
         for(const v of pool.anchors)rows.push(' post_'+v+': x'+v+' = '+(prior.get(model.variable_keys[v])??0));
-        const max=retired.has(i)?0:(plan.crop_peaks.counts[i]||0);
+        const max=retired.has(i)?0:(capacities[i]||0);
         if(pool.work.length)rows.push(' capacity_'+i+': '+pool.work.map(([v,c])=>c+' x'+v).join(' + ')+' <= '+max);
     }
     const lp=model.lp.replace('\nBounds\n','\n'+rows.join('\n')+'\nBounds\n');
@@ -135,6 +134,25 @@ function fixedProduction(pkg,highs,input,plan,dispatch,retired){
         roster_dispatch:dispatch};
 }
 
+// First try the workers already on duty. When a reserve would otherwise
+// stay deployed, offer its places to an owned pool eligible for its work.
+function* replacementTeams(context, jobs, ids, deployed, capacity) {
+    yield {copies:deployed, capacity};
+    const places=ids.reduce((n,id)=>n+(context.members[id].assumed?deployed[id]:0),0);
+    if(!places)return;
+    const affected=jobs.filter(j=>j.routes.some(r=>ids.includes(r.member)));
+    for(const [i,member] of context.members.entries()){
+        const spare=member.count-capacity[i];
+        if(member.assumed || ids.includes(i) || spare<=0 || !affected.some(({recipe})=>
+            member.abilities[recipe.aniimo[0]]>=recipe.aniimo[1]))continue;
+        const copies=deployed.slice(), limits=capacity.slice();
+        const extra=Math.min(places,spare);
+        copies[i]+=extra;
+        limits[i]+=extra;
+        yield {copies,capacity:limits};
+    }
+}
+
 export function compactMeasuredTeam(pkg,highs,{plan,context,input,limit}){
     if(!plan.continuous_production_checked||!plan.comparison_seed||!plan.crop_peaks||plan.recipe_schedule)return null;
     const jobs=workshopJobs(context),delivery=new Map(plan.delivery_assignments??plan.hauling_staffing);
@@ -147,21 +165,24 @@ export function compactMeasuredTeam(pkg,highs,{plan,context,input,limit}){
         const worker=baseline.variable_keys[v].match(/__byowned:(\d+)/);
         if(worker)cycleTimes.set(facility+'|'+name+'|Production|'+worker[1],seconds);
     }
-    for(const ids of alternatives){
+    const deployed=context.busy.map((n,i)=>slots(n+(delivery.get(i)||0)));
+    for(const ids of alternatives)for(const team of replacementTeams(context,jobs,ids,deployed,old.counts)){
         const retired=new Set(ids);
-        const policy=redistribute(context,jobs,retired,plan.reactive_dispatch,delivery,cycleTimes);
+        const policy=redistribute(context,jobs,retired,plan.reactive_dispatch,delivery,cycleTimes,team.copies);
         if(!policy)continue;
-        let next=fixedProduction(pkg,highs,input,plan,policy,retired);
+        let next=fixedProduction(pkg,highs,input,plan,policy,retired,team.capacity);
         if(!next)continue;
         const reduced=context.members.map((m,i)=>retired.has(i)?{...m,count:0,assumed:false}:m);
         const priced=buildReactiveDispatch({...context,members:reduced,busy:next.roster_workload,routes:next.roster_routes,previous:policy});
-        next=fixedProduction(pkg,highs,input,plan,priced,retired);
+        next=fixedProduction(pkg,highs,input,plan,priced,retired,team.capacity);
         if(!next)continue;
         const nextContext={...context,busy:next.roster_workload,routes:next.roster_routes};
         const measured=measuredDispatchWork(next,priced,context.recipes);
         const peaks=selectCropPeakTeam(cropPeakInput({...nextContext,delivery:measured.delivery,limit}));
-        if(!(peaks.completion<old.targetSeconds||peaks.completion<=old.completion+EPS)
-            ||peaks.counts.reduce((s,n)=>s+n,0)>=old.counts.reduce((s,n)=>s+n,0))continue;
+        if(!(peaks.completion<old.targetSeconds||peaks.completion<=old.completion+EPS))continue;
+        const saved=old.counts.reduce((n,count,i)=>n+count-peaks.counts[i],0);
+        const reservesSaved=old.counts.reduce((n,count,i)=>n+(context.members[i].assumed?count-peaks.counts[i]:0),0);
+        if(saved<0 || reservesSaved<0 || (!saved && !reservesSaved))continue;
         // A ceiling from the previous dispatch can depend on its workers.
         // Reprice each priority under the new policy, using the full-precision
         // floors from the solve. The serialized keys round floats for lookup.

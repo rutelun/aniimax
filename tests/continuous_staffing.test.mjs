@@ -306,3 +306,93 @@ test('a harvest worker can lend an idle copy to a resident post while preserving
         assert.deepEqual(after.values,helpers?before.values:[1,1,0,1,0]);
     }
 });
+
+test('an idle Royalby takes both reserve loom jobs before and after their routes are measured', {skip:!fs.existsSync(wasm)}, async()=>{
+    const pkg=await import('../web/pkg/aniimax.js');
+    pkg.initSync({module:fs.readFileSync(wasm)});
+    const highs=await highsModule({wasmBinary:fs.readFileSync(new URL('../web/vendor/highs/highs.wasm',import.meta.url)),print(){},printErr(){}});
+    const recipes=[
+        {name:'wool_fabric',facility:'Joy Wheel Loom',ingredients:['woolen_yarn'],aniimo:['Wind',3]},
+        {name:'woolen_yarn',facility:'Joy Wheel Loom',ingredients:['wool'],aniimo:['Wind',2]},
+    ];
+    const members=[{count:1,abilities:{Wind:4,Light:3,Artisanship:4}},{count:1,abilities:{Leisure:4},family:'1026'}];
+    const dispatch=Object.fromEntries(recipes.map(r=>[r.facility+'|'+r.name+'|Production',[{member:2,share:1,travel_seconds:0}]]));
+    const names=['wool',...recipes.map(r=>r.name)];
+    const input={currency:'coins',always_running:true,always_running_recipes:names,restrict_to_checked_recipes:true,
+        exclude:JSON.parse(pkg.get_all_items()).map(r=>r.name).filter(n=>!names.includes(n)),
+        facilities:{'Joy Wheel Loom':[{count:2,level:3}],'Nimbus Bed':[{count:1,level:1}]},
+        aniimo:'roster',priorities:['coins'],
+        roster:{members,environment:{},residents:['Nimbus Bed'],dispatch,movement_seconds:0}};
+    const draftInput={...input,map_dispatch_pending:true,roster:{...input.roster,dispatch:{},movement_seconds:10}};
+    const draftPayload=JSON.stringify(draftInput),draftModel=JSON.parse(pkg.exact_problem(draftPayload,'{}'));
+    const solve=model=>{
+        const result=highs.solve(model.lp);
+        assert.equal(result.Status,'Optimal');
+        return {values:model.variable_keys.map((_,v)=>result.Columns['x'+v]?.Primal??0)};
+    };
+    const holdReserve=draftModel.variable_keys.flatMap((k,v)=>k.startsWith('rate:') &&
+        (k.includes('__byowned:0') || k.includes('__byreserve:{"Leisure"')) ? [' draft_'+v+': x'+v+' = 0'] : []);
+    const original=solve({...draftModel,lp:draftModel.lp.replace('Subject To','Subject To\n'+holdReserve.join('\n'))});
+    const report=values=>JSON.parse(pkg.exact_plan(draftPayload,'{}',JSON.stringify({values,verify_only:true,proven:false,bound:0})));
+    assert.deepEqual(report(original.values).roster_routes.map(r=>r.member),[2,2]);
+    const draft=report((await refineStaffing(draftModel,original,solve,{input:draftInput,report})).values);
+    assert.deepEqual(draft.roster_routes.map(r=>r.member),[0,0]);
+    assert.ok(Math.abs(draft.rate_per_second-report(original.values).rate_per_second)<1e-9);
+
+    const payload=JSON.stringify(input),model=JSON.parse(pkg.exact_problem(payload,'{}'));
+    const result=highs.solve(model.lp);
+    assert.equal(result.Status,'Optimal');
+    const values=model.variable_keys.map((_,v)=>result.Columns['x'+v]?.Primal??0);
+    const plan=JSON.parse(pkg.exact_plan(payload,'{}',JSON.stringify({values,proven:true,bound:result.ObjectiveValue,verify_only:true})));
+    assert.equal(plan.success,true,plan.error);
+    assert.equal(plan.assumed_aniimo[0][1],'Wind');
+    assert.deepEqual(plan.roster_routes.map(r=>r.member),[2,2]);
+    Object.assign(plan,{continuous_production_checked:true,continuous_checked_recipes:names,comparison_seed:{keys:model.variable_keys,values},
+        comparison_goals:{floors:[],currency:'coins'},continuous_upper_bounds:[[JSON.stringify(['coins',{floors:[]}]),plan.rate_per_second]],
+        crop_peaks:{counts:[0,1,1,0],targetSeconds:21,completion:0},reactive_dispatch:dispatch});
+    const sites=plan.roster_routes.map((r,i)=>({facility:r.facility,crop:r.item,x:i*4,y:0,w:2,h:2,batchWeight:r.job_rate*3600}));
+    const pools=[...members];
+    for(const [id,ability,level,count,family] of plan.assumed_aniimo)pools[id]={count,family,abilities:{[ability]:level},assumed:true};
+    const context={members:pools,busy:plan.roster_workload,
+        permanent:[0,1,0,0],routes:plan.roster_routes,recipes,layout:{pieces:[{members:sites}],storages:[]}};
+    const after=compactMeasuredTeam(pkg,highs,{input,plan,context,limit:2});
+    assert.ok(after,'replace the reserve while keeping the same number of workers');
+    assert.deepEqual(after.crop_peaks.counts,[1,1,0,0]);
+    assert.deepEqual(after.roster_routes.map(r=>[r.item,r.member]),plan.roster_routes.map(r=>[r.item,0]));
+    assert.ok(Math.abs(after.rate_per_second-plan.rate_per_second)<1e-9);
+});
+
+test('an idle Sparki takes an equivalent furnace post from Magmarex even if the staffing solve retains its incumbent', async()=>{
+    const problem={variables:2,variable_keys:['staff:Heat Furnace:owned:0#0','staff:Heat Furnace:owned:1#0'],
+        climate_skills:[[0,11],[1,2]],staffing_pools:[0,1].map(v=>({anchors:[v],work:[[v,1]],crop:[],reserve:false}))};
+    const input={roster:{members:[{count:1,abilities:{Fire:4,Dark:3,Hauling:4}},{count:1,abilities:{Fire:2}}],
+        dispatch:{measured:[]}}};
+    for(const [helpers,valid,expected] of [[0,true,[0,1]],[1,true,[1,0]],[0,false,[1,0]]]){
+        const shift=await refineStaffing(problem,{values:[1,0]},async()=>null,{input:{...input,crop_peak_helpers:[0,helpers]},
+            report:values=>({success:valid||values[1]===0,rate_per_second:1})});
+        assert.deepEqual(shift.values,expected);
+    }
+});
+
+test('the native plan verifies Sparki at the furnace with the same mine output', {skip:!fs.existsSync(wasm)}, async()=>{
+    const pkg=await import('../web/pkg/aniimax.js');
+    pkg.initSync({module:fs.readFileSync(wasm)});
+    const highs=await highsModule({wasmBinary:fs.readFileSync(new URL('../web/vendor/highs/highs.wasm',import.meta.url)),print(){},printErr(){}});
+    const input={currency:'coins',aniimo:'roster',always_running:true,
+        fixed_homeland:{groups:[{facility:'Mine',count:1,level:1,lit:false,powered:false}],climate:{'Heat Furnace':1},generators:0},
+        roster:{members:[{count:1,abilities:{Fire:4,Dark:3,Hauling:4}},{count:1,abilities:{Fire:2}},{count:1,abilities:{Earth:3}}],
+            environment:{'Heat Furnace':'Fire'},residents:[],movement_seconds:0}};
+    const payload=JSON.stringify(input),problem=JSON.parse(pkg.exact_problem(payload,'{}'));
+    const furnace=problem.variable_keys.indexOf('staff:Heat Furnace:owned:0#0');
+    const solved=highs.solve(problem.lp.replace('Subject To','Subject To\n initial_furnace: x'+furnace+' = 1'));
+    assert.equal(solved.Status,'Optimal');
+    const original={values:problem.variable_keys.map((_,v)=>solved.Columns['x'+v]?.Primal??0)};
+    const report=values=>JSON.parse(pkg.exact_plan(payload,'{}',JSON.stringify({values,proven:false,bound:0,verify_only:true})));
+    const before=report(original.values);
+    assert.deepEqual(before.staffing,[['Heat Furnace',0,1]]);
+    const after=report((await refineStaffing(problem,original,async()=>null,{input,report})).values);
+    assert.equal(after.success,true,after.error);
+    assert.deepEqual(after.staffing,[['Heat Furnace',1,1]]);
+    assert.deepEqual(after.roster_workload,[0,1,before.roster_workload[2]]);
+    assert.equal(after.rate_per_second,before.rate_per_second);
+});

@@ -2990,7 +2990,6 @@ details.explain p {
     padding: 1px;
 }
 .roster-move-hint:not([hidden]) { display: flex; flex-wrap: wrap; align-items: center; gap: 0.45rem; }
-.roster-additional-title { font-size: 0.95rem; margin: 0.85rem 0 0.4rem; }
 .roster-tile {
     display: grid;
     width: 100%;
@@ -3063,7 +3062,8 @@ details.explain p {
     object-fit: cover;
 }
 .roster-portrait-fill:has(img.loaded) > span { visibility: hidden; }
-.roster-tile.is-assigned .roster-portrait::after {
+.roster-tile.is-suggested .roster-portrait::before { background: #ef535a; }
+.roster-tile.is-assigned:not(.is-suggested) .roster-portrait::after {
     content: "";
     position: absolute;
     top: 0.45rem;

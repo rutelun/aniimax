@@ -1,6 +1,12 @@
+import { readFile } from 'node:fs/promises';
+import { runInNewContext } from 'node:vm';
+import { scheduleRosterCopies } from '../web/roster-work.js';
+import { splitPhaseTasks } from '../web/phase-work.js';
+import { scheduleProfiles } from '../web/recipe-schedule-plan.js';
+import { routeDispatchKey } from '../web/reactive-dispatch.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { groupAniimoAssignments } from '../web/aniimo-assignment-groups.js';
+import { groupAniimoAssignments, groupRosterAssignments } from '../web/aniimo-assignment-groups.js';
 import { recommendBestTeam } from '../web/best-team.js';
 import { productionTeamJobs } from '../web/production-team-jobs.js';
 
@@ -54,5 +60,41 @@ test('shows each portrait once, using total workload across jobs in each group',
     assert.deepEqual(groupAniimoAssignments([miner, support, tie]), [
         ['Mining', [miner, tie]],
         ['Other Assignments', [support]],
+    ]);
+});
+
+test('groups individual roster copies by the facility they actually worked in', async () => {
+    const source = await readFile(new URL('../web/app.js', import.meta.url), 'utf8');
+    const copyShifts = runInNewContext(source.slice(source.indexOf('function rosterCopyShifts('),
+        source.indexOf('function renderRosterSummary(')) + '\nrosterCopyShifts', {
+        scheduleRosterCopies, splitPhaseTasks, scheduleProfiles, routeDispatchKey, recipeIndex: [],
+        RESIDENT_FACILITIES: new Set(['Nimbus Bed']), translate: label => 'tr-' + label, prettyItem: String,
+    });
+    const plan = {
+        coin_items: [{ status: 'producing', facility: 'Nimbus Bed', item_name: 'wool', crew: 0, facility_count: 1 }],
+        staffing: [['Crackle Generator', 0, 1]],
+        roster_routes: [['Mine','clay'], ['Well','water']].map(([facility,item]) => ({
+            facility, item, member: 0, visits: 0, jobs: [['', 1]],
+        })),
+    };
+    for (const recipe_schedule of [undefined, { phases: [{duration: 1, assignments: []}], jobs: [], sites: [] }]) {
+        const [shifts] = copyShifts({...plan, recipe_schedule}, [{ count: 4 }], [4], [0]);
+        assert.deepEqual(groupAniimoAssignments(shifts).map(([label, members]) => [label, members.length]), [
+            ['Leisure', 1], ['Mining', 1], ['Water Extraction', 1], ['Lighting & Climate', 1],
+        ]);
+    }
+});
+
+test('shows a missing copy beside the owned worker and leaves unused reserve capacity off the team', () => {
+    const owned = { count: 2 };
+    const reserve = { count: 10, assumed: true };
+    const miner = { allocations: [{ facility: 'Mine', busy: 1 }] };
+    const groups = groupRosterAssignments([owned, reserve], [1, 1], [[miner], [miner]], {
+        additions: [{ member: 0, count: 1 }], shortfall: [],
+    });
+    assert.deepEqual(groups.map(([group, copies]) => [group, copies.map(tile => [tile.member, tile.suggested])]), [
+        ['Mining', [[0, false], [1, true]]],
+        ['Other Assignments', [[0, true]]],
+        ['Unassigned', [[0, false]]],
     ]);
 });
