@@ -64,13 +64,7 @@ export function processStage(supply,capacity,quantity) {
     return {initial,intervals};
 }
 
-function scheduleChain(input,facility,jobs,switchTier,extraRaw) {
-    const initialStock={};
-    const day=input.daySeconds,raw=jobs[0];
-    const extra=extraRaw??raw;
-    if(extraRaw && Math.abs(raw.batches*raw.seconds-day)>EPS*day)return null;
-    const change=extraRaw?extra.batches*extra.seconds:raw.batches*raw.seconds-day;
-    if(change<=EPS||change>=day-EPS)return null;
+function assignSites(input,facility,jobs,switchTier,extra) {
     const sites=input.buildings.filter(b=>b.facility===facility);
     const accepts=(b,j)=>(b.electric_level??null)===(j.electric_level??null)&&b.recipes.includes(j.recipe)&&(!b.jobs||b.jobs.includes(j.id));
     // Reserve the most restrictive (high-tier) jobs first.
@@ -80,6 +74,35 @@ function scheduleChain(input,facility,jobs,switchTier,extraRaw) {
         if(at<0)return null;
         assigned[tier]=sites.splice(at,1)[0];
     }
+    return assigned;
+}
+
+// Sites in the other workshop may keep their recipes throughout the day.
+// A partially busy fixed site needs an exhausted ingredient in every phase.
+function steadyChain(input,facility,jobs) {
+    const day=input.daySeconds;
+    let supply=input.backgroundOutputs?.[Object.keys(jobs[0].inputs)[0]]??0;
+    const profiles=[];
+    for(const job of jobs){
+        const rate=job.batches/day, load=rate*job.seconds;
+        const used=rate*Object.values(job.inputs)[0];
+        if(load>1+EPS || used>supply+EPS || (load<1-EPS && Math.abs(used-supply)>EPS))return null;
+        profiles.push([{start:0,end:day,rate}]);
+        supply=rate;
+    }
+    const assigned=assignSites(input,facility,jobs);
+    return assigned?{assigned,jobs,profiles,initialStock:{}}:null;
+}
+
+function scheduleChain(input,facility,jobs,switchTier,extraRaw) {
+    const initialStock={};
+    const day=input.daySeconds,raw=jobs[0];
+    const extra=extraRaw??raw;
+    if(extraRaw && Math.abs(raw.batches*raw.seconds-day)>EPS*day)return null;
+    const change=extraRaw?extra.batches*extra.seconds:raw.batches*raw.seconds-day;
+    if(change<=EPS||change>=day-EPS)return null;
+    const assigned=assignSites(input,facility,jobs,switchTier,extra);
+    if(!assigned)return null;
     const rawInput=Object.keys(raw.inputs)[0],quantity=raw.inputs[rawInput];
     const income=input.backgroundOutputs?.[rawInput]||0;
     const batches=raw.batches+(extraRaw?.batches??0);
@@ -102,7 +125,7 @@ function scheduleChain(input,facility,jobs,switchTier,extraRaw) {
 // against their combined phases, after each workshop has its own timetable.
 export function* materialFlowSchedules(input) {
     const groups=independentMaterialChains(input,true);
-    if(!groups||groups.size>input.maxBuildings)return;
+    if(!groups)return;
     const choices=[];
     for(const [facility,jobs] of groups) {
         const sources=input.jobs.filter(j=>j.facility===facility);
@@ -115,7 +138,8 @@ export function* materialFlowSchedules(input) {
             jobs[0]=steady;
             extra=raw.find(j=>j!==steady);
         }
-        const options=[2,1,3].map(tier=>scheduleChain(input,facility,jobs,tier,extra)).filter(Boolean);
+        const steady=!extra && steadyChain(input,facility,jobs);
+        const options=steady?[steady]:[2,1,3].map(tier=>scheduleChain(input,facility,jobs,tier,extra)).filter(Boolean);
         if(!options.length)return;
         choices.push(options);
     }
@@ -133,7 +157,8 @@ export function materialFlowSchedule(input) {
 
 function combineChains(input,chains) {
     const initialStock=Object.assign({},...chains.map(chain=>chain.initialStock));
-    if(new Set(chains.map(c=>c.change)).size>input.maxSwitches)return null;
+    const changes=chains.filter(c=>c.change!=null);
+    if(changes.length>input.maxBuildings || new Set(changes.map(c=>c.change)).size>input.maxSwitches)return null;
     const cuts=[...new Set(chains.flatMap(c=>c.profiles.flatMap(profile=>profile.map(p=>p.end))))].sort((a,b)=>a-b);
     const phases=[];
     let start=0;

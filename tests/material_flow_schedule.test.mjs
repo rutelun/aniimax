@@ -200,3 +200,19 @@ test('workshop dispatch skips the roster search when a fixed income stream sets 
         requirements:[{name:'coins',need:75,have:0,per_second:5}]}};
     assert.equal(mappedMaterialPlan({get_all_items:()=>'[]'},null,{plan,input}),null);
 });
+
+test('one fixed kiln chain shares the day with a switching bench without occupying a second switch',()=>{
+    const input=setup(),kiln='Chimney Kiln';
+    const ores=['coarse_sifted_ore','sintered_ore_brick','refined_ore','microcrystalline_ore_plate'];
+    const oreJobs=input.jobs.map((job,i)=>({...job,id:ores[i],recipe:ores[i],facility:kiln,
+        inputs:{[i?ores[i-1]:'mineral_sand']:2},outputs:{[ores[i]]:1},workers:{fire:1},batches:90/2**i}));
+    const joint={...input,jobs:[...input.jobs,...oreJobs],workerCapacity:{crew:4,fire:2},
+        backgroundOutputs:{...input.backgroundOutputs,mineral_sand:1.8},buildings:[...input.buildings,
+            ...input.buildings.map(b=>({...b,facility:kiln,id:'ore'+b.id,recipes:ores}))]};
+    const schedule=materialFlowSchedule(joint);
+    assert.ok(schedule);
+    const checked=validateRecipeSchedule(joint,schedule);
+    assert.deepEqual(checked.errors,[]);
+    assert.equal(checked.switchedBuildings.length,1);
+    assert.equal(checked.switches.length,1);
+});

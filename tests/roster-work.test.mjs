@@ -57,3 +57,17 @@ test('reactive switching is shared by each active copy�s spare time, not packe
     assert.ok(Math.abs(shifts[1].tasks.get('Switching') - .2) < 1e-9);
     assert.equal(shifts[2].busy, 0);
 });
+
+test('a mobile grower uses the spare sibling for plots including watering',()=>{
+    const shifts=scheduleRosterCopies(2,[],[],[{jobs:[['Watering',.2]],crop:true},
+        {jobs:[['Processing',.4]]},{jobs:[['Hauling',.6]],delivery:true}]);
+    assert.ok(!shifts.find(s=>s.tasks.has('Watering')).tasks.has('Processing'));
+    assert.ok(Math.abs(shifts.reduce((n,s)=>n+(s.tasks.get('Hauling')||0),0)-.6)<1e-9);
+});
+
+test('mobile workshop work leaves the copy stationed at a plot free',()=>{
+    const shifts=scheduleRosterCopies(2,[],[['plot',1]],[
+        {station:'plot',jobs:[['Reaping',.1]],localPlots:1,crop:true},{jobs:[['Workshop',.7]]}]);
+    assert.ok(!shifts[0].tasks.has('Workshop'));
+    assert.equal(shifts[1].tasks.get('Workshop'),.7);
+});

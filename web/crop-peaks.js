@@ -1,6 +1,6 @@
 import { workerTravelSeconds } from './worker-travel.js';
 import { dispatchLocations } from './task-switching.js';
-import { prepareRecurringCropWork, REGROWTH_TARGET_SECONDS } from './recurring-crops.js';
+import { prepareRecurringCropWork, firstGrowerCopy, MAX_GROWER_OUTSIDE, REGROWTH_TARGET_SECONDS } from './recurring-crops.js';
 
 const EPS=1e-8;
 export const CROP_PEAK_TARGET_SECONDS=100;
@@ -8,13 +8,14 @@ export const criticalCropJob = name => ['Reaping','Logging','Collecting','Reclai
 
 export function cropPeakInput({layout,recipes,members,busy,permanent=[],routes=[],limit=Infinity,delivery=[]}) {
     const locations=dispatchLocations(layout),byRecipe=new Map(recipes.map(r=>[`${r.facility}|${r.name}`,r]));
-    const outside=members.map(()=>({busy:0,seconds:0,origins:[]}));
+    const outside=members.map(()=>({busy:0,seconds:0,origins:[],workshop:0,plotWork:0}));
     const critical=members.map(()=>0),reference=new Map(),assigned=new Map();
     for(const r of routes){
         if(!(r.job_rate>0)||!outside[r.member])continue;
         const recipe=byRecipe.get(`${r.facility}|${r.item}`);
         const work=(r.jobs||[]).reduce((sum,[,n])=>sum+n,0)+(r.walking||0);
         const urgent=(r.jobs||[]).some(([name])=>criticalCropJob(name));
+        if(r.facility==='Farmland'||r.facility==='Woodland')outside[r.member].plotWork+=work;
         if(urgent)critical[r.member]+=work;
         else {outside[r.member].busy+=work;outside[r.member].seconds+=work*work/(r.visits||r.job_rate);}
         for(const [name,load] of r.jobs||[]){
@@ -48,6 +49,7 @@ export function cropPeakInput({layout,recipes,members,busy,permanent=[],routes=[
     outside.forEach((o,i)=>{
         const measured=o.busy;
         const hauling=delivery.find(([id])=>id===i)?.[1]||0;
+        o.workshop=Math.max(0,busy[i]-(permanent[i]||0)-o.plotWork);
         o.otherSeconds=measured>0?o.seconds/measured:0;
         o.hauling=hauling;
         if(hauling>0&&stores.length&&sources.length){
@@ -90,6 +92,23 @@ export function cropPeakInput({layout,recipes,members,busy,permanent=[],routes=[
     return {members:candidates,counts,permanent,jobs,outside,limit};
 }
 
+// Compare measured teams after the workshop schedule or headcount changes.
+export function growerOutsideLoad({outside,permanent=[]},counts) {
+    let maximum=0;
+    for(const [i,o] of outside.entries()){
+        const mobile=counts[i]-(permanent[i]||0);
+        if(mobile>0 && o.plotWork>EPS){
+            const first=firstGrowerCopy(mobile,o);
+            maximum=Math.max(maximum,Math.min(1,o.workshop-first));
+        }
+    }
+    return maximum;
+}
+
+export function keepsGrowerAvailability(load,reference) {
+    return reference==null || load<=Math.max(MAX_GROWER_OUTSIDE,reference)+EPS;
+}
+
 // A bounded stress scenario, not a reconstruction of the game's hidden queue.
 // All plots release critical work together. Watering remains average demand.
 // Workers finish an already-started job before approaching a new request. Equal
@@ -109,7 +128,7 @@ export function selectCropPeakTeam({members,counts,permanent=[],jobs,outside=[],
             const workers=[];
             allocation.forEach((count,id)=>{
                 const mobile=Math.max(0,count-(permanent[id]||0)),other=outside[id]||{};
-                for(let copy=0;copy<mobile;copy++){
+                for(let copy=firstGrowerCopy(mobile,other);copy<mobile;copy++){
                     // Stratified phases are reproducible and shared by all candidates.
                     const phase=((sample+.5)/8+copy*.61803398875+id*.38196601125)%1;
                     // Match the normal-work packing: an extra copy starts free,
@@ -225,7 +244,7 @@ export function selectCropPeakTeam({members,counts,permanent=[],jobs,outside=[],
     // shares once if a different team supplied the accepted timing.
     if (recurring && active.join(',')!==originalTeam)
         result=recurringWork(active,true);
-    return {...result,recurring,counts:active,baseCounts:[...counts],withoutHelper,beforeWait,beforeCompletion,targetSeconds,
+    return {...result,recurring,growerOutsideLoad:growerOutsideLoad({outside,permanent},active),counts:active,baseCounts:[...counts],withoutHelper,beforeWait,beforeCompletion,targetSeconds,
         targetMet:meetsTarget(result.completion),
         additions:proposed.flatMap((n,member)=>n>active[member]?[{member,count:n-active[member]}]:[]),
         shortfall:required.flatMap((n,member)=>n>proposed[member]?[{member,count:n-proposed[member],abilities:members[member].abilities}]:[]),

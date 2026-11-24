@@ -152,3 +152,47 @@ test('a delivery reserve is priced only for real overload within the roster limi
     const spare={...context,busy:[0]};
     assert.equal(measureRosterDispatch(spare,plan,null,2).context,spare);
 });
+
+test('My Aniimo prefers a dedicated grower, then the lightest outside shift, excluding deliveries',()=>{
+    const key='Farmland|crop|Dark';
+    const team=[0,1,2].map(()=>({count:1,abilities:{Dark:3,Fire:2,Hauling:2}}));
+    const route=(member,work,walking=0)=>({...routes[0],member, jobs:[['',work]],walking});
+    const harvest={...routes[1],member:0,jobs:[['Reaping',.02]],walking:.01};
+    const assign=(outside,busy)=>buildReactiveDispatch({layout,recipes,members:team,
+        routes:[harvest,...outside],busy})[key].map(e=>[e.member,e.share]);
+    // Two workshop jobs and their walks together take 11%. Member 2
+    // has deliveries but no outside production, so can stay on the plots.
+    const outside=[route(0,.05,.01),route(0,.04,.01),route(1,.10)];
+    assert.deepEqual(assign(outside,[.14,.10,.45]),[[2,1]]);
+    assert.deepEqual(assign([...outside,route(2,.2)],[.14,.10,.65]),[[1,1]]);
+    assert.deepEqual(assign([...outside,route(1,.03),route(2,.2)],[.14,.13,.65]),[[0,1]]);
+});
+
+test('crop work uses a free sibling and keeps enough capacity for the complete harvest',()=>{
+    const team=[{count:2,abilities:{Dark:3,Fire:3}},{count:1,abilities:{Dark:3,Fire:3}}];
+    const assignments=[{...routes[0],jobs:[['',1]],walking:0},
+        {...routes[0],member:1,jobs:[['',.2]],walking:0},
+        {...routes[1],member:1,jobs:[['Reaping',.6]],walking:0}];
+    const get=(routes,busy)=>buildReactiveDispatch({layout,recipes,members:team,routes,busy})['Farmland|crop|Dark'];
+    assert.deepEqual(get(assignments,[1,.8]).map(e=>[e.member,e.share]),[[0,1]]);
+    const more=[...assignments,{...assignments[2],member:0,jobs:[['Reaping',.6]]}];
+    const shares=get(more,[1.6,.8]);
+    assert.ok(shares.find(e=>e.member===0).share<=1/1.2+1e-8);
+    assert.ok(Math.abs(shares.reduce((sum,e)=>sum+e.share,0)-1)<1e-9);
+});
+
+test('an unstarted workshop keeps its only operator when another idle Aniimo can reap',()=>{
+    const team=[{count:1,abilities:{Dark:3,Fire:2}},{count:1,abilities:{Dark:3}},{count:1,abilities:{Fire:1,Dark:3}}];
+    const policy=buildReactiveDispatch({layout,recipes,members:team,busy:[0,0,.6],
+        routes:[{...routes[0],facility:'Mine',item:'shell',member:2,jobs:[['',.6]],walking:0}]});
+    assert.deepEqual(policy['Farmland|crop|Dark'].map(e=>[e.member,e.share]),[[1,1]]);
+    assert.deepEqual(policy['Chimney Kiln|ore|Production'].map(e=>[e.member,e.share]),[[0,1]]);
+});
+
+test('equally focused growers keep their harvest shares when a workshop worker is excluded',()=>{
+    const members=[0,1,2].map(()=>({count:1,abilities:{Dark:3,Fire:2}}));
+    const field=(member,load)=>({...routes[1],member,job_rate:load,jobs:[['Reaping',load]],walking:0});
+    const p=buildReactiveDispatch({layout,recipes,members,busy:[.05,.05,.45],
+        routes:[field(0,.05),field(1,.05),{...routes[0],member:2,jobs:[['',.45]],walking:0}]});
+    assert.deepEqual(p['Farmland|crop|Dark'].map(e=>[e.member,e.share]),[[0,.5],[1,.5]]);
+});

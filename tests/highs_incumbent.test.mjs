@@ -108,3 +108,17 @@ test('later priorities inherit a pace attainable within the worker capacity', as
     const exact={...noisy,objective:1,values:[1,1]};
     assert.equal(attainablePriority(highs,problem,exact),exact);
 });
+
+test('a root node with many LP iterations stops with a feasible incumbent and keeps seeking the first feasible shift',()=>{
+    const quick=planSearchOptions({time_limit:2});
+    assert.ok(quick.incumbentIterations>0);
+    assert.ok(planSearchOptions({time_limit:30}).incumbentIterations>quick.incumbentIterations);
+    const states=[{mip_total_lp_iterations:BigInt(quick.incumbentIterations),mip_primal_bound:Infinity},
+        {mip_total_lp_iterations:BigInt(quick.incumbentIterations+1),mip_primal_bound:12}];
+    const stopped=[];
+    const model={run(events){
+        for(const [i,data] of states.entries())events[6]({data,interrupt:()=>stopped.push(i)});
+    }};
+    runPlanModel(model,{constants:{callbackType:{mipInterrupt:6}}},undefined,undefined,quick.incumbentIterations);
+    assert.deepEqual(stopped,[1]);
+});

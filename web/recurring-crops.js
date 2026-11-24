@@ -2,6 +2,7 @@ import {workerTravelSeconds} from './worker-travel.js';
 
 const HOUR=3600, SAMPLES=8;
 export const REGROWTH_TARGET_SECONDS=21;
+export const MAX_GROWER_OUTSIDE=0.10;
 const fraction = value => value-Math.floor(value);
 
 function locationAt(origins,phase,fallback) {
@@ -40,6 +41,19 @@ function currentPoint(worker,release) {
     const phase=fraction(worker.phase+visits*.61803398875+worker.served*.38196601125);
     const delivered=worker.stores.length && fraction(worker.phase+visits*.38196601125+worker.served*.61803398875)<worker.deliveryFraction;
     return locationAt(delivered?worker.stores:worker.origins,phase,worker.point);
+}
+
+// Workshop shifts are packed first. If the measured plot work fits on the
+// remaining copies, the grower need never leave for the workshop. Deliveries
+// use residual capacity and can delay a crop request in the simulation.
+export function firstGrowerCopy(mobile,other) {
+    if(!mobile || !(other.workshop>0))return 0;
+    const workshop=Math.min(mobile,other.workshop);
+    const clean=Math.max(0,mobile-Math.ceil(workshop-1e-9));
+    const free=mobile-workshop;
+    const afterHauling=free>0?Math.max(0,1-(other.hauling||0)/free):0;
+    if(clean && clean*afterHauling >= other.plotWork-1e-9)return mobile-clean;
+    return Math.min(mobile-1,Math.floor(workshop+1e-9));
 }
 
 function prepareWorker(id,copy,other,fixed,base,mobile) {
@@ -148,7 +162,8 @@ function simulateDay(plots,end,counts,permanent,outside,allocation,trackShares) 
     let total=0,observations=0,totalWait=0,latest=0;
     const workers=allocation.map((n,id)=>{
         const fixed=permanent[id]||0, mobile=Math.max(0,n-fixed);
-        return Array.from({length:mobile},(_,copy)=>prepareWorker(id,copy,outside[id],fixed,counts[id],mobile));
+        const first=firstGrowerCopy(mobile,outside[id]);
+        return Array.from({length:mobile-first},(_,i)=>prepareWorker(id,first+i,outside[id],fixed,counts[id],mobile));
     });
     const mobileWorkers=workers.flat();
     mobileWorkers.forEach((worker,index)=>{worker.index=index;});

@@ -8,30 +8,85 @@ function compareScore(after, before) {
     return Math.abs(difference) > 1e-5 * Math.max(1,Math.abs(after),Math.abs(before)) ? Math.sign(difference) : 0;
 }
 
+function compareUpgradeTime(candidate, baseline) {
+    const after=candidate.level_up_preview?.seconds, before=baseline.level_up_preview?.seconds;
+    if(!Number.isFinite(after))return Number.isFinite(before)?-1:0;
+    if(!Number.isFinite(before))return 1;
+    return compareScore(before,after);
+}
+
+function comparePriorities(candidate,baseline) {
+    const crops=compareScore(candidate.comparison_scores?.crop_variety,baseline.comparison_scores?.crop_variety);
+    if(crops)return crops;
+    for(const priority of baseline.priorities||[]) {
+        if(priority.target==='level_up' && baseline.level_up_preview){
+            const eta=compareUpgradeTime(candidate,baseline);
+            if(eta)return eta;
+        }else{
+            const rate=candidate.priorities?.find(p=>p.target===priority.target)?.per_second??0;
+            const gain=compareScore(rate,priority.per_second);
+            if(gain)return gain;
+        }
+    }
+    return compareScore(candidate.rate_per_second,baseline.rate_per_second);
+}
+
 export function improvesPlan(candidate,baseline) {
     if(!candidate?.success)return false;
     if(!baseline?.success)return true;
     const baseScores = baseline.comparison_scores, scores = candidate.comparison_scores;
-    const crops = compareScore(scores?.crop_variety,baseScores?.crop_variety);
-    if (crops) return crops > 0;
-    for(const priority of baseline.priorities||[]) {
-        if(priority.target==='level_up'&&baseline.level_up_preview){
-            const before=baseline.level_up_preview.seconds??Infinity,after=candidate.level_up_preview?.seconds??Infinity;
-            if(before!==after){
-                if(!Number.isFinite(after))return false;
-                if(!Number.isFinite(before))return true;
-                if(Math.abs(before-after)>1e-5*Math.max(1,before,after))return after<before;
-            }
-            continue;
-        }
-        const a=candidate.priorities?.find(p=>p.target===priority.target)?.per_second??0,b=priority.per_second;
-        const priorityGain = compareScore(a,b);
-        if (priorityGain) return priorityGain > 0;
-    }
-    // RV materials break ties after the selected priorities and income, just as in the ordinary plan.
-    return (compareScore(candidate.rate_per_second,baseline.rate_per_second)
+    return (comparePriorities(candidate,baseline)
         || compareScore(scores?.material_pace,baseScores?.material_pace)
         || compareScore(scores?.material_work,baseScores?.material_work)) > 0;
+}
+
+function crewCounts(plan) {
+    const loads=new Map(Object.entries(plan?.roster_workload??{}));
+    for(const [id,n] of plan?.hauling_staffing??[])loads.set(String(id),(loads.get(String(id))??0)+n);
+    for(const [id,profile] of Object.entries(plan?.recipe_schedule?.workerProfiles??{}))
+        loads.set(id,Math.max(loads.get(id)??0,...profile));
+    for(const [id,n] of Object.entries(plan?.crop_peaks?.counts??{}))loads.set(id,Math.max(loads.get(id)??0,n));
+    if(plan && !plan.roster_workload){
+        // Generated teams identify workers by ability, level and trait. Their
+        // schedule profiles cover only jobs on the scheduled workshop sites.
+        const scheduled=new Set((plan.recipe_schedule?.jobs??[])
+            .filter(job=>job.electric_level==null).map(job=>job.facility+'|'+job.item));
+        for(const row of plan.coin_items??[]){
+            if(row.status!=='producing' || row.electric_level!=null || scheduled.has(row.facility+'|'+row.item_name))continue;
+            for(const task of row.aniimo_tasks??[]){
+                const key=`generated:${task.ability}:${task.level}:${task.personality_bonus?row.facility:''}`;
+                loads.set(key,(loads.get(key)??0)+task.busy);
+            }
+        }
+        loads.set('generators',plan.power_generators??0);
+        loads.set('hauling',plan.hauling_busy??0);
+    }
+    const assumed=new Map((plan?.assumed_aniimo??[]).map(([id,ability,level,,family])=>
+        [String(id),JSON.stringify([ability,level,family])]));
+    const counts=new Map();
+    for(const [id,load] of loads){
+        const pool=assumed.get(id)??id;
+        counts.set(pool,(counts.get(pool)??0)+Math.ceil(load-1e-6));
+    }
+    return counts;
+}
+
+function crewSize(plan) {
+    return [...crewCounts(plan).values()].reduce((n,copies)=>n+copies,0);
+}
+
+function additionalCrew(plan,previous) {
+    let extra=0;
+    for(const [id,n] of crewCounts(plan))extra+=Math.max(0,n-(previous.get(id)??0));
+    return extra;
+}
+
+export function prefersWorkshopPlan(candidate,baseline) {
+    if(!candidate?.success)return false;
+    if(!baseline?.success)return true;
+    return (comparePriorities(candidate,baseline) || compareUpgradeTime(candidate,baseline)
+        || (baseline.recipe_schedule?.switches?.length??0)-(candidate.recipe_schedule?.switches?.length??0)
+        || crewSize(baseline)-crewSize(candidate))>0;
 }
 
 const switchTrial = (input, choice) => ({...input, recipe_switching_relaxation:true,
@@ -40,27 +95,19 @@ const switchTrial = (input, choice) => ({...input, recipe_switching_relaxation:t
 // Prefer a timetable that the existing shift can cover before adding assumed
 // copies for simultaneous work. Worker profiles include background production.
 function chooseMaterialSchedule(plan,data,baseline,onError) {
-    const previous=new Map();
-    for(const [member,ability,level,,family] of baseline?.assumed_aniimo??[]){
-        const load=(baseline.roster_workload?.[member]??0)
-            +(baseline.hauling_staffing?.find(([id])=>id===member)?.[1]??0);
-        const peak=Math.max(load,...(baseline.recipe_schedule?.workerProfiles?.[member]??[]));
-        previous.set(JSON.stringify([ability,level,family]),Math.max(Math.ceil(peak-1e-6),
-            baseline.crop_peaks?.counts?.[member]??0));
-    }
+    const previous=crewCounts(baseline);
     let best=null,minimum=Infinity;
     for(const flow of materialFlowSchedules(data)){
         let candidate;
         try{candidate=attachRecipeSchedule(plan,data,flow);}
         catch(error){onError?.(error);continue;}
-        let additional=0;
-        for(const [member,ability,level,,family] of plan.assumed_aniimo??[]){
-            const profile=candidate.recipe_schedule.workerProfiles[member]??[];
-            const needed=Math.ceil(Math.max(0,...profile)-1e-6);
-            additional+=Math.max(0,needed-(previous.get(JSON.stringify([ability,level,family]))??0));
+        const switches=candidate.recipe_schedule.switches.length;
+        const additional=additionalCrew(candidate,previous);
+        if(!best || switches<best.recipe_schedule.switches.length ||
+            (switches===best.recipe_schedule.switches.length && additional<minimum)){
+            best=candidate;
+            minimum=additional;
         }
-        if(additional===0)return candidate;
-        if(additional<minimum){best=candidate;minimum=additional;}
     }
     return best;
 }
@@ -90,6 +137,48 @@ export function canStaffWholeRecipes(input) {
         if(needed>available+1e-5*Math.max(1,input.daySeconds,needed,available))return false;
     }
     return true;
+}
+
+// In the general timetable each active site runs for the full day. Sites
+// cannot change facility or electrical tier. Material-flow schedules above
+// this check can also represent a site waiting for its next ingredient.
+function fillsWholeSites(data) {
+    if(!data.alwaysRunning)return true;
+    const loads=new Map();
+    for(const job of data.jobs){
+        const key=JSON.stringify([job.facility,job.electric_level??null]);
+        loads.set(key,(loads.get(key)??0)+job.batches*job.seconds/data.daySeconds);
+    }
+    return [...loads.values()].every(load=>Math.abs(load-Math.round(load))<1e-6*Math.max(1,load));
+}
+
+export async function validateWorkshopCapacity(input,plan,baseline,solve) {
+    if(!plan?.success)return null;
+    if(!plan.schedule_sources?.some(source=>source.turns && source.rate>0))
+        return plan.recipe_switching_candidate ? null : plan;
+    let data,best=null;
+    const modes=plan.schedule_sources.some(source=>source.turns && source.electric_level!=null) ? [false,true] : [false];
+    for(const materialSites of modes){
+        try{
+            const scheduleInput=scheduleInputForPlan(input,plan,{materialSites});
+            data??=scheduleInput;
+            const direct=chooseMaterialSchedule(plan,scheduleInput,baseline);
+            if(direct && prefersWorkshopPlan(direct,best))best=direct;
+        }catch{ /* A different site allocation can still fit the powered jobs. */ }
+    }
+    if(best)return best;
+    if(!data || !fillsWholeSites(data) || !canStaffWholeRecipes(data))return null;
+    const pattern=materialChainSchedule(data);
+    for(const attempt of [pattern,data].filter(Boolean)){
+        try{
+            const model=buildRecipeSchedule(attempt),result=await solve(model);
+            if(result?.Columns){
+                const schedule=readRecipeSchedule(model,result);
+                return attachRecipeSchedule(plan,attempt,schedule);
+            }
+        }catch{ /* Try the common timetable if the chain pattern does not fit. */ }
+    }
+    return null;
 }
 
 export async function proveFirstSwitch(input, boundsFor, candidate, progress=()=>{}) {

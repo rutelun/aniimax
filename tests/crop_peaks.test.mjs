@@ -71,3 +71,23 @@ test('a spare copy cannot claim benefits from another pool’s checked routes',(
     assert.deepEqual(result.counts,[1,1]);
     assert.deepEqual(result.shares['Farmland|rice|Dark'],[{member:1,share:1}]);
 });
+
+test('a measured crop route uses the sibling free of workshop work, even when both copies deliver',()=>{
+    const input=cropPeakInput({members:[{count:2,abilities:{Dark:3,Fire:2,Hauling:3}}],busy:[.72],delivery:[[0,.35]],
+        layout:{pieces:[{members:[{facility:'Farmland',crop:'rice',x:0,y:0,w:2,h:2,weight:2}]}],storages:[]},
+        recipes:[{name:'rice',facility:'Farmland',jobs:[['Reaping','Dark',1]],job_workloads:[['Reaping',6]]}],
+        routes:[{member:0,facility:'Chimney Kiln',item:'ore',job_rate:.01,visits:.01,jobs:[['',.7]]},
+            {member:0,facility:'Farmland',item:'rice',job_rate:.005,visits:.005,jobs:[['Reaping',.02]]}]});
+    assert.deepEqual(selectCropPeakTeam({...input,limit:2}).copyShares['Farmland|rice|Dark|0'],[[1,1]]);
+});
+
+test('the busiest grower reports workshop hours for its phase after packing spare copies',()=>{
+    const route={member:0,facility:'Farmland',item:'rice',job_rate:.005,visits:.005,jobs:[['Reaping',.02]]};
+    const context={members:[{count:2,abilities:{Dark:3}}],permanent:[0],routes:[route],delivery:[[0,.15]],
+        layout:{pieces:[{members:[{facility:'Farmland',crop:'rice',x:0,y:0,w:2,h:2,weight:2}]}]},
+        recipes:[{name:'rice',facility:'Farmland',jobs:[['Reaping','Dark',1]],job_workloads:[['Reaping',6]]}]};
+    for(const [busy,expected] of [[.02,0],[.12,.1],[.82,.8],[1.02,0]]){
+        const peak=selectCropPeakTeam({...cropPeakInput({...context,busy:[busy]}),recommend:false,targetSeconds:Infinity});
+        assert.ok(Math.abs(peak.growerOutsideLoad-expected)<1e-9);
+    }
+});

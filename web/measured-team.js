@@ -2,7 +2,7 @@ import {productionObjective} from './priority-search.js';
 import {priorityCeiling} from './priority-ceilings.js';
 import {polishSolution} from './highs-solve.js';
 import {buildReactiveDispatch,measuredDispatchWork} from './reactive-dispatch.js';
-import {cropPeakInput,selectCropPeakTeam} from './crop-peaks.js';
+import {cropPeakInput,keepsGrowerAvailability,selectCropPeakTeam} from './crop-peaks.js';
 
 const EPS=1e-8;
 const slots=load=>Math.max(0,Math.ceil(load-1e-6));
@@ -179,10 +179,17 @@ export function compactMeasuredTeam(pkg,highs,{plan,context,input,limit}){
         const nextContext={...context,busy:next.roster_workload,routes:next.roster_routes};
         const measured=measuredDispatchWork(next,priced,context.recipes);
         const peaks=selectCropPeakTeam(cropPeakInput({...nextContext,delivery:measured.delivery,limit}));
+        if(!keepsGrowerAvailability(peaks.growerOutsideLoad,old.growerOutsideLoad))continue;
         if(!(peaks.completion<old.targetSeconds||peaks.completion<=old.completion+EPS))continue;
         const saved=old.counts.reduce((n,count,i)=>n+count-peaks.counts[i],0);
         const reservesSaved=old.counts.reduce((n,count,i)=>n+(context.members[i].assumed?count-peaks.counts[i]:0),0);
         if(saved<0 || reservesSaved<0 || (!saved && !reservesSaved))continue;
+        // Releasing an owned operator can leave a suggested worker doing its
+        // compatible workshop jobs. Keep the owned shift in that case.
+        if(!reservesSaved && jobs.some(({recipe})=>
+            next.roster_routes.some(r=>r.item===recipe.name && r.facility===recipe.facility && context.members[r.member].assumed) &&
+            ids.some(id=>!context.members[id].assumed && context.members[id].abilities[recipe.aniimo[0]]>=recipe.aniimo[1])))
+            continue;
         // A ceiling from the previous dispatch can depend on its workers.
         // Reprice each priority under the new policy, using the full-precision
         // floors from the solve. The serialized keys round floats for lookup.

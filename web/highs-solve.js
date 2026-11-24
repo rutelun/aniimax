@@ -8,17 +8,23 @@ const FULL_PLAN_NODE_LIMIT = 2048;
 export function planSearchOptions({time_limit: effort = FULL_PLAN_EFFORT, ...options}) {
     // Keep the short witness and repair passes cheap before the full search.
     const nodes = effort >= FULL_PLAN_EFFORT ? FULL_PLAN_NODE_LIMIT : Math.max(1, Math.ceil(effort / 2));
-    return {mip_max_nodes: nodes, ...options};
+    // A single root node can spend hundreds of thousands of LP iterations on
+    // cuts or restarts. Use the planner’s work scale once a feasible shift exists.
+    const incumbentIterations = options.mipIterations == null ? 4000 * Math.max(1, effort) : undefined;
+    return {mip_max_nodes: nodes, incumbentIterations, ...options};
 }
 
 // A single MIP node may itself solve many LPs. Count their iterations as well
 // as nodes so two equally large trees cannot differ arbitrarily in cost.
-export function runPlanModel(model, highs, mipIterations, reachesCeiling) {
-    if (!mipIterations && !reachesCeiling) return model.run();
+export function runPlanModel(model, highs, mipIterations, reachesCeiling, incumbentIterations) {
+    if (!mipIterations && !reachesCeiling && !incumbentIterations) return model.run();
     let attained=false;
     const callback=highs.constants.callbackType;
     const events={[callback.mipInterrupt]:event=>{
-        if(attained || (mipIterations && event.data.mip_total_lp_iterations>=mipIterations))event.interrupt();
+        const iterations=event.data.mip_total_lp_iterations;
+        if(attained || (mipIterations && iterations>=mipIterations)
+            || (incumbentIterations && iterations>=incumbentIterations && Number.isFinite(event.data.mip_primal_bound)))
+            event.interrupt();
     }};
     if(reachesCeiling)events[callback.mipImprovingSolution]=({data})=>{
         attained=reachesCeiling(data.mip_solution);
@@ -55,7 +61,7 @@ export function solveWithIncumbent(highs, problem, options, incumbent, reuseMode
         const integerModel = /\nGeneral\n\s*x\d/.test(problem.lp);
         if (integerModel) model.clearSolver();
         model.zeroAllClocks();
-        const {mipIterations,primaryCeiling,...nativeOptions} = options;
+        const {mipIterations,incumbentIterations,primaryCeiling,...nativeOptions} = options;
         applyOptions(model,nativeOptions);
         if (incumbent?.length === problem.variables) {
             const values = names.map(name => incumbent[Number(name.slice(1))] ?? 0);
@@ -71,7 +77,7 @@ export function solveWithIncumbent(highs, problem, options, incumbent, reuseMode
                 return primaryAttained;
             };
         }
-        runPlanModel(model,highs,mipIterations,reachesCeiling);
+        runPlanModel(model,highs,mipIterations,reachesCeiling,integerModel ? incumbentIterations : undefined);
         const status = model.getModelStatus();
         const statuses = highs.constants.modelStatus;
         if (status === statuses.infeasible) return { Status: 'Infeasible' };

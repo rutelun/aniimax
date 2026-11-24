@@ -1,3 +1,4 @@
+import { MAX_GROWER_OUTSIDE } from './recurring-crops.js';
 import { dispatchLocations } from './task-switching.js';
 import { siteHaulingTrips } from './hauling.js';
 import { workerTravelSeconds } from './worker-travel.js';
@@ -33,6 +34,66 @@ function productionPickup(recipe,eligible,ownRoutes,members,busy,permanent){
     }
     if(speeds.size<2)return null;
     return available.length ? available : onShift;
+}
+
+// Fill crop requests from the least distracted physical copies first. Workshop
+// work and its walk occupy the first copies of a pool. Hauling only reduces
+// available capacity. A busier grower can still cover otherwise unmet demand.
+const isPlot = facility => facility === 'Farmland' || facility === 'Woodland';
+function preferCropWorkers(entries,eligible,routes,ability,level,members,outside,available,workshops) {
+    const speed=id=>1+.25*(level-1)+.5*(members[id].abilities[ability]-level);
+    let work=0,walk=0;
+    for(const route of routes){
+        const execution=route.jobs.reduce((sum,[,load])=>sum+load,0);
+        work+=execution*speed(route.member);
+        walk+=route.walking||0;
+        available[route.member]+=execution+(route.walking||0);
+    }
+    const demand=id=>work/speed(id)+walk;
+    const original=new Map(entries.map(e=>[e.member,e.share]));
+    const choices=[];
+    for(const {member,mobile} of eligible){
+        // Workshops are packed into whole shifts. Only one copy can have
+        // a partial workshop shift, and a spare sibling can work only plots.
+        const full=Math.min(mobile,Math.floor(outside[member]+1e-9));
+        const partial=Math.min(1,Math.max(0,outside[member]-full));
+        const clean=mobile-full-Number(partial>1e-9);
+        let left=available[member];
+        for(const [load,capacity] of [[0,clean],[partial,partial>1e-9?1-partial:0]]){
+            const room=Math.min(left,capacity);
+            if(room<=1e-9)continue;
+            choices.push({member,load,share:demand(member)>0?room/demand(member):1});
+            left-=room;
+        }
+    }
+    const priority=(a,b)=>Number(a.load>MAX_GROWER_OUTSIDE+1e-9)-Number(b.load>MAX_GROWER_OUTSIDE+1e-9)
+        || a.load-b.load || Number(!!members[a.member].assumed)-Number(!!members[b.member].assumed)
+        || workshops[a.member].size-workshops[b.member].size;
+    choices.sort((a,b)=>priority(a,b) || speed(b.member)-speed(a.member));
+    const shares=new Map();
+    let remaining=1;
+    const take=(c,requested)=>{
+        const share=Math.min(c.share,requested,remaining);
+        if(share<=0)return;
+        shares.set(c.member,(shares.get(c.member)||0)+share);
+        c.share-=share;
+        remaining-=share;
+    };
+    for(let i=0;i<choices.length && remaining>1e-9;){
+        let end=i+1;
+        while(end<choices.length && priority(choices[i],choices[end])===0)end++;
+        const peers=choices.slice(i,end);
+        const weight=peers.reduce((s,c)=>s+(original.get(c.member)||0),0);
+        const request=remaining;
+        // Keep the checked distribution among equally suitable growers.
+        if(weight>0)for(const c of peers)take(c,request*(original.get(c.member)||0)/weight);
+        for(const c of peers)take(c,remaining);
+        i=end;
+    }
+    if(remaining<=1e-9)entries=[...shares].map(([member,share])=>({member,share}));
+    const total=entries.reduce((sum,e)=>sum+e.share,0);
+    for(const e of entries)available[e.member]-=e.share/total*demand(e.member);
+    return entries;
 }
 
 // A dispatch policy covers every copy of a recipe. Reserve the actual output
@@ -145,6 +206,13 @@ function priceDispatch({layout,recipes,members,busy=[],permanent=[],routes=[],pr
         if(!planned.has(key))planned.set(key,[]);
         planned.get(key).push(route);
     }
+    const workshops=members.map(()=>new Set()), fieldRequests=[];
+    const outside=members.map(()=>0);
+    for(const r of routes){
+        if(r.job_rate>0 && !isPlot(r.facility))
+            outside[r.member]+=(r.jobs??[]).reduce((sum,[,load])=>sum+load,0)+(r.walking||0);
+    }
+    const available=members.map((m,i)=>(m.assumed?Math.ceil((busy[i]||0)-1e-6):m.count)-(busy[i]||0));
     for(const recipe of recipes){
         const physical=byFacility.get(recipe.facility);
         if(!physical?.length)continue;
@@ -173,6 +241,7 @@ function priceDispatch({layout,recipes,members,busy=[],permanent=[],routes=[],pr
             if(total<=1e-9){for(const e of eligible)e.weight=e.mobile;total=eligible.reduce((s,e)=>s+e.weight,0);}
             const valid=new Set(eligible.map(e=>e.member));
             let entries=previous?.[key]?.filter(e=>valid.has(e.member)&&Number.isFinite(e.share)&&e.share>0);
+            const retained=entries?.length;
             if(!entries?.length&&keyAbility==='Production'&&recipe.ingredients?.length){
                 entries=productionPickup(recipe,eligible,planned.get(key)||[],members,busy,permanent);
             }
@@ -204,11 +273,22 @@ function priceDispatch({layout,recipes,members,busy=[],permanent=[],routes=[],pr
             }
             if(!entries?.length)entries=eligible.filter(e=>e.weight>0).map(e=>({member:e.member,share:e.weight/total}));
             if (keyAbility==='Production') entries=keepStaffedSites(entries,locations.get(`${recipe.facility}|${recipe.name}`),valid);
+            if(keyAbility==='Production'){
+                for(const e of entries)if(e.share>1e-9)workshops[e.member].add(recipe.facility);
+            }else if(!retained && isPlot(recipe.facility) && keyAbility!=='Hauling'){
+                fieldRequests.push({key,eligible,ability,level});
+            }
             const shares=entries.reduce((s,e)=>s+e.share,0);
             // Shares determine delivery origins. Price each route once, after
             // those origins and the destinations of loaded trips are known.
             policy[key]=entries.map(e=>({member:e.member,share:e.share/shares,travel_seconds:0}));
         }
+    }
+    // Daily workshop recipes can start after this draft. Price crop choices
+    // after their operator policies are known, even if their draft rate is zero.
+    if(routes.some(r=>r.jobs?.length))for(const {key,eligible,ability,level} of fieldRequests){
+        const entries=preferCropWorkers(policy[key],eligible,planned.get(key)||[],ability,level,members,outside,available,workshops);
+        policy[key]=entries.map(e=>({...e,travel_seconds:0}));
     }
     const routed={storages:layout.storages,pieces:layout.pieces.map(p=>({...p,members:p.members.map(m=>({...m}))}))};
     const focused=focusedWorkers(sites,members,routes,policy);

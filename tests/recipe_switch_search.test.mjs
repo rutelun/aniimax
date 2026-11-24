@@ -125,3 +125,27 @@ test('an upgrade material gain breaks a tie after the selected priorities and in
     assert.equal(improvesPlan({...ordinary,comparison_scores:{material_pace:3,material_work:4}},
         {...ordinary,comparison_scores:{material_pace:3,material_work:2}}),true);
 });
+
+test('workshop selection protects player priorities and compares the actual upgrade horizon on tied income',async()=>{
+    const {prefersWorkshopPlan}=await import('../web/recipe-switch-search.js');
+    const coins={...baseline,priorities:[{target:'coins',per_second:1}],level_up_preview:{seconds:100}};
+    const faster={...coins,level_up_preview:{seconds:90},recipe_schedule:{switches:[1]}};
+    assert.ok(prefersWorkshopPlan(faster,coins));
+    const lowerIncome={...faster,rate_per_second:.9,priorities:[{target:'coins',per_second:.9}]};
+    assert.equal(prefersWorkshopPlan(lowerIncome,coins),false);
+    const levelUp={...coins,priorities:[{target:'level_up',per_second:0},...coins.priorities]};
+    assert.ok(prefersWorkshopPlan({...lowerIncome,priorities:[levelUp.priorities[0],...lowerIncome.priorities]},levelUp));
+    assert.equal(prefersWorkshopPlan({...coins,recipe_schedule:{switches:[1]}},coins),false);
+    assert.ok(prefersWorkshopPlan(coins,{...coins,recipe_schedule:{switches:[1]}}));
+    const crew=n=>({...coins,roster_workload:[.2],recipe_schedule:{switches:[1],workerProfiles:{0:[n,.2]}}});
+    assert.ok(prefersWorkshopPlan(crew(1),crew(2)));
+    assert.equal(prefersWorkshopPlan(crew(2),crew(1)),false);
+});
+test('workshop capacity trials pass the common physical schedule check',async()=>{
+    const {validateWorkshopCapacity}=await import('../web/recipe-switch-search.js');
+    const found=await validateWorkshopCapacity(input,candidate,baseline,m=>highs.solve(m.lp));
+    assert.equal(found.recipe_schedule.switchedBuildings.length,1);
+    assert.equal(found.recipe_switching_candidate,undefined);
+    const impossible={...candidate,schedule_sources:candidate.schedule_sources.map(s=>({...s,rate:1}))};
+    assert.equal(await validateWorkshopCapacity(input,impossible,baseline,m=>highs.solve(m.lp)),null);
+});

@@ -7,6 +7,10 @@ export async function searchMaterials(problem, incumbent, solve, options) {
     // with the actual solver score, including the preference for the player's own workers.
     const score = result => result.objective - (problem.tiebreak || [])
         .reduce((sum, [v, weight]) => sum + weight * (result.values[v] || 0), 0);
+    // A positive required input needs at least one whole production site.
+    // Give the same valid inequalities to the MIP and to its LP bound.
+    const cuts=requiredSiteRows(problem);
+    if(cuts.length)problem={...problem,lp:problem.lp.replace('\nBounds\n','\n'+cuts.join('\n')+'\nBounds\n')};
     let seed = null;
     if (incumbent?.length === problem.variables && problem.material_fixed?.length) {
         const fixed = problem.material_fixed.map(v => ` material_fix_${v}: x${v} = ${Math.round(incumbent[v])}`).join('\n');
@@ -16,12 +20,8 @@ export async function searchMaterials(problem, incumbent, solve, options) {
     if (seed && problem.primary_objective?.length) {
         // Keep the same objective in this upper bound. Proving only the raw output could
         // accept a reserve-heavy seed before comparing an equally productive owned team.
-        // A flow that is required even at this stage consumes a whole
-        // physical site. Keep those implications in the optimistic LP.
-        const cuts=problem.requiredUpgradeFlow?requiredSiteRows(problem):[];
         const lp=problem.lp.replace(/\nGeneral\n[\s\S]*\nEnd/, '\nEnd');
-        const relaxed = { ...problem, tiebreak: [], lp:cuts.length
-            ? lp.replace('\nBounds\n','\n'+cuts.join('\n')+'\nBounds\n') : lp };
+        const relaxed = { ...problem, tiebreak: [], lp };
         const bound = await solve(relaxed, { ...options, time_limit: Math.min(2, options.time_limit ?? 2) });
         if (bound?.proven && score(seed) >= bound.objective - 1e-9) {
             return { ...seed, proven: true };

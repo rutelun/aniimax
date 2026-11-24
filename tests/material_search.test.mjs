@@ -68,7 +68,7 @@ test('equal output cannot hide a reserve-heavy seed from the owned-worker prefer
 });
 
 test('a mandatory recipe reserves a whole site in the material bound and proves the seed',async()=>{
-    const p={requiredUpgradeFlow:true,variables:5,variable_keys:['rate:a','rate:b','units:a','units:b','pace#0'],
+    const p={continuousMaterialSearch:true,variables:5,variable_keys:['rate:a','rate:b','units:a','units:b','pace#0'],
         material_fixed:[2],primary_objective:[[1,1]],tiebreak:[],
         recipe_options:[[0,'a'],[1,'b']],
         lp:'Maximize\n obj: x1\nSubject To\n supply: x0 - x4 >= 0\n a: x0 - x2 <= 0\n b: x1 - x3 <= 0\n sites: x2 + x3 <= 2\nBounds\n 0 <= x0 <= 2\n 0 <= x1 <= 2\n 0 <= x2 <= 2\n 0 <= x3 <= 2\n 0.25 <= x4 <= 0.25\nGeneral\n x2\n x3\nEnd'};
@@ -76,6 +76,7 @@ test('a mandatory recipe reserves a whole site in the material bound and proves 
     const high=await highsModule({wasmBinary:await readFile(new URL('../web/vendor/highs/highs.wasm',import.meta.url)),print(){},printErr(){}});
     const solve=async model=>{
         calls++;
+        assert.match(model.lp,/required_site_0:/);
         const r=solveWithIncumbent(high,model,{mip_rel_gap:0});
         return {objective:r.ObjectiveValue,proven:r.Status==='Optimal',
             values:model.variable_keys.map((_,v)=>r.Columns['x'+v].Primal)};

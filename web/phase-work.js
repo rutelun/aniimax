@@ -7,11 +7,14 @@ export function splitPhaseTasks(tasks,durations,minimum=0) {
     const demand=durations.map((_,p)=>tasks.reduce((n,t)=>n+t.busy*(t.profile?.[p]??1),0));
     const count=Math.max(minimum,Math.ceil(Math.max(0,...demand)-1e-6));
     const shifts=Array.from({length:count},()=>({busy:0,tasks:new Map(),phaseBusy:Array(durations.length).fill(0),profiles:new Map()}));
-    const ordered=[...tasks].sort((a,b)=>Number(!!b.fixed)-Number(!!a.fixed)||Number(!!a.profile)-Number(!!b.profile)||b.busy-a.busy);
+    const order=t=>t.delivery?2:t.crop?1:0;
+    const ordered=[...tasks].sort((a,b)=>Number(!!b.fixed)-Number(!!a.fixed)||order(a)-order(b)||Number(!!a.profile)-Number(!!b.profile)||b.busy-a.busy);
     durations.forEach((duration,p)=>{
+        let growers;
         for(const task of ordered) {
             let work=task.busy*(task.profile?.[p]??1);
-            for(const shift of shifts) {
+            if(task.crop)growers??=[...shifts].sort((a,b)=>a.phaseBusy[p]-b.phaseBusy[p]);
+            for(const shift of task.crop?growers:shifts) {
                 const part=Math.min(work,Math.max(0,1-shift.phaseBusy[p]));
                 if(part>1e-10){
                     shift.phaseBusy[p]+=part;

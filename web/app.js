@@ -1998,14 +1998,58 @@ function renderHomelandLayout(plan, keepLayout = false) {
         .replace('{level}', homeLevel).replace('{n}', storageLimit);
     if (layoutWorker) layoutWorker.terminate();
     layoutWorker = null;
+    const ordinary=plan.workshop_route_fallback;
+    let ordinaryRequest,ordinaryLayout,ordinaryLayoutKey;
+    if(ordinary){
+        const {key,...options}=layoutOptionsFor(ordinary,homeLevel);
+        ordinaryLayoutKey=key;
+        if(options.staffing)options.staffing.dispatch=ordinary.roster_dispatch??null;
+        ordinaryRequest={pieces:homelandPieces(ordinary,lastPlanInput).pieces,...options};
+        ordinaryLayout=layoutsByPlan.get(ordinary)?.get(key);
+        if(!ordinaryLayout && routePreview?.layoutOnly && routePreview.runId===planRunId &&
+            routePreview.layoutInput===JSON.stringify(ordinaryRequest)){
+            ordinaryLayout=routePreview.layout.catch(()=>null);
+            routePreview=null;
+        }
+    }
+    const restoreOrdinary=previous=>{
+        // The roster setup key includes its dispatch. Retire the rejected
+        // candidate from both lookup keys when returning to the ordinary map.
+        const candidateSetup=selectedAniimoSetup();
+        reactiveDispatch=previous.roster_dispatch??{};
+        for(const key of new Set([candidateSetup,selectedAniimoSetup()]))plansBySetup[key]=previous;
+        showSelectedPlan(true);
+    };
     const applyLayout = async layout => {
         if (runId !== layoutRunId) return;
         const measured=measuredMaterialLayouts.get(plan);
         if(measured && measured.layout!==layout){
-            reactiveDispatch=measured.ordinary.roster_dispatch;
-            plansBySetup[selectedAniimoSetup()]=measured.ordinary;
-            showSelectedPlan();
+            restoreOrdinary(measured.ordinary);
             return;
+        }
+        if(ordinary && !measured){
+            try{
+                const map=(await ordinaryLayout)??await runMapWorker(WORKER_URL.replace('worker.js','layout-worker.js'),ordinaryRequest);
+                if(runId!==layoutRunId)return;
+                rememberLayout(ordinary,ordinaryLayoutKey,map);
+                measureRosterRoutes(map,ordinary,ordinary.roster_dispatch);
+                const {verifyMappedWorkshopCandidate}=await import('./mapped-material-schedule.js');
+                if(runId!==layoutRunId)return;
+                const {members,busy}=rosterWorkload(plan);
+                const context={layout,members,busy,recipes:recipeIndex,routes:plan.roster_routes??[],
+                    permanent:permanentWorkers(plan,members,RESIDENT_FACILITIES)};
+                if(unplaced.length || !verifyMappedWorkshopCandidate(plan,context,ANIIMO_MAX[homeLevel-1],ordinary.crop_peaks)){
+                    restoreOrdinary(ordinary);
+                    return;
+                }
+                measuredMaterialLayouts.set(plan,{layout,ordinary});
+                delete plan.workshop_route_fallback;
+            }catch(error){
+                if(runId!==layoutRunId)return;
+                console.warn('Keeping the ordinary roster plan after checking workshop routes.',error);
+                restoreOrdinary(ordinary);
+                return;
+            }
         }
         rememberLayout(plan, layoutKey, layout);
         const storages = layout.storages;
@@ -2213,6 +2257,8 @@ function renderHomelandLayout(plan, keepLayout = false) {
     solver.onerror = solver.onmessageerror = (event) => {
         console.error('Homeland layout failed:', event.message || event);
         if (runId !== layoutRunId) return;
+        const previous=ordinary??measuredMaterialLayouts.get(plan)?.ordinary;
+        if(previous){restoreOrdinary(previous);return;}
         stopLayout();
         document.getElementById('layout-summary').textContent = 'The layout couldn\'t be worked out.';
         setStep(layoutStep, 'fail');
@@ -3740,7 +3786,11 @@ function rosterCopyShifts(plan, members, assigned, walking) {
         facilityByTask.set(label, facility);
         return label;
     };
-    const addMobile = (member, label, share) => routes[member]?.push({ jobs: [[label, share]] });
+    const cropLabels = new Set();
+    const deliveryLabel = translate('Hauling to Storage Units');
+    const addMobile = (member, label, share) => routes[member]?.push({
+        jobs: [[label, share]], crop: cropLabels.has(label), delivery: label===deliveryLabel,
+    });
     const walkingLabel = translate('Walking between jobs');
     const detailed = plan.roster_routes?.length > 0;
     for (const step of plan.coin_items || []) {
@@ -3776,12 +3826,16 @@ function rosterCopyShifts(plan, members, assigned, walking) {
                 ]);
             }
             const key=routeDispatchKey(route,recipeIndex);
-            routes[route.member].push({ station: route.station, jobs, localPlots: route.local_plots,
+            const crop = route.facility==='Farmland' || route.facility==='Woodland';
+            if(crop)for(const [label] of jobs)cropLabels.add(label);
+            routes[route.member].push({ station: route.station, jobs, crop, localPlots: route.local_plots,
                 copyShares:plan.crop_peaks?.copyShares?.[`${key}|${route.member}`] });
         }
     } else {
         for (const [ability, , member, share] of plan.crop_assignments || []) {
-            addMobile(member, `${translate('Crop work')} · ${translate(ability)}`, share);
+            const label = `${translate('Crop work')} · ${translate(ability)}`;
+            cropLabels.add(label);
+            addMobile(member, label, share);
         }
         for (const [member, share] of walking.entries()) {
             if (share > 0) addMobile(member, walkingLabel, share);
@@ -3804,7 +3858,7 @@ function rosterCopyShifts(plan, members, assigned, walking) {
             for(const [key,value] of profiles){const [facility,item]=key.split('|'),label=`${translate(facility)} (${prettyItem(item)})`;labels.set(label,value);labels.set(`${walkingLabel} → ${label}`,value);}
             labels.set(translate('Hauling to Storage Units'),plan.recipe_schedule.haulingProfiles?.[member]);
             for(const shift of shifts)for(const [label,busy] of shift.tasks)totals.set(label,(totals.get(label)||0)+busy);
-            shifts = splitPhaseTasks([...totals].map(([label,busy])=>({label,busy,profile:labels.get(label),fixed:fixed[member].some(([name])=>name===label)})),plan.recipe_schedule.phases.map(p=>p.duration),assigned[member]);
+            shifts = splitPhaseTasks([...totals].map(([label,busy])=>({label,busy,crop:cropLabels.has(label),delivery:label===deliveryLabel,profile:labels.get(label),fixed:fixed[member].some(([name])=>name===label)})),plan.recipe_schedule.phases.map(p=>p.duration),assigned[member]);
         }
         return shifts.map(shift => ({ ...shift, allocations: [...shift.tasks].map(([label, busy]) =>
             ({ facility: facilityByTask.get(label), busy })) }));

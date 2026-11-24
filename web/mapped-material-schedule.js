@@ -3,11 +3,11 @@
 import {materialChains,materialFlowSchedules} from './material-flow-schedule.js';
 import {scheduleInputForPlan,attachRecipeSchedule} from './recipe-schedule-plan.js';
 import {improvesPlan} from './recipe-switch-search.js';
-import {cropPeakInput,selectCropPeakTeam} from './crop-peaks.js';
+import {cropPeakInput,growerOutsideLoad,keepsGrowerAvailability,selectCropPeakTeam} from './crop-peaks.js';
 import {prepareRecurringCropWork} from './recurring-crops.js';
 import {draftMaterialPlans,materialUpgradeBound} from './material-plan-draft.js';
 import {siteSchedule} from './recipe-timeline.js';
-import {buildReactiveDispatch,measuredDispatchWork,attachDeliveryFlows,permanentWorkers} from './reactive-dispatch.js';
+import {buildReactiveDispatch,measuredDispatchWork,attachDeliveryFlows,permanentWorkers,routeDispatchKey} from './reactive-dispatch.js';
 
 // Fitting a shift can leave a few ulps of delivery on a full-time operator.
 export function courierNeedsSpare(load,used,capacity){
@@ -137,36 +137,67 @@ function placeMaterialSchedule(layout,plan){
 
 // When a raw recipe runs on two sites their delivery distances can differ.
 // Measure the active lanes again in each phase, using their actual batch rates.
-function checkMappedPhases(plan,map,policy,context,limit,reference){
+function checkMappedPhases(plan,map,policy,context,limit,reference,checkPrices=false){
     const schedule=plan.recipe_schedule, counts=reference.counts.slice(), members=context.members;
     const needed=context.permanent.slice(), growers=new Set();
     for(const [,id,n] of plan.roster_posts??[])needed[id]+=n;
     const delivery=new Map(), phases=[], profiles={}, daily=new Map(plan.hauling_staffing);
-    let worst,worstCrop,worstSimulator;
-    const jobs=new Map(schedule.jobs.map(j=>[j.id,j]));
+    let worst,worstCrop,worstSimulator,maxOutside=0;
+    const key=(facility,item,variant)=>JSON.stringify([facility,item,variant??null]);
+    const fixed=schedule.fixedProduction??[], allJobs=[...schedule.jobs,...fixed];
     for(const [index,phase] of schedule.phases.entries()){
-        const layout=structuredClone(map),rates=new Map(schedule.jobs.map(j=>[JSON.stringify([j.facility,j.item,j.electric_level]),0]));
-        for(const a of phase.assignments){
-            const j=jobs.get(a.job),key=JSON.stringify([j.facility,j.item,j.electric_level]);
-            rates.set(key,(rates.get(key)??0)+a.batches/phase.duration);
+        const layout=structuredClone(map), work=new Map(),rates=new Map(),manual=new Map();
+        for(const a of phase.assignments)work.set(a.job,(work.get(a.job)??0)+a.batches/phase.duration);
+        for(const job of allJobs){
+            const k=key(job.facility,job.item,job.electric_level);
+            const rate=phase.fixedRates?.[job.id]??work.get(job.id)??0;
+            rates.set(k,(rates.get(k)??0)+rate);
+            if(job.crew!=null){
+                const workerKey=key(job.facility,job.item,job.crew),total=manual.get(workerKey)??[0,0];
+                total[0]+=rate;
+                total[1]+=job.rate;
+                manual.set(workerKey,total);
+            }
         }
-        for(const s of layout.pieces.flatMap(p=>p.members))if(s.scheduleId){
-            for(const job of s.jobs)job.rate=s.schedulePhases[index].rates[job.item]??0;
-            s.batchWeight=s.jobs.reduce((n,j)=>n+j.rate*3600,0);
+        const fixedByRecipe=new Map(fixed.map(j=>[key(j.facility,j.item,j.electric_level),j]));
+        for(const site of layout.pieces.flatMap(p=>p.members)){
+            if(site.scheduleId && site.jobs?.length){
+                for(const job of site.jobs)job.rate=site.schedulePhases[index].rates[job.item]??0;
+                site.batchWeight=site.jobs.reduce((n,j)=>n+j.rate*3600,0);
+            }else{
+                const job=fixedByRecipe.get(key(site.facility,site.crop,site.electric_level));
+                if(job)site.batchWeight=(site.batchWeight??site.weight??0)*(phase.fixedRates?.[job.id]??0)/job.rate;
+            }
         }
         const steps=plan.coin_items.map(s=>{
-            const key=JSON.stringify([s.facility,s.item_name,s.electric_level]);
-            return rates.has(key)?{...s,busy_units:rates.get(key)*s.cycle_time}:s;
+            const k=key(s.facility,s.item_name,s.electric_level);
+            if(s.status!=='producing' || !rates.has(k))return s;
+            // Dispatched copies may have several rows for the same product.
+            // Its combined delivery rate is charged once.
+            const rate=rates.get(k);
+            rates.set(k,0);
+            return {...s,busy_units:rate*s.cycle_time};
         });
-        const shift={...context,layout,busy:plan.roster_workload,routes:plan.roster_routes};
+        const workerRoutes=(plan.roster_routes??[]).map(route=>{
+            const scale=manual.get(key(route.facility,route.item,route.member));
+            if(!scale || !checkPrices)return route;
+            const share=scale[0]/scale[1];
+            return {...route,visits:route.visits*share,walking:route.walking*share,job_rate:route.job_rate*share,
+                jobs:route.jobs.map(([name,n])=>[name,n*share])};
+        });
+        const shift={...context,layout,busy:plan.roster_workload,routes:workerRoutes};
         const routes=buildReactiveDispatch({...shift,previous:policy});
-        const measured=measuredDispatchWork({...plan,coin_items:steps},routes,context.recipes);
+        const phasePlan={...plan,coin_items:steps,roster_routes:workerRoutes};
+        if(checkPrices && !keepsWorkRoutes(phasePlan,routes,context.recipes))return false;
+        const measured=measuredDispatchWork(phasePlan,routes,context.recipes);
         const walked=new Map(measured.walking),haul=new Map(measured.delivery);
         const busy=members.map((_,i)=>schedule.workerProfiles[i][index]
             -(daily.get(i)??0)*(schedule.haulingProfiles[i]?.[index]??0)+(walked.get(i)??0));
         if(busy.some((n,i)=>!Number.isFinite(n)||n+(haul.get(i)??0)>counts[i]+1e-7)
             || measured.delivery.some(([i,n])=>courierNeedsSpare(n,busy[i]+n,counts[i])))return false;
         const crop=cropPeakInput({...shift,busy,delivery:measured.delivery,limit});
+        maxOutside=Math.max(maxOutside,growerOutsideLoad(crop,counts));
+        if(!keepsGrowerAvailability(maxOutside,reference.growerOutsideLoad))return false;
         if(crop.jobs.some(j=>!(j.cycle>0)))return false;
         for(const job of crop.jobs)for(const i of job.eligibleMembers)growers.add(i);
         for(const [i,n] of busy.entries()){
@@ -200,8 +231,48 @@ function checkMappedPhases(plan,map,policy,context,limit,reference){
         remaining[i]--;
         return worstSimulator(remaining,false).completion;
     });
-    plan.crop_peaks={...report,...worst,counts,baseCounts,withoutHelper,targetMet:worst.completion<reference.targetSeconds};
+    plan.crop_peaks={...report,...worst,growerOutsideLoad:maxOutside,counts,baseCounts,withoutHelper,targetMet:worst.completion<reference.targetSeconds};
     plan.delivery_assignments=[...delivery];
+    return true;
+}
+
+// Compare individual visits. Opposite walking errors on two jobs performed
+// by one worker would otherwise cancel in the daily workload.
+function keepsWorkRoutes(plan,policy,recipes){
+    for(const route of plan.roster_routes??[]){
+        if(!(route.visits>0))continue;
+        const key=routeDispatchKey(route,recipes);
+        const entry=policy[key]?.find(e=>e.member===route.member && e.share>0);
+        if(!entry || Math.abs(entry.travel_seconds*route.visits-route.walking)>1e-7)return false;
+    }
+    return true;
+}
+
+export function verifyMappedWorkshopCandidate(plan,context,limit,reference){
+    const {layout,recipes,members}=context;
+    if(!Number.isFinite(reference?.completion)||layout.unplaced?.length || layout.power?.disconnected)return false;
+    const policy=buildReactiveDispatch({...context,previous:plan.roster_dispatch});
+    if(!keepsWorkRoutes(plan,policy,recipes))return false;
+    const measured=measuredDispatchWork(plan,policy,recipes);
+    const charged=new Map(plan.hauling_staffing),delivery=new Map(measured.delivery);
+    for(const id of new Set([...charged.keys(),...delivery.keys()])){
+        if(Math.abs((charged.get(id)??0)-(delivery.get(id)??0))>1e-7)return false;
+    }
+    const crop=cropPeakInput({...context,delivery:measured.delivery,limit});
+    const counts=crop.counts.map((n,i)=>Math.max(n,Math.ceil(Math.max(
+        context.busy[i]+(delivery.get(i)??0),...(plan.recipe_schedule?.workerProfiles?.[i]??[]))-1e-7)));
+    if(counts.some((n,i)=>!Number.isFinite(n) || n>members[i].count) || counts.reduce((a,b)=>a+b,0)>limit)return false;
+    const peak=selectCropPeakTeam({...crop,counts});
+    if(peak.uncovered || !keepsCropTime(peak.completion,reference) ||
+        !keepsGrowerAvailability(peak.growerOutsideLoad,reference.growerOutsideLoad))return false;
+    if(plan.recipe_schedule){
+        if(!checkMappedPhases(plan,layout,policy,context,limit,{...reference,counts:peak.counts},true))return false;
+    }else{
+        plan.crop_peaks=peak;
+        plan.delivery_assignments=measured.delivery;
+    }
+    plan.reactive_dispatch=policy;
+    attachDeliveryFlows(layout,policy,recipes,members,plan.roster_routes);
     return true;
 }
 

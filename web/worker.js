@@ -12,7 +12,7 @@ import {continuousProduction,withCompetingConsumers} from './continuous-producti
 import {continuousNeighborhood, incomeRepairNeighborhood, neighborhoodResult, keepProductionWitness} from './continuous-neighborhood.js';
 import {comparisonConcurrency} from './comparison-queue.js';
 import {switchingWorkshops} from './material-flow-schedule.js';
-import {proveFirstSwitch,searchRecipeSwitches,checkMaterialDraft} from './recipe-switch-search.js?v=validated-upgrade';
+import {searchRecipeSwitches,validateWorkshopCapacity} from './recipe-switch-search.js?v=workshop-capacity';
 import {refineStaffing} from './staffing-search.js';
 import {economicWorkers} from './economic-parallel.js';
 import {comparePlans} from './opportunity-comparison.js';
@@ -715,7 +715,7 @@ async function exactPlanJsonOnce(pkg, payload, step = () => {}, first = () => {}
         };
         if (workProblem.lp) {
             step('materials', 'start');
-            const worked = await (await materialSearch).searchMaterials({...workProblem,continuousMaterialSearch:true,requiredUpgradeFlow:input.prove_early_switch && stage.pace>0}, solved.values, runModel, options);
+            const worked = await (await materialSearch).searchMaterials({...workProblem,continuousMaterialSearch:true}, solved.values, runModel, options);
             step('materials', worked ? 'done' : 'fail', worked?.proven);
             if (worked) {
                 allProven &&= solved.proven;
@@ -959,14 +959,26 @@ async function canFillWorkshop(pkg,trial,baseline) {
     return canFillSwitchingWorkshop(pkg,await newHighs(),trial,baseline);
 }
 
-async function withRecipeSwitches(pkg,input,baseline,progress=()=>{},timed=false,firstProposal,workshopProof) {
-    const deadline=timed ? performance.now()+10000 : null;
-    if(!timed && input.roster && input.priorities?.[0]==='level_up'){
+function usesWorkshopCapacitySearch(input) {
+    return !input.level_up && !input.level_up_strategy && !input.prioritize_byproducts;
+}
+
+async function withRecipeSwitches(pkg,input,baseline,progress=()=>{},timed=false,workshopProof) {
+    if(!timed && baseline.success && usesWorkshopCapacitySearch(input)){
         try{
-            const {draftMaterialPlans}=await import('./material-plan-draft.js');
-            baseline=draftMaterialPlans(pkg,await newHighs(),input,baseline,checkMaterialDraft);
-        }catch(error){console.warn('Continuing workshop search after a material draft failed.',error);}
+            const {searchWorkshopCapacity}=await import('./workshop-capacity.js');
+            const highs=await newHighs();
+            const validate=(trial,plan,previous)=>validateWorkshopCapacity(trial,plan,previous,model=>highs.solve(model.lp,{mip_rel_gap:0}));
+            const selected=await searchWorkshopCapacity(pkg,highs,input,baseline,{validate,progress});
+            if(input.roster && selected!==baseline)return {...selected,workshop_route_fallback:baseline};
+            return selected;
+        }catch(error){
+            console.warn('Keeping the ordinary workshop plan after a capacity fit failed.',error);
+            return {...baseline,recipe_switching_note:'Keeping the verified ordinary workshop plan.',
+                recipe_switching_detail:String(error.message||error)};
+        }
     }
+    const deadline=timed ? performance.now()+10000 : null;
     // A switch changes the workshop constraints while preserving the measured
     // routes. Refit the ordinary shift in each trial; its previous upper bound
     // cannot certify income with the new constraints.
@@ -978,7 +990,7 @@ async function withRecipeSwitches(pkg,input,baseline,progress=()=>{},timed=false
     const workshopBaseline=!timed && input.always_running ? {success:baseline.success,
         workshopProof,routeWitness,comparison_scores:{crop_variety:baseline.comparison_scores?.crop_variety},
         priorities:baseline.priorities?.slice(0,1),level_up_preview:{seconds:baseline.level_up_preview?.seconds}} : null;
-    return searchRecipeSwitches(input,baseline,{firstProposal,workshopBaseline,
+    return searchRecipeSwitches(input,baseline,{workshopBaseline,
         canFillWorkshop:workshopBaseline ? trial=>canFillWorkshop(pkg,trial,workshopBaseline) : null,
         parallel:globalThis.navigator?.hardwareConcurrency>=8 && globalThis.navigator?.deviceMemory>=8
             ? 4 : comparisonConcurrency(globalThis.navigator,4),
@@ -1090,14 +1102,6 @@ self.onmessage = async (event) => {
             const measureFirst = switchingInput.map_dispatch_pending && switchingInput.roster
                 && !Object.keys(switchingInput.roster.dispatch || {}).length
                 && switchingInput.always_running && switchingWorkshops(switchingInput).length>0;
-            const firstSwitch = !measureFirst && await proveFirstSwitch(switchingInput, async trial => {
-                const {upgradeSwitchBounds} = await import('./recipe-switch-bound.js');
-                return upgradeSwitchBounds(pkg,await newHighs(),switchingInput,trial);
-            }, async trial => JSON.parse(await exactPlanJson(pkg,JSON.stringify({...trial,prove_early_switch:true}))), step);
-            if (firstSwitch?.winner) {
-                self.postMessage({id,ok:true,result:JSON.stringify(firstSwitch.winner)});
-                return;
-            }
             try {
                 let top = null;
                 result = await exactPlanJson(pkg, payload, step, found => { top ||= found; },
@@ -1144,7 +1148,7 @@ self.onmessage = async (event) => {
                     && comparisonConcurrency(globalThis.navigator,2)>1) {
                     self.postMessage({id,type:'progress',count:{ordinaryForMap:result,layoutOnly:measuredLayout}});
                 }
-                const selected=await withRecipeSwitches(pkg,switchingInput,ordinary,step,false,firstSwitch?.proposed,workshopProof);
+                const selected=await withRecipeSwitches(pkg,switchingInput,ordinary,step,false,workshopProof);
                 result=JSON.stringify(selected);
             }
             self.postMessage({ id, ok: true, result });

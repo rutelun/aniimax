@@ -16,7 +16,7 @@ export function solveEconomicBound(highs, problem, {seed, scope = [], timeLimit 
         const precision = {mip_abs_gap:0, mip_rel_gap:relativeGap,
             primal_feasibility_tolerance:discovery?1e-7:1e-9, mip_feasibility_tolerance:discovery?1e-8:1e-9};
         const certifyIncome = exact && !discovery && relativeGap > 0 && Number.isFinite(incomeTarget) && incomeTarget > 0;
-        const nativeOptions = exact ? precision : planSearchOptions({time_limit:timeLimit,...precision});
+        const {incumbentIterations,...nativeOptions} = exact ? precision : planSearchOptions({time_limit:timeLimit,...precision});
         if (discovery) nativeOptions.mip_max_nodes = Math.ceil(128*timeLimit);
         model.options.set(nativeOptions);
         // A partial integer start can make HiGHS 1.15.1 report its repaired
@@ -40,7 +40,7 @@ export function solveEconomicBound(highs, problem, {seed, scope = [], timeLimit 
             if (warm.indices.length) model.setSolution(warm);
         }
         const run = () => {
-            if (!certifyIncome) return runPlanModel(model,highs,!exact && (seed || discovery) ? Math.ceil(timeLimit * 4000) : undefined);
+            if (!certifyIncome) return runPlanModel(model,highs,!exact && (seed || discovery) ? Math.ceil(timeLimit * 4000) : undefined,undefined,incumbentIterations);
             // A relaxed shift may earn more than the already verified physical
             // shift. Its relative gap alone cannot certify that physical income.
             const callbacks={};
