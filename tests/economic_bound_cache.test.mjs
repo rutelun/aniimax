@@ -67,3 +67,21 @@ test('recipe proposals leave the bound request pending until its certificate arr
         assert.deepEqual(proposals,[['ore']]);
     }finally{pool.close();}
 });
+
+test('a large measured model can reuse its dual bound at the requested gap', async()=>{
+    const keys=Array.from({length:6500},(_,v)=>'continuous_site:Workshop|recipe_'+v);
+    const problem={lp:'measured dispatch',variables:keys.length,variable_keys:keys};
+    const options={exact:true,relativeGap:.002,incomeTarget:100.2};
+    let calls=0;
+    const result={proven:false,keys,upper:100.15,objective:100,values:keys.map((_,v)=>v===3?1:0)};
+    const solve=()=>{calls++;return result;};
+    await cachedEconomicBound(problem,options,solve);
+    const hit=await cachedEconomicBound(problem,options,solve);
+    assert.equal(calls,1);
+    assert.deepEqual(hit,result);
+    hit.values[3]=0;
+    assert.equal((await cachedEconomicBound(problem,options,solve)).values[3],1);
+    await cachedEconomicBound(problem,{...options,relativeGap:.0001,incomeTarget:100.01},solve);
+    await cachedEconomicBound(problem,{...options,relativeGap:.0001,incomeTarget:100.01},solve);
+    assert.equal(calls,3);
+});

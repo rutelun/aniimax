@@ -65,7 +65,7 @@ export async function cachedEconomicBound(problem,options,solve) {
     // A certification solve uses seed presence only to select its iteration
     // budget. Candidate values themselves never enter this solve.
     const settings = {...options,seed:!!options.seed};
-    const bytes = new TextEncoder().encode(JSON.stringify([import.meta.url,problem,settings]));
+    const bytes = new TextEncoder().encode(JSON.stringify([2,import.meta.url,problem,settings]));
     let digest;
     try { digest = await crypto.subtle.digest('SHA-256',bytes); }
     catch { return solve(problem,options); }
@@ -75,13 +75,35 @@ export async function cachedEconomicBound(problem,options,solve) {
         try { hit = await read(key); } catch { /* Storage is optional in private browsing. */ }
         if (hit) remember(key,hit);
     }
-    if (hit) return structuredClone(hit);
+    if (hit) {
+        const result = structuredClone(hit.result);
+        if (hit.useModelKeys) result.keys = problem.variable_keys.slice();
+        return result;
+    }
     const result = await solve(problem,options);
-    if (result?.proven && result.values?.length === problem.variables && Number.isFinite(result.upper)
-        && result.values.every(Number.isFinite) && Number.isFinite(result.objective) && Math.abs(result.upper-result.objective) <= 1e-8*Math.max(1,Math.abs(result.objective))
-        && JSON.stringify(result).length <= maxEntryChars) {
-        remember(key,structuredClone(result));
-        try { await write(key,result); } catch { /* Quota or storage permissions can change mid-solve. */ }
+    if (!Number.isFinite(result?.upper) || !Number.isFinite(result.objective)
+        || result.values?.length !== problem.variables || !result.values.every(Number.isFinite)) return result;
+    const gap = result.upper - result.objective;
+    const epsilon = 1e-8 * Math.max(1,Math.abs(result.objective));
+    const closed = result.proven && Math.abs(gap) <= epsilon;
+    // Keep the native dual bound and proof status. A measured search can also
+    // finish by certifying the physical income target or its requested MIP gap.
+    const withinTarget = options.exact && options.relativeGap > 0 && options.incomeTarget > 0
+        && gap >= -epsilon && (result.upper <= options.incomeTarget
+            || (result.objective >= options.incomeTarget && gap <= options.relativeGap * Math.abs(result.objective)));
+    if (closed || withinTarget) {
+        const entry = {result:{...result}};
+        // Column identities already form part of the cache key. Storing them
+        // a second time put measured roster models over the entry size limit.
+        if (result.keys && result.keys.length === problem.variable_keys?.length
+            && result.keys.every((key,i)=>key===problem.variable_keys[i])) {
+            delete entry.result.keys;
+            entry.useModelKeys = true;
+        }
+        if (JSON.stringify(entry).length <= maxEntryChars) {
+            remember(key,structuredClone(entry));
+            try { await write(key,entry); } catch { /* Quota or storage permissions can change mid-solve. */ }
+        }
     }
     return result;
 }

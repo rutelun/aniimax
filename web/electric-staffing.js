@@ -11,15 +11,14 @@ const catalogs=new WeakMap();
 // The draft objective charges headWeight per worker plus total workload.
 // At the minimum headcount, each pool works at most its assigned headcount.
 // Once that workload is below headWeight, adding a worker cannot improve the score.
-async function certifiedDraftShift(model, settings, solve, warm, counts, workload, headWeight) {
+async function solveDraftShift(model, settings, solve, warm, counts, workload, headWeight) {
     const minimize = terms => {
         const objective = terms.map(([v, cost]) => [v, -cost]);
         return {...model, primary_objective: objective,
             lp: model.lp.replace(/^Maximize\n[^\n]+/, 'Maximize\n obj: ' + expression(objective))};
     };
     // Price the two objectives with auxiliary integer selectors relaxed.
-    // The final replay must attain their combined bound in the original
-    // model, including all availability and worker assignments.
+    // Their combined bound gives the original model an early stopping target.
     const countModel=minimize(counts);
     const relaxSelectors=lp=>lp.replace(/\nGeneral\n([\s\S]*?)\nEnd/,(_,section)=>{
         const kept=section.trim().split(/\s+/).filter(name=>
@@ -43,8 +42,9 @@ async function certifiedDraftShift(model, settings, solve, warm, counts, workloa
     // Replay the original search to preserve its choice between equally scoring
     // physical layouts. That choice affects the next pass's measured routes.
     const replay = await solve(model, {...settings, objective_target: target - tolerance}, undefined, warm);
-    return replay?.values && Math.abs(sum(model.primary_objective, replay.values) - target) <= tolerance
-        ? replay : null;
+    // A feasible shift below the relaxed target has already used the original
+    // model's search budget. Pass it to the same production and staffing checks.
+    return replay?.values ? replay : null;
 }
 
 function contestedShifts(plan,catalog,roster){
@@ -282,9 +282,9 @@ export async function refineElectricStaffing(problem,incumbent,solve,{pkg,input,
         tiebreak:[],primary_objective:objective};
     const precision=provisional?{}:{mip_feasibility_tolerance:1e-9,primal_feasibility_tolerance:1e-9};
     const settings={mip_max_nodes:2147483647,mip_rel_gap:0,mip_abs_gap:0,...precision};
-    const certified=draftProof && workload.length && workload.every(([,c])=>c>=0)
-        ? await certifiedDraftShift(model,settings,solve,warm,counts,workload,headWeight) : null;
-    const result=certified ?? await solve(model,settings,undefined,warm);
+    const draft=draftProof && workload.length && workload.every(([,c])=>c>=0)
+        ? await solveDraftShift(model,settings,solve,warm,counts,workload,headWeight) : null;
+    const result=draft ?? await solve(model,settings,undefined,warm);
     if(!result?.values)return incumbent;
     const values=result.values.slice(0,original.length);
     if(values.length!==original.length||!values.every(Number.isFinite))return incumbent;
