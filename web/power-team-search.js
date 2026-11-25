@@ -6,7 +6,7 @@ import {createPowerTeamValidator} from './power-team-validation.js';
 const byEstimate = (a,b) => a.cropWorkshopDistractions-b.cropWorkshopDistractions || a.people-b.people || a.distractions-b.distractions
     || (Math.abs((a.manualWork??a.work)-(b.manualWork??b.work))>1e-7 ? (a.manualWork??a.work)-(b.manualWork??b.work) : 0)
     || a.work-b.work || b.plan.power_generated-a.plan.power_generated || a.plan.power_used-b.plan.power_used;
-const ordinaryModes = p => p.schedule_sources.filter(s=>!s.turns && s.electric_level!=null).map(s=>s.id).sort().join('|');
+const ordinaryModes = p => p.schedule_sources.filter(s=>!s.turns).map(s=>s.id).sort().join('|');
 
 function estimate(plan,recipes) {
     const jobs=productionTeamJobs(plan,recipes);

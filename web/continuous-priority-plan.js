@@ -1056,7 +1056,20 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
         if(!r?.values)return null;
         refined=await refineStaffing(local,r,solveModel,{pkg,input,report:values=>audit(values,true)});
     }
-    if(request.maximize_material_work)materialWork=sum(p.primary_objective,r.values);
+    if(request.maximize_material_work){
+        materialWork=sum(p.primary_objective,r.values);
+        if(materialNote==='unproven' && Number.isFinite(materialWork)){
+            // Verify against the catalogue-wide LP relaxation at the achieved
+            // priorities and raw income floor. Matching this global upper bound
+            // proves no higher Bench/Kiln workload exists anywhere.
+            const globalWork=exact(relaxed,request);
+            const boundedWork=globalWork?.lp ? keepRawIncome(productionObjective(globalWork),raw,minRate) : null;
+            const workCeiling=boundedWork ? priorityCeiling(highs,boundedWork,'material_work') : null;
+            if(Number.isFinite(workCeiling) && materialWork>=workCeiling-1e-6*Math.max(1,workCeiling)){
+                materialNote=null;
+            }
+        }
+    }
     let final=refined,plan=audit(final.values);
     if(!plan.success&&refined!==r){final=r;plan=audit(final.values);}
     if(!plan.success||!Number.isFinite(plan.rate_per_second)||plan.rate_per_second+1e-7<minRate||plan.rate_per_second>upper+1e-7)return null;

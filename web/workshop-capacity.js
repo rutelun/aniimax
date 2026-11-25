@@ -281,6 +281,45 @@ export async function searchWorkshopCapacity(pkg,highs,input,baseline,{validate,
                 const {trial,stage,problem,moving}=bestContext;
                 const payload=JSON.stringify(trial),stageJson=JSON.stringify(stage);
                 const fixedRecipes=best.recipe_schedule ? new Set(moving.flatMap(f=>materialChains[f])) : undefined;
+                const seedValues=best.comparison_seed.values;
+                const kept=new Set([...(best.active_continuous_recipes??[]),...(fixedRecipes??[]),
+                    ...(problem.recipe_variables??[]).filter(([v])=>Math.abs(seedValues[v]??0)>1e-12).map(([,name])=>name)]);
+                const off=new Set((problem.recipe_variables??[]).filter(([,name])=>!kept.has(name)).map(([v])=>v));
+                const report=values=>JSON.parse(pkg.exact_plan(payload,stageJson,
+                    JSON.stringify({values,proven:false,bound:0,verify_only:true,summary_only:true})));
+                let refinedLp=off.size ? problem.lp.replace(/^ (?:0 <= x(\d+) <= [^\n]+|x(\d+) >= 0)$/gm,
+                    (line,a,b)=>off.has(Number(a??b))?` 0 <= x${a??b} <= 0`:line) : problem.lp;
+                if(best.recipe_schedule){
+                    // Physical switching sites draw whole-building watts while the LP
+                    // prices fractional site shares. Reserve that exact watt overhead
+                    // so background E-mode switches never exceed the physical grid.
+                    const lpPower=report(seedValues)?.power_used??0;
+                    const extraWatts=Math.max(0,(best.power_used??lpPower)-lpPower);
+                    if(extraWatts>1e-6){
+                        const genCols=problem.variable_keys.flatMap((k,v)=>
+                            k==='generators#0'||k.startsWith('staff:Crackle Generator:')?[v]:[]);
+                        if(genCols.length){
+                            const genRe=new RegExp(` - \\d+(?:\\.\\d+)? x(?:${genCols.join('|')})\\b`);
+                            const lines=refinedLp.split('\n');
+                            for(let i=0;i<lines.length;i++){
+                                const genIdx=lines[i].search(genRe);
+                                if(genIdx<0 || !lines[i].endsWith(' <= 0'))continue;
+                                const drawPrefix=lines[i].slice(lines[i].indexOf(':')+1,genIdx);
+                                lines[i]=lines[i].slice(0,-5)+' <= '+(-extraWatts);
+                                for(let j=i-1;j>=0;j--){
+                                    const prev=lines[j].match(/^ c\d+:(.+) <= (\d+(?:\.\d+)?)$/);
+                                    if(prev && prev[1]===drawPrefix){
+                                        lines[j]=lines[j].slice(0,-prev[2].length)+Math.max(0,Number(prev[2])-extraWatts);
+                                        break;
+                                    }
+                                }
+                                break;
+                            }
+                            refinedLp=lines.join('\n');
+                        }
+                    }
+                }
+                const restricted=refinedLp!==problem.lp ? {...problem,lp:refinedLp} : problem;
                 const solve=async(model,settings,_,warm)=>{
                     let r=solveWithIncumbent(highs,model,settings,warm,false);
                     if(r.Status==='Infeasible')r=solveWithIncumbent(highs,model,{...settings,presolve:'off'},warm,false);
@@ -288,9 +327,7 @@ export async function searchWorkshopCapacity(pkg,highs,input,baseline,{validate,
                     return {values:Array.from({length:model.variables},(_,v)=>r.Columns['x'+v]?.Primal??0),
                         objective:r.ObjectiveValue,proven:true};
                 };
-                const report=values=>JSON.parse(pkg.exact_plan(payload,stageJson,
-                    JSON.stringify({values,proven:false,bound:0,verify_only:true,summary_only:true})));
-                const refined=await refineElectricStaffing(problem,{values:best.comparison_seed.values},solve,
+                const refined=await refineElectricStaffing(restricted,{values:best.comparison_seed.values},solve,
                     {pkg,input:trial,report,fixedRecipes});
                 if(refined?.values && refined.values!==best.comparison_seed.values){
                     const values=refined.values;

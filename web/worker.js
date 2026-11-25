@@ -869,13 +869,25 @@ async function repairProductionPriorities(pkg,input,seed) {
     if (work.recipe_variables.some(([v,name])=>result.values[v]>1e-9&&!checked.has(name))) return null;
     const plan = JSON.parse(pkg.exact_plan(payload,stageJson,JSON.stringify({values:result.values,proven:false,bound:upper})));
     if (!plan.success || plan.rate_per_second < seed.currencyTarget/CURRENCY_GAP_FACTOR) return null;
+    const materialWork = work.primary_objective.reduce((sum,[v,c])=>sum+c*result.values[v],0);
+    let materialNote = 'unproven';
+    if (Number.isFinite(materialWork)) {
+        const relaxedWork = productionObjective(JSON.parse(pkg.exact_problem(JSON.stringify({...input,always_running_recipes:[],restrict_to_checked_recipes:false}),stageJson)));
+        if (relaxedWork.lp) {
+            const lpCheck = (await newHighs()).solve(relaxedWork.lp.replace(/\nGeneral\n[\s\S]*?\nEnd/,'\nEnd'),
+                {primal_feasibility_tolerance:1e-9,dual_feasibility_tolerance:1e-9});
+            if (lpCheck.Status==='Optimal' && Number.isFinite(lpCheck.ObjectiveValue)
+                && materialWork >= lpCheck.ObjectiveValue - 1e-6*Math.max(1,lpCheck.ObjectiveValue))
+                materialNote = null;
+        }
+    }
     return {...plan,continuous_production_checked:true,continuous_checked_recipes:[...checked],
         active_continuous_recipes:work.recipe_variables.filter(([v])=>result.values[v]>1e-9).map(([,name])=>name),
         continuous_site_counts:Object.fromEntries([...physicalRecipeColumns(work)].map(([name,vs])=>
             [name,Math.round(vs.reduce((n,v)=>n+result.values[v],0))])),
         continuous_upper_bounds:seed.upperBounds,comparison_goals:{...seed.goals,floors:stage.floors,currency_value:found.objective},
-        comparison_seed:{keys:work.variable_keys,values:result.values},material_work_note:'unproven',
-        comparison_scores:{crop_variety,material_pace:null,material_work:result.objective,stock:null}};
+        comparison_seed:{keys:work.variable_keys,values:result.values},material_work_note:materialNote,
+        comparison_scores:{crop_variety,material_pace:null,material_work:materialWork,stock:null}};
 }
 
 // Recheck a completed shift against the dispatch policy measured on its map.
@@ -916,9 +928,10 @@ async function repairDispatchPlan(pkg, input, witness) {
     const materialWork = work.primary_objective.reduce((value,[v,c])=>value+c*(byKey.get(work.variable_keys[v])??0),0);
     if (materialWork < witness.scores.material_work - 1e-6) return null;
 
-    const relaxed = JSON.stringify({...input, always_running_recipes:[]});
+    const relaxed = JSON.stringify({...input, always_running_recipes:[], restrict_to_checked_recipes:false});
     const thresholds = new Map(floors);
-    thresholds.set(currency,solved.objective);
+    const rawCurrency = model.primary_objective.reduce((sum,[v,c])=>sum+c*solved.values[v],0);
+    thresholds.set(currency, rawCurrency);
     const stages = {floors:[]};
     const upperBounds = [];
     let currencyUpper;
@@ -946,12 +959,25 @@ async function repairDispatchPlan(pkg, input, witness) {
     if (!Number.isFinite(currencyUpper)) return null;
     const plan = JSON.parse(pkg.exact_plan(payload, stage, JSON.stringify({values:solved.values, proven:false, bound:currencyUpper})));
     if (!plan.success || currencyUpper - plan.rate_per_second > CURRENCY_RELATIVE_GAP * plan.rate_per_second) return null;
+    let materialNote = 'unproven';
+    if (Number.isFinite(materialWork)) {
+        const safeFloors = [...thresholds].map(([k,v])=>[k, k===currency ? Math.min(v, plan.rate_per_second) : v]);
+        const workStage = JSON.stringify({floors:safeFloors,pace,crop_variety,maximize_material_work:true});
+        const relaxedWork = productionObjective(JSON.parse(pkg.exact_problem(relaxed,workStage)));
+        if (relaxedWork.lp) {
+            const lpCheck = highs.solve(relaxedWork.lp.replace(/\nGeneral\n[\s\S]*?\nEnd/,'\nEnd'),
+                {primal_feasibility_tolerance:1e-9,dual_feasibility_tolerance:1e-9});
+            if (lpCheck.Status==='Optimal' && Number.isFinite(lpCheck.ObjectiveValue)
+                && materialWork >= lpCheck.ObjectiveValue - 1e-6*Math.max(1,lpCheck.ObjectiveValue))
+                materialNote = null;
+        }
+    }
     return {...plan, continuous_production_checked:true, continuous_checked_recipes:[...recipes],
         active_continuous_recipes:model.recipe_variables.filter(([v])=>solved.values[v]>1e-9).map(([,name])=>name),
         continuous_upper_bounds:upperBounds, comparison_seed:{keys:model.variable_keys,values:solved.values},
         comparison_goals:{...witness.goals,floors:[...thresholds],currency_value:plan.rate_per_second},
         comparison_scores:{crop_variety,material_pace:null,material_work:materialWork,stock:null},
-        material_work_note:'unproven'};
+        material_work_note:materialNote};
 }
 
 async function canFillWorkshop(pkg,trial,baseline) {

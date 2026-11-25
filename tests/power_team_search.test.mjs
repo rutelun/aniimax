@@ -167,3 +167,118 @@ test('prepared reusable native validator matches direct shortlistPowerTeams',asy
         prepared?.validator?.dispose?.();
     }
 });
+
+test('powerTeamCandidates consolidates split manual+electric recipes and multi-site fractional workshops',async()=>{
+    const {powerTeamCandidates,singleWorkshopUpgrades}=await import('../web/power-team-candidates.js');
+    const recipes=[
+        {name:'malt_sugar',facility:'Simmering Pot',facility_level:1,aniimo:['Fire',1]},
+        {name:'candied_strawberries',facility:'Pickling Jar',facility_level:4,aniimo:['Dark',3]},
+    ];
+    const input={e_mode_rv:17,facilities:{'Simmering Pot':[{level:5,count:2}],'Pickling Jar':[{level:4,count:2}]}};
+    const problem={
+        variable_keys:['rate:malt_sugar#0','rate:malt_sugar__electric5#0','rate:candied_strawberries#0','rate:candied_strawberries__electric4#0','generators#0'],
+        recipe_options:[
+            [0,'malt_sugar','Simmering Pot',false,false,100],[1,'malt_sugar','Simmering Pot',false,true,200],
+            [2,'candied_strawberries','Pickling Jar',false,false,45],[3,'candied_strawberries','Pickling Jar',false,true,90],
+        ],
+    };
+    const plan={
+        power_generators:1,power_used:90,power_generated:1000,power_generator_levels:[[3,3]],
+        generator_tiers_by_lightning:[0,0,3,3],generator_watts_by_lightning:[0,0,1000,1000],
+        schedule_sources:[
+            {facility:'Simmering Pot',item:'malt_sugar',id:'malt_sugar',facility_level:1,rate:0.002,cycle:100,turns:false,inputs:[],outputs:[['malt_sugar',1]],electric_level:null},
+            {facility:'Simmering Pot',item:'malt_sugar',id:'malt_sugar__electric5',facility_level:5,rate:0.001,cycle:200,turns:false,inputs:[],outputs:[['malt_sugar',1]],electric_level:5},
+            {facility:'Pickling Jar',item:'candied_strawberries',id:'candied_strawberries',facility_level:4,rate:0.015,cycle:45,turns:false,inputs:[],outputs:[['candied_strawberries',1]],electric_level:null},
+        ],
+        coin_items:[
+            {facility:'Simmering Pot',item_name:'malt_sugar',facility_count:1,status:'producing',busy_units:0.2,cycle_time:100,electric_level:null,aniimo:{ability:'Fire',level:4},aniimo_tasks:[{ability:'Fire',level:4,busy:0.2}]},
+            {facility:'Simmering Pot',item_name:'malt_sugar',facility_count:1,status:'producing',busy_units:0.2,cycle_time:200,electric_level:5,aniimo:null,aniimo_tasks:[]},
+            {facility:'Pickling Jar',item_name:'candied_strawberries',facility_count:2,status:'producing',busy_units:0.675,cycle_time:45,electric_level:null,aniimo:{ability:'Dark',level:4},aniimo_tasks:[{ability:'Dark',level:4,busy:0.675}]},
+        ],
+    };
+    const candidates=[...powerTeamCandidates(plan,input,problem,recipes)];
+    const consolidated=candidates.find(c=>c.schedule_sources.filter(s=>s.item==='malt_sugar').length===1
+        && c.schedule_sources.find(s=>s.item==='malt_sugar').electric_level===5
+        && Math.abs(c.schedule_sources.find(s=>s.item==='malt_sugar').rate-0.003)<1e-9);
+    assert.ok(consolidated);
+    assert.equal(consolidated.coin_items.filter(r=>r.item_name==='malt_sugar'&&r.status==='producing').length,1);
+    assert.ok(candidates.some(c=>c.schedule_sources.find(s=>s.item==='candied_strawberries')?.electric_level===4
+        && c.coin_items.find(r=>r.item_name==='candied_strawberries')?.facility_count===2));
+    // Every singleWorkshopUpgrade must be an electric upgrade (never an all-manual downgrade),
+    // and 0-watt split consolidations must still be considered at full grid draw.
+    const upgrades=[...singleWorkshopUpgrades(plan,input,problem,recipes)];
+    assert.ok(upgrades.length>=2);
+    assert.ok(upgrades.every(u=>u.power_used>=plan.power_used));
+    assert.ok(upgrades.some(u=>u.schedule_sources.filter(s=>s.item==='malt_sugar').every(s=>s.electric_level===5)));
+    assert.ok(upgrades.some(u=>u.schedule_sources.find(s=>s.item==='candied_strawberries')?.electric_level===4));
+    const fullGridUpgrades=[...singleWorkshopUpgrades({...plan,power_generated:plan.power_used},input,problem,recipes)];
+    assert.ok(fullGridUpgrades.some(u=>u.schedule_sources.filter(s=>s.item==='malt_sugar').every(s=>s.electric_level===5)));
+    // Electric-before-manual source ordering must preserve the manual row's Aniimo level.
+    const reversedPlan={...plan,schedule_sources:[plan.schedule_sources[1],plan.schedule_sources[0],plan.schedule_sources[2]]};
+    const revManual=[...powerTeamCandidates(reversedPlan,input,problem,recipes)]
+        .find(c=>c.schedule_sources.filter(s=>s.item==='malt_sugar').every(s=>s.electric_level==null));
+    assert.equal(revManual?.coin_items.find(r=>r.item_name==='malt_sugar')?.aniimo?.level,4);
+});
+
+test('shortlist retains split manual+electric incumbent when consolidated all-electric fails validation',async()=>{
+    const recipes=[{name:'malt_sugar',facility:'Simmering Pot',facility_level:1,aniimo:['Fire',1]}];
+    const input={e_mode_rv:17,facilities:{'Simmering Pot':[{level:5,count:2}]}};
+    const problem={
+        variable_keys:['rate:malt_sugar#0','rate:malt_sugar__electric5#0','units:malt_sugar#0','units:malt_sugar__electric5#0','generators#0'],
+        recipe_options:[[0,'malt_sugar','Simmering Pot',false,false,100],[1,'malt_sugar','Simmering Pot',false,true,200]],
+        lp:'\nBounds\n',
+    };
+    const incumbent={
+        power_generators:1,power_used:90,power_generated:1000,power_generator_levels:[[3,3]],
+        generator_tiers_by_lightning:[0,0,3,3],generator_watts_by_lightning:[0,0,1000,1000],
+        rate_per_second:1,comparison_seed:{keys:problem.variable_keys,values:[0.002,0.001,1,1,1]},
+        comparison_goals:{floors:[]},
+        schedule_sources:[
+            {facility:'Simmering Pot',item:'malt_sugar',id:'malt_sugar',facility_level:1,rate:0.002,cycle:100,turns:false,inputs:[],outputs:[['malt_sugar',1]],electric_level:null},
+            {facility:'Simmering Pot',item:'malt_sugar',id:'malt_sugar__electric5',facility_level:5,rate:0.001,cycle:200,turns:false,inputs:[],outputs:[['malt_sugar',1]],electric_level:5},
+        ],
+        coin_items:[
+            {facility:'Simmering Pot',item_name:'malt_sugar',facility_count:1,status:'producing',busy_units:0.2,cycle_time:100,electric_level:null,aniimo:{ability:'Fire',level:4},aniimo_tasks:[{ability:'Fire',level:4,busy:0.2}]},
+            {facility:'Simmering Pot',item_name:'malt_sugar',facility_count:1,status:'producing',busy_units:0.2,cycle_time:200,electric_level:5,aniimo:null,aniimo_tasks:[]},
+        ],
+    };
+    const pkg={
+        exact_problem:()=>JSON.stringify(problem),
+        get_all_items:()=>JSON.stringify(recipes),
+        exact_plan:()=>JSON.stringify({success:true,rate_per_second:1,priorities:[],coin_items:incumbent.coin_items}),
+    };
+    // Reject pure electric consolidation (rate:malt_sugar#0 = 0), allow the split incumbent.
+    const highs={solve:lp=>/hold_0: x0 = 0(?:\r?\n|$)/.test(lp)?{Status:'Infeasible'}:{Status:'Optimal',Columns:{}}};
+    const shortlist=await shortlistPowerTeams(pkg,highs,incumbent,input);
+    assert.ok(shortlist.some(({plan:p})=>p.power_generators===1 && p.schedule_sources.length===2));
+});
+
+test('power team validator rejects candidates whose native solve requires more physical sites than budgeted',async()=>{
+    const {createPowerTeamValidator}=await import('../web/power-team-validation.js');
+    const recipes=[{name:'candied_strawberries',facility:'Pickling Jar',facility_level:4,aniimo:['Dark',3]}];
+    const input={e_mode_rv:17,facilities:{'Pickling Jar':[{level:4,count:4}]}};
+    const problem={
+        variable_keys:['rate:candied_strawberries#0','rate:candied_strawberries__electric4#0','units:candied_strawberries#0','units:candied_strawberries__electric4#0','generators#0'],
+        recipe_options:[[0,'candied_strawberries','Pickling Jar',false,false,45],[1,'candied_strawberries','Pickling Jar',false,true,90]],
+        lp:'\nBounds\n',
+    };
+    const base={
+        power_generators:1,power_used:144,power_generated:1000,rate_per_second:1,
+        comparison_seed:{keys:problem.variable_keys,values:[0,0.015,0,2,1]},comparison_goals:{floors:[]},
+        schedule_sources:[{facility:'Pickling Jar',item:'candied_strawberries',id:'candied_strawberries__electric4',facility_level:4,rate:0.015,cycle:90,turns:false,inputs:[],outputs:[['candied_strawberries',1]],electric_level:4}],
+        coin_items:[{facility:'Pickling Jar',item_name:'candied_strawberries',facility_count:2,status:'producing',busy_units:1.35,cycle_time:90,electric_level:4}],
+    };
+    // Mock native plan that silently needs 4 sites (288W) while candidate budgeted 2 sites (144W).
+    const pkg={
+        exact_problem:()=>JSON.stringify(problem),
+        exact_plan:()=>JSON.stringify({success:true,rate_per_second:1,priorities:[],
+            coin_items:[{facility:'Pickling Jar',item_name:'candied_strawberries',facility_count:4,status:'producing',busy_units:1.35,cycle_time:90,electric_level:4}]}),
+    };
+    const highs={solve:lp=>{
+        // Verify validator caps units:candied_strawberries__electric4#0 <= 2 in the LP too.
+        assert.ok(lp.includes('cap_3: x3 <= 2'));
+        return {Status:'Optimal',Columns:{}};
+    }};
+    const validator=createPowerTeamValidator(pkg,highs,base,input);
+    assert.equal(validator.validate(base),null);
+});

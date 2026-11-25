@@ -41,12 +41,15 @@ function productionRow(base, source, definitions, input) {
     let role = null;
     if (electric_level == null) {
         const [ability, required] = definitions.get(item)?.aniimo ?? [];
-        role = base.aniimo ?? (ability && {ability, level: input.aniimo_levels?.[ability] ?? required,
+        const defaultLevel = input.aniimo?.startsWith('best3') ? 3 : input.aniimo?.startsWith('best') ? 4 : required;
+        role = base.aniimo ?? (ability && {ability, level: input.aniimo_levels?.[ability] ?? defaultLevel,
             personality_bonus: !!facilities.get(facility)?.personality});
         if (!role) return null;
     }
-    return {...base, electric_level, cycle_time: cycle, busy_units: busy, facility_count: sitesNeeded(busy),
+    const next = {...base, electric_level, cycle_time: cycle, busy_units: busy, facility_count: sitesNeeded(busy),
         aniimo: role, aniimo_tasks: role ? [{...role, busy, jobs: []}] : []};
+    if ('worker' in next) next.worker = null;
+    return next;
 }
 
 // Keep both extremes. Fractional manual work and the number of opportunities
@@ -64,15 +67,26 @@ function facilityStates(menus, tiers, definitions, maximum, protectedWorkers) {
     const levels = [...new Set(tiers.map(t => t.level))].sort((a, b) => a - b);
     const owned = levels.map(level => tiers.filter(t => t.level === level).reduce((n, t) => n + t.count, 0));
     const options = menus.map(menu => menu.map((pick, i) => {
-        const {row} = pick, electric = row.electric_level != null;
-        const recipe = definitions.get(row.item_name), required = recipe?.facility_level ?? 1;
-        const risk = !electric && !(row.busy_units>=row.facility_count-EPS) && recipe?.aniimo && facilities.get(row.facility)?.category !== 'Aniimo Materials'
-            ? protectedWorkers.reduce((sum,entry) => sum + distractionCount(entry,[{
-                ability:recipe.aniimo[0],level:recipe.aniimo[1],family:recipe.family,siteCount:row.facility_count,
-            }]),0) : 0;
-        return {pick, risk, changed: i !== 0, ability: i ? row.aniimo?.ability : null, electric,
-            tier: electric ? levels.indexOf(row.electric_level) : levels.findIndex(level => level >= required),
-            count: row.facility_count, watts: siteWatts(row) * row.facility_count, work: electric ? 0 : row.busy_units};
+        const rows = pick.rows ?? [pick.row];
+        let risk = 0, watts = 0, work = 0;
+        const items = [], abilities = [];
+        for (const row of rows) {
+            const electric = row.electric_level != null;
+            const recipe = definitions.get(row.item_name), required = recipe?.facility_level ?? 1;
+            if (!electric && !(row.busy_units >= row.facility_count - EPS) && recipe?.aniimo && facilities.get(row.facility)?.category !== 'Aniimo Materials') {
+                risk += protectedWorkers.reduce((sum, entry) => sum + distractionCount(entry, [{
+                    ability: recipe.aniimo[0], level: recipe.aniimo[1], family: recipe.family, siteCount: row.facility_count,
+                }]), 0);
+            }
+            const tier = electric ? levels.indexOf(row.electric_level) : levels.findIndex(level => level >= required);
+            items.push({electric, tier, count: row.facility_count});
+            watts += siteWatts(row) * row.facility_count;
+            if (!electric) {
+                work += row.busy_units;
+                if (i && row.aniimo?.ability) abilities.push(row.aniimo.ability);
+            }
+        }
+        return {pick, risk, changed: i !== 0, abilities, items, watts, work};
     }));
     const baseline = {changes: [], watts: 0, work: 0, risk: 0};
     for (const [first] of options) {
@@ -88,11 +102,19 @@ function facilityStates(menus, tiers, definitions, maximum, protectedWorkers) {
         for (const state of states) for (const option of menu) {
             order++;
             const watts = state.watts + option.watts;
-            if (watts > maximum + EPS || option.tier < 0) continue;
-            const powered = option.electric ? state.powered.slice() : state.powered;
-            const manual = option.electric ? state.manual : state.manual.slice();
-            (option.electric ? powered : manual)[option.tier] += option.count;
-            if (powered[option.tier] > owned[option.tier]) continue;
+            if (watts > maximum + EPS || option.items.some(item => item.tier < 0)) continue;
+            const powered = option.items.some(item => item.electric) ? state.powered.slice() : state.powered;
+            const manual = option.items.some(item => !item.electric) ? state.manual.slice() : state.manual;
+            let overflow = false;
+            for (const item of option.items) {
+                if (item.electric) {
+                    powered[item.tier] += item.count;
+                    if (powered[item.tier] > owned[item.tier]) { overflow = true; break; }
+                } else {
+                    manual[item.tier] += item.count;
+                }
+            }
+            if (overflow) continue;
             // A higher-tier manual site can run every lower-tier manual recipe.
             let spare = 0;
             for (let i = levels.length - 1; i >= 0; i--) {
@@ -100,8 +122,8 @@ function facilityStates(menus, tiers, definitions, maximum, protectedWorkers) {
                 if (spare < 0) break;
             }
             if (spare < 0) continue;
-            const abilities = option.ability && !state.abilities.includes(option.ability)
-                ? [...state.abilities, option.ability].sort() : state.abilities;
+            const abilities = option.abilities.some(a => !state.abilities.includes(a))
+                ? [...new Set([...state.abilities, ...option.abilities])].sort() : state.abilities;
             const changed = !!state.changes.length || option.changed;
             const key = [powered.join(','), manual.join(','), changed, abilities.join(',')].join('|');
             const work = state.work + option.work;
@@ -116,9 +138,13 @@ function facilityStates(menus, tiers, definitions, maximum, protectedWorkers) {
 
 function ordinaryMenus(plan, input, modes, definitions) {
     const modeKey = (name, level) => name + '|' + (level ?? '');
-    const rows = new Map(plan.coin_items.filter(r => r.status === 'producing').map(r => [modeKey(r.item_name, r.electric_level), r]));
-    const counts = new Map();
-    for (const s of plan.schedule_sources) counts.set(s.item, 1 + (counts.get(s.item) ?? 0));
+    const rowsByKey = new Map(), duplicateModeKeys = new Set();
+    for (const r of plan.coin_items.filter(r => r.status === 'producing')) {
+        const k = modeKey(r.item_name, r.electric_level);
+        if (!rowsByKey.has(k)) rowsByKey.set(k, []);
+        else duplicateModeKeys.add(k);
+        rowsByKey.get(k).push(r);
+    }
     const groups = new Map();
     const scheduled = new Set(plan.recipe_schedule?.jobs.map(j => j.item));
     // Preserve the certified background around a material schedule. Changing
@@ -136,23 +162,57 @@ function ordinaryMenus(plan, input, modes, definitions) {
             if (s.inputs.length) for (const [resource] of terms) resources.add(resource);
         }
     }
+    const byItem = new Map();
     for (const source of plan.schedule_sources.filter(s => !scheduled.has(s.item))) {
-        const row = rows.get(modeKey(source.item, source.electric_level));
-        if (!row) return null;
-        const choices = [{source, row}];
-        // Keep every always-running site required by the native solution. An
-        // extra active site can affect competition for a shared ingredient.
-        if (counts.get(source.item) === 1 && !connected.has(source.item) && row.facility_count === sitesNeeded(row.busy_units) && !row.is_grower &&
-            !(row.aniimo_tasks ?? []).some(t => t.jobs?.length)) {
-            for (const mode of modes.get(source.item) ?? []) {
-                if (mode.id === source.id) continue;
-                const next = {...source, ...mode};
-                const changed = productionRow(row, next, definitions, input);
-                if (changed) choices.push({source: next, row: changed});
+        const k = modeKey(source.item, source.electric_level);
+        const list = rowsByKey.get(k);
+        if (!list?.length) return null;
+        // Match each source 1-to-1 with its producing row (closest cycle_time when variants share a modeKey).
+        let pickIndex = 0;
+        if (list.length > 1) {
+            let bestDiff = Infinity;
+            for (let i = 0; i < list.length; i++) {
+                const diff = Math.abs((list[i].cycle_time ?? 0) - (source.cycle ?? 0));
+                if (diff < bestDiff) { bestDiff = diff; pickIndex = i; }
             }
         }
-        if (!groups.has(source.facility)) groups.set(source.facility, []);
-        groups.get(source.facility).push(choices);
+        const [row] = list.splice(pickIndex, 1);
+        if (!byItem.has(source.item)) byItem.set(source.item, []);
+        byItem.get(source.item).push({source, row, duplicateKey: duplicateModeKeys.has(k)});
+    }
+    for (const [item, entries] of byItem) {
+        const sameFacility = entries.every(e => e.source.facility === entries[0].source.facility);
+        const hasDuplicateMode = entries.some(e => e.duplicateKey);
+        const canSwitch = sameFacility && !hasDuplicateMode && !connected.has(item)
+            && entries.every(({row}) => !row.is_grower && !(row.aniimo_tasks ?? []).some(t => t.jobs?.length));
+        if (!sameFacility) {
+            for (const {source, row} of entries) {
+                if (!groups.has(source.facility)) groups.set(source.facility, []);
+                groups.get(source.facility).push([{sources: [source], rows: [row]}]);
+            }
+            continue;
+        }
+        const facility = entries[0].source.facility;
+        const choices = [{sources: entries.map(e => e.source), rows: entries.map(e => e.row)}];
+        if (canSwitch) {
+            const totalRate = entries.reduce((sum, e) => sum + e.source.rate, 0);
+            const incumbentId = entries.length === 1 ? entries[0].source.id : null;
+            const hasSurplusSite = entries.some(({row}) => row.facility_count !== sitesNeeded(row.busy_units));
+            const incumbentSites = entries.reduce((sum, {row}) => sum + row.facility_count, 0);
+            const manualRow = entries.find(e => e.row.electric_level == null && e.source.id === e.source.item && e.row.aniimo)?.row
+                ?? entries.find(e => e.row.electric_level == null && e.row.aniimo && !e.row.worker)?.row
+                ?? entries.find(e => e.row.aniimo)?.row;
+            for (const mode of modes.get(item) ?? []) {
+                if (mode.id === incumbentId) continue;
+                const next = {...entries[0].source, ...mode, rate: totalRate};
+                const baseRow = (mode.electric_level == null ? manualRow : null) ?? entries[0].row;
+                const changed = productionRow(baseRow, next, definitions, input);
+                if (changed && (!hasSurplusSite || changed.facility_count >= incumbentSites))
+                    choices.push({sources: [next], rows: [changed]});
+            }
+        }
+        if (!groups.has(facility)) groups.set(facility, []);
+        groups.get(facility).push(choices);
     }
     return groups;
 }
@@ -160,13 +220,14 @@ function ordinaryMenus(plan, input, modes, definitions) {
 // A small manual job can occupy a whole specialist. Check individual switches
 // on the shortlisted physical schedules even when aggregate work estimates tie.
 export function* singleWorkshopUpgrades(plan,input,problem,recipes) {
-    if (!(plan.power_generated>plan.power_used)) return;
+    if (!(plan.power_generated>0)) return;
     const definitions=new Map(recipes.map(r=>[r.name,r]));
     const groups=ordinaryMenus(plan,input,nativeModes(problem,definitions),definitions);
     for (const [facility,menus] of groups ?? []) {
         for (const menu of menus) {
-            if (menu.length<2 || menu[0].row.electric_level!=null) continue;
-            const choices=menus.map(other=>other===menu?menu:[other[0]]);
+            const powered=menu.slice(1).filter(c=>c.rows.every(r=>r.electric_level!=null));
+            if (!powered.length || menu[0].rows.every(r=>r.electric_level!=null)) continue;
+            const choices=menus.map(other=>other===menu?[menu[0],...powered]:[other[0]]);
             const states=facilityStates(choices,input.facilities[facility] ?? [],definitions,plan.power_generated,[]);
             for (const state of states) {
                 if (!state.changes.length) continue;
@@ -191,7 +252,7 @@ function ordinaryStates(plan, input, modes, definitions, maximum, protectedWorke
             const watts = state.watts + part.watts, work = state.work + part.work;
             if (watts > maximum + EPS) continue;
             const unchanged = !state.changes.length && !part.changes.length;
-            const abilities = new Set([...(state.abilities ?? []), ...part.changes.filter(c => c.row.aniimo).map(c => c.row.aniimo.ability)]);
+            const abilities = new Set([...(state.abilities ?? []), ...part.changes.flatMap(c => c.rows).filter(r => r.aniimo).map(r => r.aniimo.ability)]);
             const key = [watts, unchanged, [...abilities].sort().join(',')].join('|');
             retainState(next,key,{watts, work, risk:state.risk + part.risk, abilities, changes:state.changes.concat(part.changes)});
         }
@@ -315,16 +376,33 @@ function certifiedSchedule(plan, input, chains, definitions, lowestDraw, maximum
 
 function substituteOrdinary(plan, changes, input) {
     if (!changes.length) return plan;
-    const changed = new Map(changes.map(c => [c.source.item, c]));
-    const facilities = new Set(changes.map(c => c.source.facility));
-    const rows = plan.coin_items.filter(r => !facilities.has(r.facility) || r.status !== 'idle')
-        .map(r => r.status === 'producing' && changed.has(r.item_name) ? changed.get(r.item_name).row : r);
+    const changed = new Map(changes.map(c => [c.sources[0].item, c]));
+    const facilities = new Set(changes.map(c => c.sources[0].facility));
+    const emittedRows = new Set(), rows = [];
+    for (const r of plan.coin_items) {
+        if (facilities.has(r.facility) && r.status === 'idle') continue;
+        if (r.status === 'producing' && changed.has(r.item_name)) {
+            if (!emittedRows.has(r.item_name)) {
+                emittedRows.add(r.item_name);
+                rows.push(...changed.get(r.item_name).rows);
+            }
+        } else rows.push(r);
+    }
     for (const facility of facilities) {
         const total = input.facilities[facility].reduce((n, t) => n + t.count, 0);
         const used = rows.filter(r => r.facility === facility && r.status === 'producing').reduce((n, r) => n + r.facility_count, 0);
         if (used < total) rows.push({facility, facility_count: total - used, status: 'idle', item_name: null});
     }
-    return {...plan, coin_items: rows, schedule_sources: plan.schedule_sources.map(s => changed.get(s.item)?.source ?? s)};
+    const emittedSources = new Set(), sources = [];
+    for (const s of plan.schedule_sources) {
+        if (changed.has(s.item)) {
+            if (!emittedSources.has(s.item)) {
+                emittedSources.add(s.item);
+                sources.push(...changed.get(s.item).sources);
+            }
+        } else sources.push(s);
+    }
+    return {...plan, coin_items: rows, schedule_sources: sources};
 }
 
 function* generatorTeams(count, used, operators) {

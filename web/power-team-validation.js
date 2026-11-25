@@ -62,13 +62,21 @@ export function createPowerTeamValidator(pkg, highs, plan, input) {
     if (generator < 0) return null;
     const prior = new Map(seed.keys.map((key, i) => [key, seed.values[i]]));
     const options = new Map(problem.recipe_options.map(option => [keys[option[0]], option]));
+    const turningItems = new Set(plan.schedule_sources.filter(s => s.turns).map(s => s.item));
+    const unitByRate = new Map();
+    for (const [v, item] of problem.recipe_options) {
+        if (turningItems.has(item)) continue;
+        const unitKey = keys[v].replace(/^rate:/, 'units:');
+        const u = keys.indexOf(unitKey);
+        if (u >= 0) unitByRate.set(v, u);
+    }
     const fixed = (v, value) => ' hold_' + v + ': x' + v + ' = ' + value;
     const retainedEntries = keys.flatMap((key, v) => /^(environment:|pair:|crop_variety#|lower_level_plots#|sold:)/.test(key)
         ? [[v, prior.get(key) ?? 0]] : []);
     const retained = retainedEntries.map(([v, value]) => fixed(v, value));
 
     // Reuse one native HiGHS model across all candidate validations by updating
-    // only generator and recipe-rate column bounds instead of reparsing the LP.
+    // only generator, recipe-rate and non-turning unit column bounds instead of reparsing the LP.
     let nativeModel = null, nativeMap = null, nativeOrigLo = null, nativeOrigHi = null, nativeRetainedInfeasible = false;
     let dynamicCols = null;
     if (highs?.createModel && problem.lp) {
@@ -95,7 +103,9 @@ export function createPowerTeamValidator(pkg, highs, plan, input) {
                         order.map(k => retLo[k]), order.map(k => retHi[k]));
                 }
                 m.options.set({mip_feasibility_tolerance: 1e-9, primal_feasibility_tolerance: 1e-9});
-                const dyn = [[generator, map.get(generator)], ...problem.recipe_options.map(([v]) => [v, map.get(v)])]
+                const dyn = [[generator, map.get(generator)],
+                    ...problem.recipe_options.map(([v]) => [v, map.get(v)]),
+                    ...[...unitByRate.values()].map(u => [u, map.get(u)])]
                     .filter(([, ni]) => ni != null)
                     .sort((a, b) => a[1] - b[1]);
                 // Deduplicate native indices just in case
@@ -113,10 +123,35 @@ export function createPowerTeamValidator(pkg, highs, plan, input) {
         }
     }
 
-    function solveCandidate(candidate, rates) {
+    function budgetedUnits(candidate, rates) {
+        const modeKey = (facility, item, level) => JSON.stringify([facility, item, level ?? null]);
+        const rowCounts = new Map();
+        for (const row of candidate.coin_items ?? []) {
+            if (row.status !== 'producing') continue;
+            const id = modeKey(row.facility, row.item_name, row.electric_level);
+            rowCounts.set(id, (rowCounts.get(id) ?? 0) + (row.facility_count ?? 0));
+        }
+        const caps = new Map();
+        for (const [v, item, facility] of problem.recipe_options) {
+            const u = unitByRate.get(v);
+            if (u == null) continue;
+            const rate = rates.get(v) ?? 0;
+            if (!(rate > 1e-12)) {
+                caps.set(u, 0);
+                continue;
+            }
+            const levelMatch = keys[v].match(/__electric(\d+)#0$/);
+            const id = modeKey(facility, item, levelMatch ? Number(levelMatch[1]) : null);
+            if (rowCounts.has(id)) caps.set(u, rowCounts.get(id));
+        }
+        return {rowCounts, caps, modeKey};
+    }
+
+    function solveCandidate(candidate, rates, unitCaps) {
         if (!nativeModel) {
             const fixes = [...retained, fixed(generator, candidate.power_generators),
-                ...problem.recipe_options.map(([v]) => fixed(v, rates.get(v) ?? 0))];
+                ...problem.recipe_options.map(([v]) => fixed(v, rates.get(v) ?? 0)),
+                ...[...unitCaps].map(([u, cap]) => ' cap_' + u + ': x' + u + ' <= ' + cap)];
             const lp = problem.lp.replace('\nBounds\n', '\n' + fixes.join('\n') + '\nBounds\n');
             const result = highs.solve(lp, {mip_feasibility_tolerance: 1e-9, primal_feasibility_tolerance: 1e-9});
             if (result.Status !== 'Optimal' || !result.Columns) return null;
@@ -125,6 +160,12 @@ export function createPowerTeamValidator(pkg, highs, plan, input) {
         if (nativeRetainedInfeasible) return null;
         const idx = [], lo = [], hi = [];
         for (const [v, ni] of dynamicCols) {
+            if (unitCaps.has(v)) {
+                const l = nativeOrigLo[ni], u = Math.min(nativeOrigHi[ni], unitCaps.get(v));
+                if (l > u + 1e-12) return null;
+                idx.push(ni); lo.push(l); hi.push(Math.max(l, u));
+                continue;
+            }
             const val = v === generator ? candidate.power_generators : (rates.get(v) ?? 0);
             const l = Math.max(nativeOrigLo[ni], val), u = Math.min(nativeOrigHi[ni], val);
             if (l > u + 1e-12) return null;
@@ -151,7 +192,8 @@ export function createPowerTeamValidator(pkg, highs, plan, input) {
                 || !Number.isFinite(source.rate) || source.rate < 0) return null;
             rates.set(option[0], (rates.get(option[0]) ?? 0) + source.rate);
         }
-        const values = solveCandidate(candidate, rates);
+        const {rowCounts, caps, modeKey} = budgetedUnits(candidate, rates);
+        const values = solveCandidate(candidate, rates, caps);
         if (!values) return null;
         const checked = JSON.parse(pkg.exact_plan(payload, stage, JSON.stringify({
             values, verify_only: true, proven: false, bound: plan.upper_bound ?? plan.rate_per_second,
@@ -163,6 +205,18 @@ export function createPowerTeamValidator(pkg, highs, plan, input) {
         const earned = new Map(checked.priorities.map(p => [p.target, p.per_second]));
         if (plan.priorities?.some(p => !(earned.get(p.target) >= p.per_second - 1e-7))) return null;
         if (materialWork != null && problem.primary_objective.reduce((sum, [v, w]) => sum + values[v] * w, 0) < materialWork - 1e-7) return null;
+        // Verify checked physical site counts and power do not exceed candidate's budget.
+        const scheduledItems = new Set(candidate.recipe_schedule?.jobs?.map(j => j.item));
+        const checkedCounts = new Map();
+        for (const row of checked.coin_items ?? []) {
+            if (row.status !== 'producing' || scheduledItems.has(row.item_name)) continue;
+            const id = modeKey(row.facility, row.item_name, row.electric_level);
+            checkedCounts.set(id, (checkedCounts.get(id) ?? 0) + (row.facility_count ?? 0));
+        }
+        for (const [id, count] of checkedCounts) {
+            if (count > (rowCounts.get(id) ?? 0)) return null;
+        }
+        if (physicalPlanPower(checked, candidate.recipe_schedule?.sites ?? []) > candidate.power_used + 1e-6) return null;
         const physicalRows = physicalRowsWithCheckedStaff(candidate, checked);
         if (candidate.recipe_schedule) {
             // Ordinary mode changes can alter the background jobs that share

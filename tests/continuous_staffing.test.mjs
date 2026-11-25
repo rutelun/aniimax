@@ -252,13 +252,23 @@ test('My Aniimo spends limited power on a contested ingredient when earnings and
     // The original dispatch sent every batch to Wind 3. The other active
     // worker can still take a request, so that nominal share cannot hide risk.
     const dispatch={'Carousel Mill|flour|Production':[{member:0,share:1}]};
+    const phases=[];
     const solve=async(model,options)=>{
         const r=highs.solve(model.lp,options);
         assert.equal(r.Status,'Optimal');
+        const maxCoeff=Math.max(...model.primary_objective.map(([,c])=>Math.abs(c)));
+        phases.push({maxCoeff,hasRiskBound:model.lp.includes('power_shift_risk:')});
         return {values:Array.from({length:model.variables},(_,i)=>r.Columns['x'+i]?.Primal??0)};
     };
     const settings={input:{always_running:true,roster:{members,dispatch}},pkg,report};
     const result=await refineElectricStaffing(problem,{values:original},solve,settings);
+    // Two-phase contested-shift solve: phase 1 uses unit weights (-1) with no risk bound,
+    // phase 2 constrains power_shift_risk without Big-M distortion.
+    assert.equal(phases.length,2);
+    assert.equal(phases[0].maxCoeff,1);
+    assert.equal(phases[0].hasRiskBound,false);
+    assert.equal(phases[1].hasRiskBound,true);
+    assert.ok(phases[1].maxCoeff<10);
     assert.ok(Math.abs(result.values[1]-.4)<1e-9);
     assert.equal(result.values[5],.4);
     const loss=values=>({...report(),rate_per_second:values[1] > .01 ? .999 : 1});

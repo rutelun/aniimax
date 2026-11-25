@@ -275,7 +275,7 @@ export async function refineElectricStaffing(problem,incumbent,solve,{pkg,input,
     const headWeight=weight*(1+(provisional?0:baseline.reserves||0));
     for(const [v] of counts)costs.set(v,(costs.get(v)||0)-headWeight);
     if(!provisional)for(const [v] of reserveCounts)costs.set(v,(costs.get(v)||0)-weight);
-    const exposed=[];
+    const exposed=[], exposedFlags=[];
     let reference;
     if(input?.always_running&&!provisional&&input.roster&&switches.size&&report&&pkg?.get_all_items){
         reference=report(original);
@@ -288,25 +288,48 @@ export async function refineElectricStaffing(problem,incumbent,solve,{pkg,input,
                 warm.push(Number(sum(manual,original)>1e-10));
                 added.push(' 0 <= x'+flag+' <= 1');integer.push(' x'+flag);
                 row([...manual,[flag,-flow]],'<=',0);
-                // Removing one exposed recipe takes precedence over lower staffing
-                // costs, within the current headcount and exact production totals.
-                costs.set(flag,-(1+headWeight*baseline.people+weight*baseline.reserves+baseline.work));
                 exposed.push(manual);
+                exposedFlags.push(flag);
             }
             if(exposed.length)row(counts,'<=',baseline.people);
         }
     }
     const objective=[...costs];
-    const lp=problem.lp.replace(/^Maximize\n[^\n]+/,'Maximize\n obj: '+expression(objective))
-        .replace('\nBounds\n','\n'+rows.join('\n')+'\nBounds\n'+(added.length?added.join('\n')+'\n':''))
-        .replace('\nGeneral\n','\nGeneral\n'+(integer.length?integer.join('\n')+'\n':''));
-    const model={...problem,lp,variables:warm.length,variable_keys:keys.concat(integer.map((_,i)=>'power_team:'+i)),
-        tiebreak:[],primary_objective:objective};
+    const buildModel=(obj,extraRows=[])=>{
+        const allRows=extraRows.length?[...rows,...extraRows]:rows;
+        const lp=problem.lp.replace(/^Maximize\n[^\n]+/,'Maximize\n obj: '+expression(obj))
+            .replace('\nBounds\n','\n'+allRows.join('\n')+'\nBounds\n'+(added.length?added.join('\n')+'\n':''))
+            .replace('\nGeneral\n','\nGeneral\n'+(integer.length?integer.join('\n')+'\n':''));
+        return {...problem,lp,variables:warm.length,variable_keys:keys.concat(integer.map((_,i)=>'power_team:'+i)),
+            tiebreak:[],primary_objective:obj};
+    };
     const precision=provisional?{}:{mip_feasibility_tolerance:1e-9,primal_feasibility_tolerance:1e-9};
     const settings={mip_max_nodes:2147483647,mip_rel_gap:0,mip_abs_gap:0,...precision};
-    const draft=draftProof && workload.length && workload.every(([,c])=>c>=0)
-        ? await solveDraftShift(model,settings,solve,warm,counts,workload,headWeight) : null;
-    const result=draft ?? await solve(model,settings,undefined,warm);
+    let phase1=null, phase2Warm=warm, riskBoundRows=[];
+    if(exposedFlags.length){
+        // Solve contested-shift risk in a separate first phase with unit weights
+        // so Big-M penalties cannot swamp fractional manualWork improvements.
+        const initialRisk=exposedFlags.reduce((n,f)=>n+Math.round(warm[f]),0);
+        let bestRisk=initialRisk;
+        if(initialRisk>0){
+            const riskObj=exposedFlags.map(f=>[f,-1]);
+            const p1=await solve(buildModel(riskObj),settings,undefined,warm);
+            const p1Risk=p1?.values?.length===warm.length && p1.values.every(Number.isFinite)
+                ? exposedFlags.reduce((n,f)=>n+Math.round(p1.values[f]),0) : Infinity;
+            if(p1Risk<initialRisk){
+                bestRisk=p1Risk;
+                phase1=p1;
+                phase2Warm=p1.values;
+            }else if(p1Risk===initialRisk){
+                phase1=p1;
+            }
+        }
+        riskBoundRows=[' power_shift_risk: '+expression(exposedFlags.map(f=>[f,1]))+' <= '+bestRisk];
+    }
+    const model=buildModel(objective,riskBoundRows);
+    const draft=draftProof && !exposedFlags.length && workload.length && workload.every(([,c])=>c>=0)
+        ? await solveDraftShift(model,settings,solve,phase2Warm,counts,workload,headWeight) : null;
+    const result=draft ?? await solve(model,settings,undefined,phase2Warm) ?? phase1;
     if(!result?.values)return incumbent;
     const values=result.values.slice(0,original.length);
     if(values.length!==original.length||!values.every(Number.isFinite))return incumbent;
