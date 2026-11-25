@@ -1,10 +1,20 @@
 import { personalityLetter } from './facility-config.js';
 
+const SWAP_UNITS = {
+    second: { scale: 1 / 3600, label: 'Home Coins/s' },
+    minute: { scale: 1 / 60, label: 'Home Coins/min' },
+    hour: { scale: 1, label: 'Home Coins/hour' },
+    day: { scale: 24, label: 'Home Coins/day' },
+};
+
 // Each tile is an independent swap measured against the same base plan.
-export function renderRosterSwaps(section, report, members, translate, format) {
+export function renderRosterSwaps(section, report, members, translate, format, rateUnit = 'hour') {
     const grid = section.querySelector('#roster-swaps-grid');
     grid.replaceChildren();
     section.hidden = !report?.rows?.length;
+    const { scale, label: unitKey } = SWAP_UNITS[rateUnit] || SWAP_UNITS.hour;
+    const headingUnit = section.querySelector?.('#roster-swaps-unit');
+    if (headingUnit) headingUnit.textContent = translate(unitKey);
     if (section.hidden) return;
     function portrait(member) {
         const frame = document.createElement('span');
@@ -39,8 +49,11 @@ export function renderRosterSwaps(section, report, members, translate, format) {
         if (!fromMember || !toMember) continue;
         const tile = document.createElement('div');
         tile.className = 'roster-swap';
-        const amount = '+' + format(Math.round(row.gain));
-        const unit = translate('Home Coins/hour');
+        const scaledGain = row.gain * scale;
+        const scaledTotal = row.hour * scale;
+        const formatVal = v => scale < 1 && Math.abs(v) < 10 ? format(Number(v.toFixed(1))) : format(Math.round(v));
+        const amount = '+' + formatVal(scaledGain);
+        const unit = translate(unitKey);
         const needed = row.traits ?? [];
         const letters = needed.map(personalityLetter).filter(Boolean).join('');
         const traitNames = needed.map(t => {
@@ -48,7 +61,7 @@ export function renderRosterSwaps(section, report, members, translate, format) {
             const label = translate(t);
             return letter ? `${label} (${letter})` : label;
         }).join(', ');
-        const summaryText = `${fromMember.name} → ${toMember.name}: ${amount} ${unit} (${format(Math.round(row.hour))} ${unit}${traitNames ? ` · ${traitNames}` : ''})`;
+        const summaryText = `${fromMember.name} → ${toMember.name}: ${amount} ${unit} (${formatVal(scaledTotal)} ${unit}${traitNames ? ` · ${traitNames}` : ''})`;
         tile.title = summaryText;
         tile.setAttribute('aria-label', summaryText);
         const arrow = document.createElement('span');

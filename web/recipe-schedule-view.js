@@ -80,24 +80,28 @@ export function renderRecipeSchedule(schedule, {
     itemName = name => name,
     buildingName = building => `${building.facility || 'Building'} ${building.id}`,
     buildingIcon = () => '',
+    tr = value => value,
+    formatSummary = (switches, buildingsCount) =>
+        `${switches} ${switches === 1 ? 'switch' : 'switches'}/day · ${buildingsCount} ${buildingsCount === 1 ? 'building' : 'buildings'}`,
 } = {}) {
     if (!schedule?.phases?.length) return '';
     const buildings = new Map((schedule.buildings || []).map(building => [building.id, building]));
     const switched = [...new Set(schedule.switchedBuildings || [])];
     const events = schedule.switches || [];
     const columns = scheduleColumns(schedule, switched);
-    const label = values => values.length ? values.map(r => escape(itemName(r))).join(', ') : 'Idle';
+    const colTitle = title => title === 'Morning' ? tr('Morning') : title;
+    const label = values => values.length ? values.map(r => escape(itemName(r))).join(', ') : escape(tr('Idle'));
     const rows = switched.map(id => {
         const building = buildings.get(id) || {id};
         const icon = buildingIcon(building.facility);
         const cells = columns.map(({selected, title, changed: changes}) => {
             const current = selected.get(id);
             const changed = changes.has(id);
-            return `<td data-time="${escape(title)}"${changed ? ' class="recipe-schedule-changed"' : ''}>${changed ? '<span class="recipe-schedule-arrow" aria-hidden="true">→</span>' : ''}${label(current)}</td>`;
+            return `<td data-time="${escape(colTitle(title))}"${changed ? ' class="recipe-schedule-changed"' : ''}>${changed ? '<span class="recipe-schedule-arrow" aria-hidden="true">→</span>' : ''}${label(current)}</td>`;
         }).join('');
         return `<tr><th scope="row"><span class="recipe-schedule-building">${icon ? `<img src="${escape(icon)}" alt="" width="32" height="32">` : ''}<span>${escape(buildingName(building))}</span></span></th>${cells}</tr>`;
     }).join('');
-    return `<details class="recipe-schedule" open><summary><strong>Daily recipe schedule</strong> <span class="recipe-schedule-count">${events.length} ${events.length === 1 ? 'switch' : 'switches'}/day · ${switched.length} ${switched.length === 1 ? 'building' : 'buildings'}</span></summary>
-        ${switched.length ? `<div class="recipe-schedule-scroll"><table class="recipe-schedule-table"><thead><tr><th scope="col">Building</th>${columns.map(c => `<th scope="col">${escape(c.title)}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table></div>` : '<p>No buildings change recipes.</p>'}
+    return `<details class="recipe-schedule" open><summary><strong>${escape(tr('Daily recipe schedule'))}</strong> <span class="recipe-schedule-count">${escape(formatSummary(events.length, switched.length))}</span></summary>
+        ${switched.length ? `<div class="recipe-schedule-scroll"><table class="recipe-schedule-table"><thead><tr><th scope="col">${escape(tr('Building'))}</th>${columns.map(c => `<th scope="col">${escape(colTitle(c.title))}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table></div>` : `<p>${escape(tr('No buildings change recipes.'))}</p>`}
     </details>`;
 }

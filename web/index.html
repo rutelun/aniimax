@@ -4,8 +4,15 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Aniimax - Aniimo Production Optimizer</title>
-    <link rel="stylesheet" href="style.css?v=roster-swap-grid">
-    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <script>
+        try {
+            const savedTheme = localStorage.getItem('aniimax-theme');
+            const preferLight = savedTheme ? savedTheme === 'light'
+                : window.matchMedia?.('(prefers-color-scheme: light)').matches;
+            if (preferLight) document.documentElement.classList.add('light');
+        } catch (_) { /* Storage unavailable */ }
+    </script>
+    <link rel="stylesheet" href="style.css?v=ux-refresh-3">
 </head>
 <body>
     <a class="skip-to-planner" href="#planner-heading">Skip to planner</a>
@@ -15,11 +22,11 @@
             <p class="subtitle">aniimo homeland production optimizer</p>
         </div>
         <div class="header-buttons">
-            <select id="language-switch" class="toggle-button" aria-label="Language"></select>
-            <button class="toggle-button" onclick="showFacilities()" id="facilitiesToggle">facilities</button>
-            <button class="toggle-button" onclick="showMath()" id="mathToggle">math</button>
-            <button class="toggle-button" onclick="showHelp()" id="helpToggle">help</button>
-            <button class="toggle-button" onclick="toggleTheme()" id="themeToggle">light</button>
+            <select id="language-switch" class="toggle-button header-select" aria-label="Language"></select>
+            <button type="button" class="toggle-button" id="facilitiesToggle">facilities</button>
+            <button type="button" class="toggle-button" id="mathToggle">math</button>
+            <button type="button" class="toggle-button" id="helpToggle">help</button>
+            <button type="button" class="toggle-button" id="themeToggle" aria-label="Toggle color theme" aria-pressed="false">light</button>
         </div>
     </header>
     <p class="disclaimer"><span class="disclaimer-icon" aria-hidden="true">⚠</span>A few recipes, facility levels and counts haven't been confirmed in game yet; they're marked where they're used.</p>
@@ -32,20 +39,35 @@
                     <h2 id="planner-heading" tabindex="-1">Plan setup</h2>
                     <div class="config-actions">
                         <button type="button" id="share-config-btn" class="toggle-button small">Share setup</button>
-                        <button type="button" id="clear-saved-btn" class="toggle-button small" title="Your inputs are saved in this browser automatically.">Clear saved values</button>
+                        <button type="button" id="clear-saved-btn" class="toggle-button small danger-link" title="Your inputs are saved in this browser automatically.">Clear saved values</button>
                     </div>
                 </div>
                 <div id="share-config-result" class="share-config-result" hidden>
                     <label for="share-config-link">Shareable link</label>
-                    <input type="text" id="share-config-link" readonly>
+                    <div class="share-config-row">
+                        <input type="text" id="share-config-link" readonly>
+                        <button type="button" id="share-config-copy" class="skip-add-btn">Copy</button>
+                        <button type="button" id="share-config-close" class="roster-x" aria-label="Close">✕</button>
+                    </div>
                 </div>
                 <p id="share-config-status" class="hint small" role="status" aria-live="polite"></p>
 
+                <div class="planner-rv-settings">
+                    <div class="planner-rv input-field">
+                        <label for="home-level">RV level</label>
+                        <select id="home-level"></select>
+                    </div>
+                    <div class="input-field" id="level-up-target-row">
+                        <label for="level-up-target">Level up to RV</label>
+                        <select id="level-up-target"></select>
+                    </div>
+                </div>
 
                 <div class="planner-setup-grid">
                     <section class="planner-priorities" id="priorities-config" aria-labelledby="planner-priorities-heading">
                         <h3 id="planner-priorities-heading">Priorities</h3>
                         <ol class="priority-list" id="priority-list"></ol>
+                        <p id="priority-empty-hint" class="hint small" hidden>No priorities selected — the plan will maximize Home Coins.</p>
                         <div class="planner-priority-add">
                             <label class="visually-hidden" for="add-priority">Add priority</label>
                             <select id="add-priority"></select>
@@ -56,10 +78,10 @@
                     <aside class="planner-editor" aria-label="Plan settings">
                         <div class="planner-editor-options">
                             <div class="planner-editor-item">
-                                <button type="button" data-planner-editor="quests" aria-expanded="true" aria-controls="planner-edit-quests">
+                                <button type="button" data-planner-editor="quests" aria-expanded="false" aria-controls="planner-edit-quests">
                                     <strong>Quest resources</strong><span id="quest-income-summary"></span>
                                 </button>
-                                <div id="planner-edit-quests" class="planner-editor-panel">
+                                <div id="planner-edit-quests" class="planner-editor-panel" hidden>
                                     <p class="hint small">Average daily rewards. Processing uses your buildings and Aniimo.</p>
                                     <div class="quest-income-fields">
                                         <div class="input-field">
@@ -154,14 +176,14 @@
                                     </section>
 
                                     <section aria-labelledby="building-setup-heading" class="planner-building-settings">
-                                        <h4 id="building-setup-heading">Buildings</h4>
+                                        <h3 id="building-setup-heading">Buildings</h3>
                                         <p class="hint small" id="building-setup-note">Uses all buildings and upgrades available at your RV level.</p>
                                         <details class="explain" id="custom-buildings">
                                             <summary>Edit building counts and modules</summary>
                                             <button type="button" class="skip-add-btn" id="reset-buildings" hidden>Use RV defaults</button>
                                             <div id="advanced-config">
                                                 <div id="advanced-facility-settings">
-                                                <h3>Facilities</h3>
+                                                <h4>Facilities</h4>
                                                 <div class="input-field facility-search">
                                                     <label for="facility-search">Find a facility</label>
                                                     <input id="facility-search" type="search" placeholder="Search by building name" autocomplete="off">
@@ -173,12 +195,12 @@
                                                 <div class="facilities-container" id="facilities-grid"></div>
                                                 </div>
 
-                                                <h3>Item Upgrade Modules</h3>
+                                                <h4>Item Upgrade Modules</h4>
                                                 <p class="hint">Set the level for each upgrade module you have unlocked (0 = not unlocked).</p>
 
                                                 <div class="modules-grid">
                                                     <div class="module-card">
-                                                        <h4>Ecological Module <span class="info-icon" data-tooltip="Lv.1: Quick Wheat&#10;Lv.2: Quick Bamboo&#10;Lv.3: Quick Potato&#10;Lv.4: Quick Lemon&#10;Lv.5: Quick Rice&#10;Lv.6: Quick Maple Syrup&#10;Lv.7: Quick Strawberry&#10;Lv.8: Quick Coconut&#10;Lv.9: Quick Agave">?</span></h4>
+                                                        <h5>Ecological Module <button type="button" class="info-icon" data-tip="Ecological Module" data-tip-detail="Lv.1: Quick Wheat&#10;Lv.2: Quick Bamboo&#10;Lv.3: Quick Potato&#10;Lv.4: Quick Lemon&#10;Lv.5: Quick Rice&#10;Lv.6: Quick Maple Syrup&#10;Lv.7: Quick Strawberry&#10;Lv.8: Quick Coconut&#10;Lv.9: Quick Agave" aria-label="Ecological Module unlocks">?</button></h5>
                                                         <div class="input-field">
                                                             <label for="ecological-module-level">Level</label>
                                                             <input type="number" id="ecological-module-level" value="0" min="0" max="10">
@@ -186,7 +208,7 @@
                                                     </div>
 
                                                     <div class="module-card">
-                                                        <h4>Kitchen Module <span class="info-icon" data-tooltip="Lv.2: Premium Bread&#10;Lv.3: Premium Potato Soup&#10;Lv.4: Premium Sweet Rice Wine&#10;Lv.5: Premium Salted Lemon&#10;Lv.6: Premium Jello&#10;Lv.7: Premium Berry Chocolate Coconut Pudding">?</span></h4>
+                                                        <h5>Kitchen Module <button type="button" class="info-icon" data-tip="Kitchen Module" data-tip-detail="Lv.2: Premium Bread&#10;Lv.3: Premium Potato Soup&#10;Lv.4: Premium Sweet Rice Wine&#10;Lv.5: Premium Salted Lemon&#10;Lv.6: Premium Jello&#10;Lv.7: Premium Berry Chocolate Coconut Pudding" aria-label="Kitchen Module unlocks">?</button></h5>
                                                         <div class="input-field">
                                                             <label for="kitchen-module-level">Level</label>
                                                             <input type="number" id="kitchen-module-level" value="0" min="0" max="10">
@@ -194,7 +216,7 @@
                                                     </div>
 
                                                     <div class="module-card">
-                                                        <h4>Resource Detector <span class="info-icon" data-tooltip="Lv.1: Quick Well Water&#10;Lv.2: Quick Sea Salt&#10;Lv.3: Quick Aromathyst&#10;Lv.4: Quick Fresh Water&#10;Lv.5: Quick Wool&#10;Lv.6: Quick Deep Rock Spring Water&#10;Lv.7: Quick Natural Mineral Spring Water&#10;Lv.8: Quick Scales&#10;Lv.9: Quick Pearl&#10;Lv.10: Quick Snowmelt Cold Spring">?</span></h4>
+                                                        <h5>Resource Detector <button type="button" class="info-icon" data-tip="Resource Detector" data-tip-detail="Lv.1: Quick Well Water&#10;Lv.2: Quick Sea Salt&#10;Lv.3: Quick Aromathyst&#10;Lv.4: Quick Fresh Water&#10;Lv.5: Quick Wool&#10;Lv.6: Quick Deep Rock Spring Water&#10;Lv.7: Quick Natural Mineral Spring Water&#10;Lv.8: Quick Scales&#10;Lv.9: Quick Pearl&#10;Lv.10: Quick Snowmelt Cold Spring" aria-label="Resource Detector unlocks">?</button></h5>
                                                         <div class="input-field">
                                                             <label for="resource-detector-level">Level</label>
                                                             <input type="number" id="resource-detector-level" value="0" min="0" max="10">
@@ -202,7 +224,7 @@
                                                     </div>
 
                                                     <div class="module-card">
-                                                        <h4>Crafting Module <span class="info-icon" data-tooltip="Lv.1: Premium River-Washed Stones&#10;Lv.2: Premium Rose Freshener&#10;Lv.3: Advanced Lemon Incense&#10;Lv.4: Advanced Wind Chime&#10;Lv.5: Premium Soap&#10;Lv.6: Advanced Gemstone Dust&#10;Lv.7: Premium Mixed Perfume&#10;Lv.8: Premium Quicksilver Springstone">?</span></h4>
+                                                        <h5>Crafting Module <button type="button" class="info-icon" data-tip="Crafting Module" data-tip-detail="Lv.1: Premium River-Washed Stones&#10;Lv.2: Premium Rose Freshener&#10;Lv.3: Advanced Lemon Incense&#10;Lv.4: Advanced Wind Chime&#10;Lv.5: Premium Soap&#10;Lv.6: Advanced Gemstone Dust&#10;Lv.7: Premium Mixed Perfume&#10;Lv.8: Premium Quicksilver Springstone" aria-label="Crafting Module unlocks">?</button></h5>
                                                         <div class="input-field">
                                                             <label for="crafting-module-level">Level</label>
                                                             <input type="number" id="crafting-module-level" value="0" min="0" max="10">
@@ -218,27 +240,20 @@
                     </aside>
                 </div>
 
-                <div class="planner-rv-settings">
-                    <div class="planner-rv input-field">
-                        <label for="home-level">RV level</label>
-                        <select id="home-level"></select>
-                    </div>
-                    <div class="input-field" id="level-up-target-row">
-                        <label for="level-up-target">Level up to RV</label>
-                        <select id="level-up-target"></select>
-                    </div>
-                </div>
-
                 <div class="planner-submit">
                 <div class="season" id="electricity-section">
                     <label class="planner-checkbox"><input type="checkbox" id="electricity-on"><span>E-mode</span></label>
+                    <p class="hint small" id="electricity-short-hint">Power workshops with Generators and Poles instead of workers.</p>
                     <p class="hint small" id="electricity-best-minimum-note" hidden>Best and Minimum compare E-mode with normal production and count the Lightning Aniimo needed to run the generators.</p>
                 </div>
 
-                    <button id="optimize-btn" type="button" class="optimize-btn" disabled>
-                        <span class="btn-text">Loading optimizer…</span>
-                        <span class="btn-loading" style="display: none;">Solving...</span>
-                    </button>
+                    <div class="planner-submit-actions">
+                        <button id="cancel-solve-btn" type="button" class="skip-add-btn" hidden>Cancel</button>
+                        <button id="optimize-btn" type="button" class="optimize-btn" disabled>
+                            <span class="btn-text">Loading optimizer…</span>
+                            <span class="btn-loading" style="display: none;">Solving...</span>
+                        </button>
+                    </div>
                 </div>
                 <div id="progress-bar-container" class="progress-bar-container" style="display: none;">
                     <div id="progress-bar-fill" class="progress-bar-fill"></div>
@@ -249,16 +264,33 @@
             </section>
 
             <section class="results-section" id="results-section" style="display: none;">
+                <div id="results-stale-banner" class="stale-banner" role="status" hidden>
+                    <span>Setup changed since this plan was calculated.</span>
+                    <button type="button" id="recalculate-stale-btn" class="skip-add-btn">Recalculate plan</button>
+                </div>
+                <nav class="results-nav" id="results-nav" aria-label="Results sections" hidden>
+                    <a href="#plan-overview" data-nav-target="plan-overview">Results</a>
+                    <a href="#aniimo-card" data-nav-target="aniimo-card">Team</a>
+                    <a href="#product-flow-card" data-nav-target="product-flow-card">Flow map</a>
+                    <a href="#improve-card" data-nav-target="improve-card">Opportunities</a>
+                    <a href="#profit-card" data-nav-target="profit-card">Profit</a>
+                    <a href="#facility-plan-card" data-nav-target="facility-plan-card">Facilities</a>
+                    <a href="#layout-card" data-nav-target="layout-card">Layout</a>
+                    <a href="#goal-section" data-nav-target="goal-section">Goal</a>
+                    <a href="#planner-settings" class="results-nav-top">↑ Setup</a>
+                </nav>
                 <div id="error-message" class="card error-message" style="display: none;" role="alert" tabindex="-1"></div>
 
                 <div id="results-content">
                     <p class="hint small" id="power-used" hidden></p>
                     <div class="card aniimo-card" id="aniimo-card">
                         <div class="card-head">
-                            <button type="button" class="collapse-toggle" id="aniimo-toggle" aria-expanded="false" aria-controls="aniimo-body">
-                                <span class="chevron" aria-hidden="true"></span>
-                                <h2>Aniimo Team</h2>
-                            </button>
+                            <h2>
+                                <button type="button" class="collapse-toggle" id="aniimo-toggle" aria-expanded="false" aria-controls="aniimo-body">
+                                    <span class="chevron" aria-hidden="true"></span>
+                                    <span>Aniimo Team</span>
+                                </button>
+                            </h2>
                             <button type="button" class="toggle-button small" id="edit-roster-btn" hidden>Edit My Aniimo</button>
                         </div>
                         <p class="aniimo-count" id="aniimo-count" hidden><span id="aniimo-count-have">0</span><span class="aniimo-count-of" id="aniimo-count-of"></span></p>
@@ -325,7 +357,7 @@
                             </section>
                         </div>
                         <section id="roster-swaps" aria-labelledby="roster-swaps-heading" hidden>
-                            <div class="roster-swaps-heading"><h3 id="roster-swaps-heading">Roster swaps</h3><span>Home Coins/hour</span></div>
+                            <div class="roster-swaps-heading"><h3 id="roster-swaps-heading">Roster swaps</h3><span id="roster-swaps-unit">Home Coins/hour</span></div>
                             <div id="roster-swaps-grid"></div>
                         </section>
                         <details class="explain plan-upgrade-details" id="level-up-card" hidden>
@@ -423,17 +455,22 @@
                                 <input type="number" id="layout-storage-count" min="0" step="1" aria-describedby="layout-storage-limit">
                                 <span class="hint small" id="layout-storage-limit"></span>
                             </div>
-                            <span class="layout-toggles">
-                                <label class="layout-whole"><input type="checkbox" id="layout-whole"> Show the whole homeland</label>
+                            <div class="layout-primary-toggles">
                                 <label class="layout-whole"><input type="checkbox" id="layout-sim-on" checked> Simulate</label>
-                                <label class="layout-whole"><input type="checkbox" id="layout-icons" checked> Show building icons</label>
-                                <label class="layout-whole"><input type="checkbox" id="layout-recipes"> Show recipe</label>
-                                <label class="layout-whole"><input type="checkbox" id="layout-workers" checked> Show workers</label>
-                            </span>
-                            <span class="layout-sim" id="layout-sim" hidden><span id="layout-clock">0h 00m</span><button type="button" class="toggle-button small" id="layout-replay">Replay</button></span>
+                                <span class="layout-sim" id="layout-sim" hidden><span id="layout-clock">0h 00m</span><button type="button" class="toggle-button small" id="layout-replay">Replay</button></span>
+                                <details class="layout-options-menu">
+                                    <summary>Display options</summary>
+                                    <div class="layout-toggles">
+                                        <label class="layout-whole"><input type="checkbox" id="layout-whole"> Show the whole homeland</label>
+                                        <label class="layout-whole"><input type="checkbox" id="layout-icons" checked> Show building icons</label>
+                                        <label class="layout-whole"><input type="checkbox" id="layout-recipes"> Show recipe</label>
+                                        <label class="layout-whole"><input type="checkbox" id="layout-workers" checked> Show workers</label>
+                                    </div>
+                                </details>
+                            </div>
                         </div>
                         <div class="layout-zoom-controls" id="layout-zoom-controls" hidden>
-                            <span class="hint small">Drag to move around while zoomed.</span>
+                            <span class="hint small">Use + / − or Ctrl + scroll to zoom; drag to pan.</span>
                             <div role="group" aria-label="Map zoom">
                                 <button type="button" class="skip-add-btn" data-map-zoom="out" aria-label="Zoom out" disabled>−</button>
                                 <button type="button" class="skip-add-btn" data-map-zoom="in" aria-label="Zoom in">+</button>
@@ -442,7 +479,7 @@
                         </div>
                         <ul class="layout-group-legend" id="layout-group-legend" aria-label="Storage groups" hidden></ul>
                         <details class="explain" id="layout-building-index" hidden>
-                            <summary>Buildings A–Z (English names)</summary>
+                            <summary>Buildings A–Z</summary>
                             <p class="hint small" id="layout-index-nearest" hidden>Listed by nearest Storage Unit on this map.</p>
                             <div id="layout-building-index-list"></div>
                         </details>
@@ -525,33 +562,58 @@
         </main>
 
         <footer>
-            <p>aniimax v<span id="version">-</span> | <a href="https://github.com/ae-bii/aniimax" target="_blank">github</a></p>
+            <p>aniimax v<span id="version">-</span> | <a href="https://github.com/ae-bii/aniimax" target="_blank" rel="noopener noreferrer">github</a></p>
             <p class="footer-note">Unofficial fan-made tool. Not affiliated with or endorsed by the makers of Aniimo.</p>
             <p class="footer-note">Your inputs are saved in your browser and never sent anywhere.</p>
         </footer>
     </div>
 
+    <div id="undo-toast" class="undo-toast" role="status" aria-live="polite" hidden>
+        <span id="undo-toast-text"></span>
+        <div class="undo-toast-actions">
+            <button type="button" id="undo-toast-btn" class="skip-add-btn">Undo</button>
+            <button type="button" id="undo-toast-close" class="roster-x" aria-label="Close">✕</button>
+        </div>
+    </div>
+
+    <dialog id="confirm-clear-dialog" class="roster-dialog confirm-dialog" aria-labelledby="confirm-clear-title">
+        <div class="roster-dialog-head">
+            <h3 id="confirm-clear-title">Clear saved values?</h3>
+            <button type="button" class="roster-x" data-close-dialog aria-label="Close">✕</button>
+        </div>
+        <p class="hint">This resets all settings, priorities, custom buildings, and your saved My Aniimo roster in this browser.</p>
+        <div class="roster-dialog-foot">
+            <button type="button" class="skip-add-btn" data-close-dialog>Cancel</button>
+            <button type="button" class="skip-add-btn confirm-danger-btn" id="confirm-clear-accept">Clear everything</button>
+        </div>
+    </dialog>
+
     <!-- Facilities Modal -->
-    <div id="facilitiesModal" class="modal" onclick="closeFacilitiesOnBackdrop(event)">
+    <dialog id="facilitiesModal" class="modal-dialog wide" aria-labelledby="facilities-modal-title">
         <div class="modal-content wide">
             <div class="modal-header">
-                <h2>Facility Recipes</h2>
-                <button class="close-button" onclick="closeFacilities()">&times;</button>
+                <h2 id="facilities-modal-title">Facility Recipes</h2>
+                <button type="button" class="close-button" data-close-dialog aria-label="Close">&times;</button>
             </div>
             <div class="modal-body">
                 <p class="hint">Every recipe in the game data, grouped by facility. This is a reference table, not tied to your owned facility counts or levels.</p>
+                <div class="input-field facilities-modal-filter">
+                    <label for="facilities-modal-search">Search recipes, buildings, or abilities</label>
+                    <input id="facilities-modal-search" type="search" placeholder="Search by name or ability" autocomplete="off">
+                </div>
+                <p class="hint small" id="facilities-modal-empty" hidden>No matching recipes or facilities.</p>
                 <p class="hint small" id="facilities-loading-hint">Loading recipe data...</p>
                 <div id="facilities-modal-container" class="facilities-container"></div>
             </div>
         </div>
-    </div>
+    </dialog>
 
     <!-- Math Modal -->
-    <div id="mathModal" class="modal" onclick="closeMathOnBackdrop(event)">
+    <dialog id="mathModal" class="modal-dialog modal-wide" aria-labelledby="math-modal-title">
         <div class="modal-content modal-wide">
             <div class="modal-header">
-                <h2>How It Works</h2>
-                <button class="close-button" onclick="closeMath()">&times;</button>
+                <h2 id="math-modal-title">How It Works</h2>
+                <button type="button" class="close-button" data-close-dialog aria-label="Close">&times;</button>
             </div>
             <div class="modal-body">
                 <h3>The Model</h3>
@@ -596,7 +658,7 @@
                 <p>If the exact planner can't run (rare; reloading the page usually fixes it), an older planner steps in. It solves the same problem as a continuous linear program, rounds to whole plots and one recipe per machine, then re-solves. Its plans are usually close to the best but not guaranteed, and the results say when it was used.</p>
             </div>
         </div>
-    </div>
+    </dialog>
     <script>
         // Keep the math window before MathJax typesets it. This script runs while the page is still
         // being parsed, and MathJax typesets only after that. See math-translation.js.
@@ -604,11 +666,11 @@
     </script>
 
     <!-- Help Modal -->
-    <div id="helpModal" class="modal" onclick="closeHelpOnBackdrop(event)">
+    <dialog id="helpModal" class="modal-dialog" aria-labelledby="help-modal-title">
         <div class="modal-content">
             <div class="modal-header">
-                <h2>How to Use</h2>
-                <button class="close-button" onclick="closeHelp()">&times;</button>
+                <h2 id="help-modal-title">How to Use</h2>
+                <button type="button" class="close-button" data-close-dialog aria-label="Close">&times;</button>
             </div>
             <div class="modal-body">
                 <h3>1. Tell It What You've Built</h3>
@@ -637,59 +699,73 @@
                 </ul>
             </div>
         </div>
-    </div>
+    </dialog>
 
     <script>
-        window.toggleTheme = function() {
-            const body = document.body;
-            const button = document.getElementById('themeToggle');
-            body.classList.toggle('light');
-            if (body.classList.contains('light')) {
-                button.textContent = 'dark';
-            } else {
-                button.textContent = 'light';
+        let mathJaxLoadPromise = null;
+        function ensureMathJax() {
+            if (window.MathJax?.typesetPromise) return Promise.resolve(window.MathJax);
+            if (!mathJaxLoadPromise) {
+                mathJaxLoadPromise = new Promise((resolve, reject) => {
+                    const script = document.createElement('script');
+                    script.id = 'MathJax-script';
+                    script.async = true;
+                    script.src = 'https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js';
+                    script.onload = () => resolve(window.MathJax);
+                    script.onerror = reject;
+                    document.head.appendChild(script);
+                });
             }
+            return mathJaxLoadPromise;
         }
+
+        function syncThemeButton() {
+            const isLight = document.documentElement.classList.contains('light');
+            const button = document.getElementById('themeToggle');
+            if (!button) return;
+            button.textContent = isLight ? 'dark' : 'light';
+            button.setAttribute('aria-pressed', String(isLight));
+        }
+
+        window.toggleTheme = function() {
+            const isLight = document.documentElement.classList.toggle('light');
+            document.body.classList.toggle('light', isLight);
+            try { localStorage.setItem('aniimax-theme', isLight ? 'light' : 'dark'); } catch (_) {}
+            syncThemeButton();
+        };
 
         window.showHelp = function() {
-            document.getElementById('helpModal').classList.add('show');
-        }
+            const dialog = document.getElementById('helpModal');
+            if (!dialog.open) dialog.showModal();
+        };
 
         window.closeHelp = function() {
-            document.getElementById('helpModal').classList.remove('show');
-        }
-
-        window.closeHelpOnBackdrop = function(event) {
-            if (event.target.id === 'helpModal') {
-                closeHelp();
-            }
-        }
+            const dialog = document.getElementById('helpModal');
+            if (dialog.open) dialog.close();
+        };
 
         window.showMath = function() {
-            document.getElementById('mathModal').classList.add('show');
-            // Trigger MathJax to render
-            if (window.MathJax) {
-                MathJax.typesetPromise();
-            }
-        }
+            const dialog = document.getElementById('mathModal');
+            if (!dialog.open) dialog.showModal();
+            ensureMathJax().then(mj => mj?.typesetPromise?.([dialog.querySelector('.modal-body')])).catch(() => {});
+        };
 
         window.closeMath = function() {
-            document.getElementById('mathModal').classList.remove('show');
-        }
+            const dialog = document.getElementById('mathModal');
+            if (dialog.open) dialog.close();
+        };
 
-        window.closeMathOnBackdrop = function(event) {
-            if (event.target.id === 'mathModal') {
-                closeMath();
-            }
-        }
-
-        // Close modal on Escape key
-        document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape') {
-                closeHelp();
-                closeMath();
-                closeFacilities();
-            }
+        // Sync initial theme button & wire header buttons and native dialog backdrop/close buttons.
+        if (document.documentElement.classList.contains('light')) document.body.classList.add('light');
+        syncThemeButton();
+        document.getElementById('themeToggle')?.addEventListener('click', () => window.toggleTheme());
+        document.getElementById('helpToggle')?.addEventListener('click', () => window.showHelp());
+        document.getElementById('mathToggle')?.addEventListener('click', () => window.showMath());
+        document.getElementById('facilitiesToggle')?.addEventListener('click', () => window.showFacilities?.());
+        document.querySelectorAll('dialog.modal-dialog, dialog#confirm-clear-dialog').forEach(dialog => {
+            dialog.addEventListener('click', event => {
+                if (event.target === dialog || event.target.closest('[data-close-dialog]')) dialog.close();
+            });
         });
     </script>
     <svg class="roster-svg-defs" width="0" height="0" aria-hidden="true">
@@ -705,6 +781,6 @@
             </linearGradient>
         </defs>
     </svg>
-    <script type="module" src="app.js?v=team-support"></script>
+    <script type="module" src="app.js?v=ux-refresh-3"></script>
 </body>
 </html>

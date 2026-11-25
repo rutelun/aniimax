@@ -19,5 +19,5 @@ awk -v build="$build" '
         print "    <link rel=\"preload\" as=\"fetch\" crossorigin href=\"./pkg/aniimax_bg.wasm?load=" build "\">"
         print "    <link rel=\"preload\" as=\"fetch\" crossorigin href=\"./vendor/highs/highs.wasm\">"
     }
-    { sub(/app\.js\?v=team-support/, "app.js?build=" build); print }
+    { sub(/app\.js\?v=[^"]+/, "app.js?build=" build); sub(/style\.css\?v=[^"]+/, "style.css?build=" build); print }
 ' web/index.html > "$site/index.html"

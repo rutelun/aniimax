@@ -1,13 +1,13 @@
-import { attachProductionFlow, flowBuildings } from './production-flow.js?v=hex-load';
+import { attachProductionFlow, flowBuildings } from './production-flow.js?v=ux-refresh-3';
 import {siteSchedule,scheduledRate,scheduledRates} from './recipe-timeline.js';
-import {elapsed as scheduleTime, facilitySchedule, renderRecipeSchedule} from './recipe-schedule-view.js';
+import {elapsed as scheduleTime, facilitySchedule, renderRecipeSchedule} from './recipe-schedule-view.js?v=ux-refresh-3';
 import {switchingWorkshops} from './material-flow-schedule.js';
 import {scheduleProfiles} from './recipe-schedule-plan.js';
 import {splitPhaseTasks} from './phase-work.js';
 // Aniimax Web Application
 
-import { currentLocale, sourceAttribute, translate } from './i18n.js?v=roster-assignments';
-import './math-translation.js?v=results-columns';
+import { currentLocale, sourceAttribute, translate } from './i18n.js?v=ux-refresh-3';
+import './math-translation.js?v=ux-refresh-3';
 import { autoMaximizeSeasonPoints } from './season-planning.js?v=optional-season-points';
 import { normalizeMapStyle } from './map-style.js?v=production-groups';
 import { productionGroupOutline } from './group-outline.js?v=compact-groups';
@@ -32,7 +32,7 @@ import { assignFacilityStock, bufferedBatches, haulingLevelFor, haulingWorkload,
     haulingTravelSeconds, haulingWorkSeconds, siteHaulingTrips, pickupStockLimit } from './hauling.js?v=base-travel';
 import { personalityInput, replacementCandidates, compareRecommendations, usefulUpgrade, keepBetterComparison, workerUsage } from './opportunity-comparison.js?v=logic-audit';
 import { comparisonConcurrency, startComparisonQueue } from './comparison-queue.js?v=parallel-comparisons';
-import { renderRosterSwaps } from './roster-swap-cards.js';
+import { renderRosterSwaps } from './roster-swap-cards.js?v=ux-refresh-3';
 import { prepareOpportunities } from './opportunity-effects.js?v=auto-e-mode';
 import aniimoCatalog from './aniimo-catalog.json' with { type: 'json' };
 import { aniimoPortrait, attachRosterPicker, rosterCatalogId, rosterCatalogFamily, rosterFormName } from './roster-picker.js?v=rv22-families';
@@ -605,6 +605,7 @@ function saveInputsToStorage() {
         document.getElementById('share-config-result').hidden = true;
         const rosterSave = document.querySelector('[data-roster="save-import"]');
         if (rosterSave) rosterSave.hidden = true;
+        markResultsStale();
         return true;
     } catch (e) {
         console.warn('Could not save inputs to localStorage:', e);
@@ -717,6 +718,15 @@ function attachAutoSave() {
 }
 
 function clearSavedInputs() {
+    const dialog = document.getElementById('confirm-clear-dialog');
+    if (dialog && typeof dialog.showModal === 'function') {
+        if (!dialog.open) dialog.showModal();
+        return;
+    }
+    performClearSavedInputs();
+}
+
+function performClearSavedInputs() {
     try {
         localStorage.removeItem(STORAGE_KEY);
     } catch (e) {
@@ -724,6 +734,95 @@ function clearSavedInputs() {
     }
     clearShareHash();
     window.location.reload();
+}
+
+let lastSolvedConfigJson = null;
+let undoToastAction = null;
+let undoToastTimer = null;
+
+function markResultsStale() {
+    const banner = document.getElementById('results-stale-banner');
+    const btn = document.getElementById('optimize-btn');
+    if (!banner || !btn) return;
+    const stale = Boolean(lastSolvedConfigJson && lastPlan?.success
+        && document.getElementById('results-section')?.style.display !== 'none'
+        && JSON.stringify(currentConfig()) !== lastSolvedConfigJson);
+    banner.hidden = !stale;
+    btn.classList.toggle('is-dirty', stale);
+    const btnText = btn.querySelector('.btn-text');
+    if (btnText && wasmReady && !wasmLoadFailed && !btn.disabled) {
+        btnText.textContent = stale ? 'Recalculate plan' : 'Find the best plan';
+    }
+}
+
+function clearResultsStale() {
+    try { lastSolvedConfigJson = JSON.stringify(currentConfig()); } catch (_) { lastSolvedConfigJson = null; }
+    const banner = document.getElementById('results-stale-banner');
+    if (banner) banner.hidden = true;
+    const btn = document.getElementById('optimize-btn');
+    if (btn) {
+        btn.classList.remove('is-dirty');
+        const btnText = btn.querySelector('.btn-text');
+        if (btnText && wasmReady && !wasmLoadFailed) btnText.textContent = 'Find the best plan';
+    }
+}
+
+function updateResultsNav() {
+    const nav = document.getElementById('results-nav');
+    if (!nav) return;
+    const resultsContent = document.getElementById('results-content');
+    const visibleContent = resultsContent && resultsContent.style.display !== 'none'
+        && !resultsContent.classList.contains('setup-only');
+    let shownLinks = 0;
+    for (const link of nav.querySelectorAll('[data-nav-target]')) {
+        const target = document.getElementById(link.dataset.navTarget);
+        const visible = Boolean(visibleContent && target && !target.hidden && target.style.display !== 'none');
+        link.hidden = !visible;
+        if (visible) shownLinks++;
+    }
+    nav.hidden = shownLinks < 2;
+}
+
+function showUndoToast(message, onUndo) {
+    const toast = document.getElementById('undo-toast');
+    if (!toast) return;
+    clearTimeout(undoToastTimer);
+    undoToastAction = onUndo || null;
+    document.getElementById('undo-toast-text').textContent = message;
+    const btn = document.getElementById('undo-toast-btn');
+    btn.hidden = !undoToastAction;
+    toast.hidden = false;
+    undoToastTimer = setTimeout(hideUndoToast, 9000);
+}
+
+function hideUndoToast() {
+    clearTimeout(undoToastTimer);
+    undoToastTimer = null;
+    undoToastAction = null;
+    const toast = document.getElementById('undo-toast');
+    if (toast) toast.hidden = true;
+}
+
+function scrollSmoothly(el) {
+    if (!el || typeof el.scrollIntoView !== 'function') return;
+    const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    el.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' });
+}
+
+function cancelActiveSolve() {
+    planRunId++;
+    mainSolve = null;
+    discardRoutePreview();
+    restartWorker();
+    stopSetupSolve();
+    stopLayout();
+    stopRanking();
+    if (progress) {
+        progress.steps.forEach(s => { if (s.state === 'running' || s.state === 'pending') s.state = 'skipped'; });
+        renderProgress();
+    }
+    resetPlanButton();
+    announcePlanner('Plan calculation cancelled.');
 }
 
 // Initialize the worker and its wasm module.
@@ -739,6 +838,7 @@ async function initWasm() {
         wasmReady = true;
         document.querySelector('#optimize-btn .btn-text').textContent = 'Find the best plan';
         resetPlanButton();
+        document.querySelectorAll?.('[data-roster="from-best"], [data-roster="from-minimum"]').forEach(b => { b.disabled = false; });
 
         document.getElementById('version').textContent = version;
 
@@ -925,6 +1025,7 @@ function improvementCandidates(base, setup, plan) {
         if (!base.exclude.includes(recipe.name) || skipped.has(recipe.name)) continue;
         if (recipe.facility && !owns(recipe.facility)) continue;
         candidates.push({ kind: 'Recipes', change: { kind: 'recipe', name: recipe.name },
+            apply: { kind: 'recipe', name: recipe.name },
             label: `Unlock ${prettyItem(recipe.name)}`, facilities: recipe.facility ? [recipe.facility] : [],
             input: { ...base, exclude: base.exclude.filter(name => name !== recipe.name) } });
     }
@@ -937,6 +1038,7 @@ function improvementCandidates(base, setup, plan) {
             const name = rosterFormName(candidate.entry);
             candidates.push({ kind: 'Aniimo', label: `${who} → ${name}`, member: candidate.index,
                 changedMember: candidate.changedMember,
+                apply: { kind: 'roster-replace', index: candidate.index, entry: candidate.entry, traits: candidate.traits, isAssumed: Boolean(reserve) },
                 portrait: aniimoPortrait(candidate.entry.id), traits: candidate.traits, facilities: candidate.facilities, input: candidate.input });
         }
         const traits = new Map();
@@ -957,6 +1059,7 @@ function improvementCandidates(base, setup, plan) {
                 member, changedMember, traits: [trait], facilities: [...facilities],
                 portrait: aniimoPortrait(rosterCatalogId(roster[member]?.catalogId, roster[member]?.name)),
                 change: { kind: 'personality', member: changedMember, trait },
+                apply: { kind: 'personality', member, trait },
                 input: personalityInput(base, member, trait, PERSONALITY_PAIRS) });
         }
     } else if (setup.startsWith('best')) {
@@ -966,6 +1069,7 @@ function improvementCandidates(base, setup, plan) {
             const entry = aniimoCatalog.entries.find(entry => entry.abilities[ability] >= next);
             if (!entry) continue;
             candidates.push({ kind: 'Aniimo', label: `${rosterFormName(entry)} · ${translate(ability)} Lv.${next}`,
+                apply: { kind: 'best-level', ability, level: next },
                 portrait: aniimoPortrait(entry.id), input: { ...base, aniimo_levels: { ...base.aniimo_levels, [ability]: next } } });
         }
     }
@@ -979,6 +1083,7 @@ function improvementCandidates(base, setup, plan) {
                 candidates.push({
                     kind: 'Buildings',
                     label: `${MODULE_NAMES[module] || module} Lv.${next}`,
+                    apply: { kind: 'module', module, level: next },
                     input: { ...base, modules: { ...base.modules, [module]: next } },
                 });
             }
@@ -991,6 +1096,7 @@ function improvementCandidates(base, setup, plan) {
                 candidates.push({
                     kind: 'Buildings',
                     label: capLevel === 1 ? `+1 ${f.name}` : `+1 ${f.name} (Lv.${capLevel})`,
+                    apply: { kind: 'facility', facility: f.name, count: tierCount(tiers) + 1, level: capLevel },
                     input: { ...base, facilities: { ...base.facilities, [f.name]: [{count:tierCount(tiers)+1,level:capLevel}] } },
                 });
             }
@@ -1267,8 +1373,11 @@ function renderImprovements(rebuild = true) {
             ? `<p class="hint small">${translate('Load per assigned Aniimo')} · ${formatPercent(Math.min(1,before/assignments))} → ${formatPercent(Math.min(1,after/changed))}</p>` : '';
         const canCheck = !checked && !running;
         const canRefine = checked && (checked.error || report?.approximate) && !running;
-        const button = canCheck || canRefine ? `<button type="button" class="skip-add-btn" data-opportunity-check="${index}"
+        const canApply = Boolean(candidate.apply && !running);
+        const checkBtn = canCheck || canRefine ? `<button type="button" class="skip-add-btn" data-opportunity-check="${index}"
             ${canRefine?'data-detailed':''}>${translate(canRefine ? 'Detailed search' : 'Quick compare')}</button>` : '';
+        const applyBtn = canApply ? `<button type="button" class="skip-add-btn opportunity-apply-btn" data-opportunity-apply="${index}">${translate('Apply to setup')}</button>` : '';
+        const actions = checkBtn || applyBtn ? `<div class="opportunity-actions">${applyBtn}${checkBtn}</div>` : '';
         const portrait = candidate.portrait ? `<img src="${escapeText(candidate.portrait)}" class="opportunity-portrait" alt="" loading="lazy">` : '';
         return `<details class="opportunity-row" data-opportunity-open="${tab}:${index}"${open.has(`${tab}:${index}`) ? ' open' : ''}>
             <summary><span class="opportunity-title">${portrait}<span><strong>${escapeText(translate(candidate.label))}</strong>
@@ -1277,21 +1386,94 @@ function renderImprovements(rebuild = true) {
             <div class="opportunity-detail">${trait}${memberLoad}${proof}${opportunityDescription(candidate)}
             ${report ? `<details class="comparison-result" data-opportunity-open="${tab}:preview:${index}"${open.has(`${tab}:preview:${index}`)?' open':''}>
                 <summary>${translate('Preview change')}</summary>${comparisonTable(report)}</details>` : ''}
-            ${button}</div></details>`;
+            ${actions}</div></details>`;
     };
     if (!indices.length) {
         holder.innerHTML = `<p class="hint small">${translate(['Aniimo', 'Personalities'].includes(tab) && !ranking.input.roster
             ? 'Use My Aniimo to compare named replacements and personality changes.' : 'No eligible changes found.')}</p>`;
-        return;
-    }
-    if (tab === 'Recipes' && checked === 0 && !running) {
-        holder.innerHTML = `<p class="hint small">${translate('Compare unlockable recipes with the current plan.')}</p>`;
+        updateResultsNav();
         return;
     }
     const elementKey = `${tab}:rest`;
     holder.innerHTML = ranked.map(row).join('') + (rest.length
-        ? `<details class="opportunity-rest" data-opportunity-open="${elementKey}"${open.has(elementKey) ? ' open' : ''}>
+        ? `<details class="opportunity-rest" data-opportunity-open="${elementKey}"${open.has(elementKey) || !ranked.length ? ' open' : ''}>
             <summary>${translate('Other candidates')} (${rest.length})</summary>${rest.map(row).join('')}</details>` : '');
+    updateResultsNav();
+}
+
+function applyOpportunity(index) {
+    const candidate = ranking?.candidates?.[index];
+    const action = candidate?.apply;
+    if (!action) return;
+    const setTraitOn = (member, trait) => {
+        const pairIndex = PERSONALITY_PAIRS.findIndex(pair => pair.names.includes(trait));
+        if (pairIndex >= 0) member.personalities[pairIndex] = trait;
+    };
+    if (action.kind === 'recipe') {
+        unlockedSpecial.add(action.name);
+        renderSpecialRecipes();
+    } else if (action.kind === 'best-level') {
+        aniimoLevels[action.ability] = action.level;
+        renderAbilityLevels();
+    } else if (action.kind === 'personality') {
+        const source = roster[action.member];
+        if (!source) return;
+        if (source.count > 1) {
+            source.count--;
+            const copy = { ...structuredClone(source), count: 1 };
+            setTraitOn(copy, action.trait);
+            const newIdx = roster.length;
+            roster.push(copy);
+            const slot = rosterSlots.indexOf(action.member);
+            if (slot >= 0) rosterSlots[slot] = newIdx;
+            else placeRosterCopy(rosterSlots, newIdx);
+        } else {
+            setTraitOn(source, action.trait);
+        }
+        renderRoster();
+    } else if (action.kind === 'roster-replace') {
+        const name = rosterFormName(action.entry);
+        const traits = PERSONALITY_PAIRS.map(pair => action.traits?.find(t => pair.names.includes(t)) ?? null);
+        const replacement = { ...newRosterAniimo({ ...action.entry.abilities }, traits),
+            catalogId: action.entry.id, name, family: action.entry.family ?? null };
+        if (action.isAssumed || !roster[action.index]) {
+            const newIdx = roster.length;
+            roster.push(replacement);
+            placeRosterCopy(rosterSlots, newIdx);
+        } else {
+            const slot = rosterSlots.indexOf(action.index);
+            if (roster[action.index].count > 1) {
+                roster[action.index].count--;
+                const newIdx = roster.length;
+                roster.push(replacement);
+                if (slot >= 0) rosterSlots[slot] = newIdx;
+                else placeRosterCopy(rosterSlots, newIdx);
+            } else {
+                roster[action.index] = replacement;
+            }
+        }
+        renderRoster();
+    } else if (action.kind === 'module') {
+        const ids = {
+            ecological: 'ecological-module-level',
+            kitchen: 'kitchen-module-level',
+            resource_detector: 'resource-detector-level',
+            crafting: 'crafting-module-level',
+        };
+        const input = document.getElementById(ids[action.module]);
+        if (input) input.value = String(action.level);
+        customBuildings = true;
+        renderBuildingSettings();
+    } else if (action.kind === 'facility') {
+        facilityTiers[action.facility] = [{ count: action.count, level: action.level }];
+        customBuildings = true;
+        renderFacilityCards();
+        renderBuildingSettings();
+    } else {
+        return;
+    }
+    saveInputsToStorage();
+    runFindPlan();
 }
 
 // --- Homeland layout -------------------------------------------------------------------
@@ -1638,10 +1820,26 @@ function updateLayoutStyleControls() {
 }
 
 function attachLayoutHandlers() {
+    document.addEventListener('click', event => {
+        const menu = document.querySelector('.layout-options-menu[open]');
+        if (menu && !menu.contains(event.target)) menu.open = false;
+    });
+    document.addEventListener('keydown', event => {
+        if (event.key !== 'Escape') return;
+        const menu = document.querySelector('.layout-options-menu[open]');
+        if (menu) menu.open = false;
+    });
     document.getElementById('layout-building-index').addEventListener('click', event => {
         const button = event.target.closest('[data-layout-sites]');
         const svg = document.querySelector('#layout-diagram .layout-svg');
         if (!button || !svg) return;
+        const alreadySelected = button.getAttribute('aria-pressed') === 'true';
+        if (alreadySelected) {
+            svg.querySelectorAll('.layout-site-focused').forEach(el => el.classList.remove('layout-site-focused'));
+            button.setAttribute('aria-pressed', 'false');
+            setLayoutView(svg, layoutBaseOf(svg));
+            return;
+        }
         const sites = new Set(button.dataset.layoutSites.split(','));
         const matches = [...svg.querySelectorAll('[data-layout-site]')].filter(element => {
             const chosen = sites.has(element.dataset.layoutSite);
@@ -1851,10 +2049,10 @@ function renderBuildingIndex(layout) {
     });
     const groups = byDistrict.map((names, i) => {
         if (!names.size) return '';
-        const sorted = [...names].sort(([a], [b]) => a.localeCompare(b, 'en'));
+        const sorted = [...names].sort(([a], [b]) => translate(a).localeCompare(translate(b), currentLocale()));
         const range = rangeLabel(layout.groups?.[i]?.range);
         return `<div class="layout-index-group"><strong>${escapeText(districtLabel(layout.groups?.[i], i))}${range ? ` · ${range}` : ''}</strong><div>${sorted.map(([name, entry]) =>
-            `<button type="button" data-layout-sites="${entry.sites.join(',')}" aria-pressed="false" title="${escapeText([...entry.products].join(', '))}" translate="no">${escapeText(name)}</button>`).join('')}</div></div>`;
+            `<button type="button" data-layout-sites="${entry.sites.join(',')}" aria-pressed="false" title="${escapeText([...entry.products].map(translate).join(', '))}">${escapeText(translate(name))}</button>`).join('')}</div></div>`;
     }).filter(Boolean);
     document.getElementById('layout-index-nearest').hidden = !!layout.groups;
     document.getElementById('layout-building-index-list').innerHTML = groups.join('');
@@ -2103,7 +2301,8 @@ function rerenderRosterSwaps() {
     if (!section || !lastLayout?.plan || !selectedAniimoSetup().startsWith('roster')) return;
     const cached = swapReports.get(lastLayout.plan);
     if (cached?.map === lastLayout.layout) {
-        renderRosterSwaps(section, cached.report, rosterSwapMembers(), translate, formatNumber);
+        const unit = document.getElementById('rate-unit')?.value || 'hour';
+        renderRosterSwaps(section, cached.report, rosterSwapMembers(), translate, formatNumber, unit);
     }
 }
 
@@ -2113,9 +2312,10 @@ async function updateRosterSwaps(plan, map, setup) {
         !plan.continuous_site_counts || plan.comparison_goals?.currency !== 'coins' ||
         !plan.roster_workload || !Object.keys(plan.roster_dispatch ?? {}).length) return;
     const members = rosterSwapMembers();
+    const unit = document.getElementById('rate-unit')?.value || 'hour';
     const cached = swapReports.get(plan);
     if (cached?.map === map) {
-        renderRosterSwaps(section, cached.report, members, translate, formatNumber);
+        renderRosterSwaps(section, cached.report, members, translate, formatNumber, unit);
         return;
     }
     const controller = new AbortController();
@@ -2130,7 +2330,7 @@ async function updateRosterSwaps(plan, map, setup) {
         const { result } = await runMapWorker(WORKER_URL, { id: 1, type: 'roster_swaps', payload }, controller.signal);
         if (controller.signal.aborted || lastLayout?.plan !== plan || lastLayout.layout !== map || selectedAniimoSetup() !== setup) return;
         swapReports.set(plan, { map, report: result });
-        renderRosterSwaps(section, result, members, translate, formatNumber);
+        renderRosterSwaps(section, result, members, translate, formatNumber, document.getElementById('rate-unit')?.value || 'hour');
     } catch (error) {
         if (!controller.signal.aborted) console.warn('Could not calculate roster swaps.', error);
     } finally {
@@ -3132,13 +3332,30 @@ function renderProgress() {
         skipped: '<span class="step-icon skipped" aria-label="Skipped">–</span>',
     }[state] || '<span class="step-icon pending" aria-label="Waiting">•</span>');
     const time = ms => ms == null ? '' : ms < 1000 ? `${Math.max(1, Math.round(ms))} ms` : `${(ms / 1000).toFixed(1)} s`;
-    card.innerHTML = `<ol class="progress-steps">${progress.steps.map(step => {
+    const listHtml = `<ol class="progress-steps">${progress.steps.map(step => {
         const finished = step.state === 'done' || step.state === 'fail';
         const note = [step.detail, finished ? searchNote(step.proven) : '', finished ? time(step.ms) : ''].filter(Boolean).join(' · ');
         return `
         <li class="progress-step ${step.state}">${icon(step.state)}<span class="step-label">${step.label}</span>
             <span class="step-note">${note}</span></li>`;
     }).join('')}</ol>`;
+    const inFlight = progress.steps.some(step => step.state === 'running' || step.state === 'pending');
+    const failed = progress.steps.some(step => step.state === 'fail');
+    const wasOpen = card.querySelector('.solve-progress-details')?.open;
+    if (!inFlight && !failed && progress.steps.length) {
+        const doneCount = progress.steps.filter(s => s.state === 'done').length;
+        const totalMs = progress.steps.reduce((sum, s) => sum + (s.ms || 0), 0);
+        const totalNote = totalMs > 0 ? time(totalMs) : '';
+        card.classList.add('is-complete');
+        card.innerHTML = `<details class="solve-progress-details"${wasOpen ? ' open' : ''}>
+            <summary><span class="step-icon done" aria-hidden="true">✓</span><span class="solve-progress-summary-text">${escapeText(translate('Plan ready'))}</span>
+            <span class="step-note">${doneCount} ${escapeText(translate('steps'))}${totalNote ? ` · ${totalNote}` : ''}</span></summary>
+            ${listHtml}
+        </details>`;
+    } else {
+        card.classList.remove('is-complete');
+        card.innerHTML = listHtml;
+    }
     const running = progress.steps.find(step => step.state === 'running');
     if (running) announcePlanner(running.label);
 }
@@ -3450,7 +3667,7 @@ function renderRoster() {
         summary.textContent = tab === 'minimum' ? 'Minimum' : 'Best';
     }
     editor.querySelectorAll('[data-roster="from-best"], [data-roster="from-minimum"]').forEach(button => {
-        button.disabled = !lastPlanInput;
+        button.disabled = !wasmReady;
     });
     rosterPicker?.filter();
     refreshRosterTileWorkloads(rosterTileWorkloads);
@@ -3505,8 +3722,8 @@ function renderRosterCardFields(i) {
     const add = missing.length
         ? `<select class="roster-add-ability" data-add="${i}" aria-label="Add an ability"><option value="">+ Ability</option>${missing.map(name => `<option value="${name}">${name}</option>`).join('')}</select>`
         : '';
-    const personalities = PERSONALITY_PAIRS.map((pair, p) => `<span class="tabs level-picker roster-pair" role="radiogroup" aria-label="${pair.names.join(' or ')}">${pair.names.map((name, k) =>
-        `<label title="${name}"><input type="radio" name="roster-${i}-pair-${p}" data-personality="${i}|${p}" value="${name}"${aniimo.personalities[p] === name ? ' checked' : ''}> ${pair.letters[k]}</label>`).join('')}</span>`).join('');
+    const personalities = PERSONALITY_PAIRS.map((pair, p) => `<div class="roster-pair-wrap"><span class="tabs level-picker roster-pair" role="radiogroup" aria-label="${pair.names.join(' or ')}">${pair.names.map((name, k) =>
+        `<label title="${name}"><input type="radio" name="roster-${i}-pair-${p}" data-personality="${i}|${p}" value="${name}"${aniimo.personalities[p] === name ? ' checked' : ''}> ${pair.letters[k]}</label>`).join('')}</span><span class="roster-pair-caption">${escapeText(translate(pair.names[0]))} / ${escapeText(translate(pair.names[1]))}</span></div>`).join('');
     fields.innerHTML = `
         <div class="input-field">
             <label for="roster-member-name">Name</label>
@@ -3531,6 +3748,7 @@ function renderRosterCardFields(i) {
         </section>
         <p class="roster-edit-workload hint small" hidden></p>
         <div class="roster-actions roster-edit-actions">
+            <button type="button" class="skip-add-btn roster-done-btn" data-close-dialog>Done</button>
             <button type="button" class="skip-add-btn" data-roster="move">Move Aniimo</button>
             <button type="button" class="skip-add-btn" data-roster="duplicate">Add a copy</button>
             <button type="button" class="skip-add-btn roster-remove-btn" data-remove="${openRosterSlot}">Remove this Aniimo</button>
@@ -3588,13 +3806,14 @@ function rosterChanged(rerender = true) {
 }
 
 async function fillRosterFrom(setup) {
-    if (!lastPlanInput) return;
+    const baseInput = lastPlanInput || (typeof wasmReady !== 'undefined' && wasmReady && typeof getPlanInputValues === 'function' ? getPlanInputValues() : null);
+    if (!baseInput) return;
     const version = ++rosterFillVersion;
     const runId = planRunId;
     const status = document.getElementById('roster-fill-status');
     status.textContent = 'Working out the source team…';
     try {
-        const sourceInput = { ...lastPlanInput, ...aniimoInput(setup) };
+        const sourceInput = { ...baseInput, ...aniimoInput(setup) };
         let plan = plansBySetup[setup] || JSON.parse(await callWorker('find_plan', JSON.stringify(sourceInput)));
         if (runId !== planRunId || version !== rosterFillVersion) return;
         if (!plan.success) {
@@ -3694,6 +3913,7 @@ function attachRosterHandlers() {
         <div class="roster-tools">
             <div class="input-field"><label for="roster-filter">Filter your team</label>
                 <input id="roster-filter" type="search" autocomplete="off" placeholder="Name or ability"></div>
+            <label class="planner-checkbox"><input type="checkbox" id="roster-show-names"><span>Show names</span></label>
             <div class="roster-actions">
                 <button type="button" class="skip-add-btn" data-roster="save-import" hidden>Save this roster</button>
                 <button type="button" class="skip-add-btn" data-roster="add-row">Add row</button>
@@ -3808,9 +4028,18 @@ function attachRosterHandlers() {
             roster[openRosterCard].count++;
             placeRosterCopy(rosterSlots, openRosterCard);
         } else if (remove !== undefined) {
-            removeRosterCopy(Number(remove));
+            const slotIndex = Number(remove);
+            const removedMember = roster[rosterSlots[slotIndex]];
+            const removedLabel = removedMember ? rosterTileLabel(removedMember, rosterSlots[slotIndex]) : 'Aniimo';
+            const snapshot = { roster: structuredClone(roster), rosterSlots: [...rosterSlots] };
+            removeRosterCopy(slotIndex);
             openRosterCard = null;
             editor.querySelector('#roster-edit-dialog').close();
+            showUndoToast(translate('Removed {name}').replace('{name}', removedLabel), () => {
+                roster = snapshot.roster;
+                rosterSlots = snapshot.rosterSlots;
+                rosterChanged();
+            });
         } else if (drop) {
             delete editableRosterCopy().abilities[drop.split('|')[1]];
         } else if (clearPersonality !== undefined) {
@@ -3861,6 +4090,29 @@ function attachRosterHandlers() {
         } else {
             return;
         }
+        rosterChanged();
+    });
+    const showNamesInput = editor.querySelector('#roster-show-names');
+    const applyRosterNames = on => editor.querySelector('.roster-cards')?.classList.toggle('roster-board-show-names', on);
+    let savedShowNames = null;
+    try { savedShowNames = localStorage.getItem('aniimax-roster-names'); } catch (_) {}
+    showNamesInput.checked = savedShowNames != null ? savedShowNames === '1'
+        : Boolean(window.matchMedia?.('(pointer: coarse)').matches);
+    applyRosterNames(showNamesInput.checked);
+    showNamesInput.addEventListener('change', () => {
+        applyRosterNames(showNamesInput.checked);
+        try { localStorage.setItem('aniimax-roster-names', showNamesInput.checked ? '1' : '0'); } catch (_) {}
+    });
+    editor.addEventListener('mousedown', e => {
+        const input = e.target.closest('label')?.querySelector('input[data-personality]');
+        if (input?.checked) input.dataset.wasChecked = '1';
+    });
+    editor.addEventListener('click', e => {
+        const input = e.target.matches?.('input[data-personality]') ? e.target : null;
+        if (!input || input.dataset.wasChecked !== '1') return;
+        delete input.dataset.wasChecked;
+        input.checked = false;
+        editableRosterCopy().personalities[Number(input.dataset.personality.split('|')[1])] = null;
         rosterChanged();
     });
     const board = editor.querySelector('.roster-cards');
@@ -4506,6 +4758,13 @@ function attachSkipHandlers() {
         const name = e.target.closest('[data-skip]')?.dataset.skip;
         if (!name) return;
         setSkipped(name, true);
+        showUndoToast(
+            translate('Skipped {name}').replace('{name}', translate(prettyItem(name))),
+            () => {
+                setSkipped(name, false);
+                runFindPlan();
+            }
+        );
         runFindPlan();
     });
 }
@@ -4673,6 +4932,8 @@ function renderPriorities() {
     document.getElementById('add-priority').innerHTML = '<option value="">+ Add priority</option>'
         + inactive.map(p => `<option value="${escapeText(p.target)}">${escapeText(priorityLabel(p.target, best))}</option>`).join('');
     document.getElementById('add-priority').disabled = !inactive.length;
+    const emptyHint = document.getElementById('priority-empty-hint');
+    if (emptyHint) emptyHint.hidden = active.length > 0;
     document.getElementById('priority-list').innerHTML = active.map((p, at) => {
         // Indices into `priorityOrder`, which also holds any priority that isn't shown.
         const i = priorityOrder.indexOf(p);
@@ -5113,6 +5374,9 @@ function showError(message) {
     errorEl.style.display = 'block';
     resultsContent.style.display = 'none';
     resultsSection.style.display = 'block';
+    updateResultsNav();
+    scrollSmoothly(errorEl);
+    errorEl.focus?.({ preventScroll: true });
 }
 
 // The goal card's choices: coins and every priority that's on, in the player's order. Keeps the
@@ -5231,21 +5495,21 @@ const ENVIRONMENT_MODE_ORDER = ['Warm', 'Scorching', 'Cool', 'Freeze', 'Adequate
 // "Fire Lv.4 · Practical" for a row that needs a specific Aniimo, or '-' when it doesn't (crops,
 // trees, idle facilities).
 // Every Aniimo ability in the game's own order, with its in-game color and what it's for.
-// `dark` marks colors light enough to need dark text.
+// `dark` marks colors light enough to need dark text (#111317) to meet WCAG AA (4.5:1).
 const ABILITIES = [
-    { name: 'Fire', color: '#e5484d', about: 'Cooking, smelting and heat' },
-    { name: 'Grass', color: '#3fa36b', about: 'Planting seeds and gathering' },
-    { name: 'Water', color: '#2b8fe8', about: 'Brewing, fetching water and watering' },
-    { name: 'Earth', color: '#b39a74', about: 'Reclaiming land and mining' },
+    { name: 'Fire', color: '#e5484d', about: 'Cooking, smelting and heat', dark: true },
+    { name: 'Grass', color: '#3fa36b', about: 'Planting seeds and gathering', dark: true },
+    { name: 'Water', color: '#2b8fe8', about: 'Brewing, fetching water and watering', dark: true },
+    { name: 'Earth', color: '#b39a74', about: 'Reclaiming land and mining', dark: true },
     { name: 'Lightning', color: '#e6c317', about: 'Electricity', dark: true },
-    { name: 'Ice', color: '#45c4de', about: 'Cooling the homeland' },
-    { name: 'Wind', color: '#2fbfa5', about: 'Processing with wind' },
-    { name: 'Dark', color: '#7d4bb3', about: 'Harvesting, cutting, pickling and drying' },
+    { name: 'Ice', color: '#45c4de', about: 'Cooling the homeland', dark: true },
+    { name: 'Wind', color: '#2fbfa5', about: 'Processing with wind', dark: true },
+    { name: 'Dark', color: '#7d4bb3', textColor: '#b388eb', about: 'Harvesting, cutting, pickling and drying' },
     { name: 'Light', color: '#f5a524', about: 'Lighting the homeland', dark: true },
-    { name: 'Hauling', color: '#5f7fd1', about: 'Carrying produce to storage' },
-    { name: 'Artisanship', color: '#5fb14f', about: 'Handcrafted goods' },
-    { name: 'Leisure', color: '#e8678a', about: 'Making things while playing' },
-    { name: 'Perfumery', color: '#b877d9', about: 'Perfumes and incense' },
+    { name: 'Hauling', color: '#5f7fd1', about: 'Carrying produce to storage', dark: true },
+    { name: 'Artisanship', color: '#5fb14f', about: 'Handcrafted goods', dark: true },
+    { name: 'Leisure', color: '#e8678a', about: 'Making things while playing', dark: true },
+    { name: 'Perfumery', color: '#b877d9', about: 'Perfumes and incense', dark: true },
 ];
 const ABILITY_BY_NAME = new Map(ABILITIES.map(a => [a.name, a]));
 
@@ -5887,7 +6151,7 @@ function renderAniimoSummary(plan) {
             dots.push(`<span class="ability-kind">${dot('Hauling', '·', false, translate('Carrying produce to storage'))}${haulingCount > 1 ? `<span class="ability-times">×${haulingCount}</span>` : ''}</span>`);
         }
         const stack = dots.length ? `<div class="ability-stack">${dots.join('')}</div>` : '';
-        return `<div class="ability-col" style="--ability:${a.color}">
+        return `<div class="ability-col" style="--ability:${a.color}${a.textColor ? `;--ability-text:${a.textColor}` : ''}">
             <div class="ability-cell${zero ? ' zero' : ''}" title="${a.name}: ${a.about}">
                 <span class="ability-count">${n}</span><span class="ability-name">${a.name}</span>
             </div>${stack}</div>`;
@@ -6436,6 +6700,8 @@ function priorityRows(plan, includeTime = false) {
 // listener target, so switching units never needs a re-solve.
 function updateRateUnitDisplays() {
     updateRateDisplay();
+    rerenderRosterSwaps();
+    renderProductionFlow.syncPeriod?.(document.getElementById('rate-unit')?.value || 'day');
     renderImprovements();
     if (lastPlan && lastPlan.success) {
         renderSeedTable(lastPlan);
@@ -6444,6 +6710,20 @@ function updateRateUnitDisplays() {
     if (lastGoalResult) {
         renderProductBreakdown(lastGoalResult);
     }
+}
+
+function formatScheduleSummary(switches, buildingsCount) {
+    const locale = currentLocale();
+    if (locale.startsWith('ru')) {
+        const rule = new Intl.PluralRules('ru');
+        const sw = { one: 'переключение', few: 'переключения', many: 'переключений', other: 'переключений' }[rule.select(switches)];
+        const bl = { one: 'здание', few: 'здания', many: 'зданий', other: 'зданий' }[rule.select(buildingsCount)];
+        return `${switches} ${sw}/день · ${buildingsCount} ${bl}`;
+    }
+    if (locale === 'zh-TW') {
+        return `每日切換 ${switches} 次 · ${buildingsCount} 座設施`;
+    }
+    return `${switches} ${switches === 1 ? 'switch' : 'switches'}/day · ${buildingsCount} ${buildingsCount === 1 ? 'building' : 'buildings'}`;
 }
 
 const renderProductionFlow = attachProductionFlow(document.getElementById('product-flow-card'), {
@@ -6458,7 +6738,13 @@ const renderProductionFlow = attachProductionFlow(document.getElementById('produ
 // keystroke.
 function displayPlan(plan, keepLayout = false) {
     const scheduleCard=document.getElementById('recipe-schedule-container');
-    scheduleCard.innerHTML=renderRecipeSchedule(plan.recipe_schedule,{itemName:prettyItem,buildingIcon:facilityIconUrl,buildingName:b=>`${translate(b.facility)} #${b.id.split(':').at(-1)}`});
+    scheduleCard.innerHTML=renderRecipeSchedule(plan.recipe_schedule,{
+        itemName:prettyItem,
+        buildingIcon:facilityIconUrl,
+        buildingName:b=>`${translate(b.facility)} #${b.id.split(':').at(-1)}`,
+        tr:translate,
+        formatSummary:formatScheduleSummary,
+    });
     if(!plan.recipe_schedule&&plan.recipe_switching_note){const note=document.createElement('p');note.className='hint';note.textContent=plan.recipe_switching_note;scheduleCard.append(note);}
     const resultsSection = document.getElementById('results-section');
     const errorEl = document.getElementById('error-message');
@@ -6491,42 +6777,51 @@ function displayPlan(plan, keepLayout = false) {
     goalSection.style.display = plan.level_up ? 'none' : 'block';
 
     updateRateDisplay(!rateUnitChosen);
+    renderProductionFlow.syncPeriod?.(document.getElementById('rate-unit')?.value || 'day');
     renderGoalTargets(plan);
     renderHomelandLayout(plan, keepLayout);
+    clearResultsStale();
+    updateResultsNav();
 
-    // Said only when the plan might not be the best: the solver ran out of time, or the backup
-    // planner made it.
+    // Only show a footnote here when it adds information not already in the top Gap badge
+    // (e.g., backup planner fallback or field-worker crop protection).
     const explored = document.getElementById('plan-explored-hint');
     const materialHint = document.getElementById('material-work-hint');
     materialHint.hidden = !plan.material_work_note;
     materialHint.textContent = !plan.material_work_note ? ''
         : plan.material_work_note === 'unavailable' ? translate('The production plan is valid. Extra Bench and Kiln workload could not be verified.')
         : translate('Higher Bench and Kiln workload may be possible.');
-    explored.style.display = plan.proven_optimal === true ? 'none' : '';
-    if (plan.proven_optimal === true) {
+    const hasTopGapBadge = Number.isFinite(plan.upper_bound) && plan.upper_bound > 0 && plan.rate_per_second > 0;
+    if (plan.crop_protection_reference_income > plan.rate_per_second + 1e-7) {
+        const loss = 100 * (1 - plan.rate_per_second / plan.crop_protection_reference_income);
+        explored.textContent = translate('Best protects field workers at a cost of {loss}% of Home Coin income.')
+            .replace('{loss}', formatNumber(loss));
+        explored.style.display = '';
+    } else if (plan.proven_optimal === true || (plan.proven_optimal === false && hasTopGapBadge)) {
         explored.textContent = '';
+        explored.style.display = 'none';
     } else if (plan.proven_optimal === false && plan.upper_bound > 0) {
         const gapPct = Math.max(0, (plan.upper_bound - plan.rate_per_second) / plan.upper_bound) * 100;
         explored.textContent = translate('Remaining income gap is at most {gap}%.')
             .replace('{gap}', formatGapPercent(gapPct));
+        explored.style.display = '';
     } else {
         const reason = plan.fallback_reason ? ` (${plan.fallback_reason})` : '';
         explored.textContent = `The exact planner couldn't run${reason}, so this plan comes from the backup planner and may not be the very best. Reloading the page usually fixes this.`;
-    }
-
-    if (plan.crop_protection_reference_income>plan.rate_per_second+1e-7) {
-        const loss=100*(1-plan.rate_per_second/plan.crop_protection_reference_income);
-        explored.textContent=translate('Best protects field workers at a cost of {loss}% of Home Coin income.')
-            .replace('{loss}',formatNumber(loss));
+        explored.style.display = '';
     }
 
     const unverifiedEl = document.getElementById('plan-unverified');
     const unverified = plan.unverified || [];
     unverifiedRowKeys = new Set(unverified.map(u => `${u.facility}|${u.item_name}`));
     if (unverified.length) {
-        unverifiedEl.textContent = `${unverified.length} recipe${unverified.length === 1 ? '' : 's'} in this plan ${unverified.length === 1 ? "hasn't" : "haven't"} been checked in game yet (tagged below). If any of those numbers are off, so is this plan.`;
+        const detail = `${unverified.length} recipe${unverified.length === 1 ? '' : 's'} in this plan ${unverified.length === 1 ? "hasn't" : "haven't"} been checked in game yet (tagged below). If any of those numbers are off, so is this plan.`;
+        const pillText = translate(unverified.length === 1 ? '{n} unverified recipe' : '{n} unverified recipes')
+            .replace('{n}', formatNumber(unverified.length));
+        unverifiedEl.innerHTML = `<span class="unverified-pill" tabindex="0" data-tip="${escapeText(pillText)}" data-tip-detail="${escapeText(translate(detail))}"><span aria-hidden="true">⚠</span> ${escapeText(pillText)}</span>`;
         unverifiedEl.style.display = 'block';
     } else {
+        unverifiedEl.textContent = '';
         unverifiedEl.style.display = 'none';
     }
 
@@ -6576,9 +6871,19 @@ async function runFindPlan() {
     haulingSeconds = {};
     haulingDefaultSeconds = 0;
     haulingRefinements = 0;
-    const invalid = seasonActive() && document.querySelector('#season-crop-minimum-fields input:invalid');
+    const invalid = document.querySelector('#planner-settings input:invalid');
     if (invalid) {
-        openPlannerEditor('season');
+        const panel = invalid.closest('.planner-editor-panel');
+        if (panel) {
+            const trigger = document.querySelector(`[aria-controls="${panel.id}"]`);
+            if (trigger?.dataset.plannerEditor) openPlannerEditor(trigger.dataset.plannerEditor);
+        }
+        let details = invalid.closest('details');
+        while (details) {
+            details.open = true;
+            details = details.parentElement?.closest('details');
+        }
+        invalid.focus();
         invalid.reportValidity();
         return;
     }
@@ -6592,8 +6897,10 @@ async function runFindPlan() {
     const progressBar = document.getElementById('progress-bar-container');
     const progressFill = document.getElementById('progress-bar-fill');
     const progressCaption = document.getElementById('progress-bar-caption');
+    const cancelBtn = document.getElementById('cancel-solve-btn');
 
     btn.disabled = true;
+    if (cancelBtn) cancelBtn.hidden = false;
     const previousError = document.getElementById('error-message');
     previousError.style.display = 'none';
     btnText.style.display = 'none';
@@ -6665,6 +6972,12 @@ async function runFindPlan() {
         if (!plansBySetup[bestSetup].success) discardRoutePreview();
         mainSolve = null;
         showSelectedPlan();
+        if (plansBySetup[bestSetup].success) {
+            const target = document.getElementById('results-nav')?.hidden === false
+                ? document.getElementById('results-nav')
+                : document.getElementById('plan-overview');
+            scrollSmoothly(target);
+        }
         // With no plan there's nothing to lay out or improve on.
         if (!plansBySetup[bestSetup].success && progress) {
             progress.steps.forEach(s => { if (['layout','power_team','improve'].includes(s.key) && s.state === 'pending') s.state = 'skipped'; });
@@ -6697,6 +7010,8 @@ function resetPlanButton() {
     btn.disabled = !wasmReady && !wasmLoadFailed;
     btn.querySelector('.btn-text').style.display = 'inline';
     btn.querySelector('.btn-loading').style.display = 'none';
+    const cancelBtn = document.getElementById('cancel-solve-btn');
+    if (cancelBtn) cancelBtn.hidden = true;
     document.getElementById('progress-bar-container').style.display = 'none';
     document.getElementById('progress-bar-caption').style.display = 'none';
     document.getElementById('progress-bar-fill').classList.remove('indeterminate');
@@ -6976,9 +7291,45 @@ function renderRecipeTables(recipes) {
     }).join('');
 }
 
+function filterFacilitiesModal() {
+    const input = document.getElementById('facilities-modal-search');
+    const container = document.getElementById('facilities-modal-container');
+    const empty = document.getElementById('facilities-modal-empty');
+    if (!input || !container) return;
+    const terms = searchTerms(input.value);
+    let visibleTables = 0;
+    for (const category of container.querySelectorAll('.facility-category')) {
+        let visibleInCat = 0;
+        for (const block of category.querySelectorAll('.facility-recipe-table')) {
+            const facilityText = block.querySelector('h4')?.textContent || '';
+            const rows = [...block.querySelectorAll('tbody tr')];
+            const facilityMatches = matchesSearch(terms, facilityText);
+            let visibleRows = 0;
+            for (const row of rows) {
+                const show = !terms.length || facilityMatches || matchesSearch(terms, `${facilityText} ${row.textContent}`);
+                row.hidden = !show;
+                if (show) visibleRows++;
+            }
+            block.hidden = visibleRows === 0;
+            if (!block.hidden) visibleInCat++;
+        }
+        category.hidden = visibleInCat === 0;
+        visibleTables += visibleInCat;
+    }
+    if (empty) empty.hidden = !terms.length || visibleTables > 0;
+}
+
 window.showFacilities = async function() {
-    document.getElementById('facilitiesModal').classList.add('show');
-    if (recipesRendered) return;
+    const dialog = document.getElementById('facilitiesModal');
+    if (dialog && typeof dialog.showModal === 'function') {
+        if (!dialog.open) dialog.showModal();
+    } else if (dialog) {
+        dialog.classList.add('show');
+    }
+    if (recipesRendered) {
+        document.getElementById('facilities-modal-search')?.focus();
+        return;
+    }
     if (!wasmReady) {
         document.getElementById('facilities-loading-hint').textContent = 'Optimizer not ready. Please wait...';
         return;
@@ -6989,21 +7340,19 @@ window.showFacilities = async function() {
         renderRecipeTables(recipes);
         recipesRendered = true;
         document.getElementById('facilities-loading-hint').style.display = 'none';
+        filterFacilitiesModal();
+        document.getElementById('facilities-modal-search')?.focus();
     } catch (error) {
         console.error('Failed to load recipe data:', error);
         document.getElementById('facilities-loading-hint').textContent = 'Failed to load recipe data. Please refresh the page.';
     }
-}
+};
 
 window.closeFacilities = function() {
-    document.getElementById('facilitiesModal').classList.remove('show');
-}
-
-window.closeFacilitiesOnBackdrop = function(event) {
-    if (event.target.id === 'facilitiesModal') {
-        closeFacilities();
-    }
-}
+    const dialog = document.getElementById('facilitiesModal');
+    if (dialog?.open) dialog.close();
+    else dialog?.classList.remove('show');
+};
 
 // Event listeners
 async function initApp() {
@@ -7048,8 +7397,37 @@ async function initApp() {
     initWasm();
 
     document.getElementById('optimize-btn').addEventListener('click', () => wasmLoadFailed ? initWasm() : runFindPlan());
+    document.getElementById('cancel-solve-btn')?.addEventListener('click', cancelActiveSolve);
+    document.getElementById('recalculate-stale-btn')?.addEventListener('click', runFindPlan);
     document.getElementById('clear-saved-btn').addEventListener('click', clearSavedInputs);
+    document.getElementById('confirm-clear-accept')?.addEventListener('click', () => {
+        document.getElementById('confirm-clear-dialog')?.close();
+        performClearSavedInputs();
+    });
     document.getElementById('share-config-btn').addEventListener('click', shareCurrentConfig);
+    document.getElementById('share-config-copy')?.addEventListener('click', async () => {
+        const link = document.getElementById('share-config-link');
+        const status = document.getElementById('share-config-status');
+        if (!link?.value) return;
+        link.select();
+        try {
+            await navigator.clipboard.writeText(link.value);
+            status.textContent = 'Link copied. It includes your current setup.';
+        } catch (_) {
+            status.textContent = 'Copy the link above to share your setup.';
+        }
+    });
+    document.getElementById('share-config-close')?.addEventListener('click', () => {
+        document.getElementById('share-config-result').hidden = true;
+        document.getElementById('share-config-status').textContent = '';
+    });
+    document.getElementById('undo-toast-btn')?.addEventListener('click', () => {
+        const action = undoToastAction;
+        hideUndoToast();
+        action?.();
+    });
+    document.getElementById('undo-toast-close')?.addEventListener('click', hideUndoToast);
+    document.getElementById('facilities-modal-search')?.addEventListener('input', filterFacilitiesModal);
     document.getElementById('improve-check-btn').addEventListener('click', () => {
         if (ranking) rankImprovementsFor(selectedAniimoSetup(), ranking.tab);
     });
@@ -7069,6 +7447,11 @@ async function initApp() {
         renderImprovements();
     });
     document.getElementById('improve-list').addEventListener('click', event => {
+        const apply = event.target.closest('[data-opportunity-apply]');
+        if (apply && ranking) {
+            applyOpportunity(Number(apply.dataset.opportunityApply));
+            return;
+        }
         const button = event.target.closest('[data-opportunity-check]');
         if (button && ranking) rankImprovementsFor(selectedAniimoSetup(), [Number(button.dataset.opportunityCheck)], button.hasAttribute('data-detailed'));
     });

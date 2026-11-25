@@ -560,7 +560,7 @@ export function attachProductionFlow(card, { itemName, formatAmount, formatReven
         }
     });
     widthObserver.observe(content);
-    let period = 'hour', horizon = null, flow = null, requirements = [];
+    let period = 'day', horizon = null, flow = null, requirements = [];
     let rewards = {}, stock = new Map(), getBuildings, buildings;
     let switchesByItem = new Map();
     function text(tag, value, className) {
@@ -656,7 +656,7 @@ export function attachProductionFlow(card, { itemName, formatAmount, formatReven
             return row;
         }
         const saleLabels = new Map([['flow-sale-only', 'All output sold'], ['flow-sale-partial', 'Part of output sold']]);
-        function product(n) {
+        function product(n, isFinished = false) {
             const el = text('article', '', 'product-flow-node');
             const req = requirements.find(r => r.name === n.item);
             el.dataset.output = n.item;
@@ -701,7 +701,7 @@ export function attachProductionFlow(card, { itemName, formatAmount, formatReven
                 if (draw > 1e-8) el.append(field('From stock', formatAmount(Math.min(stock.get(n.item), draw * seconds)), 'flow-amount'));
             }
             const reserved = req && Math.min(Math.max(0, req.need-req.have), seconds * Math.max(0, req.per_second));
-            if (reserved > 0) el.append(field('For RV upgrade', formatAmount(reserved), 'flow-reserve'));
+            if (reserved > 0 && !isFinished) el.append(field('For RV upgrade', formatAmount(reserved), 'flow-reserve'));
             if (n.inputs.size) {
                 const ribbon = text('div', '', 'flow-ingredients');
                 for (const [id, rate] of n.inputs) {
@@ -740,7 +740,7 @@ export function attachProductionFlow(card, { itemName, formatAmount, formatReven
                     if (!members.length) return;
                     const stack = text('div', '', 'flow-chain-stack');
                     stack.style.gridRow = index + 2;
-                    stack.append(...members.map(product));
+                    stack.append(...members.map(node => product(node, depth === lastDepth)));
                     col.append(stack);
                 });
                 board.append(col);
@@ -768,13 +768,13 @@ export function attachProductionFlow(card, { itemName, formatAmount, formatReven
             render();
         }
     });
-    return (plan, context, terms, input, buildingDetails) => {
+    const updateFlow = (plan, context, terms, input, buildingDetails) => {
         getBuildings = buildingDetails;
         buildings = getBuildings?.();
         rewards = input?.quest_income_per_day || {};
         stock = new Map((input?.level_up ?? input?.level_up_preview)?.stock || []);
         horizon = upgradeHorizon(plan, context);
-        if (period === 'rv' && horizon === null) period = 'hour';
+        if (period === 'rv' && horizon === null) period = 'day';
         requirements = (plan.level_up_preview ?? plan.level_up)?.requirements || [];
         switchesByItem = new Map();
         for (const change of recipeTransitions(plan.recipe_schedule)) {
@@ -787,4 +787,13 @@ export function attachProductionFlow(card, { itemName, formatAmount, formatReven
         flow = terms || plan.schedule_sources?.length ? productionFlow(plan, terms) : null;
         render();
     };
+    updateFlow.syncPeriod = nextUnit => {
+        if (period === 'rv') return;
+        const mapped = nextUnit === 'day' ? 'day' : 'hour';
+        if (period !== mapped) {
+            period = mapped;
+            if (flow) render();
+        }
+    };
+    return updateFlow;
 }
