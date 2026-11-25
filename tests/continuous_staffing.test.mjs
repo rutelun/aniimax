@@ -172,25 +172,70 @@ test('measured staffing uses an owned resident and keeps only the lamps required
     }
 });
 for(const mode of ['minimum','best']){
-    test(mode+' counts the generator operator before accepting an E-mode switch',async()=>{
+    test(mode+' prefers E-mode only when total occupied Aniimo and every priority are preserved',async()=>{
         const keys=['rate:ore#0','rate:ore__electric1#0','sold:ore#0','generators#0'];
         const problem={variable_keys:keys,variables:4,
             lp:'Maximize\n obj: x2\nSubject To\n power: x1 - x3 <= 0\nBounds\nGeneral\n x3\nEnd',
             recipe_options:[[0,'ore','Mine',true,false,1],[1,'ore','Mine',true,true,1]],primary_objective:[[2,1]]};
         const pkg={get_all_items:()=>JSON.stringify([{name:'ore',aniimo:['Earth',1]}])};
-        const report=([manual,,sale,generators])=>({success:true,rate_per_second:sale,power_generators:generators,
-            coin_items:manual?[{status:'producing',facility:'Mine',item_name:'ore',facility_count:1,
-                aniimo_tasks:[{ability:'Earth',level:1,busy:manual}]}]:[]});
+        const makeReport=(extra={})=>([manual,,sale,generators])=>({success:true,rate_per_second:sale,power_generators:generators,
+            level_up_preview:{seconds:100},priorities:[{target:'aniimo_exp',per_second:5}],...extra,
+            coin_items:[...(extra.fixedItems??[]),...(manual?[{status:'producing',facility:'Mine',item_name:'ore',facility_count:1,
+                aniimo_tasks:[{ability:'Earth',level:1,busy:manual}]}]:[])]});
         const candidate={values:[0,.4,.4,1]},solve=async()=>candidate;
-        const options={pkg,input:{aniimo:mode},report};
+        const options={pkg,input:{aniimo:mode},report:makeReport()};
+        // Switching 0.4 manual (1 Earth Aniimo) to E-mode (1 Lightning generator) keeps people=1 and reduces manual work.
         const staffed={values:[.4,0,.4,0]};
-        assert.equal(await refineElectricStaffing(problem,staffed,solve,options),staffed);
+        assert.deepEqual((await refineElectricStaffing(problem,staffed,solve,options)).values,candidate.values);
+        // If another manual job keeps the Earth Aniimo occupied, adding a generator raises people 1 -> 2 and is rejected.
+        const sharedEarth={...options,report:makeReport({fixedItems:[{status:'producing',facility:'Mine',item_name:'clay',facility_count:1,
+            aniimo_tasks:[{ability:'Earth',level:1,busy:.2}]}]})};
+        assert.equal(await refineElectricStaffing(problem,staffed,solve,sharedEarth),staffed);
+        // Switching to E-mode on an already-running generator reduces both people and manual work.
         const runningGenerator={values:[.4,0,.4,1]};
         assert.deepEqual((await refineElectricStaffing(problem,runningGenerator,solve,options)).values,candidate.values);
+        // Any loss in income, upgrade ETA, or another priority rejects the E-mode switch.
         const losingIncome=async()=>({values:[0,.4,.39,1]});
         assert.equal(await refineElectricStaffing(problem,runningGenerator,losingIncome,options),runningGenerator);
+        const losingPriority={...options,report:vals=>({...makeReport()(vals),
+            priorities:[{target:'aniimo_exp',per_second:vals[1]>0?4.9:5}]})};
+        assert.equal(await refineElectricStaffing(problem,runningGenerator,solve,losingPriority),runningGenerator);
+        const slowerUpgrade={...options,report:vals=>({...makeReport()(vals),
+            level_up_preview:{seconds:vals[1]>0?101:100}})};
+        assert.equal(await refineElectricStaffing(problem,runningGenerator,solve,slowerUpgrade),runningGenerator);
     });
 }
+test('My Aniimo switches fractional manual work to E-mode with a new generator when occupied Aniimo and priorities stay equal',async()=>{
+    const highs=await highsModule({wasmBinary:fs.readFileSync(new URL('../web/vendor/highs/highs.wasm',import.meta.url)),print(){},printErr(){}});
+    const keys=['rate:candied_strawberries#0','rate:candied_strawberries__electric4#0','sold:candied_strawberries#0','staff:Crackle Generator:owned:1#0'];
+    const problem={variable_keys:keys,variables:4,
+        lp:'Maximize\n obj: x2\nSubject To\n out: x0 + x1 - x2 = 0\n pwr: 144 x1 - 1000 x3 <= 0\nBounds\n 0 <= x0 <= 1\n 0 <= x1 <= 2\n 0 <= x2 <= 1\n 0 <= x3 <= 1\nGeneral\n x3\nEnd',
+        recipe_options:[[0,'candied_strawberries','Pickling Jar',false,false,1],[1,'candied_strawberries','Pickling Jar',false,true,1]],
+        primary_objective:[[2,1]],
+        staffing_pools:[
+            {work:[[0,0.75]],anchors:[],crop:[],reserve:false,active:null},
+            {work:[[3,1]],anchors:[3],crop:[],reserve:false,active:null},
+        ]};
+    const solve=async(model,settings)=>{
+        const r=highs.solve(model.lp,settings);
+        assert.equal(r.Status,'Optimal');
+        return {values:Array.from({length:model.variables},(_,i)=>r.Columns['x'+i]?.Primal??0)};
+    };
+    const original=[1,0,1,0];
+    const baseReport=vals=>({success:true,rate_per_second:vals[2],level_up_preview:{seconds:500},
+        priorities:[{target:'aniimo_exp',per_second:10},{target:'coins',per_second:vals[2]}]});
+    const input={always_running:true,roster:{members:[{count:1,abilities:{Dark:4}},{count:1,abilities:{Lightning:4}}],dispatch:{'Pickling Jar|candied_strawberries|Production':[]}}};
+    // 0.75 manual Dark Aniimo -> 0 manual + 1 Lightning generator: people stays 1, priorities stay identical -> switches to E-mode.
+    const switched=await refineElectricStaffing(problem,{values:original},solve,{input,report:baseReport});
+    assert.ok(Math.abs(switched.values[1]-1)<1e-9);
+    assert.equal(Math.round(switched.values[3]),1);
+    // If switching would drop any priority, keep the incumbent.
+    const priorityDrop=vals=>({...baseReport(vals),priorities:[{target:'aniimo_exp',per_second:vals[1]>0.1?9.9:10},{target:'coins',per_second:vals[2]}]});
+    assert.deepEqual((await refineElectricStaffing(problem,{values:original},solve,{input,report:priorityDrop})).values,original);
+    // If switching would add a reserve Aniimo (Lightning is reserve), keep the incumbent.
+    const reserveProblem={...problem,staffing_pools:[problem.staffing_pools[0],{...problem.staffing_pools[1],reserve:true}]};
+    assert.deepEqual((await refineElectricStaffing(reserveProblem,{values:original},solve,{input,report:baseReport})).values,original);
+});
 test('My Aniimo spends limited power on a contested ingredient when earnings and team size are equal',async()=>{
     const highs=await highsModule({wasmBinary:fs.readFileSync(new URL('../web/vendor/highs/highs.wasm',import.meta.url)),print(){},printErr(){}});
     const recipes=[{name:'flour',facility:'Carousel Mill',raw_materials:['wheat'],aniimo:['Wind',3]},

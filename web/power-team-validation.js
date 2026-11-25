@@ -63,8 +63,80 @@ export function createPowerTeamValidator(pkg, highs, plan, input) {
     const prior = new Map(seed.keys.map((key, i) => [key, seed.values[i]]));
     const options = new Map(problem.recipe_options.map(option => [keys[option[0]], option]));
     const fixed = (v, value) => ' hold_' + v + ': x' + v + ' = ' + value;
-    const retained = keys.flatMap((key, v) => /^(environment:|pair:|crop_variety#|lower_level_plots#|sold:)/.test(key)
-        ? [fixed(v, prior.get(key) ?? 0)] : []);
+    const retainedEntries = keys.flatMap((key, v) => /^(environment:|pair:|crop_variety#|lower_level_plots#|sold:)/.test(key)
+        ? [[v, prior.get(key) ?? 0]] : []);
+    const retained = retainedEntries.map(([v, value]) => fixed(v, value));
+
+    // Reuse one native HiGHS model across all candidate validations by updating
+    // only generator and recipe-rate column bounds instead of reparsing the LP.
+    let nativeModel = null, nativeMap = null, nativeOrigLo = null, nativeOrigHi = null, nativeRetainedInfeasible = false;
+    let dynamicCols = null;
+    if (highs?.createModel && problem.lp) {
+        try {
+            const m = highs.createModel({format: 'lp', data: problem.lp});
+            const lpData = m.getLp();
+            const map = new Map();
+            for (let i = 0; i < lpData.numCols; i++) {
+                const name = m.getColName(i);
+                if (/^x\d+$/.test(name)) map.set(Number(name.slice(1)), i);
+            }
+            if (map.size === keys.length) {
+                const retIdx = [], retLo = [], retHi = [];
+                for (const [v, val] of retainedEntries) {
+                    const ni = map.get(v);
+                    if (ni == null) continue;
+                    const lo = Math.max(lpData.colLower[ni], val), hi = Math.min(lpData.colUpper[ni], val);
+                    if (lo > hi + 1e-12) { nativeRetainedInfeasible = true; break; }
+                    retIdx.push(ni); retLo.push(Math.min(lo, hi)); retHi.push(Math.max(lo, hi));
+                }
+                if (!nativeRetainedInfeasible && retIdx.length) {
+                    const order = retIdx.map((_, k) => k).sort((a, b) => retIdx[a] - retIdx[b]);
+                    m.changeColsBounds({kind: 'set', indices: order.map(k => retIdx[k])},
+                        order.map(k => retLo[k]), order.map(k => retHi[k]));
+                }
+                m.options.set({mip_feasibility_tolerance: 1e-9, primal_feasibility_tolerance: 1e-9});
+                const dyn = [[generator, map.get(generator)], ...problem.recipe_options.map(([v]) => [v, map.get(v)])]
+                    .filter(([, ni]) => ni != null)
+                    .sort((a, b) => a[1] - b[1]);
+                // Deduplicate native indices just in case
+                dynamicCols = dyn.filter(([v, ni], k) => k === 0 || dyn[k - 1][1] !== ni);
+                nativeModel = m;
+                nativeMap = map;
+                nativeOrigLo = lpData.colLower;
+                nativeOrigHi = lpData.colUpper;
+            } else {
+                m.dispose();
+            }
+        } catch {
+            nativeModel?.dispose?.();
+            nativeModel = null;
+        }
+    }
+
+    function solveCandidate(candidate, rates) {
+        if (!nativeModel) {
+            const fixes = [...retained, fixed(generator, candidate.power_generators),
+                ...problem.recipe_options.map(([v]) => fixed(v, rates.get(v) ?? 0))];
+            const lp = problem.lp.replace('\nBounds\n', '\n' + fixes.join('\n') + '\nBounds\n');
+            const result = highs.solve(lp, {mip_feasibility_tolerance: 1e-9, primal_feasibility_tolerance: 1e-9});
+            if (result.Status !== 'Optimal' || !result.Columns) return null;
+            return keys.map((_, v) => result.Columns['x' + v]?.Primal ?? 0);
+        }
+        if (nativeRetainedInfeasible) return null;
+        const idx = [], lo = [], hi = [];
+        for (const [v, ni] of dynamicCols) {
+            const val = v === generator ? candidate.power_generators : (rates.get(v) ?? 0);
+            const l = Math.max(nativeOrigLo[ni], val), u = Math.min(nativeOrigHi[ni], val);
+            if (l > u + 1e-12) return null;
+            idx.push(ni); lo.push(Math.min(l, u)); hi.push(Math.max(l, u));
+        }
+        nativeModel.clearSolver();
+        nativeModel.changeColsBounds({kind: 'set', indices: idx}, lo, hi);
+        nativeModel.run();
+        if (nativeModel.getModelStatus() !== highs.constants.modelStatus.optimal) return null;
+        const sol = nativeModel.getSolution().colValue;
+        return keys.map((_, v) => sol[nativeMap.get(v)] ?? 0);
+    }
 
     function validate(candidate) {
         const draw = physicalPlanPower(candidate);
@@ -79,12 +151,8 @@ export function createPowerTeamValidator(pkg, highs, plan, input) {
                 || !Number.isFinite(source.rate) || source.rate < 0) return null;
             rates.set(option[0], (rates.get(option[0]) ?? 0) + source.rate);
         }
-        const fixes = [...retained, fixed(generator, candidate.power_generators),
-            ...problem.recipe_options.map(([v]) => fixed(v, rates.get(v) ?? 0))];
-        const lp = problem.lp.replace('\nBounds\n', '\n' + fixes.join('\n') + '\nBounds\n');
-        const result = highs.solve(lp, {mip_feasibility_tolerance: 1e-9, primal_feasibility_tolerance: 1e-9});
-        if (result.Status !== 'Optimal' || !result.Columns) return null;
-        const values = keys.map((_, v) => result.Columns['x' + v]?.Primal ?? 0);
+        const values = solveCandidate(candidate, rates);
+        if (!values) return null;
         const checked = JSON.parse(pkg.exact_plan(payload, stage, JSON.stringify({
             values, verify_only: true, proven: false, bound: plan.upper_bound ?? plan.rate_per_second,
         })));
@@ -124,7 +192,10 @@ export function createPowerTeamValidator(pkg, highs, plan, input) {
         delete verified.recipe_switching_candidate;
         return verified;
     }
-    return {problem, validate};
+    function dispose() {
+        if (nativeModel) { nativeModel.dispose(); nativeModel = null; }
+    }
+    return {problem, validate, dispose};
 }
 
 // Re-solve sales and competing ingredient flows when an occupied crop team

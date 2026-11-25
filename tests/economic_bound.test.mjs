@@ -110,3 +110,31 @@ test('an unresolved physical target resumes beyond the native gap', () => {
     assert.equal(result.upper,100);
     assert.equal(result.proven,true);
 });
+
+test('relax_min_reasons drops selector binaries while keeping a valid upper bound', async () => {
+    const pkg = await import('../web/pkg/aniimax.js');
+    pkg.initSync({module: fs.readFileSync(new URL('../web/pkg/aniimax_bg.wasm', import.meta.url))});
+    const base = {
+        currency: 'coins',
+        aniimo: 'best',
+        always_running: true,
+        always_running_recipes: ['candied_strawberries', 'strawberry_candy'],
+        facilities: {
+            Farmland: [{count: 10, level: 5}],
+            'Pickling Jar': [{count: 2, level: 5}],
+            'Blazing Stove': [{count: 2, level: 5}],
+            'Simmering Pot': [{count: 2, level: 5}],
+        },
+        modules: {ecological_module: 3, kitchen_module: 3, resource_detector: 3, crafting_module: 3},
+        priorities: ['coins'],
+    };
+    const exactProb = JSON.parse(pkg.exact_priority_problem(JSON.stringify(base), JSON.stringify({floors: []}), 'coins'));
+    const relaxedProb = JSON.parse(pkg.exact_priority_problem(JSON.stringify({...base, relax_min_reasons: true}), JSON.stringify({floors: []}), 'coins'));
+    assert.ok(relaxedProb.variables < exactProb.variables, 'relax_min_reasons should emit fewer auxiliary variables');
+    const exactSol = highs.solve(exactProb.lp, {mip_rel_gap: 0, mip_abs_gap: 0, mip_feasibility_tolerance: 1e-9});
+    const relaxedSol = highs.solve(relaxedProb.lp, {mip_rel_gap: 0, mip_abs_gap: 0, mip_feasibility_tolerance: 1e-9});
+    assert.equal(exactSol.Status, 'Optimal');
+    assert.equal(relaxedSol.Status, 'Optimal');
+    assert.ok(relaxedSol.ObjectiveValue >= exactSol.ObjectiveValue - 1e-7,
+        `relaxed bound ${relaxedSol.ObjectiveValue} must be >= exact ${exactSol.ObjectiveValue}`);
+});

@@ -733,6 +733,12 @@ pub struct JsPlanInput {
     pub restrict_to_checked_recipes: bool,
     #[serde(default)]
     pub recipe_site_limits: std::collections::HashMap<String,u32>,
+    #[serde(default)]
+    pub relax_pair_coverage: bool,
+    #[serde(default)]
+    pub compact_dispatch: bool,
+    #[serde(default)]
+    pub relax_min_reasons: bool,
     /// `"coins"` (matches `ProductionItem::sell_currency`), or a byproduct
     /// pseudo-currency target: `"wood_blocks"`/`"mineral_sand"`; see
     /// `crate::optimizer::byproduct_resource_name`.
@@ -2177,6 +2183,9 @@ impl PreparedInput {
         facility_counts.restrict_to_checked_recipes(input.always_running && input.restrict_to_checked_recipes);
         facility_counts.set_recipe_switching_relaxation(input.recipe_switching_relaxation);
         facility_counts.set_recipe_switching_facilities(input.recipe_switching_facilities.clone());
+        facility_counts.set_relax_pair_coverage(input.relax_pair_coverage);
+        facility_counts.set_compact_dispatch(input.compact_dispatch);
+        facility_counts.set_relax_min_reasons(input.relax_min_reasons);
         facility_counts.set_quest_income_per_day(&input.quest_income_per_day);
         let module_levels = ModuleLevels {
             ecological_module: input.modules.ecological_module,

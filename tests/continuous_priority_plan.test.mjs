@@ -338,3 +338,53 @@ test('measured income certification omits a redundant incumbent floor', async ()
     assert.equal(plan.rate_per_second,.5);
     assert.equal(plan.continuous_upper_bounds[0][1],.5);
 });
+
+test('priorities after currency unlock unused producer recipes and skip duplicate pair retries on open gap', async () => {
+    const highs=await highsModule({wasmBinary:fs.readFileSync(new URL('../web/vendor/highs/highs.wasm',import.meta.url)),
+        print(){},printErr(){}});
+    const keys=['rate:coin_crop#0','units:coin_crop#0','rate:exp_dish#0','units:exp_dish#0'];
+    const build=(payload,_stage,key)=>{
+        const cfg=JSON.parse(payload);
+        const allowExp=!cfg.restrict_to_checked_recipes || cfg.always_running_recipes?.includes('exp_dish');
+        const obj=key==='aniimo_exp'?[[2,1]]:[[0,1]];
+        const expUb=allowExp?1:0;
+        return JSON.stringify({variables:4,variable_keys:keys,primary_objective:obj,tiebreak:[],
+            integer_groups:[['coin_crop',[[1,1]],1],['exp_dish',[[3,1]],1]],
+            recipe_options:[[0,'coin_crop','Farmland',false,false,1],[2,'exp_dish','Dance Pad Polisher',false,false,1]],
+            recipe_variables:[[0,'coin_crop'],[1,'coin_crop'],[2,'exp_dish'],[3,'exp_dish']],
+            lp:`Maximize\n obj: + 1 x${obj[0][0]}\nSubject To\n c0: x0 - x1 <= 0\n c1: x2 - x3 <= 0\nBounds\n 0 <= x0 <= 1\n 0 <= x1 <= 1\n 0 <= x2 <= ${expUb}\n 0 <= x3 <= ${expUb}\nGeneral\n x1\n x3\nEnd`});
+    };
+    const pkg={exact_priority_problem:build,exact_problem:build,
+        exact_plan:(_payload,_stage,report)=>{
+            const {values}=JSON.parse(report);
+            return JSON.stringify({success:true,rate_per_second:values[0],priorities:[{target:'coins',per_second:values[0]},{target:'aniimo_exp',per_second:values[2]}]});
+        }};
+    const solveModel=(p,o,_,seed)=>{
+        const r=solveWithIncumbent(highs,p,o,seed,false);
+        return r.Columns&&{values:keys.map((_,v)=>r.Columns['x'+v].Primal),objective:r.ObjectiveValue,proven:r.Status==='Optimal',upper:r.UpperBound};
+    };
+    const plan=await tryPriorityPlan(pkg,{currency:'coins',priorities:['coins','aniimo_exp'],always_running:true},{highs,solveModel});
+    assert.equal(plan?.rate_per_second,1);
+    assert.equal(plan?.comparison_goals?.floors?.find(([t])=>t==='aniimo_exp')?.[1],1);
+
+    // When relax_pair_coverage=true hits an open gap (needsWiderSearch) with
+    // pair_relax=0, tryPriorityPlan must not re-run with relax_pair_coverage=false.
+    let exactPairCalls=0;
+    const gapBuild=payload=>{
+        const cfg=JSON.parse(payload);
+        if(!cfg.relax_pair_coverage)exactPairCalls++;
+        const relaxed=cfg.always_running_recipes!=null && !cfg.restrict_to_checked_recipes;
+        return JSON.stringify({variables:2,variable_keys:['rate:crop#0','units:crop#0'],primary_objective:[[0,1]],tiebreak:[],
+            integer_groups:[['crop',[[1,1]],1]],recipe_options:[[0,'crop','Farm',false,false,1]],recipe_variables:[[0,'crop'],[1,'crop']],
+            lp:`Maximize\n obj: x0\nSubject To\n s: x0 - x1 <= 0\nBounds\n 0 <= x0 <= ${relaxed?.505:.5}\n 0 <= x1 <= 1\nGeneral\n x1\nEnd`});
+    };
+    let inc=null;
+    const gapRes=await tryPriorityPlan(
+        {exact_priority_problem:gapBuild,exact_problem:gapBuild,exact_plan:(_p,_s,r)=>JSON.stringify({success:true,rate_per_second:JSON.parse(r).values[0]})},
+        {currency:'coins',always_running:true,roster:{dispatch:{fixed:[1]}}},
+        {highs,solveModel:(p,o,_,s)=>{const r=solveWithIncumbent(highs,p,o,s,false);return r.Columns&&{values:p.variable_keys.map((_,v)=>r.Columns['x'+v].Primal),objective:r.ObjectiveValue};},
+            evaluateCounts:()=>null,onIncumbent:p=>{inc=p;}});
+    assert.equal(gapRes,null);
+    assert.equal(inc?.rate_per_second,.5);
+    assert.equal(exactPairCalls,0);
+});

@@ -4,8 +4,8 @@ import {excludesIncomeFloor} from './bound-tightening.js';
 import {cachedEconomicBound} from './economic-bound-cache.js';
 import {priorityCeiling,requiredSiteCapacity,applyRequiredSites} from './priority-ceilings.js';
 import {productionObjective, CURRENCY_RELATIVE_GAP, CURRENCY_GAP_FACTOR} from './priority-search.js';
-import {solveEconomicBound,suggestEconomicScope} from './economic-bound.js';
-import {polishSolution} from './highs-solve.js';
+import {obbtSiteLimits,solveEconomicBound,suggestEconomicScope} from './economic-bound.js';
+import {planSearchOptions,polishSolution,runPlanModel} from './highs-solve.js';
 import {refineStaffing} from './staffing-search.js';
 import {continuousNeighborhood} from './continuous-neighborhood.js';
 import {economicRecipeCounts,economicCountNeighborhood,priceIdleWorkshop} from './economic-recipe-counts.js';
@@ -78,12 +78,23 @@ export async function restoreCatalogue(highs,solveModel,problem,seed) {
     const cover=problem.variable_keys.flatMap((key,v)=>
         /^(environment|pair):/.test(key) && previous.has(key)
             ? [` shift_cover_${v}: x${v} = ${Math.round(warm[v])}`] : []);
-    let result;
-    if(cover.length) result=await solveModel(addRows(fixed,cover),options(1),undefined,warm);
-    const covered=!!result?.values;
-    if(!covered) result=await solveModel(fixed,options(1),undefined,warm);
+    const noRelaxPair=problem.variable_keys.flatMap((key,v)=>
+        key.startsWith('pair_relax:') ? [` no_relax_pair_${v}: x${v} = 0`] : []);
+    let result, extra=[];
+    if(cover.length || noRelaxPair.length){
+        extra=[...cover,...noRelaxPair];
+        result=await solveModel(addRows(fixed,extra),options(1),undefined,warm);
+    }
+    if(!result?.values && cover.length && noRelaxPair.length){
+        extra=noRelaxPair;
+        result=await solveModel(addRows(fixed,extra),options(1),undefined,warm);
+    }
+    if(!result?.values){
+        extra=[];
+        result=await solveModel(fixed,options(1),undefined,warm);
+    }
     if(!result?.values)return null;
-    return polishSolution(highs,fixed,result,covered?cover:[]);
+    return polishSolution(highs,fixed,result,extra);
 }
 
 function fixPhysical(problem,warm,recipeSitesOnly=false) {
@@ -99,16 +110,37 @@ function fixPhysical(problem,warm,recipeSitesOnly=false) {
     return addRows(problem,rows);
 }
 
-export async function tryPriorityPlan(pkg,input,options={}) {
+async function tryPriorityPlanOnce(pkg,input,options={},meta) {
     const paceProof={};
-    const plan=await searchPriorityPlan(pkg,input,options,paceProof);
+    const plan=await searchPriorityPlan(pkg,input,options,paceProof,meta);
     if(plan)return plan;
     const attainable=paceProof.attainable??paceProof.refine?.();
-    return attainable==null ? null : searchPriorityPlan(pkg,input,options,{attainable});
+    return attainable==null ? null : searchPriorityPlan(pkg,input,options,{attainable},meta);
+}
+
+export async function tryPriorityPlan(pkg,input,options={}) {
+    const compactInput=input.compact_dispatch ? input : {...input,compact_dispatch:true};
+    const dispatched=Object.keys(compactInput.roster?.dispatch??{}).length>0;
+    const routeDraft=compactInput.map_dispatch_pending && compactInput.roster && !dispatched && !options.initialWitness;
+    if(!compactInput.relax_pair_coverage && !routeDraft) {
+        const meta={usedPairRelax:false};
+        let fastIncumbent=null;
+        const fast=await tryPriorityPlanOnce(pkg,{...compactInput,relax_pair_coverage:true},
+            {...options,onIncumbent:options.onIncumbent ? p=>{fastIncumbent=p;} : undefined},meta);
+        if(fast)return fast;
+        // Relaxed pair coverage is a strict relaxation of exact pair coverage.
+        // If no solve ever used a relaxed pair variable (pair_relax = 0),
+        // retrying with 400+ exact pair variables cannot succeed or tighten bounds.
+        if(!meta.usedPairRelax){
+            if(fastIncumbent)options.onIncumbent?.(fastIncumbent);
+            return null;
+        }
+    }
+    return tryPriorityPlanOnce(pkg,compactInput,options);
 }
 
 async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=()=>{},initialWitness,
-    evaluateBound,evaluateCounts,onIncumbent,workshopProof},paceProof) {
+    evaluateBound,evaluateCounts,onIncumbent,workshopProof},paceProof,meta) {
     const currency=input.currency||'coins', priorities=[...(input.priorities??[])];
     if(!priorities.includes(currency))priorities.push(currency);
     const pos=priorities.indexOf(currency);
@@ -130,6 +162,12 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
         recipe_site_limits:counts && Object.fromEntries(counts),
         restrict_to_checked_recipes:restricted});
     const relaxed=payloadFor([]);
+    const notePairRelax=(keys,values)=>{
+        if(!meta || !input.relax_pair_coverage || meta.usedPairRelax || !keys || !values)return;
+        for(let i=0;i<keys.length;i++){
+            if(keys[i].startsWith('pair_relax:') && values[i]>1e-6){meta.usedPairRelax=true;return;}
+        }
+    };
     const priority=(payload,stage,key)=>key==='crop_variety'?JSON.parse(pkg.exact_crop_variety_problem(payload))
         :productionObjective(JSON.parse(pkg.exact_priority_problem(payload,JSON.stringify(stage),key)));
     const exact=(payload,stage)=>JSON.parse(pkg.exact_problem(payload,JSON.stringify(stage)));
@@ -158,6 +196,10 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
                 const refit=warm && polishSolution(highs,measured,{values:warm});
                 if(!measured.production_only || (refit?.polished && close(refit.objective,ceiling)))return null;
                 const solution=highs.solve(measured.lp,{mip_rel_gap:0,mip_abs_gap:0,mip_feasibility_tolerance:1e-9});
+                if(solution.Columns && input.relax_pair_coverage && meta && !meta.usedPairRelax){
+                    if(measured.variable_keys.some((k,v)=>k.startsWith('pair_relax:') && (solution.Columns['x'+v]?.Primal??0)>1e-6))
+                        meta.usedPairRelax=true;
+                }
                 const value=solution.ObjectiveValue;
                 return solution.Status==='Optimal' && value>0 && value<ceiling && !close(value,ceiling) ? value : null;
             };
@@ -195,7 +237,15 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
     const priceSitesFirst=input.roster && stage.pace && !witnessSeed && !dispatched;
     const countOptions={input,timeLimit:2};
     let countJob=priceSitesFirst && evaluateCounts ? evaluateCounts(raw,countOptions) : null;
-    const lpCeiling=priorityCeiling(highs,raw,currency);
+    const lpCeiling=priorityCeiling(highs,raw,currency,input.relax_pair_coverage && meta ? model=>{
+        const sol=model.getSolution()?.colValue;
+        if(!sol || meta.usedPairRelax)return;
+        for(let i=0;i<sol.length;i++){
+            if(sol[i]<=1e-6)continue;
+            const v=Number(model.getColName(i).slice(1));
+            if(raw.variable_keys[v]?.startsWith('pair_relax:')){meta.usedPairRelax=true;return;}
+        }
+    } : undefined);
     const ceilings=Number.isFinite(lpCeiling)?[lpCeiling]:[];
     let upper=Number.isFinite(lpCeiling)?lpCeiling:Infinity;
     const priorSales=new Set(early.flatMap(({terms})=>terms.filter(([key,c])=>c>0&&key.startsWith('sold:'))
@@ -212,7 +262,7 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
     let best;
     const contenders=[];
     const remember=(keys,values,objective)=>{
-        if(!Number.isFinite(objective)||objective<=0)return;
+        if(!Number.isFinite(objective)||objective<0||(!early.length&&objective<=0))return;
         const candidate={keys,values,objective};
         contenders.push(candidate);
         if(!best||objective>best.objective+1e-9)best=candidate;
@@ -335,9 +385,16 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
     const bound = (p,o)=>cachedEconomicBound(p,o,evaluateBound ?? localBound);
     let fullIncome;
     const siteCapacity=stage.pace>0 && dispatched && !input.recipe_switching_relaxation && requiredSiteCapacity(raw);
-    const scopedModel = recipes => applyRequiredSites(priority(siteCapacity
-        ? JSON.stringify({...input,always_running_recipes:[...recipes],restrict_to_checked_recipes:false,recipe_site_limits:siteCapacity.limits})
-        : payloadFor(recipes),currencyStage,currency),siteCapacity);
+    const scopedModel = (recipes, extraLimits, relaxReasons = false) => {
+        const mergedLimits = extraLimits
+            ? {...(siteCapacity?.limits ?? {}), ...extraLimits}
+            : siteCapacity?.limits;
+        return applyRequiredSites(priority(mergedLimits || relaxReasons
+            ? JSON.stringify({...input,always_running_recipes:[...recipes],restrict_to_checked_recipes:false,
+                ...(mergedLimits ? {recipe_site_limits:mergedLimits} : {}),
+                ...(relaxReasons ? {relax_min_reasons:true} : {})})
+            : payloadFor(recipes),currencyStage,currency),siteCapacity);
+    };
     let siteSearch, verifiedIncomeValues;
     if(integerPace) {
         // Price income at the attainable pace in the same relaxation. An
@@ -347,6 +404,7 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
         const solution=highs.solve(model.lp,exactOptions);
         if(solution.Status!=='Optimal' || !solution.Columns || !Number.isFinite(solution.ObjectiveValue))return null;
         const values=model.variable_keys.map((_,v)=>solution.Columns['x'+v]?.Primal??0);
+        notePairRelax(model.variable_keys,values);
         fullIncome=priority(fullPayload,currencyStage,currency);
         let actual=await restoreCatalogue(highs,solveModel,fullIncome,{keys:model.variable_keys,values});
         if(!actual?.values) {
@@ -375,11 +433,6 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
         // The relaxed optimum bounds every executable shift on this dispatch.
         fullIncome=priority(fullPayload,currencyStage,currency);
         const proofScope=new Set(scope);
-        const recipesByFacility=new Map();
-        for(const [,name,facility] of raw.recipe_options){
-            if(!recipesByFacility.has(facility))recipesByFacility.set(facility,new Set());
-            recipesByFacility.get(facility).add(name);
-        }
         const exactBound=bound;
         const oldCounts=initialWitness.counts??initialWitness.continuous_site_counts;
         const refitCounts=async(counts)=>{
@@ -395,45 +448,86 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
             if(!polished.polished)return null;
             return restoreCatalogue(highs,solveModel,fullIncome,{keys:compact.variable_keys,values:polished.values});
         };
-        // Try the recipes from both shifts together. If the fallback finds
-        // the same recipe set, reuse its exact fit at the new income threshold.
+        // Try the recipes from both shifts together. Reuse the fitted shift
+        // across thresholds rather than re-solving the identical restricted model.
         let joint;
-        const priceJoint=(parent,recipes)=>{
+        const priceJoint=(parent,recipes,minimum=0)=>{
             const payload=payloadFor(recipes,true);
             if(joint?.payload===payload)return;
             const compact=priority(payload,currencyStage,currency);
             const result={payload};
             if(compact.variables<parent.variables){
-                const fit=highs.solve(compact.lp,{mip_rel_gap:0,mip_abs_gap:0,mip_feasibility_tolerance:1e-9});
-                if(fit.Status==='Optimal' && fit.Columns){
-                    result.value=fit.ObjectiveValue;
-                    result.seed={keys:compact.variable_keys,values:compact.variable_keys.map((_,v)=>fit.Columns['x'+v]?.Primal??0)};
+                if(highs?.createModel){
+                    const model=highs.createModel({format:'lp',data:compact.lp});
+                    try{
+                        const {numCols}=model.getDimensions();
+                        const indices=Array.from({length:numCols},(_,i)=>Number(model.getColName(i).slice(1)));
+                        const {incumbentIterations,...nativeOpts}=planSearchOptions({
+                            time_limit:4,mip_rel_gap:CURRENCY_RELATIVE_GAP,mip_abs_gap:0,mip_feasibility_tolerance:1e-9});
+                        model.options.set(nativeOpts);
+                        runPlanModel(model,highs,undefined,undefined,incumbentIterations);
+                        if(model.info.get('primal_solution_status')===highs.constants.solutionStatus.feasible){
+                            const obj=model.getObjectiveValue();
+                            if(Number.isFinite(obj)){
+                                const native=model.getSolution().colValue;
+                                const values=Array(compact.variables).fill(0);
+                                for(let i=0;i<numCols;i++)values[indices[i]]=native[i];
+                                result.value=obj;
+                                result.seed={keys:compact.variable_keys,values};
+                            }
+                        }
+                    }finally{
+                        model.dispose();
+                    }
+                }else{
+                    const fit=highs.solve(compact.lp,{mip_rel_gap:0,mip_abs_gap:0,mip_feasibility_tolerance:1e-9});
+                    if(fit.Status==='Optimal' && fit.Columns){
+                        result.value=fit.ObjectiveValue;
+                        result.seed={keys:compact.variable_keys,values:compact.variable_keys.map((_,v)=>fit.Columns['x'+v]?.Primal??0)};
+                    }
                 }
             }
             joint=result;
         };
         const fitJoint=async(parent,proposal,priorValues,minimum)=>{
-            priceJoint(parent,new Set([...proposal.activeRecipes,...active(fullIncome,priorValues)]));
+            priceJoint(parent,new Set([...proposal.activeRecipes,...active(fullIncome,priorValues)]),minimum);
             if(!joint.seed || !(joint.value>minimum))return null;
             joint.checked??=restoreCatalogue(highs,solveModel,fullIncome,joint.seed);
             return joint.checked;
         };
+        let relaxedBound=Boolean(highs?.createModel);
         const refitPrior=async()=>await refitCounts(oldCounts) ?? await restoreCatalogue(highs,solveModel,fullIncome,witnessSeed);
         const jointFirst=hasSeasonCropMinimums(input) && oldCurrency>0 && !input.recipe_switching_relaxation;
         let witness=jointFirst?null:await refitPrior();
         let earned=witness ? sum(fullIncome.primary_objective,witness.values) : -Infinity;
         let proofSeed=witness?{keys:fullIncome.variable_keys,values:witness.values}:witnessSeed;
         let initialScope=true;
+        let round=0;
         let firstProposal;
         for (;;) {
-            const model=scopedModel([...proofScope]);
+            const targetIncome=witness ? earned : initialScope && jointFirst ? oldCurrency : 0;
+            const incomeTarget=targetIncome>0 ? targetIncome*CURRENCY_GAP_FACTOR : undefined;
+            let extraLimits=null;
+            if(witness && earned>0 && incomeTarget>0 && proofScope.size){
+                const tightened=obbtSiteLimits(highs,raw,proofScope,incomeTarget,siteCapacity?.limits??{});
+                if(tightened?.infeasible){
+                    for(const name of active(fullIncome,witness.values))names.add(name);
+                    remember(fullIncome.variable_keys,witness.values,earned);
+                    verifiedIncomeValues=witness.values;
+                    upper=Math.max(earned,incomeTarget);
+                    ceilings.push(upper);
+                    siteSearch={best,upper};
+                    break;
+                }
+                if(tightened?.limits)extraLimits=tightened.limits;
+            }
+            const model=scopedModel([...proofScope],extraLimits,relaxedBound);
             // HiGHS presolve can incorrectly declare a smaller optimum when a
             // redundant currency floor duplicates the objective on a dispatch model.
             // Previous-map income only steers the bound search. Closing this
             // map always requires a physically checked shift at its own prices.
-            const targetIncome=witness ? earned : initialScope && jointFirst ? oldCurrency : 0;
             const proofOptions={scope:[...proofScope],exact:true,seed:proofSeed,
-                relativeGap:CURRENCY_RELATIVE_GAP, incomeTarget:targetIncome>0 ? targetIncome*CURRENCY_GAP_FACTOR : undefined};
+                relativeGap:CURRENCY_RELATIVE_GAP, incomeTarget};
             if(initialScope && jointFirst && evaluateBound){
                 const prior=align(fullIncome,witnessSeed);
                 const retained=prior && active(fullIncome,prior);
@@ -456,7 +550,18 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
                 };
             }
             let bound=await exactBound(model,proofOptions);
-            if(!Number.isFinite(bound?.upper) || !bound.values)break;
+            if(bound?.values)notePairRelax(bound.keys,bound.values);
+            if(!Number.isFinite(bound?.upper))break;
+            if(witness && earned > 0 && !bound.values && bound.upper <= earned*CURRENCY_GAP_FACTOR){
+                for(const name of active(fullIncome,witness.values))names.add(name);
+                remember(fullIncome.variable_keys,witness.values,earned);
+                verifiedIncomeValues=witness.values;
+                upper=Math.max(earned,bound.upper);
+                ceilings.push(upper);
+                siteSearch={best,upper};
+                break;
+            }
+            if(!bound.values)break;
             if(initialScope)firstProposal=bound;
             proofSeed={keys:bound.keys,values:bound.values};
             let jointCloses=false;
@@ -515,7 +620,7 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
                 const value=fit && sum(fullIncome.primary_objective,fit.values);
                 if(fit && value>earned){witness=fit;earned=value;}
             }
-            if(initialScope && witness && earned>0 && bound.upper>earned*CURRENCY_GAP_FACTOR){
+            if(witness && earned>0 && bound.upper>earned*CURRENCY_GAP_FACTOR){
                 // A relaxation can pick the right recipes but assign too many
                 // sites to the wrong ones. Reallocate sites across the two
                 // working shifts before widening the catalogue.
@@ -544,24 +649,25 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
                 siteSearch={best,upper};
                 break;
             }
-            // A first cut on competing consumers can establish the same bound
-            // without introducing every occupied site's availability binaries.
-            let next=initialScope?suggestEconomicScope(model,bound.values,proofScope).filter(n=>!proofScope.has(n)):[];
-            initialScope=false;
+            // Enforce work conservation only on throttled recipes first to
+            // avoid flooding the bound with high-cardinality full-load sites.
+            let next=(bound.throttledRecipes??[]).filter(n=>!proofScope.has(n));
+            if(round>=2){
+                const extra=suggestEconomicScope(model,bound.values,proofScope).filter(n=>!proofScope.has(n));
+                if(extra.length)next=[...new Set([...next,...extra])];
+            }
+            if(!next.length && initialScope)next=suggestEconomicScope(model,bound.values,proofScope).filter(n=>!proofScope.has(n));
             if(!next.length)next=[...new Set([...bound.occupiedRecipes,...bound.activeRecipes])].filter(n=>!proofScope.has(n));
-            if(!next.length)break;
-            // When a workshop substitutes another recipe, enforce work
-            // conservation for its alternatives together in the next bound.
-            const added=new Set(next);
-            for(const recipes of recipesByFacility.values()){
-                if([...recipes].some(n=>proofScope.has(n)) && [...recipes].some(n=>added.has(n))){
-                    for(const name of recipes)proofScope.add(name);
-                }
+            initialScope=false;
+            round++;
+            if(!next.length){
+                if(relaxedBound){relaxedBound=false;continue;}
+                break;
             }
             for(const name of next)proofScope.add(name);
         }
     }
-    const seasonalSites = input.season && !input.roster && !witnessSeed;
+    const generatedSites = !input.roster && !witnessSeed;
     let sitesAttempted=false;
     const priceSitePatterns=async()=>{
         sitesAttempted=true;
@@ -579,17 +685,21 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
                 shared=await fitWorkshopIncome(highs,workshopProof,fullIncome,modelFor,solve);
             }
         }
-        siteSearch=shared ?? await searchProductionSites(highs,raw,fullIncome,scopedModel,solve);
+        siteSearch=shared ?? await searchProductionSites(highs,raw,fullIncome,scopedModel,solve,
+            {relativeGap:CURRENCY_RELATIVE_GAP, initialFloor:best?.objective??0, initialUpper:upper});
         if (siteSearch) {
-            const candidate=siteSearch.best;
-            remember(candidate.keys,candidate.values,candidate.objective);
-            for (const name of candidate.activeRecipes) names.add(name);
+            if (siteSearch.best) {
+                const candidate=siteSearch.best;
+                remember(candidate.keys,candidate.values,candidate.objective);
+                for (const name of candidate.activeRecipes) names.add(name);
+            }
             ceilings.push(siteSearch.upper);
             upper=Math.min(upper,siteSearch.upper);
         }
     };
-    if (!input.roster && !input.season && !witnessSeed) await priceSitePatterns();
-    if (!siteSearch || siteSearch.upper > siteSearch.best.objective * CURRENCY_GAP_FACTOR + 1e-7) {
+    if (generatedSites && !input.season && workshopProof && compactSwitch) await priceSitePatterns();
+    const siteSearchClosed = siteSearch && best && siteSearch.upper <= best.objective * CURRENCY_GAP_FACTOR + 1e-7;
+    if (!siteSearchClosed) {
         const initialModel=scope.length ? priority(payloadFor(scope),currencyStage,currency) : raw;
         const discovery=scope.length>0 && !witnessSeed;
         const masterOptions={seed:witnessSeed,scope,timeLimit:discovery?3:2,discovery};
@@ -660,7 +770,7 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
         // are still checked below and in the dispatch pass.
         // If crop reservations leave the proposed building counts infeasible,
         // search alternative site patterns before repairing the relaxed rates.
-        if(seasonalSites && !best) await priceSitePatterns();
+        if(generatedSites && (!best || upper>best.objective*CURRENCY_GAP_FACTOR) && !sitesAttempted) await priceSitePatterns();
         const preparingMap=priceSitesFirst && input.map_dispatch_pending && best;
         // Seasonal plots reserve crew time across workshops. Try moving the
         // existing crew between recipes before changing their building counts.
@@ -671,16 +781,20 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
             await repairModes();
             if(best!==crewSeed)await checkedCandidate(best,false);
         }
-        const pricedWithinGap = (priceSitesFirst || seasonalSites) && best && upper >= best.objective-1e-7
+        const pricedWithinGap = (priceSitesFirst || generatedSites) && best && upper >= best.objective-1e-7
             && upper <= best.objective*CURRENCY_GAP_FACTOR;
         if (!shortFit && (preparingMap || (priceSitesFirst && pricedWithinGap)) && !close(upper,best.objective)) await repairModes();
+        if (generatedSites && pricedWithinGap && best && !close(upper,best.objective)) {
+            await checkedCandidate(best,false);
+            if (!close(upper,best.objective)) await repairModes();
+        }
         for(let round=0;!measuredClosed && !preparingMap && !pricedWithinGap && round<3;round++){
-            const model=pending?.model??(round===0?initialModel:priority(payloadFor(scope),currencyStage,currency));
-            const settings=round===0?masterOptions:{seed:best??witnessSeed,scope,timeLimit:5};
-            const result=pending?await pending.result:await bound(model,settings);
+            const model=pending?.model??(round?scopedModel(scope):initialModel);
+            const result=pending?await pending.result:await bound(model,round?{seed:best??witnessSeed,scope,timeLimit:5}:masterOptions);
             pending=null;
             if(Number.isFinite(result?.upper)){ceilings.push(result.upper);upper=Math.min(upper,result.upper);}
             if(result?.values){
+                notePairRelax(result.keys,result.values);
                 for(const n of result.activeRecipes)names.add(n);
             }
             const nearFloorOnly=best&&upper-best.objective<=1e-6*Math.max(1,best.objective);
@@ -706,12 +820,11 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
             if(!dispatched&&best&&upper<=best.objective*CURRENCY_GAP_FACTOR)break;
             // Crop reservations often close on the first pricing round. If they
             // leave a material gap, price complete site patterns before widening.
-            if(!round && seasonalSites && !sitesAttempted){
+            if(!round && generatedSites && !sitesAttempted){
                 await priceSitePatterns();
                 if(best && upper<=best.objective*CURRENCY_GAP_FACTOR)break;
             }
-            if(!result?.values)break;
-            if(round&&next.length===scope.length)break;
+            if(!result?.values || (round&&next.length===scope.length))break;
             scope=next;
         }
     }
@@ -730,6 +843,8 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
         break;
     }
     if(!restored)return null;
+    notePairRelax(restored.keys,restored.values);
+    if(input.relax_pair_coverage && restored.keys.some((key,i)=>key.startsWith('pair_relax:') && restored.values[i]>0.5))return null;
     best=restored;
     // The provisional map will be measured and solved again. On the final
     // map, compare the restored shift against this map's own income ceiling.
@@ -746,8 +861,8 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
     for(const [,name,facility] of raw.recipe_options){
         if(facility==='Woodworking Bench'||facility==='Chimney Kiln')names.add(name);
     }
-    const payload=payloadFor(names,true);
-    const localIncome=priority(payload,currencyStage,currency);
+    let payload=payloadFor(names,true);
+    let localIncome=priority(payload,currencyStage,currency);
     let seed=best,materialPace=null,materialWork=null,last,materialNote=null;
     // Each lower priority is optimized with the previous objective floors.
     // Restricted search can provide a feasible value but never a global bound.
@@ -755,7 +870,33 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
         const all=priority(relaxed,stage,key);
         if(!all.lp&&key==='level_up')continue;
         if(!all.lp)return null;
-        const ceiling=priorityCeiling(highs,all,key);
+        // Include recipes active in the relaxed priority optimum (as well as
+        // dedicated producer facilities for this target) so priorities after
+        // currency are not forced to zero when their recipes were unused in coins.
+        const added=[];
+        const ceiling=priorityCeiling(highs,all,key,model=>{
+            const sol=model.getSolution()?.colValue;
+            if(!sol)return;
+            const rateByCol=new Map(all.recipe_options.map(([v,name])=>[v,name]));
+            for(let i=0;i<sol.length;i++){
+                if(sol[i]<=1e-9)continue;
+                const v=Number(model.getColName(i).slice(1));
+                const name=rateByCol.get(v);
+                if(name && !names.has(name)){names.add(name);added.push(name);}
+            }
+        });
+        for(const [,name,facility] of raw.recipe_options){
+            if((key==='aniimo_exp' && facility==='Dance Pad Polisher')
+                || (key==='aniipods' && facility==='Aniipod Maker')
+                || ((key==='Wood Blocks' || key==='level_up') && facility==='Woodland')
+                || ((key==='Mineral Sand' || key==='level_up') && facility==='Mine')){
+                if(!names.has(name)){names.add(name);added.push(name);}
+            }
+        }
+        if(added.length){
+            payload=payloadFor(names,true);
+            localIncome=priority(payload,currencyStage,currency);
+        }
         const checked=priority(payload,stage,key),local=keepRawIncome(restrict(checked,names),localIncome,income);
         if(!local)return null;
         const warm=align(local,seed);
@@ -819,6 +960,24 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
             }
         }
         if(!r)r=await solveModel(committed,settings,undefined,warm);
+        if(r?.values && request.maximize_upgrade_materials && target?.length && sum(target,r.values)<=1e-9){
+            if(!r.proven){
+                const mpCeiling=priorityCeiling(highs,productionObjective(committed),'material_pace');
+                if(Number.isFinite(mpCeiling) && mpCeiling>1e-8){
+                    const positiveCommitted=addRows(committed,[' positive_material_pace: '+expression(target)+' >= '+Math.min(1e-5,mpCeiling*0.01)]);
+                    const deeper=await solveModel(positiveCommitted,options(6));
+                    if(deeper?.values && sum(target,deeper.values)>sum(target,r.values))r=deeper;
+                }
+            }
+            if(sum(target,r.values)<=1e-9 && commitments.length){
+                const localCeiling=priorityCeiling(highs,productionObjective(local),'material_pace');
+                if(Number.isFinite(localCeiling) && localCeiling>1e-8){
+                    const positive=addRows(local,[' positive_material_pace: '+expression(target)+' >= '+Math.min(1e-5,localCeiling*0.01)]);
+                    const alt=await solveModel(positive,options(8));
+                    if(alt?.values && sum(target,alt.values)>sum(target,r.values))r=alt;
+                }
+            }
+        }
         if(!r?.values)r=fixedSeed??await solveModel(fixPhysical(local,warm),options(1),undefined,warm);
         if(!r?.values)r=await solveModel(local,options(2),undefined,warm);
         if(!r?.values)return null;
@@ -847,19 +1006,57 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
     const local=keepRawIncome(restrict(p,names),fullIncome,minRate);
     if(!local)return null;
     const compactSeed={keys:last.p.variable_keys,values:last.r.values};
-    let r=await restoreCatalogue(highs,solveModel,local,compactSeed);
-    if(!r?.values){
-        const warm=align(local,compactSeed);
-        r=await solveModel(fixPhysical(local,warm,true),options(2),undefined,warm);
-        if(!r?.values)return null;
-        r=polishSolution(highs,local,r);
-    }
-    if(request.maximize_material_work)materialWork=sum(p.primary_objective,r.values);
-    // Staffing compares validated production and worker totals. Only the final
-    // shift needs display coordinates for its climate buildings and plots.
+    const scopedPayload=payloadFor(names,false);
+    const scopedP=input.roster ? exact(scopedPayload,request) : null;
+    const scopedLocal=scopedP && scopedP.variables < p.variables
+        ? keepRawIncome(restrict(scopedP,names),fullIncome,minRate) : null;
+    const liftToFull=async(source)=>{
+        let lifted=await restoreCatalogue(highs,solveModel,local,source);
+        if(!lifted?.values){
+            const warm=align(local,source);
+            lifted=await solveModel(fixPhysical(local,warm,true),options(2),undefined,warm);
+            if(!lifted?.values)return null;
+            lifted=polishSolution(highs,local,lifted);
+        }
+        return lifted;
+    };
     const audit=(values,summaryOnly=false)=>JSON.parse(pkg.exact_plan(fullPayload,JSON.stringify(request),
         JSON.stringify({values,proven:false,bound:upper,verify_only:true,summary_only:summaryOnly})));
-    const refined=await refineStaffing(local,r,solveModel,{pkg,input,report:values=>audit(values,true)});
+    let r, refined;
+    if(scopedLocal){
+        const scopedAudit=(values,summaryOnly=false)=>JSON.parse(pkg.exact_plan(scopedPayload,JSON.stringify(request),
+            JSON.stringify({values,proven:false,bound:upper,verify_only:true,summary_only:summaryOnly})));
+        let sr=await restoreCatalogue(highs,solveModel,scopedLocal,compactSeed);
+        if(!sr?.values){
+            const warm=align(scopedLocal,compactSeed);
+            sr=await solveModel(fixPhysical(scopedLocal,warm,true),options(2),undefined,warm);
+            if(sr?.values)sr=polishSolution(highs,scopedLocal,sr);
+        }
+        if(sr?.values){
+            const sRefined=await refineStaffing(scopedLocal,sr,solveModel,{pkg,input,report:values=>scopedAudit(values,true)});
+            // Preserve the refined staffing choices (posts, climate staff, generators) when lifting to fullPayload.
+            const source={keys:scopedP.variable_keys,values:sRefined.values};
+            const prev=new Map(source.keys.map((key,v)=>[key,source.values[v]]));
+            const staffRows=[];
+            for(let v=0;v<local.variables;v++){
+                const key=local.variable_keys[v];
+                if(!/^(staff:|post:|generators#|active:)/.test(key) || !prev.has(key))continue;
+                const val=prev.get(key);
+                if(Number.isFinite(val) && Math.abs(val-Math.round(val))<1e-6)
+                    staffRows.push(` keep_staff_${v}: x${v} = ${Math.round(val)}`);
+            }
+            const liftedRefined=staffRows.length
+                ? await restoreCatalogue(highs,solveModel,addRows(local,staffRows),source) : null;
+            refined=liftedRefined?.values ? liftedRefined : await liftToFull(source);
+            r=sRefined===sr ? refined : await liftToFull({keys:scopedP.variable_keys,values:sr.values});
+        }
+    }
+    if(!r?.values){
+        r=await liftToFull(compactSeed);
+        if(!r?.values)return null;
+        refined=await refineStaffing(local,r,solveModel,{pkg,input,report:values=>audit(values,true)});
+    }
+    if(request.maximize_material_work)materialWork=sum(p.primary_objective,r.values);
     let final=refined,plan=audit(final.values);
     if(!plan.success&&refined!==r){final=r;plan=audit(final.values);}
     if(!plan.success||!Number.isFinite(plan.rate_per_second)||plan.rate_per_second+1e-7<minRate||plan.rate_per_second>upper+1e-7)return null;

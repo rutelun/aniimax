@@ -32,6 +32,7 @@ import { assignFacilityStock, bufferedBatches, haulingLevelFor, haulingWorkload,
     haulingTravelSeconds, haulingWorkSeconds, siteHaulingTrips, pickupStockLimit } from './hauling.js?v=base-travel';
 import { personalityInput, replacementCandidates, compareRecommendations, usefulUpgrade, keepBetterComparison, workerUsage } from './opportunity-comparison.js?v=logic-audit';
 import { comparisonConcurrency, startComparisonQueue } from './comparison-queue.js?v=parallel-comparisons';
+import { renderRosterSwaps } from './roster-swap-cards.js';
 import { prepareOpportunities } from './opportunity-effects.js?v=auto-e-mode';
 import aniimoCatalog from './aniimo-catalog.json' with { type: 'json' };
 import { aniimoPortrait, attachRosterPicker, rosterCatalogId, rosterCatalogFamily, rosterFormName } from './roster-picker.js?v=rv22-families';
@@ -231,6 +232,10 @@ function ensurePlanFor(setup, refining = false, previousPlan = null) {
         if (setupSolve !== job || runId !== planRunId) return;
         setupSolve = null;
         if (!plan.success) discardRoutePreview();
+        if (refining && plan.success && previousPlan && setup.startsWith('roster')) {
+            const draft = swapInputs.get(previousPlan)?.draft ?? swapPlanData(previousPlan);
+            swapInputs.set(plan, { input: JSON.parse(request.payload), draft });
+        }
         plansBySetup[setup] = plan;
         if (selectedAniimoSetup() === setup) {
             if (!plan.success) resetPlanButton();
@@ -312,6 +317,7 @@ function switchAniimoSetup() {
 // Shows the plan for the selected Aniimo setup, or a "still working" note if it isn't ready.
 function showSelectedPlan(keepLayout = false) {
     const setup = selectedAniimoSetup();
+    stopRosterSwaps();
     document.querySelectorAll('[data-roster="from-best"], [data-roster="from-minimum"]').forEach(button => {
         button.disabled = !lastPlanInput;
     });
@@ -1474,6 +1480,99 @@ const initialsOf = name => name.split(/[\s-]+/).map(w => w[0]).join('').toUpperC
 let layoutRunId = 0;
 let layoutWorker = null;
 let powerTeamController = null;
+let powerTeamPrefetch = null;
+
+function cancelPowerTeamPrefetch() {
+    powerTeamPrefetch?.cancel();
+    powerTeamPrefetch = null;
+}
+
+function startPowerTeamPrefetch(plan, input) {
+    cancelPowerTeamPrefetch();
+    const seed = powerTeamSeeds.get(plan) ?? plan;
+    let solver;
+    try { solver = new Worker(WORKER_URL, { type: 'module' }); }
+    catch { return null; }
+    let closed = false, prepared = false, waiting = null;
+    const close = () => {
+        if (closed) return;
+        closed = true;
+        solver.terminate();
+    };
+    const readyPromise = new Promise((resolve, reject) => {
+        solver.onmessage = ({ data }) => {
+            if (data.type === 'progress') return;
+            if (!prepared && data.id === 1) {
+                prepared = true;
+                if (data.ok === false || data.error) reject(new Error(data.error || 'Could not prepare power teams'));
+                else resolve();
+                return;
+            }
+            if (waiting && data.id === 2) {
+                const { resolve: done, reject: fail, cleanup } = waiting;
+                waiting = null;
+                cleanup();
+                close();
+                if (data.ok === false || data.error) fail(new Error(data.error || 'Could not shortlist power teams'));
+                else done(data);
+            }
+        };
+        solver.onerror = solver.onmessageerror = event => {
+            const error = new Error(event.message || 'The planner worker stopped');
+            close();
+            if (waiting) {
+                const { reject: fail, cleanup } = waiting;
+                waiting = null;
+                cleanup();
+                fail(error);
+            } else {
+                reject(error);
+            }
+        };
+        try { solver.postMessage({ id: 1, type: 'prepare_power_teams', payload: { plan: seed, input } }); }
+        catch (error) { close(); reject(error); }
+    });
+    readyPromise.catch(() => {});
+    const handle = {
+        seed,
+        async finish(hauling_busy, signal) {
+            signal?.throwIfAborted();
+            if (closed) throw new Error('Power team worker was closed');
+            await readyPromise;
+            signal?.throwIfAborted();
+            if (closed) throw new Error('Power team worker was closed');
+            return new Promise((resolve, reject) => {
+                const cancel = () => {
+                    waiting = null;
+                    close();
+                    reject(signal.reason);
+                };
+                const cleanup = () => signal?.removeEventListener('abort', cancel);
+                waiting = { resolve, reject, cleanup };
+                signal?.addEventListener('abort', cancel, { once: true });
+                try {
+                    solver.postMessage({ id: 2, type: 'finish_power_teams', payload: { hauling_busy, plan: seed, input } });
+                } catch (error) {
+                    waiting = null;
+                    cleanup();
+                    close();
+                    reject(error);
+                }
+            });
+        },
+        cancel() {
+            if (waiting) {
+                const { reject, cleanup } = waiting;
+                waiting = null;
+                cleanup();
+                reject(new Error('Cancelled'));
+            }
+            close();
+        },
+    };
+    powerTeamPrefetch = handle;
+    return handle;
+}
 const measuredPowerPlans = new WeakMap();
 const powerTeamSeeds = new WeakMap();
 const layoutsByPlan = new WeakMap();
@@ -1887,9 +1986,17 @@ function prepareOrdinaryRoute(planJson, setup, runId, layoutOnly = false) {
     preview.measured = prepare().catch(() => null);
 }
 
-async function refineMappedPowerTeam(plan,layout,input,signal,onMeasured,isCurrent=()=>true) {
+async function refineMappedPowerTeam(plan,layout,input,signal,onMeasured,isCurrent=()=>true,prefetch=null) {
     const seed=powerTeamSeeds.get(plan)??plan;
-    const {result}=await runMapWorker(WORKER_URL,{id:1,type:'power_teams',payload:{plan:seed,input}},signal);
+    let reply;
+    if (prefetch && prefetch.seed === seed) {
+        try { reply = await prefetch.finish(seed.hauling_busy, signal); }
+        catch (error) {
+            if (signal?.aborted) throw error;
+            reply = null;
+        }
+    }
+    const {result}=reply ?? await runMapWorker(WORKER_URL,{id:1,type:'power_teams',payload:{plan:seed,input}},signal);
     const families=seed===plan?result:[{plan:seed,upgrades:[]},...result];
     const measure=(base,map,choices)=>measureMappedPowerTeams(base,map,input,choices,seed,signal,onMeasured,isCurrent);
     const best=await measure(plan,layout,families);
@@ -1963,7 +2070,76 @@ async function measureMappedPowerTeams(plan,layout,input,families,seed,signal,on
     return selected;
 }
 
+const swapInputs=new WeakMap();
+const swapReports=new WeakMap();
+let swapController=null;
+
+function swapPlanData(plan) {
+    const {coin_items,continuous_site_counts,roster_workload,rate_per_second,roster_routes,
+        staffing,assumed_aniimo,comparison_goals}=plan;
+    return {coin_items,continuous_site_counts,roster_workload,rate_per_second,roster_routes,
+        staffing,assumed_aniimo,comparison_goals};
+}
+
+function stopRosterSwaps(){
+    swapController?.abort();
+    swapController=null;
+    document.getElementById('roster-swaps').hidden=true;
+}
+
+function rosterSwapMembers() {
+    return roster.map((m, i) => {
+        const id = rosterCatalogId(m.catalogId, m.name);
+        return {
+            name: m.name?.trim() || ('Aniimo ' + (i + 1)),
+            photo: aniimoPortrait(id),
+            prismana: Boolean(id?.includes('prismana') || /\bprismana\b/i.test(m.name ?? '')),
+        };
+    });
+}
+
+function rerenderRosterSwaps() {
+    const section = document.getElementById('roster-swaps');
+    if (!section || !lastLayout?.plan || !selectedAniimoSetup().startsWith('roster')) return;
+    const cached = swapReports.get(lastLayout.plan);
+    if (cached?.map === lastLayout.layout) {
+        renderRosterSwaps(section, cached.report, rosterSwapMembers(), translate, formatNumber);
+    }
+}
+
+async function updateRosterSwaps(plan, map, setup) {
+    const section = document.getElementById('roster-swaps');
+    if (!setup.startsWith('roster') || plan.recipe_schedule || !plan.continuous_production_checked ||
+        !plan.continuous_site_counts || plan.comparison_goals?.currency !== 'coins' ||
+        !plan.roster_workload || !Object.keys(plan.roster_dispatch ?? {}).length) return;
+    const members = rosterSwapMembers();
+    const cached = swapReports.get(plan);
+    if (cached?.map === map) {
+        renderRosterSwaps(section, cached.report, members, translate, formatNumber);
+        return;
+    }
+    const controller = new AbortController();
+    swapController?.abort();
+    swapController = controller;
+    try {
+        const source = swapInputs.get(plan);
+        const base = source?.input ?? { ...lastPlanInput, ...aniimoInput(setup) };
+        const input = { ...base, roster: { ...base.roster, dispatch: plan.roster_dispatch } };
+        const final = swapPlanData(plan);
+        const payload = { input, final, draft: source?.draft ?? final, map, prismana: members.map(m => m.prismana) };
+        const { result } = await runMapWorker(WORKER_URL, { id: 1, type: 'roster_swaps', payload }, controller.signal);
+        if (controller.signal.aborted || lastLayout?.plan !== plan || lastLayout.layout !== map || selectedAniimoSetup() !== setup) return;
+        swapReports.set(plan, { map, report: result });
+        renderRosterSwaps(section, result, members, translate, formatNumber);
+    } catch (error) {
+        if (!controller.signal.aborted) console.warn('Could not calculate roster swaps.', error);
+    } finally {
+        if (swapController === controller) swapController = null;
+    }
+}
+
 function renderHomelandLayout(plan, keepLayout = false) {
+    stopRosterSwaps();
     const card = document.getElementById('layout-card');
     if (!plan?.success || !lastPlanInput) {
         card.style.display = 'none';
@@ -2169,6 +2345,7 @@ function renderHomelandLayout(plan, keepLayout = false) {
                             compactedLayouts.add(updated);
                             rememberLayout(compact,layoutKey,updated);
                             reactiveDispatch = compact.roster_dispatch;
+                            if(swapInputs.has(plan))swapInputs.set(compact,swapInputs.get(plan));
                             plansBySetup[selectedAniimoSetup()] = compact;
                             showSelectedPlan(true);
                             return;
@@ -2188,9 +2365,11 @@ function renderHomelandLayout(plan, keepLayout = false) {
             powerTeamController=controller;
             const input={...lastPlanInput,...aniimoInput(setup)};
             setStep('power_team','start');
+            const prefetch = powerTeamPrefetch;
+            powerTeamPrefetch = null;
             try {
                 const search=refineMappedPowerTeam(plan,layout,input,controller.signal,
-                    (count,total)=>setStep('power_team','start',`${count} / ${total}`));
+                    (count,total)=>setStep('power_team','start',`${count} / ${total}`),()=>true,prefetch);
                 renderAniimoSummary(plan);
                 const winner=await search;
                 if (controller.signal.aborted||runId!==layoutRunId) return;
@@ -2209,12 +2388,14 @@ function renderHomelandLayout(plan, keepLayout = false) {
                 if(powerTeamController===controller)powerTeamController=null;
             }
         } else {
+            cancelPowerTeamPrefetch();
             setStep('power_team',measuredPowerPlans.get(plan)===layoutKey?'done':'skip');
             renderAniimoSummary(plan);
         }
         if (!setupSolve && !mainSolve) {
             resetPlanButton();
             rankImprovementsFor(selectedAniimoSetup());
+            void updateRosterSwaps(plan,layout,selectedAniimoSetup());
         }
     };
     if (routePreview && (!keepLayout || routePreview.layoutOnly)) {
@@ -2246,6 +2427,13 @@ function renderHomelandLayout(plan, keepLayout = false) {
         queueMicrotask(() => applyLayout(cached));
         return;
     }
+    const prefetchSetup = selectedAniimoSetup();
+    if (prefetchSetup.startsWith('best') && lastPlanInput.e_mode_rv >= 12 && !lastPlanInput.fixed_homeland
+        && plan.schedule_sources?.length && plan.comparison_seed && measuredPowerPlans.get(plan) !== layoutKey) {
+        startPowerTeamPrefetch(plan, { ...lastPlanInput, ...aniimoInput(prefetchSetup) });
+    } else {
+        cancelPowerTeamPrefetch();
+    }
     const solver = new Worker(WORKER_URL.replace('worker.js', 'layout-worker.js'), { type: 'module' });
     layoutWorker = solver;
     solver.onmessage = (event) => {
@@ -2275,6 +2463,8 @@ function renderHomelandLayout(plan, keepLayout = false) {
 
 // Stops a layout still being worked out, so it can't land over a newer plan.
 function stopLayout() {
+    stopRosterSwaps();
+    cancelPowerTeamPrefetch();
     powerTeamController?.abort();
     powerTeamController=null;
     clearTimeout(layoutStorageTimer);
@@ -6138,6 +6328,12 @@ function renderFacilityPlan(plan) {
 // switching units never needs a facility-allocation re-solve. `pickUnit` is for a fresh plan
 // only: it chooses the unit the plan reads best at. Switching units must never do that, or the
 // choice would be undone the moment it's made.
+function formatGapPercent(gapPct) {
+    if (gapPct < 0.01) return '0.01';
+    if (gapPct < 1) return (Math.ceil(gapPct * 100) / 100).toFixed(2);
+    return (Math.ceil(gapPct * 10) / 10).toFixed(1);
+}
+
 function updateRateDisplay(pickUnit = false) {
     if (!lastPlan || !lastPlan.success) return;
     const select = document.getElementById('rate-unit');
@@ -6156,6 +6352,33 @@ function updateRateDisplay(pickUnit = false) {
     const unitLabel = select.selectedOptions[0].textContent;
     document.getElementById('plan-rate').textContent = formatRate(lastPlan.rate_per_second * multiplier);
     document.getElementById('plan-rate-period').textContent = unitLabel;
+    const gapEl = document.getElementById('plan-rate-gap');
+    if (gapEl) {
+        const hasBound = Number.isFinite(lastPlan.upper_bound) && lastPlan.upper_bound > 0 && lastPlan.rate_per_second > 0;
+        if (hasBound) {
+            const gapPct = Math.max(0, (lastPlan.upper_bound - lastPlan.rate_per_second) / lastPlan.upper_bound) * 100;
+            const diff = Math.max(0, lastPlan.upper_bound - lastPlan.rate_per_second) * multiplier;
+            gapEl.classList.remove('gap-optimal', 'gap-tight', 'gap-warn');
+            if (lastPlan.proven_optimal === true && gapPct < 0.005) {
+                gapEl.textContent = translate('Optimal (0% gap)');
+                gapEl.classList.add('gap-optimal');
+            } else {
+                const gapText = formatGapPercent(gapPct);
+                gapEl.textContent = translate('Gap ≤ {gap}% (+{amount})')
+                    .replace('{gap}', gapText)
+                    .replace('{amount}', formatRate(diff));
+                gapEl.classList.add(gapPct <= 0.25 ? 'gap-tight' : 'gap-warn');
+            }
+            gapEl.title = translate('Upper bound: {bound} {unit}')
+                .replace('{bound}', formatRate(lastPlan.upper_bound * multiplier))
+                .replace('{unit}', unitLabel);
+            gapEl.hidden = false;
+        } else {
+            gapEl.textContent = '';
+            gapEl.title = '';
+            gapEl.hidden = true;
+        }
+    }
     // Priorities: one row each, in the player's order, at the selected unit.
     const amount = formatRate;
     const body = rows.map(r => {
@@ -6283,8 +6506,9 @@ function displayPlan(plan, keepLayout = false) {
     if (plan.proven_optimal === true) {
         explored.textContent = '';
     } else if (plan.proven_optimal === false && plan.upper_bound > 0) {
-        const gap = Math.ceil(Math.max(0,(plan.upper_bound - plan.rate_per_second) / plan.upper_bound) * 1000) / 10;
-        explored.textContent = `Remaining income gap is at most ${gap.toFixed(1)}%.`;
+        const gapPct = Math.max(0, (plan.upper_bound - plan.rate_per_second) / plan.upper_bound) * 100;
+        explored.textContent = translate('Remaining income gap is at most {gap}%.')
+            .replace('{gap}', formatGapPercent(gapPct));
     } else {
         const reason = plan.fallback_reason ? ` (${plan.fallback_reason})` : '';
         explored.textContent = `The exact planner couldn't run${reason}, so this plan comes from the backup planner and may not be the very best. Reloading the page usually fixes this.`;
@@ -6997,6 +7221,7 @@ function hideTip() {
 }
 
 document.addEventListener('aniimax-language-change', hideTip);
+document.addEventListener('aniimax-language-change', rerenderRosterSwaps);
 
 // Above the point, centered on it and kept on screen; below it where there's no room above.
 function placeTip(x, y, below = y) {

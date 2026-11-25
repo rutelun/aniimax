@@ -147,6 +147,20 @@ pub(super) fn constrain<'a>(model: &mut Model<'a>, rates: &[(&'a ProductionItem,
             }
         }
     }
+    for d in &model.dispatched_work_routes {
+        if let Some((ability, _)) = &d.crop {
+            if let Some(&factor) = workers.get(&d.member) {
+                support_by_recipe.entry(&d.recipe.name).or_default().push((ability.clone(), factor));
+            }
+        }
+    }
+    for d in &model.dispatched_hauling {
+        if d.seconds > 0.0 {
+            if let Some(&factor) = workers.get(&d.member) {
+                support_by_recipe.entry(&d.recipe.name).or_default().push(("Hauling".to_owned(), factor));
+            }
+        }
+    }
     // Dispatched worker variants share a site. Index the production rates once
     // and retain their input order when building each site's load constraints.
     let mut rates_by_site = HashMap::<(&str, &str, bool), Vec<_>>::new();
@@ -212,6 +226,7 @@ pub(super) fn constrain<'a>(model: &mut Model<'a>, rates: &[(&'a ProductionItem,
         for &factor in &factors {
             shared_loads.entry((&recipe.facility,factor)).or_default().extend_from_slice(&load);
         }
+        let relax_reasons = counts.relax_min_reasons();
         // A single physical building already supplies the activation binary.
         // Avoid introducing a product column and three product constraints for
         // each ingredient when conditional bounds express the same minimum.
@@ -227,12 +242,17 @@ pub(super) fn constrain<'a>(model: &mut Model<'a>, rates: &[(&'a ProductionItem,
             for factor in factors.iter().copied() {
                 let mut upper=load.clone();upper.push((factor,-1.0));
                 model.constrain(upper.clone(),ComparisonOp::Le,0.0);
-                let reason=if factors.len()==1 { units } else { variable(model,true,1.0) };
-                upper.push((reason,-1.0));
-                model.constrain(upper,ComparisonOp::Ge,-1.0);
-                reasons.push((reason,1.0));
+                if factors.len() == 1 {
+                    upper.push((units, -1.0));
+                    model.constrain(upper, ComparisonOp::Ge, -1.0);
+                } else if !relax_reasons {
+                    let reason = variable(model, true, 1.0);
+                    upper.push((reason, -1.0));
+                    model.constrain(upper, ComparisonOp::Ge, -1.0);
+                    reasons.push((reason, 1.0));
+                }
             }
-            if factors.len()>1 {
+            if factors.len() > 1 && !relax_reasons {
                 reasons.push((units,-1.0));
                 model.constrain(reasons,ComparisonOp::Eq,0.0);
             }
@@ -252,10 +272,14 @@ pub(super) fn constrain<'a>(model: &mut Model<'a>, rates: &[(&'a ProductionItem,
                 let mut reasons=Vec::new();
                 for factor in factors {
                     model.constrain(vec![(minimum,1.0),(factor,-1.0)],ComparisonOp::Le,0.0);
-                    let reason=variable(model,true,1.0);reasons.push((reason,1.0));
-                    model.constrain(vec![(minimum,1.0),(factor,-1.0),(reason,-1.0)],ComparisonOp::Ge,-1.0);
+                    if !relax_reasons {
+                        let reason=variable(model,true,1.0);reasons.push((reason,1.0));
+                        model.constrain(vec![(minimum,1.0),(factor,-1.0),(reason,-1.0)],ComparisonOp::Ge,-1.0);
+                    }
                 }
-                model.constrain(reasons,ComparisonOp::Eq,1.0);
+                if !relax_reasons {
+                    model.constrain(reasons,ComparisonOp::Eq,1.0);
+                }
                 minimum
             })
         };

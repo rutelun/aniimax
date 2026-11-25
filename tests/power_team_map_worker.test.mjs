@@ -15,7 +15,7 @@ test('a reused map must improve the measured team and power every scheduled cons
     const data={baseLayout,candidates:[candidate],cells:[{x:0,y:0,w:12,h:8}],poleLimit:0,recipes:[],
         facilities:{},limit:8,haulingBound:1,baselineScore:{people:1,generators:0,networks:0}};
     self.onmessage({data});
-    assert.deepEqual(response.winner?.score,{distractions:0,cropWorkshopDistractions:0,people:1,generators:1,networks:1});
+    assert.deepEqual(response.winner?.score,{distractions:0,cropWorkshopDistractions:0,people:1,generators:1,networks:1,manualWork:0});
     assert.equal(response.winner.layout.power.disconnected,0);
     self.onmessage({data:{...data,baselineScore:response.winner.score}});
     assert.equal(response.winner,null);

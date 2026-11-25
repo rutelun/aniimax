@@ -3,4 +3,4 @@ sea_salt, coins, 16, 1800, 10, , 1, ,
 quick_sea_salt, coins, 16, 2250, 23, , 2, resource_detector:2,
 pearl, coins, 450, 2700, 2, , 3, , Warm
 sweet_cone, coins, 1266, 2700, 2, , 5, , Freeze
-quick_pearl, coins, 450, 2700, 4, , 4, resource_detector:9, Warm
+quick_pearl, coins, 450, 2700, 4, , 4, resource_detector:9,

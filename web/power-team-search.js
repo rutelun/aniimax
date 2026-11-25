@@ -3,8 +3,9 @@ import {productionTeamJobs} from './production-team-jobs.js';
 import {powerTeamCandidates,singleWorkshopUpgrades} from './power-team-candidates.js';
 import {createPowerTeamValidator} from './power-team-validation.js';
 
-const byEstimate = (a,b) => a.cropWorkshopDistractions-b.cropWorkshopDistractions || a.people-b.people || a.distractions-b.distractions || a.work-b.work ||
-    b.plan.power_generated-a.plan.power_generated || a.plan.power_used-b.plan.power_used;
+const byEstimate = (a,b) => a.cropWorkshopDistractions-b.cropWorkshopDistractions || a.people-b.people || a.distractions-b.distractions
+    || (Math.abs((a.manualWork??a.work)-(b.manualWork??b.work))>1e-7 ? (a.manualWork??a.work)-(b.manualWork??b.work) : 0)
+    || a.work-b.work || b.plan.power_generated-a.plan.power_generated || a.plan.power_used-b.plan.power_used;
 const ordinaryModes = p => p.schedule_sources.filter(s=>!s.turns && s.electric_level!=null).map(s=>s.id).sort().join('|');
 
 function estimate(plan,recipes) {
@@ -47,11 +48,20 @@ function retain(pool,entry) {
     }
 }
 
-export async function shortlistPowerTeams(pkg,highs,plan,input) {
-    if(!input?.e_mode_rv||input.roster||input.fixed_homeland||!plan?.schedule_sources?.length)return [];
+export function preparePowerTeamValidator(pkg,highs,plan,input) {
+    if(!input?.e_mode_rv||input.roster||input.fixed_homeland||!plan?.schedule_sources?.length)return null;
     const validator=createPowerTeamValidator(pkg,highs,plan,input);
+    if(!validator)return null;
+    return {validator,recipes:JSON.parse(pkg.get_all_items()),plan,input};
+}
+
+export async function shortlistPowerTeams(pkg,highs,plan,input,prepared=null) {
+    if(!input?.e_mode_rv||input.roster||input.fixed_homeland||!plan?.schedule_sources?.length)return [];
+    const owned=!prepared;
+    const validator=prepared?.validator ?? createPowerTeamValidator(pkg,highs,plan,input);
     if(!validator)return [];
-    const recipes=JSON.parse(pkg.get_all_items()), incumbentModes=ordinaryModes(plan);
+    try {
+    const recipes=prepared?.recipes ?? JSON.parse(pkg.get_all_items()), incumbentModes=ordinaryModes(plan);
     const groups=new Map(), estimates=new WeakMap();
     for(const candidate of powerTeamCandidates(plan,input,validator.problem,recipes)) {
         const count=candidate.power_generators;
@@ -69,7 +79,7 @@ export async function shortlistPowerTeams(pkg,highs,plan,input) {
         retain(score.unchanged?group.unchanged:group.changed,{
             ...score,plan:candidate,
             distractions:candidate.power_generator_levels.reduce((n,[,level])=>n+score.powerRisk(level),score.cropRisk),
-            people:score.people+count,work:score.work+count,
+            people:score.people+count,manualWork:score.work,work:score.work+count,
         });
     }
     const verified=[];
@@ -103,6 +113,9 @@ export async function shortlistPowerTeams(pkg,highs,plan,input) {
         }
         return {plan,upgrades};
     });
+    } finally {
+        if (owned) validator.dispose?.();
+    }
 }
 
 const validScore = score => Number.isSafeInteger(score?.people) && score.people>=0 &&
@@ -116,7 +129,10 @@ export function improvesMeasuredTeam(candidate, incumbent) {
     if (candidate.people !== incumbent.people) return candidate.people < incumbent.people;
     if (candidate.generators !== incumbent.generators) return candidate.generators > incumbent.generators;
     if ((candidate.networks ?? 0) !== (incumbent.networks ?? 0)) return (candidate.networks ?? 0) > (incumbent.networks ?? 0);
-    return (candidate.distractions ?? 0) < (incumbent.distractions ?? 0);
+    if ((candidate.distractions ?? 0) !== (incumbent.distractions ?? 0)) return (candidate.distractions ?? 0) < (incumbent.distractions ?? 0);
+    if (candidate.manualWork != null && incumbent.manualWork != null && Math.abs(candidate.manualWork - incumbent.manualWork) > 1e-7)
+        return candidate.manualWork < incumbent.manualWork;
+    return false;
 }
 
 export async function selectPowerTeam(plan,candidates,measure,isCurrent=()=>true) {

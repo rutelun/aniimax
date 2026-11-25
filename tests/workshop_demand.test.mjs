@@ -101,8 +101,46 @@ test('the source solve activates idle gathering and shares the same worker acros
     assert.ok(joint.plan.comparison_seed.keys.some((key,i)=>key.startsWith('rate:rock') && joint.plan.comparison_seed.values[i]>0));
     assert.ok(joint.plan.comparison_seed.keys.length===joint.plan.comparison_seed.values.length);
     assert.ok(joint.plan.active_continuous_recipes.includes('rock'));
-    const maxima=[0,1].map(index=>solve({...input,level_up_preview:{cost:[input.level_up_preview.cost[index]],stock:[]}}))
-        .map((s,i)=>workshopDemand(input,s.plan,recipes)?.chains[i].supply ??
+    // When limited to the one owned worker, both streams genuinely share that worker's day.
+    const limited={...input,max_working_aniimo:1};
+    const shared=solve(limited);
+    assert.ok(shared);
+    const sharedDemand=workshopDemand(limited,shared.plan,recipes);
+    const maxima=[0,1].map(index=>solve({...limited,level_up_preview:{cost:[limited.level_up_preview.cost[index]],stock:[]}}))
+        .map((s,i)=>workshopDemand(limited,s.plan,recipes)?.chains[i].supply ??
             s.plan.byproduct_rates.filter(([n])=>n===(i?'Mineral Sand':'Wood Blocks')).reduce((n,[,r])=>n+r,0));
-    assert.ok(demand.chains.some((c,i)=>c.supply<maxima[i]-1e-6));
+    assert.ok(sharedDemand.chains.some((c,i)=>c.supply<maxima[i]-1e-6));
+    // With always_running enabled, lazy scope expansion converges to the same
+    // faster source and returns null once no faster shift exists at that pace.
+    const continuous=solve({...input,always_running:true});
+    assert.ok(continuous);
+    assert.ok(Math.abs(workshopDemand(input,continuous.plan,recipes).seconds-demand.seconds)<1e-6);
+    assert.equal(optimizeWorkshopSources(pkg,highs,{...input,always_running:true},continuous.plan,recipes),null);
+
+    // Post-level_up priorities (including intermediate goals and implicit coins)
+    // are maximized in lexicographic order at the optimal upgrade pace, and a
+    // baseline whose comparison_goals.pace already equals the ceiling is not
+    // replaced just to reclaim exact.rs's 1e-4 inter-stage pace slack.
+    const expFacilities=Object.fromEntries(FACILITIES.map(f=>[f.name,[{level:1,count:0}]]));
+    expFacilities['Woodland']=[{level:1,count:1}];
+    expFacilities['Farmland']=[{level:2,count:1}];
+    expFacilities['Dance Pad Polisher']=[{level:1,count:1}];
+    expFacilities[bench]=[{level:1,count:1}];
+    const expInput={currency:'coins',aniimo:'best',always_running:true,facilities:expFacilities,
+        priorities:['level_up','aniimo_exp','coins'],
+        level_up_preview:{cost:[[wood[0],10]],stock:[]}};
+    const expResult=optimizeWorkshopSources(pkg,highs,expInput,idle,recipes);
+    assert.ok(expResult?.plan?.success);
+    const expRate=expResult.plan.priorities?.find(p=>p.target==='aniimo_exp')?.per_second ?? 0;
+    assert.ok(expRate>0,'intermediate aniimo_exp priority after level_up must be preserved');
+    // Implicit coins when priorities = ['level_up'] alone:
+    const implicitCoins=optimizeWorkshopSources(pkg,highs,{...expInput,priorities:['level_up']},idle,recipes);
+    assert.ok(implicitCoins?.plan?.success);
+    assert.ok(implicitCoins.plan.rate_per_second>0,'implicit coins must be maximized when priorities only lists level_up');
+    // A baseline with 1e-4 inter-stage pace slack must not trigger a fake gain:
+    const exactSeconds=workshopDemand(expInput,expResult.plan,recipes).seconds;
+    const slackBase={...expResult.plan,
+        level_up_preview:{seconds:exactSeconds/(1-1e-4),requirements:expResult.plan.level_up_preview?.requirements??[]},
+        comparison_goals:{pace:86400/exactSeconds,floors:[['aniimo_exp',expRate],['coins',expResult.plan.rate_per_second]]}};
+    assert.equal(optimizeWorkshopSources(pkg,highs,expInput,slackBase,recipes),null);
 });

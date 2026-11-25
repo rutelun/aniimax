@@ -54,6 +54,7 @@ test('new crops, variants and family-restricted gathering retain their real cons
  assert.equal(crops.find(r=>r.name==='quick_agave').module_requirement,'ecological_module:9');
  assert.equal(csv('well').find(r=>r.name==='quick_snowmelt_cold_spring').module_requirement,'resource_detector:10');
  assert.equal(csv('tidewhisper_sandcastle').find(r=>r.name==='sweet_cone').environment,'Freeze');
+ assert.equal(csv('tidewhisper_sandcastle').find(r=>r.name==='quick_pearl').environment,'');
  assert.equal(csv('starfall_hammock').find(r=>r.name==='gold_speck_cap').environment,'Warm');
  const req=csv('aniimo_requirements');
  assert.equal(req.find(r=>r.name==='gold_speck_cap').family,'1063');assert.equal(req.find(r=>r.name==='sweet_cone').family,'1059');

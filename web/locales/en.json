@@ -1,4 +1,5 @@
 [
+  "Roster swaps",
   "Daily load",
   "Load during this period",
   "All day",
@@ -1233,5 +1234,8 @@
   "Sales revenue (coins)",
   "Other production",
   "Assignment unavailable",
-  "On this recipe"
+  "On this recipe",
+  "Optimal (0% gap)",
+  "Gap ≤ {gap}% (+{amount})",
+  "Upper bound: {bound} {unit}"
 ]

@@ -1042,10 +1042,42 @@ async function rankImprovements(pkg, payload, report, memo) {
     }
 }
 
+let preparedPowerTeams = null;
+
 self.onmessage = async (event) => {
     const { id, type, payload } = event.data;
     try {
         const pkg = await ready;
+        if (type === 'prepare_power_teams') {
+            preparedPowerTeams?.validator?.dispose?.();
+            preparedPowerTeams = null;
+            const {preparePowerTeamValidator}=await import('./power-team-search.js');
+            preparedPowerTeams = preparePowerTeamValidator(pkg, await newHighs(), payload.plan, payload.input);
+            self.postMessage({id,ok:true,result:!!preparedPowerTeams});
+            return;
+        }
+        if (type === 'finish_power_teams') {
+            const prepared = preparedPowerTeams;
+            preparedPowerTeams = null;
+            try {
+                const {shortlistPowerTeams}=await import('./power-team-search.js');
+                const plan = payload.hauling_busy != null && prepared?.plan
+                    ? {...prepared.plan, hauling_busy: payload.hauling_busy} : (payload.plan ?? prepared?.plan);
+                const result = await shortlistPowerTeams(pkg, await newHighs(), plan, payload.input ?? prepared?.input, prepared);
+                self.postMessage({id,ok:true,result});
+            } finally {
+                prepared?.validator?.dispose?.();
+            }
+            return;
+        }
+        if (type === 'roster_swaps') {
+            const {scanAssignments}=await import('./roster-swap-model.js');
+            const {scanSwaps}=await import('./roster-swaps.js');
+            const highs=await newHighs();
+            const singles=await scanAssignments(pkg,highs,payload.input,payload.draft,payload.final);
+            self.postMessage({id,ok:true,result:scanSwaps(pkg,highs,payload,singles)});
+            return;
+        }
         if (type === 'switch_candidate') {
             if (event.data.workshopBaseline) {
                 let possible=true;

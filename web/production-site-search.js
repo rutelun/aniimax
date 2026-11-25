@@ -1,5 +1,5 @@
 import {parseLinearLp} from './highs-reuse.js';
-import {solveEconomicBound, suggestEconomicScope} from './economic-bound.js';
+import {obbtSiteLimits, solveEconomicBound, suggestEconomicScope} from './economic-bound.js';
 
 function recipesWithoutInputs(problem) {
     const rows = parseLinearLp(problem.lp, problem.variables)?.rows;
@@ -53,39 +53,76 @@ function fixRecipeRates(full, proposal) {
 // Keep every recipe and climate constraint in the search. Introduce the
 // continuous-operation constraints for competing recipes as their rates reveal
 // contention. Each relaxation bounds income; only the full model can earn it.
-export async function searchProductionSites(highs, raw, full, scopedModel, solve = (p,o)=>solveEconomicBound(highs,p,o)) {
+export async function searchProductionSites(highs, raw, full, scopedModel, solve = (p,o)=>solveEconomicBound(highs,p,o),
+    {relativeGap = 0, initialFloor = 0, initialUpper = Infinity} = {}) {
     let scope = recipesWithoutInputs(raw);
     if (!scope) return null;
+    const gapFactor = 1 + relativeGap;
+    const closed = (hi, lo) => relativeGap > 0
+        ? hi <= lo * gapFactor + 1e-8 * Math.max(1, lo)
+        : Math.abs(hi - lo) <= 1e-8 * Math.max(1, lo);
     let seed;
-    let upper = Infinity;
+    let upper = Number.isFinite(initialUpper) ? initialUpper : Infinity;
     let best;
-    for (let round = 0; round < 5; round++) {
-        const model = scope.length ? scopedModel(scope) : raw;
-        // The standard full-plan effort prices alternative site counts on each relaxation.
-        const proposal = await solve(model, {seed, timeLimit:30});
+    let relaxReasons = Boolean(highs?.createModel);
+    const bestFloor = () => Math.max(best?.objective ?? 0, initialFloor > 0 ? initialFloor : 0);
+    if (bestFloor() > 0 && Number.isFinite(upper) && upper >= bestFloor() - 1e-7 && closed(upper, bestFloor())) {
+        return {best:null, upper:Math.max(bestFloor(), upper)};
+    }
+    for (let round = 0; round < 6; round++) {
+        const floor = bestFloor();
+        const target = floor > 0 ? floor * gapFactor : undefined;
+        let extraLimits = null;
+        if (target > 0 && scope.length) {
+            const tightened = obbtSiteLimits(highs, raw, scope, target);
+            if (tightened?.infeasible) {
+                upper = Math.min(upper, target);
+                break;
+            }
+            if (tightened?.limits) extraLimits = tightened.limits;
+        }
+        const model = scope.length ? scopedModel(scope, extraLimits, relaxReasons) : raw;
+        // When a physically checked incumbent exists and relativeGap > 0, keep
+        // the standard node budget while stopping early as soon as the dual
+        // bound certifies the incumbent within tolerance.
+        const solveOpts = target > 0 && relativeGap > 0
+            ? {seed, scope, timeLimit:30, relativeGap, incomeTarget:target}
+            : {seed, scope, timeLimit:30};
+        const proposal = await solve(model, solveOpts);
         if (Number.isFinite(proposal?.upper)) upper = Math.min(upper, proposal.upper);
         if (!proposal?.values) break;
-        const checked = await solve(fixSiteCounts(full, siteAssignment(proposal)), {timeLimit:1});
-        if (checked?.objective > (best?.objective ?? 0)) best = checked;
-        if (best && Math.abs(upper - best.objective) <= 1e-8 * Math.max(1, best.objective)) break;
+        let checked = null;
+        if (!best || proposal.objective > bestFloor() + 1e-8) {
+            checked = await solve(fixSiteCounts(full, siteAssignment(proposal)), {timeLimit:1});
+            if (checked?.objective > (best?.objective ?? 0)) best = checked;
+        }
+        if (bestFloor() > 0 && Number.isFinite(upper) && upper >= bestFloor() - 1e-7 && closed(upper, bestFloor())) break;
         if (round === 0 && proposal.objective > 0 && Math.abs(upper - proposal.objective) <= 1e-8 * Math.max(1, upper)) {
             const fixedRates = fixRecipeRates(full, proposal);
             const fitted = fixedRates && await solve(fixedRates, {timeLimit:1});
-            if (fitted?.values && Math.abs(upper - fitted.objective) <= 1e-8 * Math.max(1, upper)) {
-                best = fitted;
-                break;
-            }
+            if (fitted?.values && fitted.objective > (best?.objective ?? 0)) best = fitted;
+            if (bestFloor() > 0 && closed(upper, bestFloor())) break;
         }
         let next = suggestEconomicScope(model, proposal.values, scope);
         if (next.length === scope.length) {
             next = [...new Set([...scope, ...proposal.occupiedRecipes, ...proposal.activeRecipes])];
         }
-        if (next.length === scope.length) break;
+        if (relaxReasons && round >= 1 && proposal.objective > bestFloor() + 1e-8 && (!checked || checked.objective < proposal.objective - 1e-6)) {
+            relaxReasons = false;
+        }
+        if (next.length === scope.length) {
+            if (relaxReasons) {
+                relaxReasons = false;
+                continue;
+            }
+            break;
+        }
         scope = next;
         seed = proposal;
     }
-    if (!best || !Number.isFinite(upper) || upper < best.objective - 1e-7) return null;
-    return {best, upper:Math.max(best.objective, upper)};
+    const finalFloor = bestFloor();
+    if ((!best && !(initialFloor > 0)) || !Number.isFinite(upper) || upper < finalFloor - 1e-7) return null;
+    return {best, upper:Math.max(finalFloor, upper)};
 }
 
 // A generated team's dedicated workshop counts are feasible in the model

@@ -161,3 +161,19 @@ test('dispatch approach consumes real worker capacity and lowers feasible output
     assert.ok(walking.result.ObjectiveValue<plain.result.ObjectiveValue*.8);
     for(const route of walking.report.roster_routes) assert.ok(Math.abs(route.walking-route.job_rate*120)<1e-8);
 });
+test('compact_dispatch folds dispatched routes and hauling onto rates without changing optimal output',()=>{
+    const data={currency:'coins',aniimo:'roster',level_up:{cost:[['wheat',100]],stock:[]},
+        fixed_homeland:{groups:[{facility:'Farmland',count:3,level:1,lit:false,powered:false}],climate:{},generators:0},
+        roster:{members:[{count:1,abilities:{Grass:3,Water:3,Dark:3,Hauling:3}},{count:1,abilities:{Grass:2,Water:2,Dark:2,Hauling:2}}],
+            movement_seconds:0,
+            dispatch:{'Farmland|wheat|Grass':entries(10),'Farmland|wheat|Water':entries(30),
+                'Farmland|wheat|Hauling':[{member:0,share:1,travel_seconds:10},{member:1,share:3,travel_seconds:20}]}}};
+    const full=solve(data);
+    const compact=solve({...data,compact_dispatch:true});
+    assert.ok(compact.problem.variables<full.problem.variables);
+    assert.ok(!compact.problem.variable_keys.some(k=>k.startsWith('haul:')||(k.startsWith('route:wheat:')&&(k.includes('Grass')||k.includes('Water')))));
+    assert.ok(Math.abs(compact.result.ObjectiveValue-full.result.ObjectiveValue)<1e-9);
+    assert.deepEqual(compact.report.hauling_staffing,full.report.hauling_staffing);
+    assert.deepEqual(compact.report.roster_workload.map(x=>Number(x.toFixed(8))),
+        full.report.roster_workload.map(x=>Number(x.toFixed(8))));
+});

@@ -29,7 +29,8 @@ function page() {
         displayPlan: (plan,keepLayout) => {shown.push(plan);state.keepLayout=keepLayout;}, runTimeToGoal() {},
         resetPlanButton() {state.resets++;}, showError(error) {state.error=error;},
         startProgress() {state.starts++;}, finishSolveSteps() {}, renderProgress() {}, setStep: (...args) => steps.push(args), translate: s => s,
-        stopRanking() {}, stopLayout() {}, renderImprovements() {}, restartWorker() {}, refreshRosterTileWorkloads() {},
+        stopRanking() {}, stopLayout() {}, stopRosterSwaps() {}, swapInputs: new WeakMap(), swapPlanData: plan => plan,
+        renderImprovements() {}, restartWorker() {}, refreshRosterTileWorkloads() {},
         ENVIRONMENT_BUILDING_ABILITY: {}, RESIDENT_FACILITIES: [], FACILITIES: [], workerTravelSeconds,
     };
     const run = code => runInNewContext(code, context);

@@ -35,6 +35,8 @@ export function mappedTeamScore(team, grid, limit, income) {
     if (grid.disconnected || team.shifts.length>limit || team.cropPeaks?.recommendedTargetMet===false ||
         team.shifts.some(s => !s.entry || s.busy>1+1e-6 || s.phaseBusy?.some(n=>n>1+1e-6))) return null;
     const active=grid.networks.filter(n=>n.consumers && n.generated>0);
+    const generators=active.reduce((sum,n)=>sum+n.generators,0);
+    const manualWork=Math.max(0,team.shifts.reduce((n,s)=>n+(s.busy??0),0)-generators);
     const distractions = team.shifts.filter(protectedShift).reduce((n,s) => n + (s.distractions ?? 0), 0);
-    return {...(Number.isFinite(income) ? {income} : {}),distractions,cropWorkshopDistractions:cropWorkshopDistractions(team),people:team.shifts.length,generators:active.reduce((sum,n)=>sum+n.generators,0),networks:active.length};
+    return {...(Number.isFinite(income) ? {income} : {}),distractions,cropWorkshopDistractions:cropWorkshopDistractions(team),people:team.shifts.length,generators,networks:active.length,manualWork};
 }

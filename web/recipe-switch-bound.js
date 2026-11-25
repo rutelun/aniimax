@@ -112,7 +112,8 @@ function mandatoryOwnedRoute(problem,columns,v,cycle){
     const mobile=columns.get(route+'true#0');
     const assigned=mobile!=null && !columns.has(route+'false#0')
         ? problem.staffing_pools?.[member]?.work?.find(([column])=>column===mobile) : null;
-    return {member,seconds:Math.max(cycle,assigned?.[1]??cycle)};
+    const dispatched=assigned ? null : problem.dispatched_work?.find(([column,m])=>column===v && m===member);
+    return {member,seconds:Math.max(cycle,assigned?.[1]??dispatched?.[2]??cycle)};
 }
 
 function canRunAtCapacity(problem,columns,trial,v,cycle){

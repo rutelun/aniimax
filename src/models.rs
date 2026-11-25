@@ -1346,6 +1346,9 @@ pub struct FacilityCounts {
     restrict_to_checked_recipes: bool,
     recipe_site_limits: std::collections::HashMap<String,u32>,
     recipe_switching_facilities: Vec<String>,
+    relax_pair_coverage: bool,
+    compact_dispatch: bool,
+    relax_min_reasons: bool,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -1397,6 +1400,9 @@ impl Default for FacilityCounts {
             restrict_to_checked_recipes: false,
             recipe_site_limits: Default::default(),
             recipe_switching_facilities: Vec::new(),
+            relax_pair_coverage: false,
+            compact_dispatch: false,
+            relax_min_reasons: false,
         }
     }
 }
@@ -1422,6 +1428,30 @@ impl FacilityCounts {
 
     pub fn set_recipe_switching_facilities(&mut self, facilities: Vec<String>) {
         self.recipe_switching_facilities = facilities;
+    }
+
+    pub fn set_relax_pair_coverage(&mut self, enabled: bool) {
+        self.relax_pair_coverage = enabled;
+    }
+
+    pub fn relax_pair_coverage(&self) -> bool {
+        self.relax_pair_coverage
+    }
+
+    pub fn set_compact_dispatch(&mut self, enabled: bool) {
+        self.compact_dispatch = enabled;
+    }
+
+    pub fn compact_dispatch(&self) -> bool {
+        self.compact_dispatch
+    }
+
+    pub fn set_relax_min_reasons(&mut self, enabled: bool) {
+        self.relax_min_reasons = enabled;
+    }
+
+    pub fn relax_min_reasons(&self) -> bool {
+        self.relax_min_reasons
     }
 
     pub fn set_always_running(&mut self, enabled: bool) { self.always_running = enabled; }

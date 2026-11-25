@@ -1,4 +1,5 @@
 {
+  "Roster swaps": "Замены в составе",
   "Daily load": "Загрузка за сутки",
   "Load during this period": "Загрузка за этот период",
   "All day": "Весь день",
@@ -1233,5 +1234,8 @@
   "Sales revenue (coins)": "Выручка, мон.",
   "Other production": "Остальное производство",
   "Assignment unavailable": "Нет данных о назначении",
-  "On this recipe": "Из них на рецепт"
+  "On this recipe": "Из них на рецепт",
+  "Optimal (0% gap)": "Оптимум (разрыв 0%)",
+  "Gap ≤ {gap}% (+{amount})": "Разрыв ≤ {gap}% (+{amount})",
+  "Upper bound: {bound} {unit}": "Верхняя граница: {bound} {unit}"
 }

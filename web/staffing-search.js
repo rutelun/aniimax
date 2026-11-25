@@ -1,4 +1,4 @@
-import {refineElectricStaffing} from './electric-staffing.js';
+import {refineElectricStaffing, keepsProduction} from './electric-staffing.js';
 
 const total = (terms, values) => terms.reduce((sum, [v, coefficient]) => sum + coefficient * values[v], 0);
 const expression = terms => terms.map(([v, c]) => `${c < 0 ? '-' : '+'} ${Math.abs(c)} x${v}`).join(' ');
@@ -14,7 +14,7 @@ export async function refineStaffing(problem, incumbent, solve, context) {
     // Keep the audited production shift for layout, then staff the measured map.
     if(input?.map_dispatch_pending && input.roster && !measured && input.always_running
         && input.priorities?.[0]==='level_up' && Object.values(input.season_crop_minimums??{}).some(n=>n>0))return incumbent;
-    if(!context?.report || !input?.roster)
+    if(!context?.report)
         return refineShift(problem,incumbent,solve,context);
     const reports=new Map();
     const report=values=>{
@@ -23,18 +23,7 @@ export async function refineStaffing(problem, incumbent, solve, context) {
     };
     let candidate=await refineShift(problem,incumbent,solve,{...context,report});
     if(candidate!==incumbent && !keepsProduction(report(incumbent.values),report(candidate.values)))candidate=incumbent;
-    return preferOwnedPostWorkers(problem,candidate,context.input,report);
-}
-
-function keepsProduction(before,after){
-    if(!before?.success||!after?.success||!Number.isFinite(before.rate_per_second)||!Number.isFinite(after.rate_per_second)
-        ||after.rate_per_second<before.rate_per_second-1e-9)return false;
-    for(const key of ['level_up','level_up_preview']){
-        if(Number.isFinite(before[key]?.seconds)&&(!Number.isFinite(after[key]?.seconds)||after[key].seconds>before[key].seconds+1e-5))
-            return false;
-    }
-    const achieved=new Map((after.priorities??[]).map(p=>[p.target,p.per_second]));
-    return (before.priorities??[]).every(p=>achieved.get(p.target)>=p.per_second-1e-9);
+    return input?.roster ? preferOwnedPostWorkers(problem,candidate,context.input,report) : candidate;
 }
 
 // An owned pool can have a grower in the field and a second, completely idle
@@ -75,7 +64,151 @@ function preferOwnedPostWorkers(problem,shift,input,report){
     return shift;
 }
 
+// Minimize climate buildings (and avoid redundant overlapping pairs or empty units)
+// while holding every recipe, site, route, power and sale variable fixed.
+async function refineClimate(problem, incumbent, solve) {
+    const keys = problem?.variable_keys, original = incumbent?.values;
+    if (!keys?.length || original?.length !== problem.variables || !problem.lp) return incumbent;
+    const envVars = [], pairVars = [], pairRelaxVars = [], climateStaff = [], activeVars = [];
+    for (let v = 0; v < keys.length; v++) {
+        const key = keys[v];
+        if (key.startsWith('environment:')) envVars.push(v);
+        else if (key.startsWith('pair:')) pairVars.push(v);
+        else if (key.startsWith('pair_relax:')) pairRelaxVars.push(v);
+        else if (key.startsWith('staff:') && !key.startsWith('staff:Crackle Generator:')) climateStaff.push(v);
+        else if (key.startsWith('active:')) activeVars.push(v);
+    }
+    if (!envVars.length && !pairVars.length) return incumbent;
+    const hasActiveClimate = envVars.some(v => original[v] > 0.5) || pairVars.some(v => original[v] > 0.5);
+    if (!hasActiveClimate) return incumbent;
+
+    const pools = problem.staffing_pools ?? [];
+    const reserves = pools.filter(pool => pool.reserve);
+    const reserveWork = reserves.flatMap(pool => pool.work);
+    const reserveTime = total(reserveWork, original);
+    const growers = pools.filter(pool => pool.crop.some(v => original[v] > 1e-9));
+    const headcount = (team, values) => team.reduce((sum, pool) => sum + Math.max(0,
+        Math.ceil(total(pool.work, values) - 1e-6),
+        Math.round(pool.anchors.reduce((n, v) => n + values[v], 0))), 0);
+    const people = headcount(pools, original), extra = headcount(reserves, original);
+    const reserveStaffSet = new Set();
+    const ownedClimateBuilding = new Set();
+    for (const pool of pools) {
+        for (const v of pool.anchors) {
+            const key = keys[v];
+            if (!key?.startsWith('staff:') || key.startsWith('staff:Crackle Generator:')) continue;
+            if (pool.reserve) reserveStaffSet.add(v);
+            else ownedClimateBuilding.add(key.split(':')[1]);
+        }
+    }
+    const climateSkills = new Map(problem.climate_skills ?? []);
+    const costs = new Map();
+    for (const v of envVars) {
+        const mode = keys[v].split(':')[2];
+        costs.set(v, mode === 'Scorching' || mode === 'Freeze' ? -1.01 : -1.0);
+    }
+    for (const v of pairVars) costs.set(v, -2.05);
+    for (const v of climateStaff) {
+        if (reserveStaffSet.has(v)) costs.set(v, (costs.get(v) || 0) - 100);
+        else {
+            const skills = climateSkills.get(v) ?? 0;
+            if (skills > 0) costs.set(v, (costs.get(v) || 0) - 1e-4 * skills);
+        }
+    }
+    for (const pool of reserves) {
+        if (pool.active != null) costs.set(pool.active, (costs.get(pool.active) || 0) - 1000);
+    }
+    const climateScore = values => {
+        let s = 0;
+        for (const [v, c] of costs) s += c * (values[v] ?? 0);
+        return s;
+    };
+
+    const rows = [];
+    if (pools.length) {
+        if (reserveWork.length) rows.push(` climate_reserve_work: ${expression(reserveWork)} <= ${reserveTime + 1e-9}`);
+        growers.forEach((pool, i) => rows.push(` climate_grower_${i}: ${expression(pool.work)} <= ${total(pool.work, original) + 1e-9}`));
+        for (const [name, team, limit] of [['team', pools, people], ['reserves', reserves, extra]]) {
+            const active = team.filter(pool => pool.active != null).map(pool => [pool.active, 1]);
+            if (active.length) rows.push(` climate_people_${name}: ${expression(active)} <= ${limit}`);
+        }
+    }
+    const generalSection = problem.lp.match(/\nGeneral\n([\s\S]*?)\nEnd/);
+    const integers = new Set([...(generalSection?.[1] ?? '').matchAll(/\bx(\d+)\b/g)].map(m => Number(m[1])));
+    const baseFree = new Set([...envVars, ...(pools.length ? [...climateStaff, ...activeVars] : [])]);
+    const runClimate = async (allowPairs, warm) => {
+        const free = allowPairs ? new Set([...baseFree, ...pairVars]) : baseFree;
+        const forceZero = new Set(allowPairs ? pairRelaxVars : [...pairVars, ...pairRelaxVars]);
+        let lp = problem.lp.replace(/^Maximize\n[^\n]+/, 'Maximize\n obj: ' + expression([...costs]));
+        if (rows.length) lp = lp.replace('\nBounds\n', '\n' + rows.join('\n') + '\nBounds\n');
+        lp = lp.replace(/^ (?:[^\n]+ <= x(\d+) <= [^\n]+|x(\d+) >= [^\n]+)$/gm, (line, a, b) => {
+            const v = Number(a ?? b);
+            if (free.has(v)) return line;
+            if (forceZero.has(v)) return ` 0 <= x${v} <= 0`;
+            const raw = original[v] ?? 0;
+            const val = integers.has(v) ? Math.round(raw) : Math.max(0, raw);
+            return ` ${val} <= x${v} <= ${val}`;
+        });
+        const sub = { ...problem, lp, primary_objective: [...costs], tiebreak: [] };
+        try {
+            return await solve(sub, { mip_max_nodes: 256, mipIterations: 12000, mip_rel_gap: 0, mip_abs_gap: 0 }, undefined, warm);
+        } catch (error) {
+            console.warn('Keeping the checked climate layout after a climate solve error.', error);
+            return null;
+        }
+    };
+    const isValid = values => {
+        if (values?.length !== original.length || !values.every(Number.isFinite)) return false;
+        if (!pools.length) return true;
+        return total(reserveWork, values) <= reserveTime + 1e-8
+            && headcount(pools, values) <= people
+            && headcount(reserves, values) <= extra
+            && !growers.some(pool => total(pool.work, values) > total(pool.work, original) + 1e-8);
+    };
+
+    const hasOriginalPair = pairVars.some(v => original[v] > 0.5);
+    let bestValues = original, bestScore = climateScore(original);
+    const standalone = await runClimate(false, hasOriginalPair ? undefined : original);
+    let standaloneOk = false;
+    if (standalone?.values && isValid(standalone.values)) {
+        standaloneOk = true;
+        const s = climateScore(standalone.values);
+        if (s > bestScore + 1e-6) {
+            bestValues = standalone.values;
+            bestScore = s;
+        }
+    }
+    let needPairs = pairVars.length > 0 && !standaloneOk;
+    if (!needPairs && pairVars.length > 0 && standaloneOk) {
+        const tempModes = new Set();
+        for (const v of envVars) {
+            if (standalone.values[v] <= 0.5) continue;
+            const mode = keys[v].split(':')[2];
+            if (mode === 'Warm' || mode === 'Scorching' || mode === 'Cool' || mode === 'Freeze') tempModes.add(mode);
+        }
+        const reserveHF = climateStaff.some(v =>
+            reserveStaffSet.has(v) && standalone.values[v] > 0.5 && keys[v].startsWith('staff:Heat Furnace:'));
+        const reserveCU = climateStaff.some(v =>
+            reserveStaffSet.has(v) && standalone.values[v] > 0.5 && keys[v].startsWith('staff:Cooling Unit:'));
+        const pairCanSaveReserve = (reserveHF && ownedClimateBuilding.has('Cooling Unit'))
+            || (reserveCU && ownedClimateBuilding.has('Heat Furnace'));
+        if (tempModes.size >= 3 || pairCanSaveReserve) needPairs = true;
+    }
+    if (needPairs) {
+        const paired = await runClimate(true, standaloneOk ? standalone.values : original);
+        if (paired?.values && isValid(paired.values)) {
+            const s = climateScore(paired.values);
+            if (s > bestScore + 1e-6) {
+                bestValues = paired.values;
+                bestScore = s;
+            }
+        }
+    }
+    return bestValues === original ? incumbent : { ...incumbent, values: bestValues };
+}
+
 async function refineShift(problem, incumbent, solve, context) {
+    incumbent = await refineClimate(problem, incumbent, solve);
     try {
         incumbent=await refineElectricStaffing(problem,incumbent,solve,context);
     } catch (error) {

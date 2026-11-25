@@ -13,9 +13,9 @@ export function solveEconomicBound(highs, problem, {seed, scope = [], timeLimit 
         const {numCols} = model.getDimensions();
         const indices = Array.from({length:numCols}, (_, i) => Number(model.getColName(i).slice(1)));
         if (indices.some(v => !Number.isInteger(v) || v < 0 || v >= keys.length)) return null;
-        const precision = {mip_abs_gap:0, mip_rel_gap:relativeGap,
+        const certifyIncome = !discovery && relativeGap > 0 && Number.isFinite(incomeTarget) && incomeTarget > 0;
+        const precision = {mip_abs_gap:0, mip_rel_gap:certifyIncome && !exact ? 0 : relativeGap,
             primal_feasibility_tolerance:discovery?1e-7:1e-9, mip_feasibility_tolerance:discovery?1e-8:1e-9};
-        const certifyIncome = exact && !discovery && relativeGap > 0 && Number.isFinite(incomeTarget) && incomeTarget > 0;
         const {incumbentIterations,...nativeOptions} = exact ? precision : planSearchOptions({time_limit:timeLimit,...precision});
         if (discovery) nativeOptions.mip_max_nodes = Math.ceil(128*timeLimit);
         model.options.set(nativeOptions);
@@ -40,7 +40,8 @@ export function solveEconomicBound(highs, problem, {seed, scope = [], timeLimit 
             if (warm.indices.length) model.setSolution(warm);
         }
         const run = () => {
-            if (!certifyIncome) return runPlanModel(model,highs,!exact && (seed || discovery) ? Math.ceil(timeLimit * 4000) : undefined,undefined,incumbentIterations);
+            const maxIter = !exact && (seed || discovery) ? Math.ceil(timeLimit * 4000) : undefined;
+            if (!certifyIncome) return runPlanModel(model,highs,maxIter,undefined,incumbentIterations);
             // A relaxed shift may earn more than the already verified physical
             // shift. Its relative gap alone cannot certify that physical income.
             const callbacks={};
@@ -56,9 +57,15 @@ export function solveEconomicBound(highs, problem, {seed, scope = [], timeLimit 
                 };
             }
             return model.run({...callbacks,[highs.constants.callbackType.mipInterrupt]:event=>{
-                const {mip_primal_bound:lower,mip_dual_bound:upper} = event.data;
-                if (!Number.isFinite(lower) || !Number.isFinite(upper) || lower > upper) return;
-                if (upper <= incomeTarget || (lower >= incomeTarget && upper-lower <= relativeGap*Math.abs(lower))) {
+                const {mip_primal_bound:lower,mip_dual_bound:upper,mip_total_lp_iterations:iters} = event.data;
+                if ((maxIter && iters >= maxIter)
+                    || (incumbentIterations && iters >= incumbentIterations && Number.isFinite(lower))) {
+                    event.interrupt();
+                    return;
+                }
+                if (!Number.isFinite(upper)) return;
+                if (Number.isFinite(lower) && lower > upper) return;
+                if (upper <= incomeTarget || (Number.isFinite(lower) && lower >= incomeTarget && upper-lower <= relativeGap*Math.abs(lower))) {
                     event.interrupt();
                 }
             }});
@@ -93,6 +100,76 @@ export function solveEconomicBound(highs, problem, {seed, scope = [], timeLimit 
         indices.forEach((v, i) => { values[v] = native[i]; });
         const objective = problem.primary_objective.reduce((sum, [v,c]) => sum + c * values[v], 0);
         return {...result, keys, values, objective, ...economicRecipeUse(problem, values)};
+    } finally {
+        model.dispose();
+    }
+}
+
+// Exact LP-based OBBT on recipe site totals for a given proof scope at a
+// verified income floor. Every integer shift earning >= floor must satisfy
+// these upper bounds, so passing them as recipe_site_limits tightens
+// always_running binary expansions and big-M envelopes without pruning any
+// optimal shift.
+export function obbtSiteLimits(highs, rawProblem, recipes, floor, baseLimits = {}) {
+    if (!(floor > 0) || !Number.isFinite(floor) || !highs?.createModel
+        || !rawProblem?.primary_objective?.length || !rawProblem?.lp) return null;
+    const targets = new Set(recipes);
+    if (!targets.size) return null;
+    const groups = new Map();
+    for (const [name, terms, cap] of rawProblem.integer_groups ?? []) {
+        if (!targets.has(name)) continue;
+        const entry = groups.get(name) ?? {cols:new Set(), cap};
+        for (const [v] of terms) entry.cols.add(v);
+        entry.cap = Math.max(entry.cap, cap);
+        groups.set(name, entry);
+    }
+    for (const [v, name] of rawProblem.recipe_variables ?? []) {
+        if (!targets.has(name)) continue;
+        const key = rawProblem.variable_keys[v];
+        if (!key.startsWith('continuous_site:')) continue;
+        const entry = groups.get(name) ?? {cols:new Set(), cap:Infinity};
+        entry.cols.add(v);
+        groups.set(name, entry);
+    }
+    const candidates = [...groups.entries()].filter(([name, g]) => {
+        const current = baseLimits[name] ?? g.cap;
+        return g.cols.size > 0 && current > 1;
+    });
+    if (!candidates.length) return null;
+    const expr = rawProblem.primary_objective.map(([v, c]) => `${c < 0 ? '-' : '+'} ${Math.abs(c)} x${v}`).join(' ');
+    const lp = rawProblem.lp.replace(/\nGeneral\n[\s\S]*?\nEnd/, '\nEnd')
+        .replace('\nBounds\n', `\n obbt_floor: ${expr} >= ${floor - 1e-7 * Math.max(1, Math.abs(floor))}\nBounds\n`);
+    const model = highs.createModel({format:'lp', data:lp});
+    const statuses = highs.constants.modelStatus;
+    try {
+        const {numCols} = model.getDimensions();
+        const nativeIndex = new Map(Array.from({length:numCols}, (_, i) => [Number(model.getColName(i).slice(1)), i]));
+        model.options.set({primal_feasibility_tolerance:1e-9, dual_feasibility_tolerance:1e-9});
+        model.changeColsCost({kind:'range', from:0, to:numCols - 1}, Array(numCols).fill(0));
+        model.run();
+        if (model.getModelStatus() === statuses.infeasible) return {infeasible:true};
+        if (model.getModelStatus() !== statuses.optimal) return null;
+        const limits = {...baseLimits};
+        let prev = [], tightened = 0;
+        for (const [name, g] of candidates) {
+            const cols = [...g.cols].map(v => nativeIndex.get(v)).filter(i => i != null).sort((a, b) => a - b);
+            if (!cols.length || cols.length !== g.cols.size) continue;
+            if (prev.length) model.changeColsCost({kind:'set', indices:prev}, prev.map(() => 0));
+            prev = cols;
+            model.changeColsCost({kind:'set', indices:cols}, cols.map(() => 1));
+            model.run();
+            const st = model.getModelStatus();
+            if (st === statuses.infeasible) return {infeasible:true};
+            if (st !== statuses.optimal) continue;
+            const ub = Math.max(0, Math.floor(model.getObjectiveValue() + 1e-5));
+            const current = limits[name] ?? g.cap;
+            if (ub < current) {
+                limits[name] = ub;
+                tightened++;
+                model.addRow(-Infinity, ub, {indices:cols, values:cols.map(() => 1)});
+            }
+        }
+        return tightened ? {infeasible:false, limits} : null;
     } finally {
         model.dispose();
     }

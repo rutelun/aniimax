@@ -102,6 +102,17 @@ function minimumWorkers(jobs){
     }
     return count;
 }
+export function keepsProduction(before,after){
+    if(!before?.success||!after?.success||!Number.isFinite(before.rate_per_second)||!Number.isFinite(after.rate_per_second)
+        ||after.rate_per_second<before.rate_per_second-1e-9)return false;
+    for(const key of ['level_up','level_up_preview']){
+        if(Number.isFinite(before[key]?.seconds)&&(!Number.isFinite(after[key]?.seconds)||after[key].seconds>before[key].seconds+1e-5))
+            return false;
+    }
+    const achieved=new Map((after.priorities??[]).map(p=>[p.target,p.per_second]));
+    return (before.priorities??[]).every(p=>achieved.get(p.target)>=p.per_second-1e-9);
+}
+
 function generatedScore(plan,input,definitions){
     const jobs=[];
     for(const step of plan.coin_items??[]){
@@ -117,19 +128,21 @@ function generatedScore(plan,input,definitions){
     // Environment posts stay fixed by the LP. Count generators separately
     // because each one needs a dedicated Lightning worker for its whole shift.
     const generators=plan.power_generators??plan.power_generator_levels?.length??0;
-    const work=jobs.reduce((n,j)=>n+j.busy,0)+generators;
+    const manualWork=jobs.reduce((n,j)=>n+j.busy,0);
+    const work=manualWork+generators;
     if(input.aniimo?.startsWith('best')){
-        return {people:recommendBestTeam(jobs,plan.hauling_busy||0).shifts.length+generators,work};
+        return {people:recommendBestTeam(jobs,plan.hauling_busy||0).shifts.length+generators,manualWork,work};
     }
-    return {people:minimumWorkers(jobs)+generators+Math.max(0,Math.ceil((plan.hauling_busy||0)-1e-6)),work};
+    return {people:minimumWorkers(jobs)+generators+Math.max(0,Math.ceil((plan.hauling_busy||0)-1e-6)),manualWork,work};
 }
 
 // Hold every recipe's combined output and every sale exactly at their
 // incumbent values. Whole sites, electric tiers, generators and their staff
 // remain in the native model, including competition for scarce ingredients.
-export async function refineElectricStaffing(problem,incumbent,solve,{pkg,input,report}={}){
+export async function refineElectricStaffing(problem,incumbent,solve,{pkg,input,report,fixedRecipes}={}){
     const options=problem.recipe_options??[], keys=problem.variable_keys;
-    if(!keys || incumbent?.values?.length!==keys.length || !options.length || input?.fixed_homeland || input?.recipe_switching_relaxation)return incumbent;
+    if(!keys || incumbent?.values?.length!==keys.length || !options.length || input?.fixed_homeland
+        || (input?.recipe_switching_relaxation && !fixedRecipes?.size))return incumbent;
     const original=incumbent.values, groups=new Map(), pools=problem.staffing_pools??[];
     // The income solve already chose staffed and powered recipes. For a map
     // draft, optimize secondary power assignments once pickup shares exist.
@@ -139,7 +152,9 @@ export async function refineElectricStaffing(problem,incumbent,solve,{pkg,input,
         const list=groups.get(option[1])??[];
         list.push(option);groups.set(option[1],list);
     }
-    const switches=new Set([...groups].filter(([,g])=>g.some(o=>o[4])&&g.some(o=>!o[4])&&g.some(o=>original[o[0]]>1e-10)).map(([name])=>name));
+    const switches=new Set([...groups]
+        .filter(([name,g])=>!fixedRecipes?.has(name)&&g.some(o=>o[4])&&g.some(o=>!o[4])&&g.some(o=>original[o[0]]>1e-10))
+        .map(([name])=>name));
     if(!switches.size && !(pools.length && input && !provisional))return incumbent;
     if(!pools.length && (!pkg?.get_all_items || !report))return incumbent;
     const rows=[],warm=[...original],added=[],working=[],counts=[],integer=[],reserveCounts=[];
@@ -148,7 +163,8 @@ export async function refineElectricStaffing(problem,incumbent,solve,{pkg,input,
     // Free equivalent worker variants even for residents and other buildings
     // that cannot use E-mode. Keep their recipe, physical tier and output.
     const transferable=new Set();
-    const held=new Set((problem.recipe_variables??[]).filter(([,name])=>!switches.has(name)).map(([v])=>v));
+    const held=new Set((problem.recipe_variables??[])
+        .filter(([,name])=>!switches.has(name)&&!fixedRecipes?.has(name)).map(([v])=>v));
     for(const group of provisional?[]:(problem.staffing_groups??[])){
         if(group.length<2 || !group.every(v=>held.has(v)))continue;
         const terms=group.map(v=>[v,1]);
@@ -185,13 +201,14 @@ export async function refineElectricStaffing(problem,incumbent,solve,{pkg,input,
         return index;
     }
     let score,baseline,definitions;
+    const isGeneratorVar=v=>keys[v]?.startsWith('staff:Crackle Generator:')||keys[v]==='generators#0';
     if(pools.length){
         const reserveWork=[];
         for(const [member,p] of pools.entries()){
             if(!p.work.length&&!p.anchors.length)continue;
             const deployed=scorePool(p,original);
             const count=countFor(p.work,deployed,p.anchors,p.active);
-            if(p.reserve){reserveCounts.push([count,1]);reserveWork.push(...p.work);}
+            if(p.reserve){reserveCounts.push([count,1]);reserveWork.push(...p.work.filter(([v])=>!isGeneratorVar(v)));}
             const helpers=input?.crop_peak_helpers?.[member]??0;
             if(helpers>0 || p.crop.some(v=>original[v]>1e-9)){
                 const spare=(input?.roster?.members?.[member]?.count??0)-deployed-helpers;
@@ -210,9 +227,10 @@ export async function refineElectricStaffing(problem,incumbent,solve,{pkg,input,
         }
         if(reserveCounts.length){
             row(reserveCounts,'<=',pools.filter(p=>p.reserve).reduce((n,p)=>n+scorePool(p,original),0));
-            row(reserveWork,'<=',sum(reserveWork,original)+1e-9);
+            if(reserveWork.length)row(reserveWork,'<=',sum(reserveWork,original)+1e-9);
         }
-        score=values=>({people:pools.reduce((n,p)=>n+scorePool(p,values),0),work:sum(working,values),
+        const manualWorking=working.filter(([v])=>!isGeneratorVar(v));
+        score=values=>({people:pools.reduce((n,p)=>n+scorePool(p,values),0),manualWork:sum(manualWorking,values),work:sum(working,values),
             reserves:pools.reduce((n,p)=>n+(p.reserve?scorePool(p,values):0),0)});
         baseline=score(original);
     }else{
@@ -241,13 +259,17 @@ export async function refineElectricStaffing(problem,incumbent,solve,{pkg,input,
         if(generator>=0){counts.push([generator,1]);working.push([generator,1]);}
         score=values=>{
             const plan=report(values);
-            return plan?.success&&plan.rate_per_second>=before.rate_per_second-1e-9?generatedScore(plan,input,definitions):null;
+            return keepsProduction(before,plan)?generatedScore(plan,input,definitions):null;
         };
     }
     if(!counts.length)return incumbent;
-    const weight=1+Math.ceil(Math.max(sum(working,original),baseline.work,baseline.people));
+    // Prefer switching manual work to E-mode whenever total occupied Aniimo
+    // (and reserves) do not increase. A tiny generator tie-break avoids turning
+    // on an idle generator that does not reduce manual work.
+    const genPenalty=1e-5;
+    const weight=2+Math.ceil(Math.max(sum(working,original),baseline.work,baseline.people));
     const costs=new Map();
-    for(const [v,c] of working)costs.set(v,(costs.get(v)||0)-c);
+    for(const [v,c] of working)costs.set(v,(costs.get(v)||0)-c*(isGeneratorVar(v)?genPenalty:1));
     const draftProof=provisional && input.map_dispatch_pending && input.always_running && pools.length;
     const workload=draftProof?[...costs].map(([v,c])=>[v,-c]):null;
     const headWeight=weight*(1+(provisional?0:baseline.reserves||0));
@@ -296,16 +318,17 @@ export async function refineElectricStaffing(problem,incumbent,solve,{pkg,input,
     }
     const after=score(values);
     if(!after||after.people>baseline.people)return incumbent;
+    if(pools.length && !provisional && after.reserves>baseline.reserves)return incumbent;
     const manualRecipes=vals=>exposed.filter(terms=>sum(terms,vals)>1e-10).length;
     const riskChange=manualRecipes(values)-manualRecipes(original);
+    const betterLoad=after.manualWork<baseline.manualWork-1e-8
+        || (Math.abs(after.manualWork-baseline.manualWork)<=1e-8 && after.work<baseline.work-1e-8);
     const staffingImproved=after.people<baseline.people || (after.people===baseline.people &&
-        ((!provisional && after.reserves<baseline.reserves) || ((provisional || after.reserves===baseline.reserves) && after.work<baseline.work-1e-8)));
+        ((!provisional && after.reserves<baseline.reserves) || ((provisional || after.reserves===baseline.reserves) && betterLoad)));
     if(riskChange>0 || (riskChange===0 && !staffingImproved))return incumbent;
-    if(exposed.length){
-        const checked=report(values);
-        if(!checked?.success||!Number.isFinite(checked.rate_per_second)||!Number.isFinite(reference.rate_per_second)
-            ||checked.rate_per_second<reference.rate_per_second-1e-9)
-            return incumbent;
+    if(report && pools.length){
+        reference??=report(original);
+        if(!keepsProduction(reference,report(values)))return incumbent;
     }
     return {...incumbent,values};
 }

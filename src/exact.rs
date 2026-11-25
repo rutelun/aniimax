@@ -40,7 +40,7 @@ use microlp::{ComparisonOp, OptimizationDirection, Problem};
 
 use crate::coverage::{
     facility_footprint, mode_temperature, single_building_options, temperature_mode, CoverageOption,
-    building_size, pair_options_over_offsets, Offset, PairOption, PairSizes, Zone, ENVIRONMENT_GATED_FACILITIES,
+    building_size, pair_options_over_offsets, Offset, PairOption, PairSizes, Zone,
 };
 use crate::models::{byproduct_item, FacilityCounts, ModuleLevels, ProductionItem};
 use crate::power::{electric_level, watts_per_level, GENERATOR};
@@ -313,6 +313,11 @@ enum VarKind<'a> {
         types: Vec<&'a str>,
         option: PairOption,
     },
+    /// Relaxed aggregate over all overlapping-pair options for a building/mode pair.
+    EnvironmentPairRelaxed {
+        buildings: (&'a str, &'a str),
+        modes: (&'a str, &'a str),
+    },
     /// How much of a roster member's day goes to staffing environment buildings of one kind
     /// (see [`crate::models::Crew`]).
     Staff { building: String, member: usize },
@@ -331,6 +336,24 @@ enum VarKind<'a> {
 mod always_running;
 
 type Constraint = (Vec<(usize, f64)>, ComparisonOp, f64);
+
+struct DispatchedWorkRoute<'a> {
+    recipe: &'a ProductionItem,
+    rate: usize,
+    member: usize,
+    crop: Option<(String, u32)>,
+    share: f64,
+    seconds: f64,
+    travel: f64,
+}
+
+struct DispatchedHauling<'a> {
+    recipe: &'a ProductionItem,
+    rate: usize,
+    member: usize,
+    share: f64,
+    seconds: f64,
+}
 
 /// The mixed-integer program, kept independent of any one `microlp` solve so every node of the
 /// search can rebuild its relaxation with its own bounds.
@@ -353,6 +376,8 @@ struct Model<'a> {
     /// `(variable, weight)` for the tie-break in the objective (see [`BUILDING_TIE_BREAK`]),
     /// so a solve's objective can be given back without it.
     tiebreak: Vec<(usize, f64)>,
+    dispatched_work_routes: Vec<DispatchedWorkRoute<'a>>,
+    dispatched_hauling: Vec<DispatchedHauling<'a>>,
 }
 
 /// What each environment building a plan sets up costs in the objective: far too little to give
@@ -366,6 +391,11 @@ impl<'a> Model<'a> {
     fn finish_objective(mut self) -> Self {
         self.primary_objective = self.objective.iter().copied().enumerate()
             .filter(|(_, coefficient)| *coefficient != 0.0).collect();
+        let mut merged = BTreeMap::<usize, f64>::new();
+        for &(v, weight) in &self.tiebreak {
+            *merged.entry(v).or_default() += weight;
+        }
+        self.tiebreak = merged.into_iter().filter(|&(_, w)| w != 0.0).collect();
         for &(v, weight) in &self.tiebreak {
             self.objective[v] -= weight;
         }
@@ -377,7 +407,7 @@ impl<'a> Model<'a> {
         self.bounds.push(bounds);
         self.integer.push(integer);
         self.priority.push(match &kind {
-            VarKind::Environment { .. } | VarKind::EnvironmentPair { .. } => 0,
+            VarKind::Environment { .. } | VarKind::EnvironmentPair { .. } | VarKind::EnvironmentPairRelaxed { .. } => 0,
             VarKind::Units(recipe) if recipe.raw_materials.is_none() => 1,
             _ => 2,
         });
@@ -392,7 +422,7 @@ impl<'a> Model<'a> {
         for (v, c) in terms {
             *merged.entry(v).or_default() += c;
         }
-        self.constraints.push((merged.into_iter().collect(), op, rhs));
+        self.constraints.push((merged.into_iter().filter(|&(_, c)| c != 0.0).collect(), op, rhs));
     }
 
     /// Sell everything left by today's recipes and reservations, even when the current
@@ -512,6 +542,37 @@ fn add_movement_work<'a>(model: &mut Model<'a>, rates: &[(&'a ProductionItem, us
         for crop in work_groups(recipe, counts) {
             let ability = crop.as_ref().map_or("Production", |(ability, _)| ability.as_str());
             let policy = counts.dispatch(recipe, ability);
+            if let Some(policy) = policy.filter(|_| counts.compact_dispatch()) {
+                let mut assigned = Vec::new();
+                let mut total_share = 0.0;
+                for member in 0..crew.members.len() {
+                    let Some((seconds, visits)) = work_spec(recipe, crop.as_ref(), member, counts) else { continue };
+                    let Some(entry) = policy.iter().find(|entry| entry.member == member) else { continue };
+                    let share = if crop.is_some() { entry.share } else { 1.0 };
+                    if crop.is_some() { total_share += entry.share; }
+                    if share <= 0.0 { continue; }
+                    let travel = entry.travel_seconds * visits as f64;
+                    assigned.push((member, share, seconds, travel));
+                }
+                let feasible = if crop.is_some() {
+                    !assigned.is_empty() && (total_share - 1.0).abs() <= 1e-6
+                } else {
+                    !assigned.is_empty()
+                };
+                if !feasible {
+                    model.constrain(vec![(rate, 1.0)], ComparisonOp::Eq, 0.0);
+                } else {
+                    for (member, share, seconds, travel) in assigned {
+                        let time = share * (seconds + travel);
+                        busy[member].push((rate, time));
+                        model.tiebreak.push((rate, 1e-8 * time));
+                        model.dispatched_work_routes.push(DispatchedWorkRoute {
+                            recipe, rate, member, crop: crop.clone(), share, seconds, travel,
+                        });
+                    }
+                }
+                continue;
+            }
             let mut demand = vec![(rate, -1.0)];
             for member in 0..crew.members.len() {
                 let Some((seconds, visits)) = work_spec(recipe, crop.as_ref(), member, counts) else { continue };
@@ -761,6 +822,8 @@ fn build_model<'a>(
         sale_balances: Vec::new(),
         staffing_pools: Vec::new(),
         tiebreak: Vec::new(),
+        dispatched_work_routes: Vec::new(),
+        dispatched_hauling: Vec::new(),
     };
 
     // Seeds are paid in coins, so they only come off a coin total.
@@ -773,7 +836,8 @@ fn build_model<'a>(
         // Dispatch gives an unassigned processor zero batches. Its staffed
         // variant, deliveries and routes therefore cannot run on this map.
         if let (Some(member), Some(policy)) = (recipe.crew, facility_counts.dispatch(recipe, "Production")) {
-            if facility_counts.recipe_switching_relaxation() && !policy.iter().any(|assignment| assignment.member == member && assignment.share > 0.0) {
+            if (facility_counts.compact_dispatch() || facility_counts.recipe_switching_relaxation())
+                && !policy.iter().any(|assignment| assignment.member == member && assignment.share > 0.0) {
                 continue;
             }
         }
@@ -1017,44 +1081,62 @@ fn build_model<'a>(
     }
 
     // Growing environments: plots of a crop needing environment E at facility F must be covered.
-    let gated_types: Vec<&str> = ENVIRONMENT_GATED_FACILITIES.iter().map(|(f, _)| *f).collect();
-    let mut needs_cover: BTreeMap<(&str, &str), Vec<usize>> = BTreeMap::new();
+    // Facilities with the same square footprint (e.g. 5x5 Starfall Hammock and Tidewhisper
+    // Sandcastle) are geometrically interchangeable inside a climate zone, so group demand and
+    // coverage by `(footprint, environment)`.
+    let footprint_key = |facility: &str| facility_footprint(facility).map(f64::to_bits);
+    let mut needs_cover: BTreeMap<(u64, &str), Vec<usize>> = BTreeMap::new();
     for &(recipe, units) in &physical_units {
         if let Some(environment) = recipe.environment.as_deref() {
-            if gated_types.contains(&recipe.facility.as_str()) {
-                needs_cover.entry((recipe.facility.as_str(), environment)).or_default().push(units);
+            if let Some(size_bits) = footprint_key(&recipe.facility) {
+                needs_cover.entry((size_bits, environment)).or_default().push(units);
             }
         }
     }
     // Coverage geometry is catalogued by facility types. Removing a crop with
     // zero rate must not introduce an arrangement missing from the full model.
-    let mut demand_limit = BTreeMap::new();
+    let mut facility_demand_limit = BTreeMap::new();
     for recipe in &eligible_recipes {
-        if let Some(environment) = recipe.environment.as_deref().filter(|_| gated_types.contains(&recipe.facility.as_str())) {
+        if let Some(environment) = recipe.environment.as_deref().filter(|_| footprint_key(&recipe.facility).is_some()) {
             let eligible = facility_counts.capacity_at_level(&recipe.facility, recipe.facility_level);
-            let limit = demand_limit.entry((recipe.facility.as_str(), environment)).or_insert(0);
+            let limit = facility_demand_limit.entry((recipe.facility.as_str(), environment)).or_insert(0);
             *limit = eligible.max(*limit);
         }
     }
-    let mut cover_terms: BTreeMap<(&str, &str), Vec<(usize, f64)>> = BTreeMap::new();
+    let mut demand_limit: BTreeMap<(u64, &str), u32> = BTreeMap::new();
+    for (&(facility, environment), &limit) in &facility_demand_limit {
+        let size_bits = footprint_key(facility).unwrap();
+        let total = demand_limit.entry((size_bits, environment)).or_insert(0);
+        *total = total.saturating_add(limit);
+    }
+    let mut cover_terms: BTreeMap<(u64, &str), Vec<(usize, f64)>> = BTreeMap::new();
     // Every building a variable uses, so no plan sets out more than are owned.
     let mut usage: BTreeMap<&str, Vec<(usize, f64)>> = BTreeMap::new();
     // A single selected physical layout can cover at most every eligible plot
     // owned. Fractional arrangements in the diagnostic relaxation may use a
     // fraction of a larger layout, so retain its original capacity there.
     let relaxed = coverage_relaxed();
-    let useful_limit = |facility: &str, mode: &str| match demand_limit.get(&(facility,mode)) {
+    let useful_limit = |facility: &str, mode: &str| match footprint_key(facility).and_then(|fp| demand_limit.get(&(fp, mode))) {
         Some(_) if relaxed => u32::MAX,
         Some(&limit) => limit,
         None => 0,
     };
-    // The facility types wanting a given mode, largest footprint first (see
-    // `single_building_options`).
+    // One representative facility per distinct footprint wanting a given mode, largest footprint
+    // first (see `single_building_options`).
     let types_for = |modes: &[&str]| -> Vec<&str> {
-        let mut types: Vec<&str> =
-            demand_limit.keys().filter(|(_, e)| modes.contains(e)).map(|(f, _)| *f).collect();
-        types.sort_unstable();
-        types.dedup();
+        let mut by_size: BTreeMap<u64, &str> = BTreeMap::new();
+        for &(facility, env) in facility_demand_limit.keys() {
+            if !modes.contains(&env) {
+                continue;
+            }
+            let size_bits = footprint_key(facility).unwrap();
+            by_size.entry(size_bits).and_modify(|rep| {
+                if facility < *rep {
+                    *rep = facility;
+                }
+            }).or_insert(facility);
+        }
+        let mut types: Vec<&str> = by_size.into_values().collect();
         types.sort_by(|a, b| {
             let (fa, fb) = (facility_footprint(a).unwrap_or(0.0), facility_footprint(b).unwrap_or(0.0));
             fb.partial_cmp(&fa).unwrap_or(std::cmp::Ordering::Equal).then(a.cmp(b))
@@ -1082,7 +1164,7 @@ fn build_model<'a>(
                 for (t, &facility) in types.iter().enumerate() {
                     let covered = counts[t].min(limits[t]);
                     if covered > 0 {
-                        cover_terms.entry((facility, mode)).or_default().push((count, covered as f64));
+                        cover_terms.entry((footprint_key(facility).unwrap(), mode)).or_default().push((count, covered as f64));
                     }
                 }
             }
@@ -1122,24 +1204,89 @@ fn build_model<'a>(
                     let zones = [(Zone::First, mode_a), (Zone::Both, middle), (Zone::Second, mode_b)];
                     let limits: Vec<_> = zones.iter().flat_map(|&(_,mode)|
                         types.iter().map(move |&f| useful_limit(f,mode))).collect();
-                    for option in useful_coverage(pair_options_over_offsets(PairSizes::of(first, second), &types), |o| {
+                    let options = useful_coverage(pair_options_over_offsets(PairSizes::of(first, second), &types), |o| {
                         o.counts.iter().flatten().zip(&limits).map(|(n,cap)| (*n).min(*cap)).collect()
-                    }) {
-                        let counts = option.counts.clone();
-                        let kind = VarKind::EnvironmentPair {
-                            buildings: (first, second),
-                            modes: (mode_a, mode_b),
-                            types: types.clone(),
-                            option,
-                        };
-                        let count = model.add(0.0, (0.0, most as f64), !coverage_relaxed(), kind);
-                        usage.entry(first).or_default().push((count, 1.0));
-                        usage.entry(second).or_default().push((count, 1.0));
+                    });
+                    if facility_counts.relax_pair_coverage() && options.len() > 1 {
+                        let areas: Vec<f64> = types.iter().map(|&f| facility_footprint(f).unwrap_or(1.0)).collect();
+                        let kind = VarKind::EnvironmentPairRelaxed { buildings: (first, second), modes: (mode_a, mode_b) };
+                        let pair = model.add(0.0, (0.0, most as f64), !coverage_relaxed(), kind);
+                        usage.entry(first).or_default().push((pair, 1.0));
+                        usage.entry(second).or_default().push((pair, 1.0));
+                        let mut allocs = [vec![None; types.len()], vec![None; types.len()], vec![None; types.len()]];
                         for (zone, mode) in zones {
+                            let z = zone as usize;
                             for (t, &facility) in types.iter().enumerate() {
-                                let covered = counts[zone as usize][t].min(limits[zone as usize * types.len()+t]);
-                                if covered > 0 {
-                                    cover_terms.entry((facility, mode)).or_default().push((count, covered as f64));
+                                let cap = limits[z * types.len() + t];
+                                let max_zt = options.iter().map(|o| o.counts[z][t].min(cap)).max().unwrap_or(0);
+                                if max_zt == 0 { continue; }
+                                let alloc = model.add(0.0, (0.0, max_zt.saturating_mul(most) as f64), false, VarKind::Extra);
+                                model.constrain(vec![(alloc, 1.0), (pair, -(max_zt as f64))], ComparisonOp::Le, 0.0);
+                                cover_terms.entry((footprint_key(facility).unwrap(), mode)).or_default().push((alloc, 1.0));
+                                allocs[z][t] = Some(alloc);
+                            }
+                        }
+                        for (zone, _) in zones {
+                            let z = zone as usize;
+                            let mut terms: Vec<(usize, f64)> = allocs[z].iter().enumerate()
+                                .filter_map(|(t, a)| a.map(|v| (v, areas[t]))).collect();
+                            if terms.len() > 1 {
+                                let max_zone_area = options.iter().map(|o| {
+                                    types.iter().enumerate().map(|(t, _)| {
+                                        let cap = limits[z * types.len() + t];
+                                        areas[t] * o.counts[z][t].min(cap) as f64
+                                    }).sum::<f64>()
+                                }).fold(0.0_f64, f64::max);
+                                terms.push((pair, -max_zone_area));
+                                model.constrain(terms, ComparisonOp::Le, 0.0);
+                            }
+                        }
+                        for (t, _) in types.iter().enumerate() {
+                            let mut terms: Vec<(usize, f64)> = (0..3).filter_map(|z| allocs[z][t].map(|v| (v, 1.0))).collect();
+                            if terms.len() > 1 {
+                                let max_type = options.iter().map(|o| {
+                                    (0..3).map(|z| o.counts[z][t].min(limits[z * types.len() + t])).sum::<u32>()
+                                }).max().unwrap_or(0);
+                                terms.push((pair, -(max_type as f64)));
+                                model.constrain(terms, ComparisonOp::Le, 0.0);
+                            }
+                        }
+                        let mut total_terms: Vec<(usize, f64)> = Vec::new();
+                        for zone_allocs in &allocs {
+                            for (t, a) in zone_allocs.iter().enumerate() {
+                                if let Some(v) = *a {
+                                    total_terms.push((v, areas[t]));
+                                }
+                            }
+                        }
+                        if total_terms.len() > 1 {
+                            let max_total_area = options.iter().map(|o| {
+                                (0..3).map(|z| types.iter().enumerate().map(|(t, _)| {
+                                    let cap = limits[z * types.len() + t];
+                                    areas[t] * o.counts[z][t].min(cap) as f64
+                                }).sum::<f64>()).sum::<f64>()
+                            }).fold(0.0_f64, f64::max);
+                            total_terms.push((pair, -max_total_area));
+                            model.constrain(total_terms, ComparisonOp::Le, 0.0);
+                        }
+                    } else {
+                        for option in options {
+                            let counts = option.counts.clone();
+                            let kind = VarKind::EnvironmentPair {
+                                buildings: (first, second),
+                                modes: (mode_a, mode_b),
+                                types: types.clone(),
+                                option,
+                            };
+                            let count = model.add(0.0, (0.0, most as f64), !coverage_relaxed(), kind);
+                            usage.entry(first).or_default().push((count, 1.0));
+                            usage.entry(second).or_default().push((count, 1.0));
+                            for (zone, mode) in zones {
+                                for (t, &facility) in types.iter().enumerate() {
+                                    let covered = counts[zone as usize][t].min(limits[zone as usize * types.len()+t]);
+                                    if covered > 0 {
+                                        cover_terms.entry((footprint_key(facility).unwrap(), mode)).or_default().push((count, covered as f64));
+                                    }
                                 }
                             }
                         }
@@ -1233,7 +1380,8 @@ fn build_model<'a>(
         for (v, kind) in model.kinds.iter().enumerate() {
             let modes = match kind {
                 VarKind::Environment { building, mode, .. } => vec![(building, mode)],
-                VarKind::EnvironmentPair { buildings: (a, b), modes: (ma, mb), .. } => vec![(a, ma), (b, mb)],
+                VarKind::EnvironmentPair { buildings: (a, b), modes: (ma, mb), .. }
+                | VarKind::EnvironmentPairRelaxed { buildings: (a, b), modes: (ma, mb) } => vec![(a, ma), (b, mb)],
                 _ => Vec::new(),
             };
             for (building, mode) in modes {
@@ -1243,7 +1391,8 @@ fn build_model<'a>(
             }
             let named: Vec<&str> = match kind {
                 VarKind::Environment { building, .. } => vec![building],
-                VarKind::EnvironmentPair { buildings: (a, b), .. } => vec![a, b],
+                VarKind::EnvironmentPair { buildings: (a, b), .. }
+                | VarKind::EnvironmentPairRelaxed { buildings: (a, b), .. } => vec![a, b],
                 _ => continue,
             };
             for building in named {
@@ -1311,11 +1460,14 @@ fn build_model<'a>(
         }
         for group in production_groups.values() {
             let policy = facility_counts.dispatch(group[0].0, "Production").unwrap();
-            if !facility_counts.recipe_switching_relaxation() {
+            if !(facility_counts.compact_dispatch() || facility_counts.recipe_switching_relaxation()) {
                 for member in 0..crew.members.len() {
                     let share = policy.iter().find(|e| e.member == member).map_or(0.0, |e| e.share);
-                    let terms = group.iter().map(|(r, rate)| (*rate, if r.crew == Some(member) { 1.0 - share } else { -share })).collect();
-                    model.constrain(terms, ComparisonOp::Eq, 0.0);
+                    let terms: Vec<_> = group.iter().filter_map(|(r, rate)| {
+                        let coeff = if r.crew == Some(member) { 1.0 - share } else { -share };
+                        (coeff != 0.0).then_some((*rate, coeff))
+                    }).collect();
+                    if !terms.is_empty() { model.constrain(terms, ComparisonOp::Eq, 0.0); }
                 }
                 continue;
             }
@@ -1343,8 +1495,28 @@ fn build_model<'a>(
         }
         for &(recipe, rate) in &rate_of {
             if !facility_counts.needs_hauling(recipe) { continue; }
-            let mut deliveries = vec![(rate, -1.0)];
             let policy = facility_counts.dispatch(recipe, "Hauling");
+            if let Some(policy) = policy.filter(|_| facility_counts.compact_dispatch()) {
+                let mut assigned = Vec::new();
+                let mut total_share = 0.0;
+                for (member, _) in crew.members.iter().enumerate().filter(|(member, _)| crew.can_work(*member, "Hauling", 1)) {
+                    let share = policy.iter().find(|e| e.member == member).map_or(0.0, |e| e.share);
+                    if share <= 0.0 { continue; }
+                    total_share += share;
+                    let seconds = facility_counts.hauling_seconds_for_member(recipe, member);
+                    assigned.push((member, share, seconds));
+                }
+                if assigned.is_empty() || (total_share - 1.0).abs() > 1e-6 {
+                    model.constrain(vec![(rate, 1.0)], ComparisonOp::Eq, 0.0);
+                } else {
+                    for (member, share, seconds) in assigned {
+                        busy[member].push((rate, share * seconds));
+                        model.dispatched_hauling.push(DispatchedHauling { recipe, rate, member, share, seconds });
+                    }
+                }
+                continue;
+            }
+            let mut deliveries = vec![(rate, -1.0)];
             for (member, _) in crew.members.iter().enumerate().filter(|(member, _)| crew.can_work(*member, "Hauling", 1)) {
                 let share = policy.map(|entries| entries.iter().find(|e| e.member == member).map_or(0.0, |e| e.share));
                 if share == Some(0.0) { continue; }
@@ -1360,15 +1532,29 @@ fn build_model<'a>(
             }
             model.constrain(deliveries, ComparisonOp::Eq, 0.0);
         }
+        for terms in &mut busy {
+            let mut merged = BTreeMap::<usize, f64>::new();
+            for &(v, c) in terms.iter() {
+                *merged.entry(v).or_default() += c;
+            }
+            *terms = merged.into_iter().filter(|&(_, c)| c != 0.0).collect();
+        }
         if let Some(first) = crew.assumed_from {
             reserve_work.extend(busy.iter().skip(first).flatten().copied());
         }
         worker_busy = busy.clone();
         if facility_counts.always_running() {
             let owned = crew.assumed_from.unwrap_or(crew.members.len());
-            model.staffing_pools = busy.iter().zip(&anchored).enumerate().map(|(member, (work, posts))| StaffingPool {
-                crop: work.iter().filter_map(|&(v, _)| matches!(model.kinds[v],
-                    VarKind::CropStaff { .. } | VarKind::WorkRoute { crop: Some(_), .. }).then_some(v)).collect(),
+            let mut crop_cols: Vec<Vec<usize>> = busy.iter().map(|work| {
+                work.iter().filter_map(|&(v, _)| matches!(model.kinds[v],
+                    VarKind::CropStaff { .. } | VarKind::WorkRoute { crop: Some(_), .. }).then_some(v)).collect()
+            }).collect();
+            for d in &model.dispatched_work_routes {
+                if d.crop.is_some() { crop_cols[d.member].push(d.rate); }
+            }
+            for cols in &mut crop_cols { cols.sort_unstable(); cols.dedup(); }
+            model.staffing_pools = busy.iter().zip(&anchored).zip(crop_cols).enumerate().map(|(member, ((work, posts), crop))| StaffingPool {
+                crop,
                 work: work.clone(), anchors: posts.iter().map(|&(v, _)| v).collect(),
                 reserve: member >= owned, active: None,
             }).collect();
@@ -1468,6 +1654,14 @@ fn build_model<'a>(
             let weight = 4e-5 * seconds;
             model.tiebreak.push((variable, weight));
         }
+        for d in &model.dispatched_work_routes {
+            let Some((ability, _)) = &d.crop else { continue };
+            if d.member >= owned || crew.members[d.member].level("Hauling") == 0
+                || !specialists.get(ability.as_str()).is_some_and(|levels| levels.contains(&crew.members[d.member].level(ability))) {
+                continue;
+            }
+            model.tiebreak.push((d.rate, 4e-5 * d.share * d.seconds));
+        }
     }
     let compare_power_staff = generator_count.is_some() && facility_counts.crew().is_none();
     // On equal output, compare normal work saved with the full shifts of the generators.
@@ -1484,11 +1678,15 @@ fn build_model<'a>(
             model.tiebreak.push((rate, -weight));
         }
     }
-    // Of plans otherwise equal, the fewest environment buildings: a pair is two.
+    // Of plans otherwise equal, the fewest environment buildings: a pair is two, with a small
+    // preference for standalone buildings over an overlapping pair and for weak modes over strong.
     for v in 0..model.kinds.len() {
         let weight = match model.kinds[v] {
-            VarKind::Environment { .. } => BUILDING_TIE_BREAK,
-            VarKind::EnvironmentPair { .. } => 2.0 * BUILDING_TIE_BREAK,
+            VarKind::Environment { mode, .. } => {
+                BUILDING_TIE_BREAK * if matches!(mode, "Scorching" | "Freeze") { 1.01 } else { 1.0 }
+            }
+            VarKind::EnvironmentPair { .. } => 2.05 * BUILDING_TIE_BREAK,
+            VarKind::EnvironmentPairRelaxed { .. } => 2.1 * BUILDING_TIE_BREAK,
             VarKind::LowerLevelPlots => LOWER_LEVEL_PLOT_TIE_BREAK,
             VarKind::PowerGenerators if compare_power_staff => POWER_STAFF_TIE_BREAK + 1e-7,
             VarKind::PowerGenerators => 1e-7,
@@ -1785,7 +1983,7 @@ fn start_bounds(model: &Model, plan: &crate::models::ProductionPlan) -> Option<V
             let count = units.get(recipe.name.as_str()).copied().unwrap_or(0);
             used.insert(recipe.name.as_str(), count);
             bounds[i] = (count as f64, count as f64);
-        } else if let VarKind::Environment { .. } | VarKind::EnvironmentPair { .. } = kind {
+        } else if let VarKind::Environment { .. } | VarKind::EnvironmentPair { .. } | VarKind::EnvironmentPairRelaxed { .. } = kind {
             bounds[i] = (0.0, 0.0);
         }
     }
@@ -1797,15 +1995,23 @@ fn start_bounds(model: &Model, plan: &crate::models::ProductionPlan) -> Option<V
         if assignment.units == 0 {
             continue;
         }
+        let mut per_size: HashMap<u64, u32> = HashMap::new();
+        for (facility, total) in &assignment.covered {
+            let size_bits = facility_footprint(facility)?.to_bits();
+            *per_size.entry(size_bits).or_default() += *total;
+        }
         let mut choice: Option<(usize, u32)> = None;
         for (i, kind) in model.kinds.iter().enumerate() {
             let VarKind::Environment { building, mode, types, option } = kind else { continue };
             if *building != assignment.building || *mode != assignment.mode {
                 continue;
             }
-            let holds = assignment.covered.iter().all(|(facility, total)| {
+            let holds = per_size.iter().all(|(&size_bits, total)| {
                 let per_building = total.div_ceil(assignment.units);
-                types.iter().position(|t| t == facility).is_some_and(|t| option.counts[t] >= per_building)
+                types
+                    .iter()
+                    .position(|t| facility_footprint(t).map(f64::to_bits) == Some(size_bits))
+                    .is_some_and(|t| option.counts[t] >= per_building)
             });
             let size: u32 = option.counts.iter().sum();
             if holds && choice.is_none_or(|(_, best)| size < best) {
@@ -1913,6 +2119,29 @@ fn plan_from(model: &Model, upper_bound: f64, proven_optimal: bool, nodes: u32, 
                 option: option.clone(),
             }),
             _ => {}
+        }
+    }
+    for d in &model.dispatched_hauling {
+        let v = values[d.rate] * d.share;
+        if v > 1e-9 {
+            *hauling_staffing.entry(d.member).or_default() += v * d.seconds;
+            hauling_routes.push((d.recipe.name.clone(), d.member, v));
+        }
+    }
+    for d in &model.dispatched_work_routes {
+        let v = values[d.rate] * d.share;
+        if v > 1e-9 {
+            work_routes.push(WorkRoute {
+                recipe: d.recipe.name.clone(),
+                member: d.member,
+                crop: d.crop.clone(),
+                mobile: true,
+                rate: v,
+            });
+            if let Some((ability, level)) = &d.crop {
+                crop_staffing.push((ability.clone(), *level, d.member, v * d.seconds));
+            }
+            *travel.entry(d.member).or_default() += v * d.travel;
         }
     }
     // Units set to a recipe that doesn't run are just idle.
@@ -2677,11 +2906,13 @@ pub fn check_plan_with_workload(
     if let Some(fixed) = fixed {
         buildings_used.extend(fixed.climate.iter().map(|(building, &count)| (building.as_str(), count)));
     }
-    let mut covered: HashMap<(&str, &str), u32> = HashMap::new();
+    let mut covered: HashMap<(u64, &str), u32> = HashMap::new();
     for env in &plan.environment {
         *buildings_used.entry(env.building.as_str()).or_default() += env.count;
         for (facility, count) in &env.covers {
-            *covered.entry((facility.as_str(), env.mode.as_str())).or_default() += count * env.count;
+            if let Some(size) = facility_footprint(facility) {
+                *covered.entry((size.to_bits(), env.mode.as_str())).or_default() += count * env.count;
+            }
         }
     }
     // Overlapping pairs: each uses one of both buildings, and covers a zone per temperature.
@@ -2698,7 +2929,9 @@ pub fn check_plan_with_workload(
                 return Err(format!("pair zone {zone} says {:?}, not {mode}", pair.zone_modes[zone]));
             }
             for (facility, count) in &pair.zone_covers[zone] {
-                *covered.entry((facility.as_str(), mode)).or_default() += count * pair.count;
+                if let Some(size) = facility_footprint(facility) {
+                    *covered.entry((size.to_bits(), mode)).or_default() += count * pair.count;
+                }
             }
         }
     }
@@ -2871,10 +3104,18 @@ pub fn check_plan_with_workload(
     }
     // The measurement build lets a building mix arrangements, which no whole layout can hold, so
     // its plans are deliberately unbuildable and only their rate is of interest.
+    let mut footprint_needing: BTreeMap<(u64, &str), (u32, Vec<&str>)> = BTreeMap::new();
     for ((facility, environment), plots) in plots_needing.into_iter().filter(|_| fixed.is_none()) {
-        let have = covered.get(&(facility, environment)).copied().unwrap_or(0);
+        if let Some(size) = facility_footprint(facility) {
+            let entry = footprint_needing.entry((size.to_bits(), environment)).or_default();
+            entry.0 += plots;
+            entry.1.push(facility);
+        }
+    }
+    for ((size_bits, environment), (plots, facilities)) in footprint_needing {
+        let have = covered.get(&(size_bits, environment)).copied().unwrap_or(0);
         if plots > have && !coverage_relaxed() {
-            return Err(format!("{plots} {facility} plots need {environment} but {have} are covered"));
+            return Err(format!("{plots} {} plots need {environment} but {have} are covered", facilities.join("/")));
         }
     }
     if (earned - plan.rate_per_second).abs() > 1e-6 * earned.abs().max(1.0) {
@@ -2927,6 +3168,9 @@ pub struct LpProblem {
     pub production_zero: Vec<usize>,
     /// Integer sums for LP-based bound tightening: name, terms, natural upper bound.
     pub integer_groups: Vec<(String, Vec<(usize, f64)>, u32)>,
+    /// Dispatched production work `(rate_col, member, seconds + travel)` folded directly onto rates.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub dispatched_work: Vec<(usize, usize, f64)>,
 }
 
 fn integer_groups(model: &Model<'_>, counts: &FacilityCounts) -> Vec<(String, Vec<(usize, f64)>, u32)> {
@@ -3023,6 +3267,8 @@ fn warm_start_keys(model: &Model<'_>, items: &[ProductionItem], counts: &Facilit
                 format!("environment:{building}:{mode}:{types:?}:{:?}", option.counts),
             VarKind::EnvironmentPair { buildings, modes, types, option } =>
                 format!("pair:{buildings:?}:{modes:?}:{types:?}:{option:?}"),
+            VarKind::EnvironmentPairRelaxed { buildings, modes } =>
+                format!("pair_relax:{buildings:?}:{modes:?}"),
             VarKind::Staff { building, member } => format!("staff:{building}:{}", member_key(*member)),
             VarKind::CropStaff { ability, level, member } => format!("crop:{ability}:{level}:{}", member_key(*member)),
             VarKind::WorkPost { station, member } => {
@@ -3162,7 +3408,11 @@ pub fn write_lp(
             _=>None,
         }).collect(),
         variable_keys: warm_start_keys(&model, items, facility_counts), production_zero:production_staff_zeros(&model,facility_counts),
-        integer_groups:integer_groups(&model,facility_counts) }
+        integer_groups:integer_groups(&model,facility_counts),
+        dispatched_work: model.dispatched_work_routes.iter()
+            .filter(|d| d.crop.is_none())
+            .map(|d| (d.rate, d.member, d.seconds + d.travel))
+            .collect() }
 }
 
 /// Builds an [`ExactPlan`] from an external solver's variable values. Accepts the complete
@@ -3225,6 +3475,9 @@ pub(crate) fn read_external_plan(
         }
     });
     if feasible {
+        if model.kinds.iter().zip(&rounded).any(|(k, &v)| matches!(k, VarKind::EnvironmentPairRelaxed { .. }) && v > 0.5) {
+            return None;
+        }
         let earnings: f64 = model.earnings.iter().zip(&rounded).map(|(c, v)| c * v).sum();
         return Some(plan_from(&model, upper_bound.max(earnings), proven_optimal, 0, &rounded));
     }
@@ -3244,6 +3497,9 @@ pub(crate) fn read_external_plan(
         })
         .collect();
     let (_, solved) = model.relax(&fixed)?;
+    if model.kinds.iter().zip(&solved).any(|(k, &v)| matches!(k, VarKind::EnvironmentPairRelaxed { .. }) && v > 0.5) {
+        return None;
+    }
     let earnings: f64 = model.earnings.iter().zip(&solved).map(|(c, v)| c * v).sum();
     Some(plan_from(&model, upper_bound.max(earnings), proven_optimal, 0, &solved))
 }
@@ -3764,7 +4020,7 @@ fn production_plan(
         };
     }
     // Environment layouts, trimmed to the plots the plan actually uses.
-    let mut still_needed: HashMap<(String, String), u32> = HashMap::new();
+    let mut still_needed: BTreeMap<(String, String), u32> = BTreeMap::new();
     for (name, &units) in &exact.units {
         if let Some(recipe) = all.get(name.as_str()) {
             if let Some(environment) = &recipe.environment {
@@ -3772,6 +4028,22 @@ fn production_plan(
             }
         }
     }
+    let take_matching = |still_needed: &mut BTreeMap<(String, String), u32>, size: f64, mode: &str, mut budget: u32| -> Vec<(String, u32)> {
+        let mut taken = Vec::new();
+        for ((facility, env), left) in still_needed.iter_mut() {
+            if budget == 0 {
+                break;
+            }
+            if env != mode || *left == 0 || facility_footprint(facility) != Some(size) {
+                continue;
+            }
+            let take = budget.min(*left);
+            *left -= take;
+            budget -= take;
+            taken.push((facility.clone(), take));
+        }
+        taken
+    };
     // Overlapping pairs show as one assignment per zone, all in the same frame so the diagram can
     // draw both buildings. Worked out before the buildings standing on their own, so the plots
     // they cover are taken off what those still have to cover.
@@ -3779,34 +4051,36 @@ fn production_plan(
     for (pair_id, pair) in exact.pairs.iter().enumerate() {
         // Only what the plan actually grows: a zone whose plots went unused isn't worth drawing,
         // and a pair with nothing in the zone they share is really two separate buildings.
+        // Distribute each footprint bucket round-robin across copies so no single copy ever
+        // exceeds its per-pair footprint capacity even when same-footprint facilities mix.
+        let mut unit_used: Vec<[Vec<(String, u32)>; 3]> = vec![Default::default(); pair.count as usize];
         let used: [Vec<(String, u32)>; 3] = std::array::from_fn(|zone| {
             let Some(mode) = pair.zone_modes[zone].clone() else { return Vec::new() };
-            pair.zone_covers[zone]
-                .iter()
-                .filter_map(|(facility, covered)| {
-                    let left = still_needed.entry((facility.clone(), mode.clone())).or_default();
-                    let take = covered.saturating_mul(pair.count).min(*left);
-                    *left -= take;
-                    (take > 0).then(|| (facility.clone(), take))
-                })
-                .collect()
+            let mut zone_total: Vec<(String, u32)> = Vec::new();
+            for (rep_facility, covered) in &pair.zone_covers[zone] {
+                let Some(size) = facility_footprint(rep_facility) else { continue };
+                let taken = take_matching(&mut still_needed, size, &mode, covered.saturating_mul(pair.count));
+                let mut slot = 0usize;
+                for (facility, count) in taken {
+                    match zone_total.iter_mut().find(|(f, _)| *f == facility) {
+                        Some((_, n)) => *n += count,
+                        None => zone_total.push((facility.clone(), count)),
+                    }
+                    for _ in 0..count {
+                        let unit = slot % pair.count as usize;
+                        slot += 1;
+                        let entry = &mut unit_used[unit][zone];
+                        match entry.iter_mut().find(|(f, _)| *f == facility) {
+                            Some((_, n)) => *n += 1,
+                            None => entry.push((facility.clone(), 1)),
+                        }
+                    }
+                }
+            }
+            zone_total
         });
         let holds = |zone: usize| used[zone].iter().map(|(_, n)| n).sum::<u32>() > 0;
-        let types: Vec<&str> = {
-            let mut names: Vec<&str> = used.iter().flatten().map(|(f, _)| f.as_str()).collect();
-            names.sort_unstable();
-            names.dedup();
-            names
-        };
         let sizes = PairSizes::of(&pair.buildings.0, &pair.buildings.1);
-        // Covered is the total across identical pairs. Split each type's actual
-        // demand across copies; even the larger share fits its single-pair capacity.
-        let per_unit = |zone: usize, unit: u32| -> Vec<(String, u32)> {
-            used[zone].iter().filter_map(|(facility, total)| {
-                let count = total / pair.count + u32::from(unit < total % pair.count);
-                (count > 0).then(|| (facility.clone(), count))
-            }).collect()
-        };
         let placements = |plots: Vec<crate::coverage::Placement>| -> Vec<FacilityPlacement> {
             plots.into_iter().map(|p| FacilityPlacement { facility: p.facility, x: p.x, y: p.y, size: p.size }).collect()
         };
@@ -3845,8 +4119,8 @@ fn production_plan(
             .flatten();
         if let Some(apart) = apart {
             let detached: Option<Vec<_>> = apart.into_iter().map(|(zone, building, mode)| {
-                let layouts = (0..pair.count).map(|unit|
-                    crate::coverage::tidy_layout(building_size(building), &per_unit(zone, unit)).map(placements)
+                let layouts = (0..pair.count as usize).map(|unit|
+                    crate::coverage::tidy_layout(building_size(building), &unit_used[unit][zone]).map(placements)
                 ).collect::<Option<_>>()?;
                 Some(EnvironmentAssignment {
                     building: building.clone(),
@@ -3868,16 +4142,63 @@ fn production_plan(
             }
         }
         let mut layouts: [Vec<Vec<FacilityPlacement>>; 3] = Default::default();
-        for unit in 0..pair.count {
-            let counts = std::array::from_fn(|zone| {
-                let here = per_unit(zone, unit);
-                types.iter().map(|name| here.iter().find(|(f, _)| f == name).map_or(0, |(_, n)| *n)).collect()
+        for unit in 0..pair.count as usize {
+            // Pack using one canonical representative per distinct footprint, then relabel
+            // same-footprint placements to the real facilities requested in each zone.
+            let mut by_size: BTreeMap<u64, &str> = BTreeMap::new();
+            for zone_entries in &unit_used[unit] {
+                for (name, _) in zone_entries {
+                    if let Some(size) = facility_footprint(name) {
+                        by_size.entry(size.to_bits()).or_insert(name.as_str());
+                    }
+                }
+            }
+            let mut pack_types: Vec<&str> = by_size.into_values().collect();
+            pack_types.sort_by(|a, b| {
+                let (fa, fb) = (facility_footprint(a).unwrap_or(0.0), facility_footprint(b).unwrap_or(0.0));
+                fb.partial_cmp(&fa).unwrap_or(std::cmp::Ordering::Equal).then(a.cmp(b))
             });
-            let packed = crate::coverage::tidy_pair_layout(sizes, &types, pair.offset, &counts)
-                .or_else(|| crate::coverage::pair_layout_for(sizes, &types, pair.offset, &counts))
+            let counts = std::array::from_fn(|zone| {
+                pack_types
+                    .iter()
+                    .map(|rep| {
+                        let size = facility_footprint(rep);
+                        unit_used[unit][zone]
+                            .iter()
+                            .filter(|(f, _)| facility_footprint(f) == size)
+                            .map(|(_, n)| *n)
+                            .sum()
+                    })
+                    .collect()
+            });
+            let packed = crate::coverage::tidy_pair_layout(sizes, &pack_types, pair.offset, &counts)
+                .or_else(|| crate::coverage::pair_layout_for(sizes, &pack_types, pair.offset, &counts))
                 .unwrap_or_default();
-            for (zone, plots) in packed.into_iter().enumerate() {
-                layouts[zone].push(placements(plots));
+            for (zone, mut plots) in packed.into_iter().enumerate() {
+                plots.sort_by(|a, b| a.x.total_cmp(&b.x).then(a.y.total_cmp(&b.y)));
+                let mut relabeled = Vec::with_capacity(plots.len());
+                let mut labels_by_size: BTreeMap<u64, Vec<String>> = BTreeMap::new();
+                for (name, count) in &unit_used[unit][zone] {
+                    if let Some(size) = facility_footprint(name) {
+                        labels_by_size
+                            .entry(size.to_bits())
+                            .or_default()
+                            .extend(std::iter::repeat_n(name.clone(), *count as usize));
+                    }
+                }
+                let mut cursor: BTreeMap<u64, usize> = BTreeMap::new();
+                for mut p in plots {
+                    let key = p.size.to_bits();
+                    if let Some(labels) = labels_by_size.get(&key) {
+                        let idx = cursor.entry(key).or_default();
+                        if let Some(name) = labels.get(*idx) {
+                            p.facility = name.clone();
+                            *idx += 1;
+                        }
+                    }
+                    relabeled.push(p);
+                }
+                layouts[zone].push(placements(relabeled));
             }
         }
         for zone in 0..3 {
@@ -3917,17 +4238,16 @@ fn production_plan(
             for _ in 0..env.count {
                 let mut layout = Vec::new();
                 for placement in &nearest_first {
-                    let need = still_needed.entry((placement.facility.clone(), env.mode.clone())).or_default();
-                    if *need == 0 {
+                    let taken = take_matching(&mut still_needed, placement.size, &env.mode, 1);
+                    let Some((facility, _)) = taken.into_iter().next() else {
                         continue;
-                    }
-                    *need -= 1;
-                    match covered.iter_mut().find(|(f, _)| *f == placement.facility) {
+                    };
+                    match covered.iter_mut().find(|(f, _)| *f == facility) {
                         Some((_, n)) => *n += 1,
-                        None => covered.push((placement.facility.clone(), 1)),
+                        None => covered.push((facility.clone(), 1)),
                     }
                     layout.push(FacilityPlacement {
-                        facility: placement.facility.clone(),
+                        facility,
                         x: placement.x,
                         y: placement.y,
                         size: placement.size,

@@ -1,4 +1,5 @@
 {
+  "Roster swaps": "陣容替換",
   "Daily load": "每日平均負載",
   "Load during this period": "此時段負載",
   "All day": "全天",
@@ -1252,5 +1253,8 @@
   "Sales revenue (coins)": "銷售收入（家園幣）",
   "Other production": "其他生產",
   "Assignment unavailable": "無指派資料",
-  "On this recipe": "其中此配方"
+  "On this recipe": "其中此配方",
+  "Optimal (0% gap)": "最佳解（差距 0%）",
+  "Gap ≤ {gap}% (+{amount})": "差距 ≤ {gap}%（+{amount}）",
+  "Upper bound: {bound} {unit}": "上限：{bound} {unit}"
 }

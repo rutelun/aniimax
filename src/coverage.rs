@@ -1461,6 +1461,29 @@ pub fn pair_options_over_offsets(sizes: PairSizes, types: &[&str]) -> Vec<PairOp
     if let Some(hit) = baked_pair_coverage().get(&key) {
         return hit.clone();
     }
+    if let Some(footprints) = types
+        .iter()
+        .map(|t| facility_footprint(t).map(f64::to_bits))
+        .collect::<Option<Vec<_>>>()
+    {
+        if let Some(hit) = baked_pair_coverage()
+            .iter()
+            .filter(|((s, names), _)| {
+                *s == sizes.key()
+                    && names.len() == footprints.len()
+                    && names
+                        .iter()
+                        .zip(&footprints)
+                        .all(|(n, &fp)| facility_footprint(n).map(f64::to_bits) == Some(fp))
+            })
+            .max_by(|((_, a_names), a_opts), ((_, b_names), b_opts)| {
+                a_opts.len().cmp(&b_opts.len()).then_with(|| b_names.cmp(a_names))
+            })
+            .map(|(_, opts)| opts)
+        {
+            return hit.clone();
+        }
+    }
     let mut all: Vec<PairOption> = Vec::new();
     for offset in pair_offsets(sizes) {
         for option in pair_options_uncached(sizes, types, offset) {
@@ -1533,6 +1556,46 @@ pub fn single_building_options(building: f64, types: &[&str]) -> Vec<CoverageOpt
     let key = (building.to_bits(), types.iter().map(|t| t.to_string()).collect::<Vec<_>>());
     if let Some(hit) = baked_single_coverage().get(&key) {
         return hit.clone();
+    }
+    if let Some(footprints) = types
+        .iter()
+        .map(|t| facility_footprint(t).map(f64::to_bits))
+        .collect::<Option<Vec<_>>>()
+    {
+        if let Some(((_, template_names), hit)) = baked_single_coverage()
+            .iter()
+            .filter(|((b, names), _)| {
+                *b == building.to_bits()
+                    && names.len() == footprints.len()
+                    && names
+                        .iter()
+                        .zip(&footprints)
+                        .all(|(n, &fp)| facility_footprint(n).map(f64::to_bits) == Some(fp))
+            })
+            .max_by(|((_, a_names), a_opts), ((_, b_names), b_opts)| {
+                a_opts.len().cmp(&b_opts.len()).then_with(|| b_names.cmp(a_names))
+            })
+        {
+            return hit
+                .iter()
+                .map(|option| CoverageOption {
+                    counts: option.counts.clone(),
+                    layout: option
+                        .layout
+                        .iter()
+                        .map(|p| {
+                            let idx = template_names.iter().position(|n| n == &p.facility).unwrap_or(0);
+                            Placement {
+                                facility: types[idx].to_string(),
+                                x: p.x,
+                                y: p.y,
+                                size: p.size,
+                            }
+                        })
+                        .collect(),
+                })
+                .collect();
+        }
     }
     if let Some(hit) = OPTION_CACHE.with(|cache| cache.borrow().get(&key).cloned()) {
         return hit;

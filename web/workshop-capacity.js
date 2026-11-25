@@ -6,6 +6,7 @@ import {prefersWorkshopPlan} from './recipe-switch-search.js';
 import {priorityCeiling} from './priority-ceilings.js';
 import {productionObjective} from './priority-search.js';
 import {solveWithIncumbent,polishSolution} from './highs-solve.js';
+import {refineElectricStaffing,keepsProduction} from './electric-staffing.js';
 
 const DAY=86400;
 const options={mip_rel_gap:0,mip_abs_gap:0,mip_feasibility_tolerance:1e-7,primal_feasibility_tolerance:1e-10};
@@ -83,7 +84,8 @@ function fitCapacity(pkg,highs,trial,baseline,background,demand,moving,mode,stag
     for(const [v,name] of problem.recipe_variables){
         const key=problem.variable_keys[v];
         if(!movingRecipes.has(name)&&/^(units|continuous_site):/.test(key)){
-            rows.push(' fixed_site_'+v+': x'+v+' = '+(retained(key,name)??0));
+            const val=retained(key,name)??0;
+            rows.push(' fixed_site_'+v+': x'+v+' = '+(Math.abs(val-Math.round(val))<1e-6?Math.round(val):val));
         }
     }
     for(const [v,key] of problem.variable_keys.entries()){
@@ -120,7 +122,12 @@ function fitCapacity(pkg,highs,trial,baseline,background,demand,moving,mode,stag
     const currency=trial.currency??'coins',priorities=trial.priorities??[];
     const lp=addRows(problem.lp,rows);
     const fastest=lp.replace(/Maximize\n[\s\S]*?\nSubject To\n/,'Maximize\n obj: x'+pace+'\nSubject To\n');
-    const run=(lp,seed)=>solveWithIncumbent(highs,{...problem,lp},options,seed,false);
+    const run=(lp,seed)=>{
+        let result=solveWithIncumbent(highs,{...problem,lp},options,seed,false);
+        if(result.Status==='Infeasible')
+            result=solveWithIncumbent(highs,{...problem,lp},{...options,presolve:'off'},seed,false);
+        return result;
+    };
     const speed=run(fastest);
     if(speed.Status!=='Optimal'||!(speed.ObjectiveValue>0))return null;
     const read=solution=>problem.variable_keys.map((_,v)=>solution.Columns['x'+v]?.Primal??0);
@@ -165,7 +172,7 @@ function fitCapacity(pkg,highs,trial,baseline,background,demand,moving,mode,stag
 // priority floors. For an unlimited generated team and income before RV pace,
 // dropping optional workshop jobs preserves every economic recipe and its
 // ingredients. Check the catalogue before transferring that proof to switching.
-function incomeBound(pkg,highs,input,base,plan,catalog,facilities) {
+function incomeBound(pkg,highs,input,base,plan,catalog,facilities,sourcePlan=null) {
     const currency=input.currency??'coins',priorities=input.priorities??[];
     const pos=priorities.indexOf(currency),prefix=pos<0?priorities:priorities.slice(0,pos);
     const previous=new Map(base.comparison_goals.floors),achieved=new Map(plan.comparison_goals.floors);
@@ -179,6 +186,18 @@ function incomeBound(pkg,highs,input,base,plan,catalog,facilities) {
     if(keepsFloors && (!plan.recipe_schedule || sinks) && Number.isFinite(base.upper_bound) &&
         base.upper_bound>=plan.rate_per_second-1e-8)return Math.max(base.upper_bound,plan.rate_per_second);
 
+    // When the workshop-free source solve proved a tighter MIP dual bound at
+    // this exact pace and higher-priority floors, it also bounds every valid
+    // physical switching schedule that matches or beats those goals.
+    let bestUpper=null;
+    if(Number.isFinite(sourcePlan?.source_upper_bound) && sourcePlan.source_upper_bound>=plan.rate_per_second-1e-7){
+        const sourceFloors=new Map((sourcePlan.priorities??[]).map(p=>[p.target,p.per_second]));
+        const matchesSource=prefix.every(goal=>goal==='level_up'
+            ? Number.isFinite(sourcePlan.source_pace) && plan.comparison_goals.pace>=sourcePlan.source_pace*(1-1e-5)
+            : (achieved.get(goal)??0)>=(sourceFloors.get(goal)??0)*(1-1e-5));
+        if(matchesSource)bestUpper=Math.max(sourcePlan.source_upper_bound,plan.rate_per_second);
+    }
+
     // Switching can change the feasible economic shifts. Price the entire
     // catalogue with fractional sites and all switchable workshops for a bound.
     const relaxed={...input,always_running_recipes:[],restrict_to_checked_recipes:false,
@@ -188,7 +207,11 @@ function incomeBound(pkg,highs,input,base,plan,catalog,facilities) {
         pace:prefix.includes('level_up')?plan.comparison_goals.pace:null};
     const p=productionObjective(JSON.parse(pkg.exact_problem(JSON.stringify(relaxed),JSON.stringify(stage))));
     const upper=priorityCeiling(highs,p,currency);
-    return upper!=null && upper>=plan.rate_per_second-1e-8?Math.max(upper,plan.rate_per_second):null;
+    if(upper!=null && upper>=plan.rate_per_second-1e-8){
+        const lpBound=Math.max(upper,plan.rate_per_second);
+        bestUpper=bestUpper!=null ? Math.min(bestUpper,lpBound) : lpBound;
+    }
+    return bestUpper;
 }
 
 export async function searchWorkshopCapacity(pkg,highs,input,baseline,{validate,progress=()=>{}}) {
@@ -199,9 +222,9 @@ export async function searchWorkshopCapacity(pkg,highs,input,baseline,{validate,
         !input.level_up_preview?.cost?.length)return baseline;
     const catalog=new Map(JSON.parse(pkg.get_all_items()).map(item=>[item.name,item]));
     progress('recipe_switching','start');
-    let best=baseline;
+    let best=baseline, source=null, bestContext=null;
     try{
-        const source=optimizeWorkshopSources(pkg,highs,input,baseline,catalog);
+        source=optimizeWorkshopSources(pkg,highs,input,baseline,catalog);
         const backgrounds=source?[source.plan,baseline]:[baseline];
         for(const background of backgrounds){
             const demand=workshopDemand(input,background,catalog);
@@ -224,7 +247,10 @@ export async function searchWorkshopCapacity(pkg,highs,input,baseline,{validate,
                 const draft=fitCapacity(pkg,highs,trial,baseline,background,demand,facilities,mode,stage,catalog,problem);
                 if(!draft)return;
                 const verified=await validate(trial,draft,baseline);
-                if(verified && prefersWorkshopPlan(verified,best))best=verified;
+                if(verified && prefersWorkshopPlan(verified,best)){
+                    best=verified;
+                    bestContext={trial,stage,problem,moving:facilities};
+                }
                 return verified;
             };
             await consider(fixed,moving,'fixed',fixedProblem);
@@ -246,6 +272,58 @@ export async function searchWorkshopCapacity(pkg,highs,input,baseline,{validate,
             }
         }
     }finally{progress('recipe_switching','done',false);}
-    if(best!==baseline)best.upper_bound=incomeBound(pkg,highs,input,baseline,best,catalog,facilities);
+    if(best!==baseline){
+        // Switch-workshop backgrounds come from the tiebreak-free source solve.
+        // Refine E-mode on all non-switching recipes (or all recipes when fixed)
+        // while strictly preserving occupied Aniimo, priorities, income and schedule.
+        if(bestContext && best.comparison_seed?.values && (input.e_mode_rv>=12 || input.electricity)){
+            try{
+                const {trial,stage,problem,moving}=bestContext;
+                const payload=JSON.stringify(trial),stageJson=JSON.stringify(stage);
+                const fixedRecipes=best.recipe_schedule ? new Set(moving.flatMap(f=>materialChains[f])) : undefined;
+                const solve=async(model,settings,_,warm)=>{
+                    let r=solveWithIncumbent(highs,model,settings,warm,false);
+                    if(r.Status==='Infeasible')r=solveWithIncumbent(highs,model,{...settings,presolve:'off'},warm,false);
+                    if(r.Status!=='Optimal'||!r.Columns)return null;
+                    return {values:Array.from({length:model.variables},(_,v)=>r.Columns['x'+v]?.Primal??0),
+                        objective:r.ObjectiveValue,proven:true};
+                };
+                const report=values=>JSON.parse(pkg.exact_plan(payload,stageJson,
+                    JSON.stringify({values,proven:false,bound:0,verify_only:true,summary_only:true})));
+                const refined=await refineElectricStaffing(problem,{values:best.comparison_seed.values},solve,
+                    {pkg,input:trial,report,fixedRecipes});
+                if(refined?.values && refined.values!==best.comparison_seed.values){
+                    const values=refined.values;
+                    const rebuilt=JSON.parse(pkg.exact_plan(payload,stageJson,
+                        JSON.stringify({values,proven:false,bound:0,verify_only:true})));
+                    if(keepsProduction(best,rebuilt)){
+                        const active=[...new Set(problem.recipe_variables.filter(([v])=>values[v]>1e-8).map(([,name])=>name))];
+                        const counts={};
+                        for(const [name,terms] of problem.integer_groups??[])
+                            counts[name]=(counts[name]??0)+Math.round(terms.reduce((n,[v,c])=>n+values[v]*c,0));
+                        for(const [v,name] of problem.recipe_variables)if(problem.variable_keys[v].startsWith('continuous_site:'))
+                            counts[name]=(counts[name]??0)+Math.round(values[v]);
+                        const pace=problem.variable_keys.indexOf('pace#0');
+                        const currency=trial.currency??'coins',priorities=trial.priorities??[];
+                        const candidate={...rebuilt,upper_bound:null,proven_optimal:false,continuous_production_checked:!!trial.always_running,
+                            active_continuous_recipes:active,continuous_checked_recipes:trial.always_running_recipes,continuous_site_counts:counts,
+                            comparison_seed:{keys:problem.variable_keys,values},comparison_scores:{crop_variety:stage.crop_variety},
+                            comparison_goals:{currency,currency_value:rebuilt.rate_per_second,crop_variety:stage.crop_variety,
+                                pace:priorities.includes('level_up')&&pace>=0?values[pace]:null,
+                                floors:(rebuilt.priorities??[]).filter(p=>p.target!=='level_up').map(p=>[p.target,p.per_second])}};
+                        const verified=await validate(trial,candidate,baseline);
+                        if(verified && keepsProduction(best,verified)
+                            && (verified.recipe_schedule?.switches?.length??0)<=(best.recipe_schedule?.switches?.length??0))
+                            best=verified;
+                    }
+                }
+            }catch{
+                // Keep the already-certified workshop plan if E-mode refinement fails.
+            }
+        }
+        best.upper_bound=incomeBound(pkg,highs,input,baseline,best,catalog,facilities,source?.plan??null);
+        if(Number.isFinite(best.upper_bound) && best.upper_bound<=best.rate_per_second*(1+1e-7))
+            best.proven_optimal=true;
+    }
     return best;
 }

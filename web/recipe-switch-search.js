@@ -81,12 +81,27 @@ function additionalCrew(plan,previous) {
     return extra;
 }
 
+function manualWorkLoad(plan) {
+    let total=0;
+    for(const row of plan?.coin_items??[]){
+        if(row.status!=='producing'||row.electric_level!=null)continue;
+        if(row.aniimo_tasks?.length){
+            for(const task of row.aniimo_tasks)total+=task.busy||0;
+        }else if(row.busy_units>0){
+            total+=row.busy_units;
+        }
+    }
+    return total;
+}
+
 export function prefersWorkshopPlan(candidate,baseline) {
     if(!candidate?.success)return false;
     if(!baseline?.success)return true;
-    return (comparePriorities(candidate,baseline) || compareUpgradeTime(candidate,baseline)
+    const priority=comparePriorities(candidate,baseline) || compareUpgradeTime(candidate,baseline)
         || (baseline.recipe_schedule?.switches?.length??0)-(candidate.recipe_schedule?.switches?.length??0)
-        || crewSize(baseline)-crewSize(candidate))>0;
+        || crewSize(baseline)-crewSize(candidate);
+    if(priority)return priority>0;
+    return manualWorkLoad(baseline)-manualWorkLoad(candidate)>1e-6;
 }
 
 const switchTrial = (input, choice) => ({...input, recipe_switching_relaxation:true,
