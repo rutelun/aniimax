@@ -6,7 +6,8 @@ import {priorityCeiling,requiredSiteCapacity,applyRequiredSites} from './priorit
 import {productionObjective, CURRENCY_RELATIVE_GAP, CURRENCY_GAP_FACTOR} from './priority-search.js';
 import {obbtSiteLimits,solveEconomicBound,suggestEconomicScope} from './economic-bound.js';
 import {planSearchOptions,polishSolution,runPlanModel} from './highs-solve.js';
-import {refineStaffing} from './staffing-search.js';
+import {refineStaffing, refineClimate} from './staffing-search.js';
+import {keepsProduction} from './electric-staffing.js';
 import {continuousNeighborhood} from './continuous-neighborhood.js';
 import {economicRecipeCounts,economicCountNeighborhood,priceIdleWorkshop} from './economic-recipe-counts.js';
 import {switchingWorkshops} from './material-flow-schedule.js';
@@ -1002,7 +1003,8 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
     }else if(!last&&await finalStage(stage)==null)return null;
     if(initialWitness?.success&&oldScores?.material_pace!=null&&materialPace+1e-8<oldScores.material_pace&&income<=oldCurrency+1e-7)return null;
     if(initialWitness?.success&&oldScores?.material_work!=null&&materialWork+1e-8<oldScores.material_work&&income<=oldCurrency+1e-7)return null;
-    const {request}=last, p=exact(fullPayload,request);
+    const {request}=last;
+    let p=exact(fullPayload,request);
     const local=keepRawIncome(restrict(p,names),fullIncome,minRate);
     if(!local)return null;
     const compactSeed={keys:last.p.variable_keys,values:last.r.values};
@@ -1022,7 +1024,7 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
     };
     const audit=(values,summaryOnly=false)=>JSON.parse(pkg.exact_plan(fullPayload,JSON.stringify(request),
         JSON.stringify({values,proven:false,bound:upper,verify_only:true,summary_only:summaryOnly})));
-    let r, refined;
+    let r, refined, fallbackSource = null;
     if(scopedLocal){
         const scopedAudit=(values,summaryOnly=false)=>JSON.parse(pkg.exact_plan(scopedPayload,JSON.stringify(request),
             JSON.stringify({values,proven:false,bound:upper,verify_only:true,summary_only:summaryOnly})));
@@ -1048,7 +1050,27 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
             const liftedRefined=staffRows.length
                 ? await restoreCatalogue(highs,solveModel,addRows(local,staffRows),source) : null;
             refined=liftedRefined?.values ? liftedRefined : await liftToFull(source);
-            r=sRefined===sr ? refined : await liftToFull({keys:scopedP.variable_keys,values:sr.values});
+            if(refined?.values){
+                const climateCount=(keys,vals)=>{
+                    let b=0,p=0;
+                    for(let v=0;v<keys.length;v++){
+                        const val=Math.round(vals[v]??0);
+                        if(val<=0)continue;
+                        if(keys[v].startsWith('environment:'))b+=val;
+                        else if(keys[v].startsWith('pair:')){b+=2*val;p+=val;}
+                    }
+                    return {b,p};
+                };
+                const beforeLift=climateCount(scopedP.variable_keys,sRefined.values);
+                const afterLift=climateCount(local.variable_keys,refined.values);
+                if(afterLift.b>beforeLift.b || (afterLift.b===beforeLift.b && afterLift.p>beforeLift.p)){
+                    const cleaned=await refineClimate(local,refined,solveModel);
+                    if(cleaned!==refined && keepsProduction(audit(refined.values,true),audit(cleaned.values,true)))
+                        refined=cleaned;
+                }
+            }
+            r=refined;
+            if(sRefined!==sr)fallbackSource={keys:scopedP.variable_keys,values:sr.values};
         }
     }
     if(!r?.values){
@@ -1071,7 +1093,10 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
         }
     }
     let final=refined,plan=audit(final.values);
-    if(!plan.success&&refined!==r){final=r;plan=audit(final.values);}
+    if(!plan.success && fallbackSource){
+        const unrefined=await liftToFull(fallbackSource);
+        if(unrefined?.values){final=unrefined;plan=audit(final.values);}
+    } else if(!plan.success&&refined!==r){final=r;plan=audit(final.values);}
     if(!plan.success||!Number.isFinite(plan.rate_per_second)||plan.rate_per_second+1e-7<minRate||plan.rate_per_second>upper+1e-7)return null;
     if (materialPace != null && plan.level_up_preview?.requirements && request.maximize_material_work) {
         // Material work can improve the pace even after the prior stage has
@@ -1089,6 +1114,53 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
                     final=lifted;
                     plan=checked;
                     materialPace=pace;
+                }
+            }
+        }
+    }
+    if (input.relax_pair_coverage) {
+        // Relaxed pair coverage omits exact pair:* columns. When the final plan uses
+        // 3+ temperature modes (or a reserve climate worker with an owned opposite),
+        // check exact overlapping pairs via the compact climate solver.
+        const tempModes = new Set((plan.environment_assignments ?? [])
+            .map(a => a.mode).filter(m => m === 'Warm' || m === 'Scorching' || m === 'Cool' || m === 'Freeze'));
+        const pools = p.staffing_pools ?? [];
+        const reserveHF = pools.some(pool => pool.reserve && pool.anchors.some(v =>
+            p.variable_keys[v]?.startsWith('staff:Heat Furnace:') && final.values[v] > 0.5));
+        const reserveCU = pools.some(pool => pool.reserve && pool.anchors.some(v =>
+            p.variable_keys[v]?.startsWith('staff:Cooling Unit:') && final.values[v] > 0.5));
+        const hasOwnedCU = pools.some(pool => !pool.reserve && pool.anchors.some(v =>
+            p.variable_keys[v]?.startsWith('staff:Cooling Unit:')));
+        const hasOwnedHF = pools.some(pool => !pool.reserve && pool.anchors.some(v =>
+            p.variable_keys[v]?.startsWith('staff:Heat Furnace:')));
+        if (tempModes.size >= 3 || (reserveHF && hasOwnedCU) || (reserveCU && hasOwnedHF)) {
+            const exactPayload = JSON.stringify({ ...JSON.parse(fullPayload), relax_pair_coverage: false });
+            const exactP = exact(exactPayload, request);
+            if (exactP?.lp && exactP.variable_keys?.some(k => k.startsWith('pair:'))) {
+                const byKey = new Map(p.variable_keys.map((k, i) => [k, final.values[i]]));
+                const oldExtras = p.variable_keys.flatMap((k, i) => k.startsWith('extra#') ? [i] : []);
+                const newExtras = exactP.variable_keys.flatMap((k, i) => k.startsWith('extra#') ? [i] : []);
+                const extraShift = oldExtras.length - newExtras.length;
+                const aligned = exactP.variable_keys.map(k => byKey.get(k) ?? 0);
+                if (extraShift >= 0) {
+                    for (let i = 0; i < newExtras.length; i++) {
+                        aligned[newExtras[i]] = final.values[oldExtras[i + extraShift]];
+                    }
+                }
+                const exactAudit = (values, summaryOnly = false) => JSON.parse(pkg.exact_plan(exactPayload, JSON.stringify(request),
+                    JSON.stringify({ values, proven: false, bound: upper, verify_only: true, summary_only: summaryOnly })));
+                const baseExact = exactAudit(aligned, true);
+                if (baseExact.success) {
+                    const cleaned = await refineClimate(exactP, { ...final, values: aligned }, solveModel);
+                    if (cleaned !== final && cleaned.values !== aligned) {
+                        const checked = exactAudit(cleaned.values);
+                        if (checked.success && keepsProduction(plan, checked)
+                            && checked.rate_per_second >= minRate - 1e-7 && checked.rate_per_second <= upper + 1e-7) {
+                            p = exactP;
+                            final = cleaned;
+                            plan = checked;
+                        }
+                    }
                 }
             }
         }

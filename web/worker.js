@@ -13,7 +13,7 @@ import {continuousNeighborhood, incomeRepairNeighborhood, neighborhoodResult, ke
 import {comparisonConcurrency} from './comparison-queue.js';
 import {switchingWorkshops} from './material-flow-schedule.js';
 import {searchRecipeSwitches,validateWorkshopCapacity} from './recipe-switch-search.js?v=workshop-capacity';
-import {refineStaffing} from './staffing-search.js';
+import {refineStaffing, refineClimate} from './staffing-search.js';
 import {economicWorkers} from './economic-parallel.js';
 import {comparePlans} from './opportunity-comparison.js';
 
@@ -767,8 +767,10 @@ async function exactPlanJsonOnce(pkg, payload, step = () => {}, first = () => {}
         step('check', 'start');
         if (stocked) {
             stocked = (await incumbentSolver).polishSolution(await newHighs(),stockProblem,stocked);
-            if (input.always_running && !discoveryPass && !comparison && deadline == null) {
-                stocked = await verifiedStaffing(pkg,payload,stockJson,stockProblem,stocked);
+            if (!discoveryPass && !comparison && deadline == null) {
+                stocked = input.always_running
+                    ? await verifiedStaffing(pkg,payload,stockJson,stockProblem,stocked)
+                    : await verifiedClimate(pkg,payload,stockJson,stockProblem,stocked);
             }
         }
         const stockedPlan = stocked
@@ -781,8 +783,10 @@ async function exactPlanJsonOnce(pkg, payload, step = () => {}, first = () => {}
     }
     step('check', 'start');
     solved = (await incumbentSolver).polishSolution(await newHighs(),problem,solved);
-    if (input.always_running && !discoveryPass && !comparison && deadline == null) {
-        solved = await verifiedStaffing(pkg,payload,stageJson,problem,solved);
+    if (!discoveryPass && !comparison && deadline == null) {
+        solved = input.always_running
+            ? await verifiedStaffing(pkg,payload,stageJson,problem,solved)
+            : await verifiedClimate(pkg,payload,stageJson,problem,solved);
     }
     let json = exact_plan(payload, stageJson, JSON.stringify({ values: solved.values, proven, bound, summary_only:!!comparison }));
     let plan = JSON.parse(json);
@@ -810,6 +814,16 @@ async function verifiedStaffing(pkg,payload,stage,problem,incumbent) {
     const refined = await refineStaffing(problem,incumbent,solveModel,{pkg,input:JSON.parse(payload),report});
     if (refined === incumbent) return incumbent;
     const validation = report(refined.values);
+    return validation.success ? refined : incumbent;
+}
+
+async function verifiedClimate(pkg,payload,stage,problem,incumbent) {
+    if (!problem?.variable_keys?.length || typeof refineClimate !== 'function') return incumbent;
+    const refined = await refineClimate(problem,incumbent,solveModel);
+    if (refined === incumbent) return incumbent;
+    const validation = JSON.parse(pkg.exact_plan(payload,stage,JSON.stringify({
+        values:refined.values,proven:false,bound:0,summary_only:true,verify_only:true,
+    })));
     return validation.success ? refined : incumbent;
 }
 
@@ -864,8 +878,7 @@ async function repairProductionPriorities(pkg,input,seed) {
     const worked = await solveModel(fixed,{...SOLVE_OPTIONS,time_limit:1},undefined,warm);
     if (!worked) return null;
     const polished = (await incumbentSolver).polishSolution(await newHighs(),fixed,worked);
-    const result = work.staffing_pools?.length
-        ? await verifiedStaffing(pkg,payload,stageJson,work,polished) : polished;
+    const result = await verifiedStaffing(pkg,payload,stageJson,work,polished);
     if (work.recipe_variables.some(([v,name])=>result.values[v]>1e-9&&!checked.has(name))) return null;
     const plan = JSON.parse(pkg.exact_plan(payload,stageJson,JSON.stringify({values:result.values,proven:false,bound:upper})));
     if (!plan.success || plan.rate_per_second < seed.currencyTarget/CURRENCY_GAP_FACTOR) return null;
@@ -920,8 +933,7 @@ async function repairDispatchPlan(pkg, input, witness) {
     if (!found) return null;
     const highs = await newHighs();
     const polished = (await incumbentSolver).polishSolution(highs,local,found);
-    const solved = model.staffing_pools?.length
-        ? await verifiedStaffing(pkg,payload,stage,model,polished) : polished;
+    const solved = await verifiedStaffing(pkg,payload,stage,model,polished);
     if (model.recipe_variables.some(([v,name]) => !recipes.has(name) && solved.values[v] > 1e-9)) return null;
     const work = JSON.parse(pkg.exact_problem(payload,JSON.stringify({floors,pace,crop_variety,maximize_material_work:true})));
     const byKey = new Map(model.variable_keys.map((key,i)=>[key,solved.values[i]]));
