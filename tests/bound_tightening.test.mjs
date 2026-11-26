@@ -77,4 +77,7 @@ test('a fractional staffing choice cannot earn income unavailable at either whol
     assert.equal(excludesIncomeFloor(highs,model,1+1e-9),false);
     const continuous={...model,lp:model.lp.replace('\nGeneral\n x0','')};
     assert.equal(excludesIncomeFloor(highs,continuous,1.25),false);
+    // Ignores auxiliary extra# binaries and honors maxProbes.
+    assert.equal(excludesIncomeFloor(highs,{...model,variable_keys:['extra#0','sold']},1.25),false);
+    assert.equal(excludesIncomeFloor(highs,model,1.25,{maxProbes:0}),false);
 });

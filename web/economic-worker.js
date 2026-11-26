@@ -18,7 +18,7 @@ async function evaluate({id,kind,problem,options,reportRecipes}) {
     }
     const {economicRecipeCounts} = await import('./economic-recipe-counts.js');
     const counts = economicRecipeCounts(highs,problem,options);
-    return counts && {entries:[...counts],upper:counts.upper};
+    return counts && {entries:[...counts],upper:counts.upper,infeasible:Boolean(counts.infeasible)};
 }
 self.onmessage = async ({data}) => {
     try {

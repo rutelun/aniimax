@@ -541,3 +541,38 @@ test('Lunara (Light 3, Hauling 3) gets a lower Sunlamp climate_skills penalty th
     assert.ok(skills.get(idxLunara) < skills.get(idxRoyalby),
         `expected Lunara (${skills.get(idxLunara)}) < Royalby (${skills.get(idxRoyalby)})`);
 });
+
+test('solveDraftShift accepts verified shift within solver tolerance without falling through to replay', async () => {
+    const nInts = 16;
+    const keys = ['rate:ore', 'rate:ore:electric', ...Array.from({length: nInts}, (_, i) => `units:site_${i}`), 'extra#0'];
+    const extraIdx = 2 + nInts;
+    const gen = [...Array.from({length: nInts}, (_, i) => ` x${2 + i}`), ` x${extraIdx}`].join('\n');
+    const bounds = keys.map((_, i) => ` 0 <= x${i} <= 1`).join('\n');
+    const problem = {
+        variables: keys.length,
+        variable_keys: keys,
+        recipe_options: [[0, 'ore', 'Chimney Kiln', false, false, 1], [1, 'ore', 'Chimney Kiln', false, true, 1]],
+        lp: `Maximize\n obj: x0\nSubject To\nBounds\n${bounds}\nGeneral\n${gen}\nEnd`,
+        staffing_pools: [{ work: [[0, 1]], anchors: [], crop: [] }],
+    };
+    const input = { roster: { members: [] }, always_running: true, map_dispatch_pending: true,
+        facilities: { 'Chimney Kiln': [{ count: 1, level: 2 }] } };
+    const phases = [];
+    const solve = async (model, settings) => {
+        const phase = model.lp.includes('draft_work_fix_') ? 'verified'
+            : settings.objective_target != null ? 'replay'
+            : model.lp.includes('minimum_team:') ? 'work'
+            : model.primary_objective.length === 1 ? 'count' : 'original';
+        phases.push(phase);
+        const vals = Array(model.variables).fill(0);
+        vals[1] = 1;
+        // Simulate 1e-9 HiGHS primal solver tolerance drift on the verified pass.
+        if (phase === 'verified') vals[0] = 1e-9;
+        return { proven: true, objective: 0, values: vals };
+    };
+    const initial = Array(keys.length).fill(0);
+    initial[0] = 1;
+    const result = await refineElectricStaffing(problem, { values: initial }, solve, { input });
+    assert.deepEqual(phases, ['count', 'work', 'verified']);
+    assert.equal(result.values[1], 1);
+});

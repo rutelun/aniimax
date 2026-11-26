@@ -3,7 +3,7 @@ import {parseLinearLp} from './highs-reuse.js';
 // Test whether this site pattern can meet its income floor. The LP is a
 // superset of the integer model. A binary choice whose LP ceiling misses the
 // floor forces its opposite for every integer plan earning that income.
-export function excludesIncomeFloor(highs, problem, floor) {
+export function excludesIncomeFloor(highs, problem, floor, {maxProbes = 64} = {}) {
     if (!(floor > 0) || !Number.isFinite(floor) || !highs?.createModel) return false;
     const parsed = parseLinearLp(problem.lp,problem.variables,false);
     if (!parsed) return false;
@@ -13,12 +13,14 @@ export function excludesIncomeFloor(highs, problem, floor) {
     const tolerance = 1e-7 * Math.max(1,Math.abs(floor));
     const solve = () => { model.run(); return model.getModelStatus(); };
     const set = (column,lower,upper) => model.changeColsBounds({kind:'set',indices:[column]},[lower],[upper]);
+    let probes = 0;
     try {
         const binary = new Set();
         const {numCols} = model.getDimensions();
         for (let i=0; i<numCols; i++) {
             const v = Number(model.getColName(i).slice(1));
-            if (parsed.integers[v] && parsed.bounds[v][0]===0 && parsed.bounds[v][1]===1) binary.add(i);
+            if (parsed.integers[v] && parsed.bounds[v][0]===0 && parsed.bounds[v][1]===1
+                && !problem.variable_keys?.[v]?.startsWith('extra#')) binary.add(i);
         }
         for (;;) {
             const status = solve();
@@ -41,6 +43,8 @@ export function excludesIncomeFloor(highs, problem, floor) {
             fractional.sort((a,b)=>Math.abs(.5-colValue[b])-Math.abs(.5-colValue[a]));
             let forced = false;
             for (const i of fractional) {
+                if (probes >= maxProbes) return false;
+                probes++;
                 const branch = colValue[i]<.5 ? 1 : 0;
                 set(i,branch,branch);
                 const status = solve();

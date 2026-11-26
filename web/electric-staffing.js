@@ -49,10 +49,11 @@ async function solveDraftShift(model, settings, solve, warm, counts, workload, h
         fixNonExtra.push(` draft_work_fix_${v}: x${v} = ${Math.round(work.values[v] ?? 0)}`);
     }
     if (fixNonExtra.length >= 16) {
+        const verifyTol = Math.max(tolerance, 1e-6 * Math.max(1, Math.abs(target)));
         const verified = await solve(
             {...model, lp: model.lp.replace('\nBounds\n', '\n' + fixNonExtra.join('\n') + '\nBounds\n')},
-            {...settings, objective_target: target - tolerance}, undefined, work.values);
-        if (verified?.values && sum(model.primary_objective, verified.values) >= target - tolerance) {
+            {...settings, objective_target: target - verifyTol}, undefined, work.values);
+        if (verified?.values && sum(model.primary_objective, verified.values) >= target - verifyTol) {
             return verified;
         }
     }

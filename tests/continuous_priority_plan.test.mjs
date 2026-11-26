@@ -418,3 +418,41 @@ test('relaxed pass clears unnecessary pair_relax via restoreCatalogue instead of
     assert.equal(plan?.rate_per_second,1);
     assert.equal(exactPairCalls,0);
 });
+
+test('draft refines an integer-infeasible level_up LP ceiling and dispatched integerPace falls through to iterative proof', async () => {
+    const highs=await highsModule({wasmBinary:fs.readFileSync(new URL('../web/vendor/highs/highs.wasm',import.meta.url)),
+        print(){},printErr(){}});
+    const keys=['rate:crop#0','units:crop#0','pace#0'];
+    const build=(payload,stage,key)=>{
+        const goal=key==='level_up'?2:0;
+        const paceFloor=JSON.parse(stage).pace??0;
+        return JSON.stringify({variables:3,variable_keys:keys,primary_objective:[[goal,1]],tiebreak:[],
+            recipe_variables:[[0,'crop'],[1,'crop']],recipe_options:[[0,'crop','Farm',false,false,1]],
+            integer_groups:[['crop',[[1,1]],1]],
+            lp:['Maximize',' obj: x'+goal,'Subject To',' produce: x0 - x1 <= 0',
+                ' upgrade: x2 - 0.5 x1 <= 0',' posts: x1 <= 1.5',' prior: x2 >= '+paceFloor,
+                'Bounds',' 0 <= x0 <= 1',' 0 <= x1 <= 1.5',' x2 >= 0','General',' x1','End'].join('\n')});
+    };
+    const pkg={exact_priority_problem:build,exact_problem:build,
+        exact_plan:(_p,_s,r)=>JSON.stringify({success:true,rate_per_second:JSON.parse(r).values[0]})};
+    const solveModel=(p,o,_,seed)=>{
+        const r=solveWithIncumbent(highs,p,o,seed,false);
+        return r.Columns&&{values:keys.map((_,v)=>r.Columns['x'+v].Primal),objective:r.ObjectiveValue,proven:r.Status==='Optimal',upper:r.UpperBound};
+    };
+    // Draft (no dispatch): LP level_up ceiling is 0.75 (from x1=1.5), integer max is 0.5.
+    const draft=await tryPriorityPlan(pkg,{currency:'coins',always_running:true,map_dispatch_pending:true,
+        priorities:['level_up','coins'],roster:{members:[],dispatch:{}}},{highs,solveModel});
+    assert.equal(draft?.comparison_goals?.pace,0.5);
+    assert.equal(draft?.rate_per_second,1);
+    assert.equal(draft?.continuous_production_checked,true);
+
+    // Dispatched with >2 witness recipes: skips monolithic zero-gap shortcut and
+    // closes through the iterative dispatched proof loop even when integerPace triggers.
+    const dispatched=await tryPriorityPlan(pkg,{currency:'coins',always_running:true,
+        priorities:['level_up','coins'],roster:{members:[],dispatch:{crop:[1]}}},{
+        highs,solveModel,initialWitness:{recipes:['crop','unused_a','unused_b'],seed:{keys,values:[1,1,0.5]}},
+    });
+    assert.equal(dispatched?.comparison_goals?.pace,0.5);
+    assert.equal(dispatched?.rate_per_second,1);
+    assert.equal(dispatched?.continuous_production_checked,true);
+});

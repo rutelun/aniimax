@@ -2,7 +2,7 @@
 // recipes. Candidate models check work conservation on every occupied site.
 import {excludesIncomeFloor} from './bound-tightening.js';
 import {cachedEconomicBound} from './economic-bound-cache.js';
-import {priorityCeiling,requiredSiteCapacity,applyRequiredSites} from './priority-ceilings.js';
+import {priorityCeiling,requiredSiteCapacity,requiredSiteRows,applyRequiredSites} from './priority-ceilings.js';
 import {productionObjective, CURRENCY_RELATIVE_GAP, CURRENCY_GAP_FACTOR} from './priority-search.js';
 import {obbtSiteLimits,solveEconomicBound,suggestEconomicScope} from './economic-bound.js';
 import {planSearchOptions,polishSolution,runPlanModel} from './highs-solve.js';
@@ -185,21 +185,27 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
             p=priority(relaxed,stage,key);
             if(!p.lp && key==='level_up')continue;
             if(!p.lp)return null;
-            upper=priorityCeiling(highs,p,key);
+            upper=key==='level_up' && paceProof.attainable!=null ? paceProof.attainable : priorityCeiling(highs,p,key);
         }
         if(!Number.isFinite(upper))return null;
-        if(key==='level_up' && dispatched && witnessSeed && witnessNames.length && upper>0) {
-            // Walking can make the fractional upgrade pace impossible with
-            // whole posts. Enforcing the previous shift's operating rules
-            // still leaves every recipe available, so its optimum bounds the
-            // fully checked plan. Only refine a bound the old shift cannot meet.
+        if(key==='level_up' && upper>0) {
+            // Whole posts, workshops, generators, or walking can make the
+            // fractional upgrade pace impossible with integer sites. Enforcing
+            // a subset of operating rules still leaves every recipe available,
+            // so its optimum bounds the fully checked plan.
             const before=structuredClone(stage), ceiling=upper;
+            const useWitness=Boolean(dispatched && witnessSeed && witnessNames.length);
             const refine=()=>{
-                const measured=priority(payloadFor(witnessNames),before,key);
-                const warm=align(measured,witnessSeed);
-                const refit=warm && polishSolution(highs,measured,{values:warm});
-                if(!measured.production_only || (refit?.polished && close(refit.objective,ceiling)))return null;
-                const solution=highs.solve(measured.lp,{mip_rel_gap:0,mip_abs_gap:0,mip_feasibility_tolerance:1e-9});
+                const measured=useWitness ? priority(payloadFor(witnessNames),before,key) : p;
+                if(!measured?.production_only)return null;
+                if(useWitness){
+                    const warm=align(measured,witnessSeed);
+                    const refit=warm && polishSolution(highs,measured,{values:warm});
+                    if(refit?.polished && close(refit.objective,ceiling))return null;
+                }
+                const cuts=requiredSiteRows(measured,null,true);
+                const lp=cuts.length ? addRows(measured,cuts).lp : measured.lp;
+                const solution=highs.solve(lp,{mip_rel_gap:0,mip_abs_gap:0,mip_feasibility_tolerance:1e-9});
                 if(solution.Columns && input.relax_pair_coverage && meta && !meta.usedPairRelax){
                     if(measured.variable_keys.some((k,v)=>k.startsWith('pair_relax:') && (solution.Columns['x'+v]?.Primal??0)>1e-6))
                         meta.usedPairRelax=true;
@@ -210,9 +216,9 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
             let attainable=paceProof.attainable;
             if(attainable==null){
                 // A full income shift at the relaxation ceiling also proves its
-                // upgrade pace. Only search for a smaller integer ceiling if
-                // the measured shift cannot certify the first priority itself.
-                if(oldGoals?.pace>=ceiling-1e-9 && priorities[0]==='level_up')paceProof.refine=refine;
+                // upgrade pace. Defer the MIP pace solve when the ceiling may
+                // already be attainable, and only run it if that search fails.
+                if(!useWitness || (oldGoals?.pace>=ceiling-1e-9 && priorities[0]==='level_up')) paceProof.refine=refine;
                 else attainable=refine();
             }
             if(attainable!=null){upper=attainable;integerPace=true;}
@@ -400,36 +406,40 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
             : payloadFor(recipes),currencyStage,currency),siteCapacity);
     };
     let siteSearch, verifiedIncomeValues;
-    if(integerPace) {
-        // Price income at the attainable pace in the same relaxation. An
-        // optimum that also works in the full catalogue closes both searches.
+    if(integerPace && dispatched && witnessSeed && witnessNames.length<=2) {
+        // On tiny models, price income directly at the attainable pace. Larger
+        // dispatched models use the iterative OBBT / floor-certify loop below.
         const model=scopedModel(witnessNames);
         const exactOptions={mip_rel_gap:0,mip_abs_gap:0,mip_feasibility_tolerance:1e-9};
         const solution=highs.solve(model.lp,exactOptions);
-        if(solution.Status!=='Optimal' || !solution.Columns || !Number.isFinite(solution.ObjectiveValue))return null;
-        const values=model.variable_keys.map((_,v)=>solution.Columns['x'+v]?.Primal??0);
-        notePairRelax(model.variable_keys,values);
-        fullIncome=priority(fullPayload,currencyStage,currency);
-        let actual=await restoreCatalogue(highs,solveModel,fullIncome,{keys:model.variable_keys,values});
-        if(!actual?.values) {
-            // Tied shifts can use different recipes. Enforce the operating
-            // rules for this shift and try to realize the same income.
-            const recipes=new Set([...witnessNames,...active(model,values)]);
-            const compact=priority(payloadFor(recipes,true),currencyStage,currency);
-            const refit=highs.solve(compact.lp,exactOptions);
-            if(refit.Status!=='Optimal' || !refit.Columns || !close(refit.ObjectiveValue,solution.ObjectiveValue))return null;
-            const rates=compact.variable_keys.map((_,v)=>refit.Columns['x'+v]?.Primal??0);
-            actual=await restoreCatalogue(highs,solveModel,fullIncome,{keys:compact.variable_keys,values:rates});
+        if(solution.Status==='Optimal' && solution.Columns && Number.isFinite(solution.ObjectiveValue)){
+            const values=model.variable_keys.map((_,v)=>solution.Columns['x'+v]?.Primal??0);
+            notePairRelax(model.variable_keys,values);
+            fullIncome=priority(fullPayload,currencyStage,currency);
+            let actual=await restoreCatalogue(highs,solveModel,fullIncome,{keys:model.variable_keys,values});
+            if(!actual?.values) {
+                // Tied shifts can use different recipes. Enforce the operating
+                // rules for this shift and try to realize the same income.
+                const recipes=new Set([...witnessNames,...active(model,values)]);
+                const compact=priority(payloadFor(recipes,true),currencyStage,currency);
+                const refit=highs.solve(compact.lp,exactOptions);
+                if(refit.Status==='Optimal' && refit.Columns && close(refit.ObjectiveValue,solution.ObjectiveValue)){
+                    const rates=compact.variable_keys.map((_,v)=>refit.Columns['x'+v]?.Primal??0);
+                    actual=await restoreCatalogue(highs,solveModel,fullIncome,{keys:compact.variable_keys,values:rates});
+                }
+            }
+            if(actual?.values){
+                const earned=sum(fullIncome.primary_objective,actual.values);
+                if(close(earned,solution.ObjectiveValue)){
+                    for(const name of active(fullIncome,actual.values))names.add(name);
+                    remember(fullIncome.variable_keys,actual.values,earned);
+                    verifiedIncomeValues=actual.values;
+                    upper=Math.max(earned,solution.ObjectiveValue);
+                    ceilings.push(upper);
+                    siteSearch={best,upper};
+                }
+            }
         }
-        if(!actual?.values)return null;
-        const earned=sum(fullIncome.primary_objective,actual.values);
-        if(!close(earned,solution.ObjectiveValue))return null;
-        for(const name of active(fullIncome,actual.values))names.add(name);
-        remember(fullIncome.variable_keys,actual.values,earned);
-        verifiedIncomeValues=actual.values;
-        upper=Math.max(earned,solution.ObjectiveValue);
-        ceilings.push(upper);
-        siteSearch={best,upper};
     }
     if (!siteSearch && dispatched && witnessSeed) {
         // A route measurement changes the feasible shifts. Keep every recipe
@@ -813,6 +823,10 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
         }
         if(!measuredClosed){
             const counts=countJob?await countJob:economicRecipeCounts(highs,raw,countOptions);
+            // economicRecipeCounts is a valid relaxation of the whole-site model.
+            // If it proves infeasible while an unrefined LP pace ceiling is active,
+            // bail immediately so tryPriorityPlanOnce refines the integer pace.
+            if(counts?.infeasible && paceProof.refine)return null;
             if(counts?.size&&economicCountNeighborhood){
                 const allowed=new Set(counts.keys());
                 for(const name of allowed)names.add(name);

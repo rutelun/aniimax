@@ -18,7 +18,7 @@ export function economicWorkers(load) {
                     return;
                 }
                 pending.delete(id);
-                if (kind === 'counts' && result) result = Object.assign(new Map(result.entries),{upper:result.upper});
+                if (kind === 'counts' && result) result = Object.assign(new Map(result.entries),{upper:result.upper,infeasible:Boolean(result.infeasible)});
                 request.resolve(error ? null : result);
             };
             worker.onerror = worker.onmessageerror = () => {

@@ -214,6 +214,9 @@ export function economicRecipeCounts(highs, problem, {input,timeLimit=1.5}={}) {
         // The compact model can cheaply compare hundreds of building-count patterns.
         model.options.set({mip_max_nodes:256,mip_rel_gap:.0001});
         model.run();
+        if (model.getModelStatus()===highs.constants.modelStatus.infeasible) {
+            return Object.assign(new Map(),{infeasible:true});
+        }
         if (model.info.get('primal_solution_status')!==highs.constants.solutionStatus.feasible) return null;
         const values = model.getSolution().colValue;
         const selected = new Map();
