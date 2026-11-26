@@ -918,6 +918,16 @@ async function refineShift(problem, incumbent, solve, context) {
         primary_objective: objTerms,
         tiebreak: [],
     };
+    // Fast exact LP ceiling check: if the continuous relaxation cannot improve
+    // upon the feasible warm staffing score, the incumbent is already optimal.
+    if (context?.highs?.solve && objTerms.length) {
+        const warmScore = total(objTerms, compactWarm);
+        const lpCheck = context.highs.solve(lp.replace(/\nGeneral\n[\s\S]*?\nEnd/, '\nEnd'));
+        if (lpCheck.Status === 'Optimal' && Number.isFinite(lpCheck.ObjectiveValue)
+            && lpCheck.ObjectiveValue <= warmScore + 1e-7) {
+            return incumbent;
+        }
+    }
     let result;
     try {
         result = await solve(staffing, {

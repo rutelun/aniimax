@@ -465,10 +465,18 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
         // Requiring a strict improvement turns an already optimal neighborhood
         // into an infeasibility proof and triggers a second solve without presolve.
         if(!fixed&&best)model=keepRawIncome(model,p,best.objective);
-        let candidate=await solveModel(model,options(fixed?1:2),undefined,warm);
+        const lpWorthTrying=(m,minObj)=>{
+            if(!highs?.solve || !m?.lp)return true;
+            const lpSol=highs.solve(m.lp.replace(/\nGeneral\n[\s\S]*?\nEnd/,'\nEnd'));
+            if(lpSol.Status==='Infeasible')return false;
+            if(minObj!=null && lpSol.Status==='Optimal' && lpSol.ObjectiveValue<=minObj+1e-7)return false;
+            return true;
+        };
+        let candidate=lpWorthTrying(model,!fixed&&best?best.objective:null)
+            ? await solveModel(model,options(fixed?1:2),undefined,warm) : null;
         if(!candidate?.values&&fixed&&!sourceModel) {
             model=fixPhysical(p,warm,true);
-            candidate=await solveModel(model,options(1),undefined,warm);
+            if(lpWorthTrying(model,null))candidate=await solveModel(model,options(1),undefined,warm);
         }
         if(!candidate?.values)return;
         const polished=polishSolution(highs,p,candidate);
@@ -488,6 +496,7 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
         // strict gain can make an already optimal shift numerically infeasible.
         const local=economicCountNeighborhood(highs,p,occupied,Math.max(0,best.objective-1e-8));
         if(!local)return;
+        if(Number.isFinite(local.localIncomeUpper) && local.localIncomeUpper<=best.objective+1e-8)return;
         // Only the draft uses this local tolerance. The measured map still
         // prices every competing recipe against its own global income bound.
         if(input.map_dispatch_pending && !dispatched && hasSeasonCropMinimums(input)
@@ -533,8 +542,14 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
             const n=Math.ceil(pool.work.reduce((n,[v,c])=>n+c*(incumbent.get(p.variable_keys[v])??0),0)-1e-6);
             fixed.push(' within_reserve_'+id+': '+expression(pool.work)+' <= '+n);
         }
-        let result=await solveModel(addRows(local,fixed),options(1.5));
-        if(!result?.values && fixed.length)result=await solveModel(local,options(1.5));
+        let result=null;
+        if(fixed.length){
+            const fixedLocal=addRows(local,fixed);
+            const fixedLp=highs.solve(fixedLocal.lp.replace(/\nGeneral\n[\s\S]*?\nEnd/,'\nEnd'));
+            if(fixedLp.Status==='Optimal' && fixedLp.ObjectiveValue>best.objective+1e-7)
+                result=await solveModel(fixedLocal,options(1.5));
+        }
+        if(!result?.values)result=await solveModel(local,options(1.5));
         if(!result?.values)return false;
         const polished=polishSolution(highs,p,result);
         if(!polished.polished)return false;
@@ -602,13 +617,14 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
         const proofScope=new Set(scope);
         const exactBound=bound;
         const oldCounts=initialWitness.counts??initialWitness.continuous_site_counts;
-        const refitCounts=async(counts)=>{
+        const refitCounts=async(counts,minObj=0)=>{
             if(!counts)return null;
             const occupied=new Map(Object.entries(counts).filter(([,n])=>n>0));
             if(!occupied.size)return null;
             const compact=priority(payloadFor(occupied.keys(),true,occupied),currencyStage,currency);
             const local=economicCountNeighborhood(highs,compact,occupied);
             if(!local)return null;
+            if(minObj>0 && Number.isFinite(local.localIncomeUpper) && local.localIncomeUpper<=minObj+1e-8)return null;
             const result=await solveModel(local,options(2));
             if(!result?.values)return null;
             const polished=polishSolution(highs,local,result);
@@ -620,7 +636,7 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
         let joint;
         const jointCache=new Map();
         const jointProvenBounds=[];
-        const priceJoint=(parent,recipes,minimum=0,warmSeed=null)=>{
+        const priceJoint=(parent,recipes,minimum=0,warmSeed=null,closeTarget=0)=>{
             const payload=payloadFor([...recipes].sort(),true);
             if(jointCache.has(payload)){joint=jointCache.get(payload);return;}
             const recipeSet=new Set(recipes);
@@ -680,6 +696,7 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
                             model.run({[highs.constants.callbackType.mipInterrupt]:event=>{
                                 const {mip_primal_bound:lower,mip_dual_bound:dual,mip_total_lp_iterations:iters}=event.data;
                                 if((incumbentIterations && iters>=incumbentIterations && Number.isFinite(lower))
+                                    || (closeTarget>0 && Number.isFinite(lower) && lower>=closeTarget)
                                     || (minimum>0 && Number.isFinite(dual) && dual<=minimum+1e-7)){
                                     event.interrupt();
                                 }
@@ -712,9 +729,9 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
             jointCache.set(payload,result);
             joint=result;
         };
-        const fitJoint=async(parent,proposal,priorValues,minimum)=>{
+        const fitJoint=async(parent,proposal,priorValues,minimum,closeTarget=0)=>{
             const warmSeed=priorValues?{keys:fullIncome.variable_keys,values:priorValues}:witnessSeed;
-            priceJoint(parent,new Set([...proposal.activeRecipes,...active(fullIncome,priorValues)]),minimum,warmSeed);
+            priceJoint(parent,new Set([...proposal.activeRecipes,...active(fullIncome,priorValues)]),minimum,warmSeed,closeTarget);
             if(!joint.seed || !(joint.value>minimum))return null;
             joint.checked??=restoreCatalogue(highs,solveModel,fullIncome,joint.seed);
             return joint.checked;
@@ -777,7 +794,9 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
                     // fitJoint reuses it only for the identical final model.
                     if(previous && recipes.size<previous.size && [...recipes].every(k=>previous.has(k))){
                         try {
-                            priceJoint(model,recipes);
+                            const minHint=earned>0 ? earned : (oldCurrency>0 ? oldCurrency/CURRENCY_GAP_FACTOR-1e-8 : 0);
+                            const warmHint=prior ? {keys:fullIncome.variable_keys,values:prior} : witnessSeed;
+                            priceJoint(model,recipes,minHint,warmHint);
                             if(!joint?.seed)joint=null;
                         } catch {
                             joint=null;
@@ -807,7 +826,7 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
             if(initialScope && jointFirst){
                 const priorValues=align(fullIncome,witnessSeed);
                 if(priorValues){
-                    const fit=await fitJoint(model,bound,priorValues,bestBoundUpper/CURRENCY_GAP_FACTOR-1e-8);
+                    const fit=await fitJoint(model,bound,priorValues,bestBoundUpper/CURRENCY_GAP_FACTOR-1e-8,bestBoundUpper/CURRENCY_GAP_FACTOR+1e-7);
                     const value=fit?.polished && sum(fullIncome.primary_objective,fit.values);
                     if(value>0 && value<=bestBoundUpper+1e-7 && value*CURRENCY_GAP_FACTOR>=bestBoundUpper){
                         witness=fit;earned=value;jointCloses=true;
@@ -821,8 +840,9 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
             if(!jointCloses && (!witness || !close(earned,bound.upper))){
                 let fit=await restoreCatalogue(highs,solveModel,fullIncome,bound);
                 if(!fit?.polished || !close(sum(fullIncome.primary_objective,fit.values),bound.upper)){
-                    const alt=await refitCounts(siteCounts(model,bound.values));
-                    if(alt && (!fit?.polished || sum(fullIncome.primary_objective,alt.values)>sum(fullIncome.primary_objective,fit.values)))fit=alt;
+                    const fitObj=fit?.polished ? sum(fullIncome.primary_objective,fit.values) : 0;
+                    const alt=await refitCounts(siteCounts(model,bound.values),Math.max(earned>0?earned:0,fitObj));
+                    if(alt && (!fit?.polished || sum(fullIncome.primary_objective,alt.values)>fitObj))fit=alt;
                 }
                 if(!fit?.polished && !highs?.createModel){
                     const warm=align(fullIncome,bound);
@@ -865,7 +885,7 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
                 // A relaxation can pick the right recipes but assign too many
                 // sites to the wrong ones. Reallocate sites across the two
                 // working shifts before widening the catalogue.
-                const checked=await fitJoint(model,bound,witness.values,earned+1e-8);
+                const checked=await fitJoint(model,bound,witness.values,earned+1e-8,bestBoundUpper/CURRENCY_GAP_FACTOR+1e-7);
                 if(checked?.polished){
                     const income=sum(fullIncome.primary_objective,checked.values);
                     if(income>earned){witness=checked;earned=income;}
@@ -1041,6 +1061,7 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
                 for(const floor of target>0 ? [target,0] : [0]){
                     const local=economicCountNeighborhood(highs,compact,counts,floor);
                     if(!local || (floor>0 && excludesIncomeFloor(highs,local,floor)))continue;
+                    if(best && Number.isFinite(local.localIncomeUpper) && local.localIncomeUpper<=best.objective+1e-8)continue;
                     const found=await solveModel(local,{time_limit:2,mip_rel_gap:0});
                     if(!found?.values)continue;
                     const fit=polishSolution(highs,local,found);
@@ -1210,8 +1231,16 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
         const warm=align(local,seed);
         let fit=await solveModel(fixPhysical(local,warm),options(1),undefined,warm);
         if(!fit?.values||!close(sum(checked.primary_objective,fit.values),ceiling)){
-            const alternative=await solveModel(local,options(2),undefined,fit?.values??warm);
-            if(alternative?.values&&(!fit?.values||sum(checked.primary_objective,alternative.values)>sum(checked.primary_objective,fit.values)))fit=alternative;
+            let skipAlt=false;
+            if(fit?.values && highs?.solve && local.lp){
+                const fitObj=sum(checked.primary_objective,fit.values);
+                const lpSol=highs.solve(local.lp.replace(/\nGeneral\n[\s\S]*?\nEnd/,'\nEnd'));
+                if(lpSol.Status==='Optimal' && lpSol.ObjectiveValue<=fitObj+1e-8)skipAlt=true;
+            }
+            if(!skipAlt){
+                const alternative=await solveModel(local,options(2),undefined,fit?.values??warm);
+                if(alternative?.values&&(!fit?.values||sum(checked.primary_objective,alternative.values)>sum(checked.primary_objective,fit.values)))fit=alternative;
+            }
         }
         if(!fit?.values)return null;
         const objective=sum(checked.primary_objective,fit.values);
@@ -1337,7 +1366,7 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
         const sr=last.r;
         if(sr?.values){
             const sRefined=await refineStaffing(scopedLocal,sr,solveModel,
-                {pkg,input,report:values=>scopedAudit(values,true)});
+                {pkg,input,highs,report:values=>scopedAudit(values,true)});
             // Preserve the refined staffing choices (posts, climate staff, generators) when lifting to fullPayload.
             const source={keys:scopedP.variable_keys,values:sRefined.values};
             const prev=new Map(source.keys.map((key,v)=>[key,source.values[v]]));
@@ -1378,7 +1407,7 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
     if(!r?.values){
         r=await liftToFull(compactSeed);
         if(!r?.values)return null;
-        refined=await refineStaffing(local,r,solveModel,{pkg,input,report:values=>audit(values,true)});
+        refined=await refineStaffing(local,r,solveModel,{pkg,input,highs,report:values=>audit(values,true)});
     }
     if(request.maximize_material_work){
         materialWork=sum(p.primary_objective,r.values);
