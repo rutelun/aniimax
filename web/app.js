@@ -2101,9 +2101,11 @@ function layoutOptionsFor(plan, homeLevel, setup = selectedSetupTab()) {
             steps: (plan.coin_items || []).filter(step => step.status === 'producing'),
         };
     }
+    const provisional = Boolean(plan.pending_workshop_routes || (setup === 'custom' && !Object.keys(reactiveDispatch).length));
     return {
-        key: `${homeLevel}:${storageCount}:${style}`,
+        key: `${homeLevel}:${storageCount}:${style}${provisional ? ':draft' : ''}`,
         storageCount, poleLimit: powerPoleLimit(homeLevel), style, groupGap, saleProducts, recipes, staffing,
+        ...(provisional ? { provisional: true } : {}),
         cells: homelandPlots().filter(p => p.number <= homeLevel).map(({ x, y, w, h }) => ({ x, y, w, h })),
     };
 }

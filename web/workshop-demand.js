@@ -2,7 +2,8 @@
 // fractional batches, as in the exact production model.
 import {materialChains} from './material-flow-schedule.js';
 import {CURRENCY_GAP_FACTOR,CURRENCY_RELATIVE_GAP,productionObjective} from './priority-search.js';
-import {suggestEconomicScope} from './economic-bound.js';
+import {obbtSiteLimits,solveEconomicBound,suggestEconomicScope} from './economic-bound.js';
+import {priorityCeiling} from './priority-ceilings.js';
 import {planSearchOptions,polishSolution,runPlanModel} from './highs-solve.js';
 import {questIncome} from './quest-income.js';
 
@@ -308,7 +309,8 @@ export function optimizeWorkshopSources(pkg,highs,input,base,catalog){
             const postStage={...stage,floors:[...stage.floors],pace:objective*(1-1e-6)/(1-1e-4)};
             const workshopRecipes=new Set(Object.values(materialChains).flat());
             const baseRecipes=(base.active_continuous_recipes??[]).filter(name=>!workshopRecipes.has(name));
-            let postScope=scope==null ? null : [...new Set([...scope,...baseRecipes])];
+            const levelUpActive=(problem.recipe_variables??[]).filter(([v])=>values[v]>1e-9).map(([,name])=>name);
+            let postScope=sourceInput.always_running ? [...new Set([...(scope??levelUpActive),...baseRecipes])] : null;
             let postRelaxPairs=relaxPairs;
             let currentValues=values, currentKeys=problem.variable_keys;
             const buildWarm=(p,prevKeys,prevValues)=>{
@@ -321,12 +323,32 @@ export function optimizeWorkshopSources(pkg,highs,input,base,catalog){
                 const cm=highs.createModel({format:'lp',data:pProblem.lp});
                 const statuses=highs.constants.modelStatus;
                 try{
-                    const {numCols}=cm.getDimensions();
+                    const lpData=cm.getLp();
+                    const numCols=lpData.numCols;
                     const idx=Array.from({length:numCols},(_,i)=>Number(cm.getColName(i).slice(1)));
                     cm.options.set({mip_max_nodes:nodes,mip_rel_gap:relGap,mip_abs_gap:0});
                     if(warm){
-                        const colValue=idx.map(v=>warm[v]??0);
-                        cm.setSolution({colValue});
+                        const hasExtra=pProblem.variable_keys.some(k=>k.startsWith('extra#'));
+                        const allExtraZero=hasExtra && pProblem.variable_keys.every((k,v)=>!k.startsWith('extra#') || Math.abs(warm[v]??0)<=1e-12);
+                        try{
+                            if(hasExtra && allExtraZero){
+                                const sparse={indices:[],values:[]};
+                                for(let i=0;i<numCols;i++){
+                                    const v=idx[i], key=pProblem.variable_keys[v], val=warm[v];
+                                    if(lpData.integrality[i]===1 && !key.startsWith('extra#') && Number.isFinite(val)
+                                        && Math.abs(val-Math.round(val))<1e-6){
+                                        const r=Math.round(val);
+                                        if(r>=lpData.colLower[i]-1e-7 && r<=lpData.colUpper[i]+1e-7){
+                                            sparse.indices.push(i);sparse.values.push(r);
+                                        }
+                                    }
+                                }
+                                if(sparse.indices.length)cm.setSolution(sparse);
+                            }else{
+                                const colValue=idx.map(v=>warm[v]??0);
+                                cm.setSolution({colValue});
+                            }
+                        }catch{}
                     }
                     runPlanModel(cm,highs,undefined,undefined,iters);
                     if(cm.getModelStatus()===statuses.infeasible){
@@ -361,10 +383,217 @@ export function optimizeWorkshopSources(pkg,highs,input,base,catalog){
                     cm.dispose();
                 }
             };
+            const usesRelaxPair=(pProblem,pValues)=>Boolean(pValues && pProblem.variable_keys.some((key,v)=>key.startsWith('pair_relax:') && pValues[v]>0.5));
+            const liftFixedSites=(targetInput,target,sourceKeys,sourceValues,{noRelaxPair=false}={})=>{
+                const lPayload=JSON.stringify(targetInput);
+                const lProblem=productionObjective(JSON.parse(pkg.exact_priority_problem(lPayload,JSON.stringify(postStage),target)));
+                if(!lProblem.lp)return null;
+                const byKey=new Map(sourceKeys.map((k,i)=>[k,sourceValues[i]]));
+                const cm=highs.createModel({format:'lp',data:lProblem.lp});
+                const statuses=highs.constants.modelStatus;
+                try{
+                    const {numCols}=cm.getDimensions();
+                    const idx=Array.from({length:numCols},(_,i)=>Number(cm.getColName(i).slice(1)));
+                    const warm=[];
+                    for(let i=0;i<numCols;i++){
+                        const v=idx[i], key=lProblem.variable_keys[v];
+                        const val=byKey.get(key)??0;
+                        warm.push(key.startsWith('extra#')?0:val);
+                        if(/^(units:|continuous_site:)/.test(key)){
+                            const fixed=Math.max(0,Math.round(val));
+                            cm.changeColBounds(i,fixed,fixed);
+                        }else if(noRelaxPair && key.startsWith('pair_relax:')){
+                            cm.changeColBounds(i,0,0);
+                        }
+                    }
+                    cm.options.set({mip_max_nodes:32,mip_rel_gap:target===currency?CURRENCY_RELATIVE_GAP:0,mip_abs_gap:0});
+                    if(warm.every(Number.isFinite))cm.setSolution({colValue:warm});
+                    runPlanModel(cm,highs,undefined,undefined,8000);
+                    if(cm.getModelStatus()===statuses.infeasible){
+                        cm.clearSolver();
+                        cm.options.set({presolve:'off'});
+                        runPlanModel(cm,highs,undefined,undefined,8000);
+                    }
+                    if(cm.info.get('primal_solution_status')!==highs.constants.solutionStatus.feasible)return null;
+                    const native=cm.getSolution().colValue;
+                    const rawValues=Array(lProblem.variables).fill(0);
+                    for(let i=0;i<numCols;i++)rawValues[idx[i]]=native[i];
+                    const rawObj=lProblem.primary_objective.reduce((s,[v,c])=>s+c*rawValues[v],0);
+                    const polished=polishSolution(highs,lProblem,{objective:rawObj,values:rawValues});
+                    const lValues=polished.values;
+                    const lPaceCol=lProblem.variable_keys.indexOf('pace#0');
+                    if(lPaceCol>=0 && lValues[lPaceCol]<objective*(1-1e-5))return null;
+                    if(noRelaxPair && usesRelaxPair(lProblem,lValues))return null;
+                    const lObj=lProblem.primary_objective.reduce((s,[v,c])=>s+c*lValues[v],0);
+                    return {values:lValues,obj:lObj,problem:lProblem,payload:lPayload};
+                }finally{
+                    cm.dispose();
+                }
+            };
             const fullPostBudget=planSearchOptions({time_limit:30,mip_rel_gap:CURRENCY_RELATIVE_GAP,mip_abs_gap:0});
             for(const target of postPriorities){
                 let bestValues=null, bestProblem=null, bestPayload=null, bestObj=null;
                 const relGap=target===currency ? CURRENCY_RELATIVE_GAP : 0;
+                if(target===currency && sourceInput.always_running){
+                    const activePrior=(problem.recipe_variables??[]).filter(([v])=>currentValues[v]>1e-9).map(([,name])=>name);
+                    for(let pairPass=0;pairPass<2;pairPass++){
+                        const rawInput={...sourceInput,compact_dispatch:true,relax_pair_coverage:postRelaxPairs,
+                            always_running_recipes:[],restrict_to_checked_recipes:false};
+                        const rawProblem=productionObjective(JSON.parse(pkg.exact_priority_problem(
+                            JSON.stringify(rawInput),JSON.stringify(postStage),target)));
+                        if(!rawProblem.lp)break;
+                        const lpUpper=priorityCeiling(highs,rawProblem,target);
+                        if(Number.isFinite(lpUpper))currencyUpper=Math.min(currencyUpper,lpUpper);
+                        // Seed the primal witness with baseRecipes + active prior recipes in a
+                        // tiny restricted solve, while keeping the dual-bound proofScope minimal
+                        // (starting from reserved season crops only) so solveEconomicBound stays small.
+                        const proofScope=new Set(Object.keys(sourceInput.season_crop_minimums??{}));
+                        const seedRecipes=new Set([...activePrior,...baseRecipes,...proofScope]);
+                        let witness=null, earned=-Infinity;
+                        const solveRestricted=(recipes,warmKeys,warmVals)=>{
+                            const rScope=[...recipes];
+                            const rInput={...sourceInput,compact_dispatch:true,relax_pair_coverage:postRelaxPairs,
+                                always_running_recipes:rScope,restrict_to_checked_recipes:true};
+                            const rPayload=JSON.stringify(rInput);
+                            const rProblem=productionObjective(JSON.parse(pkg.exact_priority_problem(
+                                rPayload,JSON.stringify(postStage),target)));
+                            if(!rProblem.lp)return null;
+                            const rWarm=buildWarm(rProblem,warmKeys,warmVals);
+                            const rSolved=solvePost(rProblem,rWarm,{nodes:64,iters:16000,relGap:CURRENCY_RELATIVE_GAP});
+                            const paceCol=rProblem.variable_keys.indexOf('pace#0');
+                            if(!rSolved.values || (paceCol>=0 && rSolved.values[paceCol]<objective*(1-1e-5)))return null;
+                            return {values:rSolved.values,obj:rSolved.obj,problem:rProblem,payload:rPayload,scope:rScope};
+                        };
+                        const initialWitness=solveRestricted(seedRecipes,currentKeys,currentValues);
+                        if(initialWitness){
+                            witness=initialWitness;
+                            earned=initialWitness.obj;
+                        }
+                        let relaxedBound=true, prevBoundObj=null, flatRelaxedRounds=0;
+                        let obbtLimits={}, obbtFloor=0;
+                        const obbtProbed=new Set();
+                        const maxRounds=pairPass===0 ? 3 : 2;
+                        for(let round=0;round<maxRounds;round++){
+                            const incomeTarget=earned>0 ? earned*CURRENCY_GAP_FACTOR : undefined;
+                            if(witness && earned>0 && Number.isFinite(currencyUpper) && currencyUpper<=incomeTarget+1e-7)break;
+                            if(witness && earned>0 && incomeTarget>0 && proofScope.size){
+                                const needReprobe=earned>obbtFloor+1e-7;
+                                const toProbe=needReprobe ? [...proofScope] : [...proofScope].filter(n=>!obbtProbed.has(n));
+                                if(toProbe.length){
+                                    const tightened=obbtSiteLimits(highs,rawProblem,toProbe,incomeTarget,obbtLimits);
+                                    if(tightened?.infeasible){
+                                        currencyUpper=Math.min(currencyUpper,incomeTarget);
+                                        break;
+                                    }
+                                    if(tightened?.limits)obbtLimits=tightened.limits;
+                                    if(needReprobe){obbtFloor=earned;obbtProbed.clear();}
+                                    for(const n of toProbe)obbtProbed.add(n);
+                                }
+                            }
+                            const hasLimits=Object.keys(obbtLimits).length>0;
+                            const bInput={...sourceInput,compact_dispatch:true,relax_pair_coverage:postRelaxPairs,
+                                always_running_recipes:[...proofScope],restrict_to_checked_recipes:false,
+                                ...(hasLimits ? {recipe_site_limits:obbtLimits} : {}),
+                                ...(relaxedBound ? {relax_min_reasons:true} : {})};
+                            const bPayload=JSON.stringify(bInput);
+                            const bProblem=productionObjective(JSON.parse(pkg.exact_priority_problem(
+                                bPayload,JSON.stringify(postStage),target)));
+                            if(!bProblem.lp)break;
+                            const effort=pairPass===0 ? (round===0 ? 4 : 8) : 6;
+                            const bound=solveEconomicBound(highs,bProblem,{
+                                scope:[...proofScope],exact:false,timeLimit:effort,maxNodes:256,
+                                relativeGap:CURRENCY_RELATIVE_GAP,incomeTarget,floorCertify:false,
+                            });
+                            if(Number.isFinite(bound?.upper))currencyUpper=Math.min(currencyUpper,bound.upper);
+                            if(witness && earned>0 && Number.isFinite(currencyUpper) && currencyUpper<=earned*CURRENCY_GAP_FACTOR+1e-7)break;
+                            if(!bound?.values)break;
+                            const missing=unguardedRecipes(bProblem,bound.values,[...proofScope]);
+                            if(!missing.length && !relaxedBound){
+                                const polished=polishSolution(highs,bProblem,bound);
+                                const paceCol=bProblem.variable_keys.indexOf('pace#0');
+                                if(polished.polished && (paceCol<0 || polished.values[paceCol]>=objective*(1-1e-5))){
+                                    const bObj=bProblem.primary_objective.reduce((s,[v,c])=>s+c*polished.values[v],0);
+                                    if(bObj>earned+1e-8){
+                                        witness={values:polished.values,obj:bObj,problem:bProblem,payload:bPayload,scope:[...proofScope]};
+                                        earned=bObj;
+                                    }
+                                }
+                            }else if(bound.activeRecipes?.length){
+                                const activeList=[...new Set(bound.activeRecipes)];
+                                const activeInput={...sourceInput,compact_dispatch:true,relax_pair_coverage:postRelaxPairs,
+                                    always_running_recipes:activeList,restrict_to_checked_recipes:true};
+                                let cand=liftFixedSites(activeInput,target,bProblem.variable_keys,bound.values);
+                                if(!cand || cand.obj<=earned+1e-8){
+                                    const combined=new Set([...seedRecipes,...activeList]);
+                                    const alt=solveRestricted(combined.size<=28 ? combined : activeList,bProblem.variable_keys,bound.values);
+                                    if(alt && (!cand || alt.obj>cand.obj))cand=alt;
+                                }
+                                if(cand && cand.obj>earned+1e-8){
+                                    witness={...cand,scope:cand.scope??activeList};
+                                    earned=cand.obj;
+                                }
+                            }
+                            const newTarget=earned>0 ? earned*CURRENCY_GAP_FACTOR : undefined;
+                            if(witness && earned>0 && Number.isFinite(currencyUpper) && currencyUpper<=newTarget+1e-7)break;
+                            let next=(bound.throttledRecipes??[]).filter(n=>!proofScope.has(n));
+                            if(!next.length || round>=2){
+                                const suggested=suggestEconomicScope(bProblem,bound.values,proofScope).filter(n=>!proofScope.has(n));
+                                next=[...new Set([...next,...suggested])];
+                            }
+                            if(!next.length){
+                                next=[...new Set([...missing,...(bound.occupiedRecipes??[]),...(bound.activeRecipes??[])])].filter(n=>!proofScope.has(n));
+                            }
+                            if(relaxedBound && Number.isFinite(bound.objective) && prevBoundObj!=null
+                                && bound.objective>=prevBoundObj-1e-6*Math.max(1,Math.abs(bound.objective))){
+                                flatRelaxedRounds++;
+                            }else{
+                                flatRelaxedRounds=0;
+                            }
+                            prevBoundObj=bound.objective;
+                            if(relaxedBound && flatRelaxedRounds>=1){
+                                relaxedBound=false;
+                                flatRelaxedRounds=0;
+                                continue;
+                            }
+                            if(!next.length){
+                                if(relaxedBound){relaxedBound=false;continue;}
+                                break;
+                            }
+                            for(const n of next)proofScope.add(n);
+                        }
+                        if(witness && postRelaxPairs && usesRelaxPair(witness.problem,witness.values)){
+                            const sameNoRelax=liftFixedSites(JSON.parse(witness.payload),target,
+                                witness.problem.variable_keys,witness.values,{noRelaxPair:true});
+                            if(sameNoRelax && sameNoRelax.obj>=earned-1e-7
+                                && (!Number.isFinite(currencyUpper) || currencyUpper<=sameNoRelax.obj*CURRENCY_GAP_FACTOR+1e-7)){
+                                witness={...sameNoRelax,scope:witness.scope};
+                                earned=sameNoRelax.obj;
+                            }else{
+                                const exactInput={...JSON.parse(witness.payload),relax_pair_coverage:false};
+                                const exactLift=liftFixedSites(exactInput,target,
+                                    witness.problem.variable_keys,witness.values);
+                                if(exactLift && exactLift.obj>=earned-1e-7
+                                    && (!Number.isFinite(currencyUpper) || currencyUpper<=exactLift.obj*CURRENCY_GAP_FACTOR+1e-7)){
+                                    witness={...exactLift,scope:witness.scope};
+                                    earned=exactLift.obj;
+                                    postRelaxPairs=false;
+                                }else{
+                                    postScope=[...proofScope];
+                                    postRelaxPairs=false;
+                                    continue;
+                                }
+                            }
+                        }
+                        if(witness){
+                            bestValues=witness.values;
+                            bestProblem=witness.problem;
+                            bestPayload=witness.payload;
+                            bestObj=witness.obj;
+                            postScope=[...proofScope];
+                        }
+                        break;
+                    }
+                }else{
                 for(let pr=0;pr<10;pr++){
                     const pInput=postScope==null
                         ? {...sourceInput,compact_dispatch:true,relax_pair_coverage:postRelaxPairs,always_running_recipes:undefined,restrict_to_checked_recipes:false}
@@ -385,7 +614,16 @@ export function optimizeWorkshopSources(pkg,highs,input,base,catalog){
                         postScope=pr<8 ? [...new Set([...postScope,...pMissing,...suggested])] : null;
                         continue;
                     }
-                    if(postRelaxPairs && pProblem.variable_keys.some((key,v)=>key.startsWith('pair_relax:') && pValues[v]>0.5)){
+                    if(postRelaxPairs && usesRelaxPair(pProblem,pValues)){
+                        const exactLift=liftFixedSites({...pInput,relax_pair_coverage:false},target,pProblem.variable_keys,pValues);
+                        if(exactLift && exactLift.obj>=pObj-1e-7){
+                            bestValues=exactLift.values;
+                            bestProblem=exactLift.problem;
+                            bestPayload=exactLift.payload;
+                            bestObj=exactLift.obj;
+                            postRelaxPairs=false;
+                            break;
+                        }
                         postRelaxPairs=false;
                         continue;
                     }
@@ -408,7 +646,7 @@ export function optimizeWorkshopSources(pkg,highs,input,base,catalog){
                                 postScope=pr<8 ? [...new Set([...postScope,...nextMissing,...suggested])] : null;
                                 continue;
                             }
-                            if(postRelaxPairs && pProblem.variable_keys.some((key,v)=>key.startsWith('pair_relax:') && pValues[v]>0.5)){
+                            if(postRelaxPairs && usesRelaxPair(pProblem,pValues)){
                                 postRelaxPairs=false;
                                 continue;
                             }
@@ -419,6 +657,7 @@ export function optimizeWorkshopSources(pkg,highs,input,base,catalog){
                     bestPayload=pPayload;
                     bestObj=pObj;
                     break;
+                }
                 }
                 if(!bestValues)break;
                 problem=bestProblem;

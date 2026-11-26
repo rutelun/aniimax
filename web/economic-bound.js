@@ -4,7 +4,7 @@ import {planSearchOptions,runPlanModel,searchStopped} from './highs-solve.js';
 // physical building and balance. Omitting a recipe's work-conservation rules
 // enlarges its feasible set, so its MIP dual bound also bounds the full model.
 // A primal from this relaxation still needs the caller's full production audit.
-export function solveEconomicBound(highs, problem, {seed, scope = [], timeLimit = 2, discovery = false, exact = false, relativeGap = 0, incomeTarget, onRecipes, floorCertify = false} = {}) {
+export function solveEconomicBound(highs, problem, {seed, scope = [], timeLimit = 2, discovery = false, exact = false, relativeGap = 0, incomeTarget, onRecipes, floorCertify = false, maxNodes} = {}) {
     const keys = problem.variable_keys;
     if (!problem.production_only || problem.continuousRestricted || !problem.primary_objective?.length
         || keys?.length !== problem.variables || !problem.recipe_options || !(timeLimit > 0)) return null;
@@ -24,6 +24,7 @@ export function solveEconomicBound(highs, problem, {seed, scope = [], timeLimit 
             ...(useFloor ? {presolve:'off'} : {})};
         const {incumbentIterations,...nativeOptions} = exact ? precision : planSearchOptions({time_limit:timeLimit,...precision});
         if (discovery) nativeOptions.mip_max_nodes = Math.ceil(128*timeLimit);
+        else if (maxNodes != null) nativeOptions.mip_max_nodes = maxNodes;
         model.options.set(nativeOptions);
         // A partial integer start can make HiGHS 1.15.1 report its repaired
         // incumbent as Optimal. Use it only for discovery, which supplies no bound.
@@ -83,7 +84,7 @@ export function solveEconomicBound(highs, problem, {seed, scope = [], timeLimit 
         }
         // Tight priority floors and measured worker shares can make presolve
         // declare a feasible model infeasible. Verify on its original rows.
-        if(exact && !useFloor && model.getModelStatus()===statuses.infeasible){
+        if(!useFloor && model.getModelStatus()===statuses.infeasible){
             model.clearSolver();
             model.options.set({presolve:'off'});
             run();

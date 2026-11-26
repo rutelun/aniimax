@@ -64,18 +64,171 @@ function siteCounts(problem,values) {
 // Lift the production shift. Recompute sales from its material balances:
 // a prior stage can reserve a rounded amount of an output, while the full
 // model accounts for every remaining unit. Its priority floors still apply.
-export async function restoreCatalogue(highs,solveModel,problem,seed) {
+export async function restoreCatalogue(highs,solveModel,problem,seed,{allowPairRelax=true}={}) {
     const previous=new Map(seed.keys.map((key,v)=>[key,seed.values[v]]));
-    const rows=[];
+    const fixedEntries=[];
     for(let v=0;v<problem.variables;v++){
         const key=problem.variable_keys[v];
         if(!/^(rate:|units:|continuous_site:|pace#|material_pace#)/.test(key))continue;
         const value=previous.get(key)??0;
         if(!Number.isFinite(value))return null;
-        rows.push(` actual_shift_${v}: x${v} = ${Math.max(0,value)}`);
+        fixedEntries.push([v,Math.max(0,value)]);
     }
-    const fixed=addRows(problem,rows);
     const warm=align(problem,seed);
+    if(highs?.createModel && problem.lp && problem.variables>=64){
+        const fixedMap=new Map(fixedEntries);
+        const cm=highs.createModel({format:'lp',data:problem.lp});
+        const statuses=highs.constants.modelStatus;
+        try{
+            const lpData=cm.getLp();
+            const numCols=lpData.numCols;
+            const idx=Array.from({length:numCols},(_,i)=>Number(cm.getColName(i).slice(1)));
+            if(idx.some(v=>!Number.isInteger(v)||v<0||v>=problem.variables))return null;
+            const origIntegrality=lpData.integrality.slice();
+            const origLower=lpData.colLower.slice();
+            const origUpper=lpData.colUpper.slice();
+            const coverCols=[], relaxPairCols=[], freeIntCols=[], allIntCols=[];
+            for(let i=0;i<numCols;i++){
+                const v=idx[i], key=problem.variable_keys[v];
+                if(origIntegrality[i]===1)allIntCols.push(i);
+                if(fixedMap.has(v)){
+                    const target=fixedMap.get(v);
+                    if(target<origLower[i]-1e-7 || target>origUpper[i]+1e-7)return null;
+                    const clamped=Math.min(origUpper[i],Math.max(origLower[i],target));
+                    cm.changeColBounds(i,clamped,clamped);
+                    continue;
+                }
+                if(origIntegrality[i]===1)freeIntCols.push(i);
+                if(/^(environment|pair):/.test(key) && previous.has(key)){
+                    const target=Math.round(warm[v]??0);
+                    if(target>=origLower[i]-1e-7 && target<=origUpper[i]+1e-7){
+                        coverCols.push([i,Math.min(origUpper[i],Math.max(origLower[i],target))]);
+                    }
+                }else if(key.startsWith('pair_relax:')){
+                    relaxPairCols.push(i);
+                }
+            }
+            if(!allowPairRelax){
+                for(const i of relaxPairCols)cm.changeColBounds(i,0,0);
+            }
+            // Cheap LP feasibility pre-check on the most relaxed attempt: if the
+            // continuous relaxation is already infeasible, no MIP attempt can succeed.
+            if(freeIntCols.length){
+                cm.changeColsIntegrality({kind:'set',indices:freeIntCols},freeIntCols.map(()=>0));
+            }
+            cm.options.set({primal_feasibility_tolerance:1e-7,dual_feasibility_tolerance:1e-7,presolve:'on'});
+            cm.run();
+            if(cm.getModelStatus()===statuses.infeasible){
+                cm.clearSolver();
+                cm.options.set({presolve:'off'});
+                cm.run();
+                if(cm.getModelStatus()===statuses.infeasible)return null;
+            }
+            if(freeIntCols.length){
+                cm.changeColsIntegrality({kind:'set',indices:freeIntCols},freeIntCols.map(()=>1));
+            }
+            const opts=planSearchOptions(options(1));
+            const attempts=[];
+            if(coverCols.length || relaxPairCols.length)attempts.push({useCover:true,useNoRelax:true});
+            if(coverCols.length)attempts.push({useCover:false,useNoRelax:true});
+            if(allowPairRelax && relaxPairCols.length)attempts.push({useCover:false,useNoRelax:false});
+            if(!attempts.length)attempts.push({useCover:false,useNoRelax:!allowPairRelax});
+            const setWarmStart=(useNoRelax)=>{
+                if(!warm)return;
+                let hasExtra=false, allExtraZero=true;
+                for(let v=0;v<problem.variables;v++){
+                    if(!problem.variable_keys[v]?.startsWith('extra#'))continue;
+                    hasExtra=true;
+                    if(Math.abs(warm[v]??0)>1e-12){allExtraZero=false;break;}
+                }
+                try{
+                    if(hasExtra && allExtraZero){
+                        const warmSparse={indices:[],values:[]};
+                        for(const i of freeIntCols){
+                            const v=idx[i], key=problem.variable_keys[v], val=warm[v];
+                            if(key.startsWith('extra#') || (useNoRelax && key.startsWith('pair_relax:')))continue;
+                            if(Number.isFinite(val) && Math.abs(val-Math.round(val))<1e-6){
+                                const r=Math.round(val);
+                                if(r>=origLower[i]-1e-7 && r<=origUpper[i]+1e-7){
+                                    warmSparse.indices.push(i);warmSparse.values.push(r);
+                                }
+                            }
+                        }
+                        if(warmSparse.indices.length)cm.setSolution(warmSparse);
+                    }else{
+                        const colValue=idx.map((v,i)=>useNoRelax && problem.variable_keys[v]?.startsWith('pair_relax:') ? 0 : (warm[v]??0));
+                        if(colValue.every(Number.isFinite))cm.setSolution({colValue});
+                    }
+                }catch{}
+            };
+            const tryAttempt=({useCover,useNoRelax},presolveOff=false)=>{
+                for(const [i,val] of coverCols){
+                    cm.changeColBounds(i,useCover?val:origLower[i],useCover?val:origUpper[i]);
+                }
+                for(const i of relaxPairCols){
+                    cm.changeColBounds(i,useNoRelax?0:origLower[i],useNoRelax?0:origUpper[i]);
+                }
+                cm.clearSolver();
+                cm.zeroAllClocks();
+                cm.options.set({
+                    mip_max_nodes:opts.mip_max_nodes,mip_rel_gap:0,mip_abs_gap:0,
+                    mip_feasibility_tolerance:1e-9,primal_feasibility_tolerance:1e-9,
+                    presolve:presolveOff?'off':'on',
+                });
+                setWarmStart(useNoRelax);
+                const iters=presolveOff ? (opts.incumbentIterations ?? 6000) : opts.incumbentIterations;
+                runPlanModel(cm,highs,presolveOff?iters:undefined,undefined,presolveOff?undefined:iters);
+                const st=cm.getModelStatus();
+                const feasible=cm.info.get('primal_solution_status')===highs.constants.solutionStatus.feasible;
+                if(!feasible || (st!==statuses.optimal && st!==statuses.timeLimit && st!==statuses.iterationLimit
+                    && st!==statuses.solutionLimit && st!==statuses.interrupted))return null;
+                const native=cm.getSolution().colValue.slice();
+                const proven=st===statuses.optimal;
+                const dual=proven ? cm.getObjectiveValue() : cm.info.get('mip_dual_bound');
+                // In-place LP polish with all original integer columns fixed to their
+                // rounded MIP values: avoids re-parsing the full LP string.
+                let polished=false;
+                if(allIntCols.every(i=>Number.isFinite(native[i]) && Math.abs(native[i]-Math.round(native[i]))<=1e-7)){
+                    const savedLo=allIntCols.map(i=>origLower[i]), savedHi=allIntCols.map(i=>origUpper[i]);
+                    for(const i of allIntCols){
+                        const r=Math.round(native[i]);
+                        cm.changeColBounds(i,r,r);
+                    }
+                    if(allIntCols.length)cm.changeColsIntegrality({kind:'set',indices:allIntCols},allIntCols.map(()=>0));
+                    cm.clearSolver();
+                    cm.options.set({primal_feasibility_tolerance:1e-9,dual_feasibility_tolerance:1e-9,presolve:'on'});
+                    cm.run();
+                    if(cm.getModelStatus()===statuses.optimal){
+                        const refit=cm.getSolution().colValue;
+                        for(let i=0;i<numCols;i++)native[i]=refit[i];
+                        polished=true;
+                    }
+                    if(allIntCols.length)cm.changeColsIntegrality({kind:'set',indices:allIntCols},allIntCols.map(()=>1));
+                    for(let k=0;k<allIntCols.length;k++){
+                        const i=allIntCols[k];
+                        if(fixedMap.has(idx[i]))continue;
+                        cm.changeColBounds(i,savedLo[k],savedHi[k]);
+                    }
+                }
+                const values=Array(problem.variables).fill(0);
+                for(let i=0;i<numCols;i++)values[idx[i]]=native[i];
+                const objective=problem.primary_objective?.length
+                    ? sum(problem.primary_objective,values)
+                    : cm.getObjectiveValue();
+                return {values,objective,proven,upper:dual,polished};
+            };
+            for(const attempt of attempts){
+                const res=tryAttempt(attempt,false);
+                if(res)return res;
+            }
+            const lastAttempt=attempts[attempts.length-1];
+            return tryAttempt(lastAttempt,true);
+        }finally{
+            cm.dispose();
+        }
+    }
+    const rows=fixedEntries.map(([v,val])=>` actual_shift_${v}: x${v} = ${val}`);
+    const fixed=addRows(problem,rows);
     // Try the physical coverage from this candidate first. A different
     // catalogue or dispatch may require other coverage, so retry freely.
     const cover=problem.variable_keys.flatMap((key,v)=>
@@ -92,7 +245,7 @@ export async function restoreCatalogue(highs,solveModel,problem,seed) {
         extra=noRelaxPair;
         result=await solveModel(addRows(fixed,extra),options(1),undefined,warm);
     }
-    if(!result?.values){
+    if(!result?.values && allowPairRelax){
         extra=[];
         result=await solveModel(fixed,options(1),undefined,warm);
     }
@@ -466,42 +619,83 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
         // across thresholds rather than re-solving the identical restricted model.
         let joint;
         const jointCache=new Map();
+        const jointProvenBounds=[];
         const priceJoint=(parent,recipes,minimum=0,warmSeed=null)=>{
             const payload=payloadFor([...recipes].sort(),true);
             if(jointCache.has(payload)){joint=jointCache.get(payload);return;}
+            const recipeSet=new Set(recipes);
+            if(minimum>0 && jointProvenBounds.some(e=>e.upper<=minimum+1e-7 && [...recipeSet].every(r=>e.recipes.has(r)))){
+                joint={payload};
+                return;
+            }
             const compact=priority(payload,currencyStage,currency);
             const result={payload};
             if(compact.variables<parent.variables){
                 if(highs?.createModel){
                     const model=highs.createModel({format:'lp',data:compact.lp});
+                    const statuses=highs.constants.modelStatus;
                     try{
-                        const {numCols}=model.getDimensions();
+                        const lpData=model.getLp();
+                        const numCols=lpData.numCols;
                         const indices=Array.from({length:numCols},(_,i)=>Number(model.getColName(i).slice(1)));
-                        const {incumbentIterations,...nativeOpts}=planSearchOptions({
-                            time_limit:4,mip_max_nodes:8,mip_rel_gap:CURRENCY_RELATIVE_GAP,mip_abs_gap:0,mip_feasibility_tolerance:1e-9});
-                        model.options.set(nativeOpts);
-                        if(warmSeed?.keys?.length===warmSeed?.values?.length){
-                            const previous=new Map(warmSeed.keys.map((k,i)=>[k,warmSeed.values[i]]));
-                            const section=compact.lp.match(/\nGeneral\n([\s\S]*?)\nEnd/);
-                            const integers=new Set(Array.from((section?.[1]??'').matchAll(/\bx(\d+)\b/g),m=>Number(m[1])));
-                            const warm={indices:[],values:[]};
-                            indices.forEach((v,i)=>{
-                                const key=compact.variable_keys[v],val=previous.get(key);
-                                if(integers.has(v) && !key.startsWith('extra#') && Number.isFinite(val) && Math.abs(val-Math.round(val))<1e-6){
-                                    warm.indices.push(i);warm.values.push(Math.round(val));
+                        const intCols=[];
+                        for(let i=0;i<numCols;i++)if(lpData.integrality[i]===1)intCols.push(i);
+                        // Fast LP upper-bound check: skip the MIP when the relaxed
+                        // restricted shift cannot beat the current income floor.
+                        let skipMip=false;
+                        if(minimum>0 && intCols.length){
+                            model.changeColsIntegrality({kind:'set',indices:intCols},intCols.map(()=>0));
+                            model.options.set({primal_feasibility_tolerance:1e-7,dual_feasibility_tolerance:1e-7});
+                            model.run();
+                            const lpSt=model.getModelStatus();
+                            if(lpSt===statuses.infeasible){
+                                jointProvenBounds.push({recipes:recipeSet,upper:-Infinity});
+                                skipMip=true;
+                            }else if(lpSt===statuses.optimal){
+                                const lpObj=model.getObjectiveValue();
+                                if(Number.isFinite(lpObj) && lpObj<=minimum+1e-7){
+                                    jointProvenBounds.push({recipes:recipeSet,upper:lpObj});
+                                    skipMip=true;
                                 }
-                            });
-                            if(warm.indices.length)model.setSolution(warm);
+                            }
+                            model.changeColsIntegrality({kind:'set',indices:intCols},intCols.map(()=>1));
+                            model.clearSolver();
                         }
-                        runPlanModel(model,highs,undefined,undefined,incumbentIterations);
-                        if(model.info.get('primal_solution_status')===highs.constants.solutionStatus.feasible){
-                            const obj=model.getObjectiveValue();
-                            if(Number.isFinite(obj)){
-                                const native=model.getSolution().colValue;
-                                const values=Array(compact.variables).fill(0);
-                                for(let i=0;i<numCols;i++)values[indices[i]]=native[i];
-                                result.value=obj;
-                                result.seed={keys:compact.variable_keys,values};
+                        if(!skipMip){
+                            const {incumbentIterations,...nativeOpts}=planSearchOptions({
+                                time_limit:4,mip_max_nodes:8,mip_rel_gap:CURRENCY_RELATIVE_GAP,mip_abs_gap:0,mip_feasibility_tolerance:1e-9});
+                            model.options.set(nativeOpts);
+                            if(warmSeed?.keys?.length===warmSeed?.values?.length){
+                                const previous=new Map(warmSeed.keys.map((k,i)=>[k,warmSeed.values[i]]));
+                                const intSet=new Set(intCols.map(i=>indices[i]));
+                                const warm={indices:[],values:[]};
+                                indices.forEach((v,i)=>{
+                                    const key=compact.variable_keys[v],val=previous.get(key);
+                                    if(intSet.has(v) && !key.startsWith('extra#') && Number.isFinite(val) && Math.abs(val-Math.round(val))<1e-6){
+                                        warm.indices.push(i);warm.values.push(Math.round(val));
+                                    }
+                                });
+                                if(warm.indices.length)model.setSolution(warm);
+                            }
+                            model.run({[highs.constants.callbackType.mipInterrupt]:event=>{
+                                const {mip_primal_bound:lower,mip_dual_bound:dual,mip_total_lp_iterations:iters}=event.data;
+                                if((incumbentIterations && iters>=incumbentIterations && Number.isFinite(lower))
+                                    || (minimum>0 && Number.isFinite(dual) && dual<=minimum+1e-7)){
+                                    event.interrupt();
+                                }
+                            }});
+                            const st=model.getModelStatus();
+                            const dual=st===statuses.optimal ? model.getObjectiveValue() : model.info.get('mip_dual_bound');
+                            if(Number.isFinite(dual))jointProvenBounds.push({recipes:recipeSet,upper:dual});
+                            if(model.info.get('primal_solution_status')===highs.constants.solutionStatus.feasible){
+                                const obj=model.getObjectiveValue();
+                                if(Number.isFinite(obj)){
+                                    const native=model.getSolution().colValue;
+                                    const values=Array(compact.variables).fill(0);
+                                    for(let i=0;i<numCols;i++)values[indices[i]]=native[i];
+                                    result.value=obj;
+                                    result.seed={keys:compact.variable_keys,values};
+                                }
                             }
                         }
                     }finally{
@@ -536,25 +730,36 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
         let firstProposal;
         let bestBoundUpper=Infinity;
         let prevBoundObj=null, flatRelaxedRounds=0, retryFloorCertify=false;
+        let obbtLimits={...(siteCapacity?.limits??{})}, obbtFloor=0;
+        const obbtProbed=new Set();
         for (;;) {
             const targetIncome=witness ? earned : initialScope && jointFirst ? oldCurrency : 0;
             const incomeTarget=targetIncome>0 ? targetIncome*CURRENCY_GAP_FACTOR : undefined;
             const floorCertify=(retryFloorCertify || !relaxedBound || bestBoundUpper<=incomeTarget*1.002)
                 && Boolean(witness && earned>0 && incomeTarget>0);
             retryFloorCertify=false;
-            let extraLimits=null;
+            let extraLimits=Object.keys(obbtLimits).length ? obbtLimits : null;
             if(witness && earned>0 && incomeTarget>0 && proofScope.size){
-                const tightened=obbtSiteLimits(highs,raw,proofScope,incomeTarget,siteCapacity?.limits??{});
-                if(tightened?.infeasible){
-                    for(const name of active(fullIncome,witness.values))names.add(name);
-                    remember(fullIncome.variable_keys,witness.values,earned);
-                    verifiedIncomeValues=witness.values;
-                    upper=Math.max(earned,incomeTarget);
-                    ceilings.push(upper);
-                    siteSearch={best,upper};
-                    break;
+                const needReprobe=earned>obbtFloor+1e-7;
+                const toProbe=needReprobe ? [...proofScope] : [...proofScope].filter(n=>!obbtProbed.has(n));
+                if(toProbe.length){
+                    const tightened=obbtSiteLimits(highs,raw,toProbe,incomeTarget,obbtLimits);
+                    if(tightened?.infeasible){
+                        for(const name of active(fullIncome,witness.values))names.add(name);
+                        remember(fullIncome.variable_keys,witness.values,earned);
+                        verifiedIncomeValues=witness.values;
+                        upper=Math.max(earned,incomeTarget);
+                        ceilings.push(upper);
+                        siteSearch={best,upper};
+                        break;
+                    }
+                    if(tightened?.limits){
+                        obbtLimits=tightened.limits;
+                        extraLimits=obbtLimits;
+                    }
+                    if(needReprobe){obbtFloor=earned;obbtProbed.clear();}
+                    for(const n of toProbe)obbtProbed.add(n);
                 }
-                if(tightened?.limits)extraLimits=tightened.limits;
             }
             const model=scopedModel([...proofScope],extraLimits,relaxedBound);
             // HiGHS presolve can incorrectly declare a smaller optimum when a
@@ -1115,7 +1320,7 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
     const scopedP=input.roster && last.p && last.p.variables < p.variables ? last.p : null;
     const scopedLocal=scopedP ? last.local : null;
     const liftToFull=async(source)=>{
-        let lifted=await restoreCatalogue(highs,solveModel,local,source);
+        let lifted=await restoreCatalogue(highs,solveModel,local,source,{allowPairRelax:false});
         if(!lifted?.values){
             const warm=align(local,source);
             lifted=await solveModel(fixPhysical(local,warm,true),options(2),undefined,warm);
@@ -1132,7 +1337,8 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
             JSON.stringify({values,proven:false,bound:upper,verify_only:true,summary_only:summaryOnly})));
         const sr=last.r;
         if(sr?.values){
-            const sRefined=await refineStaffing(scopedLocal,sr,solveModel,{pkg,input,report:values=>scopedAudit(values,true)});
+            const sRefined=await refineStaffing(scopedLocal,sr,solveModel,
+                {pkg,input,report:values=>scopedAudit(values,true)});
             // Preserve the refined staffing choices (posts, climate staff, generators) when lifting to fullPayload.
             const source={keys:scopedP.variable_keys,values:sRefined.values};
             const prev=new Map(source.keys.map((key,v)=>[key,source.values[v]]));
@@ -1145,7 +1351,7 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
                     staffRows.push(` keep_staff_${v}: x${v} = ${Math.round(val)}`);
             }
             const liftedRefined=staffRows.length
-                ? await restoreCatalogue(highs,solveModel,addRows(local,staffRows),source) : null;
+                ? await restoreCatalogue(highs,solveModel,addRows(local,staffRows),source,{allowPairRelax:false}) : null;
             refined=liftedRefined?.values ? liftedRefined : await liftToFull(source);
             if(refined?.values){
                 const climateCount=(keys,vals)=>{
@@ -1194,6 +1400,28 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
         const unrefined=await liftToFull(fallbackSource);
         if(unrefined?.values){final=unrefined;plan=audit(final.values);}
     } else if(!plan.success&&refined!==r){final=r;plan=audit(final.values);}
+    if((!plan.success || !Number.isFinite(plan.rate_per_second) || plan.rate_per_second+1e-7<minRate || plan.rate_per_second>upper+1e-7)
+        && activeInput.relax_pair_coverage){
+        const exactPayload=JSON.stringify({...JSON.parse(fullPayload),relax_pair_coverage:false});
+        const exactP=exact(exactPayload,request);
+        const exactLocal=exactP?.lp ? keepRawIncome(restrict(exactP,names),exact(exactPayload,currencyStage),minRate) : null;
+        if(exactLocal){
+            const exactLifted=await restoreCatalogue(highs,solveModel,exactLocal,{keys:p.variable_keys,values:final.values},{allowPairRelax:false})
+                ?? await restoreCatalogue(highs,solveModel,exactLocal,compactSeed,{allowPairRelax:false});
+            if(exactLifted?.values){
+                const exactPlan=JSON.parse(pkg.exact_plan(exactPayload,JSON.stringify(request),
+                    JSON.stringify({values:exactLifted.values,proven:false,bound:upper,verify_only:true})));
+                if(exactPlan.success && Number.isFinite(exactPlan.rate_per_second)
+                    && exactPlan.rate_per_second+1e-7>=minRate && exactPlan.rate_per_second<=upper+1e-7){
+                    p=exactP;
+                    fullPayload=exactPayload;
+                    payload=JSON.stringify({...JSON.parse(payload),relax_pair_coverage:false});
+                    final=exactLifted;
+                    plan=exactPlan;
+                }
+            }
+        }
+    }
     if(!plan.success||!Number.isFinite(plan.rate_per_second)||plan.rate_per_second+1e-7<minRate||plan.rate_per_second>upper+1e-7)return null;
     if (materialPace != null && plan.level_up_preview?.requirements && request.maximize_material_work) {
         // Material work can improve the pace even after the prior stage has

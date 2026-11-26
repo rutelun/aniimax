@@ -3,7 +3,7 @@ import test from 'node:test';
 import fs from 'node:fs';
 import {HOMELAND_PLOTS,storageUnitLimit} from '../web/facility-config.js';
 import {createInsideTest,layoutDeliveryCost} from '../web/layout.js';
-import {encodeRefinement,refineFastLayout} from '../web/fast-layout.js';
+import {encodeRefinement,refineFastLayout,polishFastLayout} from '../web/fast-layout.js';
 import {updatePowerConnections} from '../web/power-layout.js';
 const wasmRoot=process.env.LAYOUT_WASM_ROOT || '../web/pkg/';
 const wasmPath=new URL(`${wasmRoot}aniimax_bg.wasm`,import.meta.url);
@@ -108,4 +108,14 @@ for(let rv=1;rv<=22;rv++)for(const skew of [false,true])for(const polish of [0,2
 wasmTest('polishing rejects excessive pass counts',()=>{
  const input={rectangles:[{x:0,y:0,w:2,h:2,weight:1}],producer_count:1,store_count:0,cells:[{x:0,y:0,w:8,h:8}],polish_passes:17};
  assert.throws(()=>refine(input));
+});
+
+wasmTest('provisional polishFastLayout preserves feasibility and does not regress delivery cost',()=>{
+ const layout={pieces:[{members:[{x:2,y:0,w:2,h:2,weight:1}]},{members:[{x:32,y:0,w:2,h:2,weight:4}]}],
+   storages:[{x:0,y:0,w:2,h:2},{x:30,y:0,w:2,h:2}],power:{poles:[],disconnected:0},unplaced:[]};
+ const cells=[{x:0,y:0,w:40,h:10}];
+ const broad=refineFastLayout(layout,cells,refine_layout,{iterations:20000});
+ const polished=polishFastLayout(broad,layout,cells,refine_layout,true);
+ assert.ok(layoutDeliveryCost(polished)<=layoutDeliveryCost(broad)+1e-8);
+ assert.equal(polished.power.disconnected,0);
 });

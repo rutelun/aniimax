@@ -92,7 +92,10 @@ async function solveDraftShift(model, settings, solve, warm, counts, workload, h
     // physical layouts. On a provisional draft, a sub-unit gap (< 1 << headWeight)
     // still proves the exact minimum headcount while avoiding long workload tail proofs.
     const draftGap = Math.max(tolerance, Math.min(0.75, 0.001 * Math.abs(target)));
-    const replay = await solve(replayModel, {...settings, mip_abs_gap: draftGap, objective_target: target - draftGap}, undefined, warm);
+    const replay = await solve(replayModel, {
+        ...settings, mip_max_nodes: 64, incumbentIterations: 16000,
+        mip_abs_gap: draftGap, objective_target: target - draftGap,
+    }, undefined, warm);
     // A feasible shift below the relaxed target has already used the original
     // model's search budget. Pass it to the same production and staffing checks.
     return replay?.values ? replay : null;

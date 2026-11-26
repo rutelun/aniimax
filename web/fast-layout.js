@@ -61,14 +61,17 @@ export function refineFastLayout(layout,cells,refineJSON,options={}) {
 
 // Follow the broad search with a small exchange neighborhood and deterministic
 // polishing. Every stage retains the previous feasible result unless it wins.
-export function polishFastLayout(layout,seed,cells,refineJSON) {
+export function polishFastLayout(layout,seed,cells,refineJSON,provisional=false) {
     if(layout.unplaced?.length||layout.power?.disconnected||!layout.storages.length)return layout;
     const exchanged=refineFastLayout(layout,cells,refineJSON,{iterations:0,exchange_trials:6});
     // Keep the original workload scale: a successful first pass must not
     // abruptly change the cooling schedule for the remaining neighborhoods.
     const temperature=encodeRefinement(seed,cells).temperature;
     let best=exchanged;
-    for(const [iterations,scale,exchange_trials] of [[1500000,.4,0],[1000000,.2,6],[500000,.1,6]]) {
+    const schedule=provisional
+        ? [[500000,.25,6]]
+        : [[1500000,.4,0],[1000000,.2,6],[500000,.1,6]];
+    for(const [iterations,scale,exchange_trials] of schedule) {
         best=refineFastLayout(best,cells,refineJSON,{
             iterations,temperature:temperature*scale,exchange_trials,unequal_swaps:true,polish_passes:4,
         });

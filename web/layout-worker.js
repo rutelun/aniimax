@@ -97,8 +97,9 @@ async function buildLayout(event) {
                 if(seed.unplaced.length || seed.power.disconnected)incompleteRegularSeed=seed;
                 else {
                     try {
-                        const broad=refineFastLayout(seed,cells,refineJSON);
-                        const polished=polishFastLayout(broad,seed,cells,refineJSON);
+                        const provisional=Boolean(event.data.provisional);
+                        const broad=refineFastLayout(seed,cells,refineJSON,provisional?{iterations:1500000}:{});
+                        const polished=polishFastLayout(broad,seed,cells,refineJSON,provisional);
                         const candidate=layoutKeepsIncome(polished,staffing,recipes||[])?polished:broad;
                         if(layoutKeepsIncome(candidate,staffing,recipes||[])) {
                             deliver(grouped?{...candidate,groupFallback:groupFailure}:candidate);
@@ -160,9 +161,10 @@ async function buildLayout(event) {
     }
     if (complete(best) && fastRefine) {
         try {
+            const provisional = Boolean(event.data.provisional);
             const { refineJSON, refineFastLayout, polishFastLayout, layoutKeepsIncome } = fastRefine;
-            const broad = refineFastLayout(best, cells, refineJSON);
-            const polished = polishFastLayout(broad, best, cells, refineJSON);
+            const broad = refineFastLayout(best, cells, refineJSON, provisional ? { iterations: 1500000 } : {});
+            const polished = polishFastLayout(broad, best, cells, refineJSON, provisional);
             const candidate = layoutKeepsIncome(polished, staffing, recipes || []) ? polished : broad;
             if (layoutKeepsIncome(candidate, staffing, recipes || [])) {
                 deliver(grouped ? { ...candidate, groupFallback: groupFailure } : candidate);

@@ -69,17 +69,28 @@ export async function searchProductionSites(highs, raw, full, scopedModel, solve
     if (bestFloor() > 0 && Number.isFinite(upper) && upper >= bestFloor() - 1e-7 && closed(upper, bestFloor())) {
         return {best:null, upper:Math.max(bestFloor(), upper)};
     }
+    let obbtLimits = {}, obbtFloor = 0;
+    const obbtProbed = new Set();
     for (let round = 0; round < 6; round++) {
         const floor = bestFloor();
         const target = floor > 0 ? floor * gapFactor : undefined;
-        let extraLimits = null;
+        let extraLimits = Object.keys(obbtLimits).length ? obbtLimits : null;
         if (target > 0 && scope.length) {
-            const tightened = obbtSiteLimits(highs, raw, scope, target);
-            if (tightened?.infeasible) {
-                upper = Math.min(upper, target);
-                break;
+            const needReprobe = floor > obbtFloor + 1e-7;
+            const toProbe = needReprobe ? scope : scope.filter(n => !obbtProbed.has(n));
+            if (toProbe.length) {
+                const tightened = obbtSiteLimits(highs, raw, toProbe, target, obbtLimits);
+                if (tightened?.infeasible) {
+                    upper = Math.min(upper, target);
+                    break;
+                }
+                if (tightened?.limits) {
+                    obbtLimits = tightened.limits;
+                    extraLimits = obbtLimits;
+                }
+                if (needReprobe) { obbtFloor = floor; obbtProbed.clear(); }
+                for (const n of toProbe) obbtProbed.add(n);
             }
-            if (tightened?.limits) extraLimits = tightened.limits;
         }
         const model = scope.length ? scopedModel(scope, extraLimits, relaxReasons) : raw;
         // When a physically checked incumbent exists and relativeGap > 0, keep

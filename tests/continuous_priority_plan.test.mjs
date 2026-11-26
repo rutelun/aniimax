@@ -3,7 +3,7 @@ import test from 'node:test';
 import fs from 'node:fs';
 import highsModule from '../web/vendor/highs/highs.mjs';
 import {solveWithIncumbent} from '../web/highs-solve.js';
-import {tryPriorityPlan} from '../web/continuous-priority-plan.js';
+import {tryPriorityPlan, restoreCatalogue} from '../web/continuous-priority-plan.js';
 import {searchProductionSites} from '../web/production-site-search.js';
 
 test('measured dispatch proves the attainable whole-post pace before optimizing income',async()=>{
@@ -455,4 +455,38 @@ test('draft refines an integer-infeasible level_up LP ceiling and dispatched int
     assert.equal(dispatched?.comparison_goals?.pace,0.5);
     assert.equal(dispatched?.rate_per_second,1);
     assert.equal(dispatched?.continuous_production_checked,true);
+});
+
+test('restoreCatalogue native fast path enforces allowPairRelax=false and short-circuits infeasible lifts', async () => {
+    const highs=await highsModule({wasmBinary:fs.readFileSync(new URL('../web/vendor/highs/highs.wasm',import.meta.url)),
+        print(){},printErr(){}});
+    // Build a 66-variable model so restoreCatalogue uses its native single-model bound-fixing path.
+    const n=66;
+    const keys=['rate:crop#0','units:crop#0','environment:Heat Furnace:Warm#0','pair_relax:a:b#0',
+        ...Array.from({length:n-4},(_,i)=>`rate:idle_${i}#0`)];
+    const lp=[
+        'Maximize',' obj: + 10 x0',
+        'Subject To',
+        ' produce: x0 - x1 <= 0',
+        ' cover: x2 + x3 - x1 >= 0',
+        ' cap_env: x2 <= 0',
+        'Bounds',
+        ' 0 <= x0 <= 1',' 0 <= x1 <= 1',' 0 <= x2 <= 1',' 0 <= x3 <= 1',
+        ...Array.from({length:n-4},(_,i)=>` 0 <= x${i+4} <= 1`),
+        'General',' x1',' x2',' x3','End',
+    ].join('\n');
+    const problem={variables:n,variable_keys:keys,primary_objective:[[0,10]],tiebreak:[],lp};
+    const values=Array(n).fill(0);
+    values[0]=1; values[1]=1; values[3]=1;
+    let solveModelCalls=0;
+    const solveModel=async()=>{solveModelCalls++;return null;};
+    // With allowPairRelax=true, pair_relax x3=1 is allowed and lift succeeds without calling solveModel.
+    const relaxed=await restoreCatalogue(highs,solveModel,problem,{keys,values},{allowPairRelax:true});
+    assert.ok(relaxed?.polished);
+    assert.equal(relaxed.values[3],1);
+    assert.equal(solveModelCalls,0);
+    // With allowPairRelax=false, x3 is fixed to 0 while x2 <= 0 cannot cover x1=1 -> returns null via LP check.
+    const strict=await restoreCatalogue(highs,solveModel,problem,{keys,values},{allowPairRelax:false});
+    assert.equal(strict,null);
+    assert.equal(solveModelCalls,0);
 });
