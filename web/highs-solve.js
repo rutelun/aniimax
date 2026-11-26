@@ -16,14 +16,15 @@ export function planSearchOptions({time_limit: effort = FULL_PLAN_EFFORT, ...opt
 
 // A single MIP node may itself solve many LPs. Count their iterations as well
 // as nodes so two equally large trees cannot differ arbitrarily in cost.
-export function runPlanModel(model, highs, mipIterations, reachesCeiling, incumbentIterations) {
-    if (!mipIterations && !reachesCeiling && !incumbentIterations) return model.run();
+export function runPlanModel(model, highs, mipIterations, reachesCeiling, incumbentIterations, minDual) {
+    if (!mipIterations && !reachesCeiling && !incumbentIterations && minDual == null) return model.run();
     let attained=false;
     const callback=highs.constants.callbackType;
     const events={[callback.mipInterrupt]:event=>{
         const iterations=event.data.mip_total_lp_iterations;
         if(attained || (mipIterations && iterations>=mipIterations)
-            || (incumbentIterations && iterations>=incumbentIterations && Number.isFinite(event.data.mip_primal_bound)))
+            || (incumbentIterations && iterations>=incumbentIterations && Number.isFinite(event.data.mip_primal_bound))
+            || (minDual!=null && Number.isFinite(event.data.mip_dual_bound) && event.data.mip_dual_bound<=minDual))
             event.interrupt();
     }};
     if(reachesCeiling)events[callback.mipImprovingSolution]=({data})=>{
@@ -61,7 +62,7 @@ export function solveWithIncumbent(highs, problem, options, incumbent, reuseMode
         const integerModel = /\nGeneral\n\s*x\d/.test(problem.lp);
         if (integerModel) model.clearSolver();
         model.zeroAllClocks();
-        const {mipIterations,incumbentIterations,primaryCeiling,...nativeOptions} = options;
+        const {mipIterations,incumbentIterations,primaryCeiling,minDual,...nativeOptions} = options;
         applyOptions(model,nativeOptions);
         if (incumbent?.length === problem.variables) {
             const keys = problem.variable_keys;
@@ -108,7 +109,7 @@ export function solveWithIncumbent(highs, problem, options, incumbent, reuseMode
                 return primaryAttained;
             };
         }
-        runPlanModel(model,highs,mipIterations,reachesCeiling,integerModel ? incumbentIterations : undefined);
+        runPlanModel(model,highs,mipIterations,reachesCeiling,integerModel ? incumbentIterations : undefined,integerModel ? minDual : undefined);
         const status = model.getModelStatus();
         const statuses = highs.constants.modelStatus;
         if (status === statuses.infeasible) return { Status: 'Infeasible' };

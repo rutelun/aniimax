@@ -109,6 +109,17 @@ test('an unresolved physical target resumes beyond the native gap', () => {
     assert.deepEqual(gaps,[.002,0]);
     assert.equal(result.upper,100);
     assert.equal(result.proven,true);
+
+    // With deferExactGap, an improving relaxed incumbent returns needsExactGap
+    // so the caller can try restoring and closing before paying for a full restart.
+    const deferredGaps=[];
+    const deferredNative={...native,options:{set(options){deferredGaps.push(options.mip_rel_gap);}},
+        info:{get:name=>({mip_gap:deferredGaps.at(-1),mip_dual_bound:100.2,primal_solution_status:2})[name]}};
+    const deferredRuntime={...runtime,createModel:()=>deferredNative};
+    const deferred=solveEconomicBound(deferredRuntime,problem,{exact:true,relativeGap:.002,deferExactGap:true,incomeTarget:100.1});
+    assert.deepEqual(deferredGaps,[.002]);
+    assert.equal(deferred.needsExactGap,true);
+    assert.equal(deferred.upper,100.2);
 });
 
 test('relax_min_reasons drops selector binaries while keeping a valid upper bound', async () => {

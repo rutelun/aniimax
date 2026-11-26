@@ -4,7 +4,7 @@ import {planSearchOptions,runPlanModel,searchStopped} from './highs-solve.js';
 // physical building and balance. Omitting a recipe's work-conservation rules
 // enlarges its feasible set, so its MIP dual bound also bounds the full model.
 // A primal from this relaxation still needs the caller's full production audit.
-export function solveEconomicBound(highs, problem, {seed, scope = [], timeLimit = 2, discovery = false, exact = false, relativeGap = 0, incomeTarget, onRecipes, floorCertify = false, maxNodes} = {}) {
+export function solveEconomicBound(highs, problem, {seed, scope = [], timeLimit = 2, discovery = false, exact = false, relativeGap = 0, exactGap = false, deferExactGap = false, incomeTarget, onRecipes, floorCertify = false, maxNodes} = {}) {
     const keys = problem.variable_keys;
     if (!problem.production_only || problem.continuousRestricted || !problem.primary_objective?.length
         || keys?.length !== problem.variables || !problem.recipe_options || !(timeLimit > 0)) return null;
@@ -19,7 +19,7 @@ export function solveEconomicBound(highs, problem, {seed, scope = [], timeLimit 
         const {numCols} = model.getDimensions();
         const indices = Array.from({length:numCols}, (_, i) => Number(model.getColName(i).slice(1)));
         if (indices.some(v => !Number.isInteger(v) || v < 0 || v >= keys.length)) return null;
-        const precision = {mip_abs_gap:0, mip_rel_gap:certifyIncome && !exact ? 0 : relativeGap,
+        const precision = {mip_abs_gap:0, mip_rel_gap:exactGap || (certifyIncome && !exact) ? 0 : relativeGap,
             primal_feasibility_tolerance:useFloor||discovery?1e-7:1e-9, mip_feasibility_tolerance:useFloor?1e-7:discovery?1e-8:1e-9,
             ...(useFloor ? {presolve:'off'} : {})};
         const {incumbentIterations,...nativeOptions} = exact ? precision : planSearchOptions({time_limit:timeLimit,...precision});
@@ -99,11 +99,19 @@ export function solveEconomicBound(highs, problem, {seed, scope = [], timeLimit 
             }
         }
         // A native gap stop can leave the physical target between the
-        // incumbent and its upper bound. Resume that case at full precision.
+        // incumbent and its upper bound. When the relaxed incumbent already
+        // beats the prior verified income (incomeTarget / (1 + relativeGap)),
+        // let the caller try restoring it first before paying for a full restart.
+        let needsExactGap = false;
+        const prevEarned = incomeTarget / (1 + relativeGap);
         if (certifyIncome && model.getModelStatus() === statuses.optimal && model.info.get('mip_gap') > 0
             && model.getObjectiveValue() < incomeTarget && model.info.get('mip_dual_bound') > incomeTarget) {
-            model.options.set({mip_rel_gap:0});
-            run();
+            if (deferExactGap && model.getObjectiveValue() > prevEarned + 1e-7) {
+                needsExactGap = true;
+            } else {
+                model.options.set({mip_rel_gap:0});
+                run();
+            }
         }
         const status = model.getModelStatus();
         if (status !== statuses.optimal && !searchStopped(status,statuses)) return null;
@@ -113,7 +121,7 @@ export function solveEconomicBound(highs, problem, {seed, scope = [], timeLimit 
         // The dual bound, rather than that status, distinguishes exact income.
         const exactObjective = optimal && (!relativeGap || model.info.get('mip_gap') === 0);
         const result = {upper:!discovery && Number.isFinite(upper) ? upper : null,
-            proven:exactObjective && !discovery, scope:[...scope]};
+            proven:exactObjective && !discovery, needsExactGap, scope:[...scope]};
         if (model.info.get('primal_solution_status') !== highs.constants.solutionStatus.feasible) return result;
         const values = Array(keys.length).fill(0), native = model.getSolution().colValue;
         indices.forEach((v, i) => { values[v] = native[i]; });
