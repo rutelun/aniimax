@@ -300,6 +300,7 @@ export function optimizeWorkshopSources(pkg,highs,input,base,catalog){
         // arbitrary tied shift that discards intermediate goals or coin income.
         let finalPayload=payload;
         let finalStage={...stage,pace:objective};
+        let finalRelaxPairs=relaxPairs;
         let currencyUpper=Infinity;
         const postPriorities=rv>=0 ? [...priorities.slice(rv+1)] : [];
         if(rv>=0 && !priorities.includes(currency))postPriorities.push(currency);
@@ -435,6 +436,7 @@ export function optimizeWorkshopSources(pkg,highs,input,base,catalog){
                 }
             }
             finalStage={...postStage,pace:objective*(1-1e-6)};
+            finalRelaxPairs=postRelaxPairs;
         }
         const verified=JSON.parse(pkg.exact_plan(finalPayload,JSON.stringify(finalStage),
             JSON.stringify({values,verify_only:true,proven:false,bound:0})));
@@ -446,7 +448,7 @@ export function optimizeWorkshopSources(pkg,highs,input,base,catalog){
         }
         verified.comparison_seed={keys:problem.variable_keys,values};
         verified.active_continuous_recipes=[...new Set((problem.recipe_variables??problem.recipe_options).filter(([v])=>values[v]>1e-9).map(([,name])=>name))];
-        return {plan:verified};
+        return {plan:verified,problem,payload:finalPayload,stage:finalStage,relaxPairs:finalRelaxPairs};
     }
     return null;
 }

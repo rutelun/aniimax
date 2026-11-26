@@ -7,6 +7,9 @@ import {recommendBestTeam} from '../web/best-team.js';
 import {refineStaffing} from '../web/staffing-search.js';
 import {solveWithIncumbent} from '../web/highs-solve.js';
 import {tryPriorityPlan} from '../web/continuous-priority-plan.js';
+import {searchWorkshopCapacity} from '../web/workshop-capacity.js';
+import {validateWorkshopCapacity} from '../web/recipe-switch-search.js';
+import {simpleSetup, LEVEL_UP_COSTS, SPECIAL_RECIPES} from '../web/facility-config.js';
 
 test('Best uses real level-2 workers for strong climate jobs', () => {
     for (const [ability, label] of [['Ice','Cooling Unit (Freeze)'], ['Fire','Heat Furnace (Scorching)']]) {
@@ -227,4 +230,104 @@ test('tryPriorityPlan upgrades relax_pair_coverage plans to an overlapping Scorc
     assert.ok(plan.environment_assignments.every(a => a.partner && a.units === 1), 'should use a single overlapping pair instead of 3 standalone units');
     assert.deepEqual(plan.environment_assignments.map(a => a.mode).sort(), ['Cool', 'Scorching', 'Warm']);
     assert.ok(plan.environment_assignments.every(a => (a.layouts || []).every(l => l.length > 0)));
+});
+
+test('searchWorkshopCapacity consolidates 28 Agave + 4 Coconut into one Heat Furnace and avoids redundant pairs', async () => {
+    pkg.initSync({module:fs.readFileSync(new URL('../web/pkg/aniimax_bg.wasm',import.meta.url))});
+    const highs = await highsModule({wasmBinary:fs.readFileSync(new URL('../web/vendor/highs/highs.wasm',import.meta.url)),print(){},printErr(){}});
+    const solveModel = (p, options, _stage, seed) => {
+        const r = solveWithIncumbent(highs, p, options, seed, false);
+        return r.Columns ? {
+            values: Array.from({length:p.variables}, (_, i) => r.Columns['x'+i]?.Primal ?? 0),
+            objective: r.ObjectiveValue,
+            proven: r.Status === 'Optimal',
+            upper: r.UpperBound,
+        } : null;
+    };
+    const validate = (trial, plan, prev) => validateWorkshopCapacity(trial, plan, prev, m => highs.solve(m.lp, {mip_rel_gap:0}));
+
+    // 1. RV21 MWN (6+6) level_up -> coins: 28 Quick Agave + 4 Quick Coconut must pack into 1 Scorching Heat Furnace.
+    const rv = 21;
+    const levels = {Fire:4,Water:4,Earth:4,Lightning:4,Wind:4,Dark:4,Artisanship:4,Leisure:4,Perfumery:3};
+    const next = LEVEL_UP_COSTS[rv + 1];
+    const rv21Input = {
+        ...simpleSetup(rv),
+        e_mode_rv: rv,
+        currency: 'coins',
+        always_running: true,
+        priorities: ['level_up', 'coins'],
+        aniimo: 'best:' + Object.entries(levels).map(([n, l]) => n + l).join(','),
+        aniimo_levels: levels,
+        exclude: SPECIAL_RECIPES.map(r => r.name),
+        season: 'magical_wonder_night',
+        season_currency_per_day: 2000,
+        season_crop_minimums: {magic_pumpkin: 6, memory_lanternfruit: 6},
+        level_up_preview: {cost: [['coins', next.coins], ...next.items], stock: []},
+    };
+    const baseline = await tryPriorityPlan(pkg, rv21Input, {highs, solveModel});
+    assert.ok(baseline?.success, baseline?.error || 'expected baseline RV21 plan');
+    const switched = await searchWorkshopCapacity(pkg, highs, rv21Input, baseline, {validate});
+    assert.ok(switched?.success, switched?.error || 'expected workshop-capacity RV21 plan');
+    const scorching = switched.environment_assignments.filter(a => a.building === 'Heat Furnace' && a.mode === 'Scorching');
+    const scorchingUnits = scorching.reduce((s, a) => s + a.units, 0);
+    assert.equal(scorchingUnits, 1, `expected 1 Scorching Heat Furnace for 28 Agave + 4 Coconut, got ${JSON.stringify(scorching)}`);
+    const coveredScorching = Object.fromEntries(scorching[0].covered.map(c => [c.facility, c.count]));
+    assert.equal(coveredScorching.Farmland, 28);
+    assert.equal(coveredScorching.Woodland, 4);
+    assert.ok(switched.environment_assignments.every(a => !a.partner), 'no overlapping pair needed');
+
+    // 2. Redundant Scorching|Cool pair covering only Scorching (18 Agave + 2 Coconut) + Warm (2 Starfall Hammock)
+    //    must be replaced with standalone Scorching + Warm Heat Furnaces when 2 Heat Furnaces are available.
+    const pairInput = {
+        currency: 'coins',
+        aniimo: 'best',
+        always_running: true,
+        priorities: ['level_up', 'coins'],
+        facilities: {
+            Farmland: [{count: 18, level: 8}],
+            Woodland: [{count: 2, level: 6}],
+            'Starfall Hammock': [{count: 2, level: 2}],
+            'Woodworking Bench': [{count: 1, level: 2}],
+            'Heat Furnace': [{count: 2, level: 1}],
+            'Cooling Unit': [{count: 1, level: 1}],
+            Sunlamp: [{count: 0, level: 1}],
+        },
+        modules: {ecological_module: 9, resource_detector: 0},
+        quest_income_per_day: {wood_block: 864000},
+        exclude: [
+            'quick_strawberry','strawberry','ginseng','cranberry','star','apple','maple_syrup','quick_maple_syrup',
+            'sorghum','premium_potato','premium_wheat','quick_rice','quick_potato','cotton','soybean','rice','potato',
+            'wheat','quick_wheat','orange_flower','frost_pine','quick_frost_pine','quick_sweet_cone','sweet_cone',
+            'quick_cocoa_bean','cocoa_bean','refined_timber','reinforced_plank','densified_timber_component',
+        ],
+        level_up_preview: {cost: [['standard_planks', 10]], stock: []},
+    };
+    const payload = JSON.stringify(pairInput);
+    const stage = '{"pace":0,"floors":[]}';
+    const prob = JSON.parse(pkg.exact_problem(payload, stage));
+    const scPairs = prob.variable_keys.flatMap((k, i) => k.startsWith('pair:') && k.includes('Scorching') && k.includes('Cool') ? [i] : []);
+    assert.ok(scPairs.length > 0, 'expected Scorching|Cool pair columns');
+    const benchZero = prob.recipe_variables.filter(([, name]) => name === 'standard_planks').map(([v]) => ` no_plank_${v}: x${v} = 0`).join('\n');
+    const forced = highs.solve(
+        prob.lp.replace('Subject To', `Subject To\n force_pair: ${scPairs.map(i => `x${i}`).join(' + ')} = 1\n${benchZero}\n`),
+        {mip_rel_gap: 0, mip_abs_gap: 0},
+    );
+    assert.equal(forced.Status, 'Optimal');
+    const forcedValues = Array.from({length: prob.variables}, (_, i) => forced.Columns['x'+i]?.Primal ?? 0);
+    const pairBaseline = JSON.parse(pkg.exact_plan(payload, stage, JSON.stringify({values: forcedValues, proven: false, bound: 0, verify_only: true})));
+    assert.equal(pairBaseline.success, true, pairBaseline.error);
+    assert.ok(pairBaseline.environment_assignments.some(a => a.partner), 'baseline deliberately starts with a redundant Scorching|Cool pair');
+    const seededBaseline = {
+        ...pairBaseline,
+        comparison_seed: {keys: prob.variable_keys, values: forcedValues},
+        active_continuous_recipes: [...new Set(prob.recipe_variables.filter(([v]) => forcedValues[v] > 1e-9).map(([, n]) => n))],
+        comparison_goals: {floors: [], pace: 0, currency: 'coins', currency_value: pairBaseline.rate_per_second},
+        comparison_scores: {crop_variety: null},
+        continuous_production_checked: true,
+    };
+    const cleaned = await searchWorkshopCapacity(pkg, highs, pairInput, seededBaseline, {validate});
+    assert.ok(cleaned?.success, cleaned?.error || 'expected cleaned plan');
+    assert.ok(cleaned.environment_assignments.every(a => !a.partner), `expected standalone Heat Furnaces instead of pair, got ${JSON.stringify(cleaned.environment_assignments)}`);
+    assert.ok(cleaned.environment_assignments.every(a => a.building === 'Heat Furnace'), 'expected no Cooling Unit');
+    assert.deepEqual(cleaned.environment_assignments.map(a => a.mode).sort(), ['Scorching', 'Warm']);
 });

@@ -7,6 +7,7 @@ import {priorityCeiling} from './priority-ceilings.js';
 import {productionObjective} from './priority-search.js';
 import {solveWithIncumbent,polishSolution} from './highs-solve.js';
 import {refineElectricStaffing,keepsProduction} from './electric-staffing.js';
+import {refineClimate} from './staffing-search.js';
 
 const DAY=86400;
 const options={mip_rel_gap:0,mip_abs_gap:0,mip_feasibility_tolerance:1e-7,primal_feasibility_tolerance:1e-10};
@@ -214,6 +215,66 @@ function incomeBound(pkg,highs,input,base,plan,catalog,facilities,sourcePlan=nul
     return bestUpper;
 }
 
+async function minimizeClimate(pkg,solve,problem,payload,stageJson,plan,values,{relaxPairs=false}={}) {
+    let curProblem=problem, curPayload=payload, curValues=values, curPlan=plan, changed=false;
+    if(curProblem?.lp && curValues?.length===curProblem.variables){
+        const cleaned=await refineClimate(curProblem,{values:curValues},solve);
+        if(cleaned?.values && cleaned.values!==curValues){
+            const checked=JSON.parse(pkg.exact_plan(curPayload,stageJson,
+                JSON.stringify({values:cleaned.values,verify_only:true,proven:false,bound:0})));
+            if(keepsProduction(curPlan,checked)){
+                curValues=cleaned.values;
+                curPlan=checked;
+                changed=true;
+            }
+        }
+    }
+    if(relaxPairs && curProblem?.variable_keys?.length && curValues?.length===curProblem.variables){
+        const tempModes=new Set((curPlan.environment_assignments??[])
+            .map(a=>a.mode).filter(m=>m==='Warm'||m==='Scorching'||m==='Cool'||m==='Freeze'));
+        const pools=curProblem.staffing_pools??[];
+        const reserveHF=pools.some(pool=>pool.reserve && pool.anchors.some(v=>
+            curProblem.variable_keys[v]?.startsWith('staff:Heat Furnace:') && curValues[v]>0.5));
+        const reserveCU=pools.some(pool=>pool.reserve && pool.anchors.some(v=>
+            curProblem.variable_keys[v]?.startsWith('staff:Cooling Unit:') && curValues[v]>0.5));
+        const hasOwnedCU=pools.some(pool=>!pool.reserve && pool.anchors.some(v=>
+            curProblem.variable_keys[v]?.startsWith('staff:Cooling Unit:')));
+        const hasOwnedHF=pools.some(pool=>!pool.reserve && pool.anchors.some(v=>
+            curProblem.variable_keys[v]?.startsWith('staff:Heat Furnace:')));
+        if(tempModes.size>=3 || (reserveHF && hasOwnedCU) || (reserveCU && hasOwnedHF)){
+            const exactPayload=JSON.stringify({...JSON.parse(curPayload),relax_pair_coverage:false});
+            const exactP=JSON.parse(pkg.exact_problem(exactPayload,stageJson));
+            if(exactP?.lp && exactP.variable_keys?.some(k=>k.startsWith('pair:'))){
+                const byKey=new Map(curProblem.variable_keys.map((k,i)=>[k,curValues[i]]));
+                const oldExtras=curProblem.variable_keys.flatMap((k,i)=>k.startsWith('extra#')?[i]:[]);
+                const newExtras=exactP.variable_keys.flatMap((k,i)=>k.startsWith('extra#')?[i]:[]);
+                const extraShift=oldExtras.length-newExtras.length;
+                const aligned=exactP.variable_keys.map(k=>byKey.get(k)??0);
+                if(extraShift>=0){
+                    for(let i=0;i<newExtras.length;i++)aligned[newExtras[i]]=curValues[oldExtras[i+extraShift]];
+                }
+                const baseExact=JSON.parse(pkg.exact_plan(exactPayload,stageJson,
+                    JSON.stringify({values:aligned,verify_only:true,proven:false,bound:0,summary_only:true})));
+                if(baseExact.success){
+                    const cleaned=await refineClimate(exactP,{values:aligned},solve);
+                    if(cleaned?.values && cleaned.values!==aligned){
+                        const checked=JSON.parse(pkg.exact_plan(exactPayload,stageJson,
+                            JSON.stringify({values:cleaned.values,verify_only:true,proven:false,bound:0})));
+                        if(keepsProduction(curPlan,checked)){
+                            curProblem=exactP;
+                            curPayload=exactPayload;
+                            curValues=cleaned.values;
+                            curPlan=checked;
+                            changed=true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return {plan:curPlan,problem:curProblem,payload:curPayload,values:curValues,changed};
+}
+
 export async function searchWorkshopCapacity(pkg,highs,input,baseline,{validate,progress=()=>{}}) {
     const facilities=switchingWorkshops(input);
     // Upgrades are the only selected goal that consumes these unsold products.
@@ -221,10 +282,36 @@ export async function searchWorkshopCapacity(pkg,highs,input,baseline,{validate,
     if(!baseline?.success || !baseline.comparison_seed || !baseline.comparison_goals || !facilities.length ||
         !input.level_up_preview?.cost?.length)return baseline;
     const catalog=new Map(JSON.parse(pkg.get_all_items()).map(item=>[item.name,item]));
+    const solve=async(model,settings,_,warm)=>{
+        let r=solveWithIncumbent(highs,model,settings,warm,false);
+        if(r.Status==='Infeasible')r=solveWithIncumbent(highs,model,{...settings,presolve:'off'},warm,false);
+        if(r.Status!=='Optimal'||!r.Columns)return null;
+        return {values:Array.from({length:model.variables},(_,v)=>r.Columns['x'+v]?.Primal??0),
+            objective:r.ObjectiveValue,proven:true};
+    };
     progress('recipe_switching','start');
     let best=baseline, source=null, bestContext=null;
     try{
         source=optimizeWorkshopSources(pkg,highs,input,baseline,catalog);
+        if(source?.plan?.comparison_seed?.values && source.problem && source.payload && source.stage){
+            try{
+                // The tiebreak-free source solve can split plots across redundant climate buildings.
+                // Consolidate climate before fitCapacity freezes climate posts and their workers.
+                const refined=await minimizeClimate(pkg,solve,source.problem,source.payload,JSON.stringify(source.stage),
+                    source.plan,source.plan.comparison_seed.values,{relaxPairs:source.relaxPairs});
+                if(refined.changed){
+                    const nextPlan={...refined.plan,
+                        comparison_seed:{keys:refined.problem.variable_keys,values:refined.values},
+                        active_continuous_recipes:source.plan.active_continuous_recipes};
+                    for(const key of ['source_upper_bound','source_pace','upper_bound']){
+                        if(Object.hasOwn(source.plan,key))nextPlan[key]=source.plan[key];
+                    }
+                    source={...source,plan:nextPlan,problem:refined.problem,payload:refined.payload};
+                }
+            }catch{
+                // Keep the verified source shift if climate consolidation fails.
+            }
+        }
         const backgrounds=source?[source.plan,baseline]:[baseline];
         for(const background of backgrounds){
             const demand=workshopDemand(input,background,catalog);
@@ -274,88 +361,99 @@ export async function searchWorkshopCapacity(pkg,highs,input,baseline,{validate,
     }finally{progress('recipe_switching','done',false);}
     if(best!==baseline){
         // Switch-workshop backgrounds come from the tiebreak-free source solve.
-        // Refine E-mode on all non-switching recipes (or all recipes when fixed)
+        // Consolidate climate buildings and refine E-mode on non-switching recipes
         // while strictly preserving occupied Aniimo, priorities, income and schedule.
-        if(bestContext && best.comparison_seed?.values && (input.e_mode_rv>=12 || input.electricity)){
+        if(bestContext && best.comparison_seed?.values){
+            const {trial,stage,problem,moving}=bestContext;
+            const payload=JSON.stringify(trial),stageJson=JSON.stringify(stage);
+            const acceptRefined=async(values)=>{
+                const rebuilt=JSON.parse(pkg.exact_plan(payload,stageJson,
+                    JSON.stringify({values,proven:false,bound:0,verify_only:true})));
+                if(!keepsProduction(best,rebuilt))return false;
+                const active=[...new Set(problem.recipe_variables.filter(([v])=>values[v]>1e-8).map(([,name])=>name))];
+                const counts={};
+                for(const [name,terms] of problem.integer_groups??[])
+                    counts[name]=(counts[name]??0)+Math.round(terms.reduce((n,[v,c])=>n+values[v]*c,0));
+                for(const [v,name] of problem.recipe_variables)if(problem.variable_keys[v].startsWith('continuous_site:'))
+                    counts[name]=(counts[name]??0)+Math.round(values[v]);
+                const pace=problem.variable_keys.indexOf('pace#0');
+                const currency=trial.currency??'coins',priorities=trial.priorities??[];
+                const candidate={...rebuilt,upper_bound:null,proven_optimal:false,continuous_production_checked:!!trial.always_running,
+                    active_continuous_recipes:active,continuous_checked_recipes:trial.always_running_recipes,continuous_site_counts:counts,
+                    comparison_seed:{keys:problem.variable_keys,values},comparison_scores:{crop_variety:stage.crop_variety},
+                    comparison_goals:{currency,currency_value:rebuilt.rate_per_second,crop_variety:stage.crop_variety,
+                        pace:priorities.includes('level_up')&&pace>=0?values[pace]:null,
+                        floors:(rebuilt.priorities??[]).filter(p=>p.target!=='level_up').map(p=>[p.target,p.per_second])}};
+                const verified=await validate(trial,candidate,baseline);
+                if(verified && keepsProduction(best,verified)
+                    && (verified.recipe_schedule?.switches?.length??0)<=(best.recipe_schedule?.switches?.length??0)){
+                    best=verified;
+                    return true;
+                }
+                return false;
+            };
             try{
-                const {trial,stage,problem,moving}=bestContext;
-                const payload=JSON.stringify(trial),stageJson=JSON.stringify(stage);
-                const fixedRecipes=best.recipe_schedule ? new Set(moving.flatMap(f=>materialChains[f])) : undefined;
-                const seedValues=best.comparison_seed.values;
-                const kept=new Set([...(best.active_continuous_recipes??[]),...(fixedRecipes??[]),
-                    ...(problem.recipe_variables??[]).filter(([v])=>Math.abs(seedValues[v]??0)>1e-12).map(([,name])=>name)]);
-                const off=new Set((problem.recipe_variables??[]).filter(([,name])=>!kept.has(name)).map(([v])=>v));
-                const report=values=>JSON.parse(pkg.exact_plan(payload,stageJson,
-                    JSON.stringify({values,proven:false,bound:0,verify_only:true,summary_only:true})));
-                let refinedLp=off.size ? problem.lp.replace(/^ (?:0 <= x(\d+) <= [^\n]+|x(\d+) >= 0)$/gm,
-                    (line,a,b)=>off.has(Number(a??b))?` 0 <= x${a??b} <= 0`:line) : problem.lp;
-                if(best.recipe_schedule){
-                    // Physical switching sites draw whole-building watts while the LP
-                    // prices fractional site shares. Reserve that exact watt overhead
-                    // so background E-mode switches never exceed the physical grid.
-                    const lpPower=report(seedValues)?.power_used??0;
-                    const extraWatts=Math.max(0,(best.power_used??lpPower)-lpPower);
-                    if(extraWatts>1e-6){
-                        const genCols=problem.variable_keys.flatMap((k,v)=>
-                            k==='generators#0'||k.startsWith('staff:Crackle Generator:')?[v]:[]);
-                        if(genCols.length){
-                            const genRe=new RegExp(` - \\d+(?:\\.\\d+)? x(?:${genCols.join('|')})\\b`);
-                            const lines=refinedLp.split('\n');
-                            for(let i=0;i<lines.length;i++){
-                                const genIdx=lines[i].search(genRe);
-                                if(genIdx<0 || !lines[i].endsWith(' <= 0'))continue;
-                                const drawPrefix=lines[i].slice(lines[i].indexOf(':')+1,genIdx);
-                                lines[i]=lines[i].slice(0,-5)+' <= '+(-extraWatts);
-                                for(let j=i-1;j>=0;j--){
-                                    const prev=lines[j].match(/^ c\d+:(.+) <= (\d+(?:\.\d+)?)$/);
-                                    if(prev && prev[1]===drawPrefix){
-                                        lines[j]=lines[j].slice(0,-prev[2].length)+Math.max(0,Number(prev[2])-extraWatts);
-                                        break;
+                const climate=await refineClimate(problem,{values:best.comparison_seed.values},solve);
+                if(climate?.values && climate.values!==best.comparison_seed.values)await acceptRefined(climate.values);
+            }catch{
+                // Keep the already-certified workshop plan if climate refinement fails.
+            }
+            if(input.e_mode_rv>=12 || input.electricity){
+                try{
+                    const fixedRecipes=best.recipe_schedule ? new Set(moving.flatMap(f=>materialChains[f])) : undefined;
+                    const seedValues=best.comparison_seed.values;
+                    const kept=new Set([...(best.active_continuous_recipes??[]),...(fixedRecipes??[]),
+                        ...(problem.recipe_variables??[]).filter(([v])=>Math.abs(seedValues[v]??0)>1e-12).map(([,name])=>name)]);
+                    const off=new Set((problem.recipe_variables??[]).filter(([,name])=>!kept.has(name)).map(([v])=>v));
+                    const report=values=>JSON.parse(pkg.exact_plan(payload,stageJson,
+                        JSON.stringify({values,proven:false,bound:0,verify_only:true,summary_only:true})));
+                    let refinedLp=off.size ? problem.lp.replace(/^ (?:0 <= x(\d+) <= [^\n]+|x(\d+) >= 0)$/gm,
+                        (line,a,b)=>off.has(Number(a??b))?` 0 <= x${a??b} <= 0`:line) : problem.lp;
+                    if(best.recipe_schedule){
+                        // Physical switching sites draw whole-building watts while the LP
+                        // prices fractional site shares. Reserve that exact watt overhead
+                        // so background E-mode switches never exceed the physical grid.
+                        const lpPower=report(seedValues)?.power_used??0;
+                        const extraWatts=Math.max(0,(best.power_used??lpPower)-lpPower);
+                        if(extraWatts>1e-6){
+                            const genCols=problem.variable_keys.flatMap((k,v)=>
+                                k==='generators#0'||k.startsWith('staff:Crackle Generator:')?[v]:[]);
+                            if(genCols.length){
+                                const genRe=new RegExp(` - \\d+(?:\\.\\d+)? x(?:${genCols.join('|')})\\b`);
+                                const lines=refinedLp.split('\n');
+                                for(let i=0;i<lines.length;i++){
+                                    const genIdx=lines[i].search(genRe);
+                                    if(genIdx<0 || !lines[i].endsWith(' <= 0'))continue;
+                                    const drawPrefix=lines[i].slice(lines[i].indexOf(':')+1,genIdx);
+                                    lines[i]=lines[i].slice(0,-5)+' <= '+(-extraWatts);
+                                    for(let j=i-1;j>=0;j--){
+                                        const prev=lines[j].match(/^ c\d+:(.+) <= (\d+(?:\.\d+)?)$/);
+                                        if(prev && prev[1]===drawPrefix){
+                                            lines[j]=lines[j].slice(0,-prev[2].length)+Math.max(0,Number(prev[2])-extraWatts);
+                                            break;
+                                        }
                                     }
+                                    break;
                                 }
-                                break;
+                                refinedLp=lines.join('\n');
                             }
-                            refinedLp=lines.join('\n');
                         }
                     }
-                }
-                const restricted=refinedLp!==problem.lp ? {...problem,lp:refinedLp} : problem;
-                const solve=async(model,settings,_,warm)=>{
-                    let r=solveWithIncumbent(highs,model,settings,warm,false);
-                    if(r.Status==='Infeasible')r=solveWithIncumbent(highs,model,{...settings,presolve:'off'},warm,false);
-                    if(r.Status!=='Optimal'||!r.Columns)return null;
-                    return {values:Array.from({length:model.variables},(_,v)=>r.Columns['x'+v]?.Primal??0),
-                        objective:r.ObjectiveValue,proven:true};
-                };
-                const refined=await refineElectricStaffing(restricted,{values:best.comparison_seed.values},solve,
-                    {pkg,input:trial,report,fixedRecipes});
-                if(refined?.values && refined.values!==best.comparison_seed.values){
-                    const values=refined.values;
-                    const rebuilt=JSON.parse(pkg.exact_plan(payload,stageJson,
-                        JSON.stringify({values,proven:false,bound:0,verify_only:true})));
-                    if(keepsProduction(best,rebuilt)){
-                        const active=[...new Set(problem.recipe_variables.filter(([v])=>values[v]>1e-8).map(([,name])=>name))];
-                        const counts={};
-                        for(const [name,terms] of problem.integer_groups??[])
-                            counts[name]=(counts[name]??0)+Math.round(terms.reduce((n,[v,c])=>n+values[v]*c,0));
-                        for(const [v,name] of problem.recipe_variables)if(problem.variable_keys[v].startsWith('continuous_site:'))
-                            counts[name]=(counts[name]??0)+Math.round(values[v]);
-                        const pace=problem.variable_keys.indexOf('pace#0');
-                        const currency=trial.currency??'coins',priorities=trial.priorities??[];
-                        const candidate={...rebuilt,upper_bound:null,proven_optimal:false,continuous_production_checked:!!trial.always_running,
-                            active_continuous_recipes:active,continuous_checked_recipes:trial.always_running_recipes,continuous_site_counts:counts,
-                            comparison_seed:{keys:problem.variable_keys,values},comparison_scores:{crop_variety:stage.crop_variety},
-                            comparison_goals:{currency,currency_value:rebuilt.rate_per_second,crop_variety:stage.crop_variety,
-                                pace:priorities.includes('level_up')&&pace>=0?values[pace]:null,
-                                floors:(rebuilt.priorities??[]).filter(p=>p.target!=='level_up').map(p=>[p.target,p.per_second])}};
-                        const verified=await validate(trial,candidate,baseline);
-                        if(verified && keepsProduction(best,verified)
-                            && (verified.recipe_schedule?.switches?.length??0)<=(best.recipe_schedule?.switches?.length??0))
-                            best=verified;
+                    const restricted=refinedLp!==problem.lp ? {...problem,lp:refinedLp} : problem;
+                    const refined=await refineElectricStaffing(restricted,{values:best.comparison_seed.values},solve,
+                        {pkg,input:trial,report,fixedRecipes});
+                    if(refined?.values && refined.values!==best.comparison_seed.values){
+                        let nextValues=refined.values;
+                        try{
+                            const climate=await refineClimate(problem,{values:nextValues},solve);
+                            if(climate?.values && climate.values!==nextValues && keepsProduction(report(nextValues),report(climate.values)))
+                                nextValues=climate.values;
+                        }catch{}
+                        await acceptRefined(nextValues);
                     }
+                }catch{
+                    // Keep the already-certified workshop plan if E-mode refinement fails.
                 }
-            }catch{
-                // Keep the already-certified workshop plan if E-mode refinement fails.
             }
         }
         best.upper_bound=incomeBound(pkg,highs,input,baseline,best,catalog,facilities,source?.plan??null);
