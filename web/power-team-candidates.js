@@ -202,8 +202,14 @@ function ordinaryMenus(plan, input, modes, definitions) {
             const manualRow = entries.find(e => e.row.electric_level == null && e.source.id === e.source.item && e.row.aniimo)?.row
                 ?? entries.find(e => e.row.electric_level == null && e.row.aniimo && !e.row.worker)?.row
                 ?? entries.find(e => e.row.aniimo)?.row;
+            // Under always_running, a slower manual variant (e.g. Perfumery Lv.1) was chosen
+            // specifically to balance shared-ingredient availability; faster modes are infeasible.
+            const slowedEntry = input.always_running
+                ? entries.find(e => e.source.electric_level == null && e.source.id !== e.source.item) : null;
+            const incumbentCycle = slowedEntry?.source.cycle ?? Infinity;
             for (const mode of modes.get(item) ?? []) {
                 if (mode.id === incumbentId) continue;
+                if (slowedEntry && mode.cycle < incumbentCycle - EPS) continue;
                 const next = {...entries[0].source, ...mode, rate: totalRate};
                 const baseRow = (mode.electric_level == null ? manualRow : null) ?? entries[0].row;
                 const changed = productionRow(baseRow, next, definitions, input);

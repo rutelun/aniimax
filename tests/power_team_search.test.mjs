@@ -282,3 +282,45 @@ test('power team validator rejects candidates whose native solve requires more p
     const validator=createPowerTeamValidator(pkg,highs,base,input);
     assert.equal(validator.validate(base),null);
 });
+
+test('power team validator and crop protection retain solved pace floor against LP slack', async () => {
+    const { createPowerTeamValidator, cropProtectionPlans } = await import('../web/power-team-validation.js');
+    const input = { e_mode_rv: 21, facilities: { 'Bouncy Brew Keg': [{ level: 5, count: 1 }] } };
+    const problem = {
+        variable_keys: ['rate:agave_drink#0', 'rate:agave_drink__electric5#0', 'units:agave_drink#0', 'units:agave_drink__electric5#0', 'pace#0', 'generators#0'],
+        recipe_options: [[0, 'agave_drink', 'Bouncy Brew Keg', false, false, 67.5], [1, 'agave_drink', 'Bouncy Brew Keg', false, true, 135]],
+        lp: '\nBounds\n',
+    };
+    const pace = 0.04341477272727273;
+    const base = {
+        currency: 'coins',
+        power_generators: 1, power_used: 0, power_generated: 1500, power_generator_levels: [[5, 3]], rate_per_second: 100,
+        level_up_preview: { seconds: 86400 / pace },
+        priorities: [{ target: 'coins', per_second: 100 }],
+        comparison_seed: { keys: problem.variable_keys, values: [0.002, 0, 1, 0, pace, 1] },
+        comparison_goals: { currency: 'coins', pace, floors: [['coins', 100]] },
+        schedule_sources: [{ facility: 'Bouncy Brew Keg', item: 'agave_drink', id: 'agave_drink', facility_level: 1, rate: 0.002, cycle: 67.5, turns: false, inputs: [], outputs: [['agave_drink', 1]], electric_level: null }],
+        coin_items: [{ facility: 'Bouncy Brew Keg', item_name: 'agave_drink', facility_count: 1, status: 'producing', busy_units: 0.135, cycle_time: 67.5, electric_level: null, aniimo: { ability: 'Water', level: 4 }, aniimo_tasks: [{ ability: 'Water', level: 4, busy: 0.135 }] }],
+    };
+    const pkg = {
+        exact_problem: () => JSON.stringify(problem),
+        exact_plan: () => JSON.stringify({
+            success: true, rate_per_second: 100, priorities: [{ target: 'coins', per_second: 100 }],
+            level_up_preview: { seconds: 86400 / pace },
+            coin_items: base.coin_items, schedule_sources: base.schedule_sources,
+        }),
+    };
+    let sawValidatorPace = false, sawCropPace = false;
+    const highs = {
+        solve: lp => {
+            if (lp.includes(`hold_4: x4 >= ${pace}`)) sawValidatorPace = true;
+            if (lp.includes(`x4 >= ${pace}`)) sawCropPace = true;
+            return { Status: 'Optimal', Columns: { x4: { Primal: pace }, x5: { Primal: 1 } } };
+        },
+    };
+    const validator = createPowerTeamValidator(pkg, highs, base, input);
+    assert.ok(validator.validate(base), 'validator should accept incumbent with retained pace floor');
+    assert.ok(sawValidatorPace, 'validator LP must retain pace#0 >= prior pace');
+    cropProtectionPlans(pkg, highs, { plan: base, input, targets: ['agave_drink'], referenceIncome: 100 });
+    assert.ok(sawCropPace, 'cropProtectionPlans LP must retain pace#0 >= prior pace');
+});

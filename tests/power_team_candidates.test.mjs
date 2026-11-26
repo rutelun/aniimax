@@ -142,3 +142,51 @@ test('spare generator capacity can remove an individual specialist without chang
     assert.deepEqual(upgrades.map(p=>p.schedule_sources.filter(s=>s.electric_level!=null).map(s=>s.item)),[['pearl_powder'],['brick']]);
     assert.deepEqual([...singleWorkshopUpgrades({...plan,power_generated:89},input,problem,recipes)],[]);
 });
+
+test('always_running does not speed up a slowed manual variant while electrifying other workshops', () => {
+    const plan = {
+        power_generator_levels: [[5, 3]],
+        generator_tiers_by_lightning: [0, 0, 5, 5],
+        generator_watts_by_lightning: [0, 0, 1500, 1500],
+        schedule_sources: [
+            { item: 'orange_flower_incense', id: 'orange_flower_incense__dewy', facility: 'Phonolfactory Table',
+                facility_level: 6, rate: 0.0014, cycle: 270, turns: false, electric_level: null, inputs: [['orange_flower', 1]], outputs: [['orange_flower_incense', 1]] },
+            { item: 'coconut_oil', id: 'coconut_oil', facility: 'Carousel Mill',
+                facility_level: 7, rate: 0.008, cycle: 22.5, turns: false, electric_level: null, inputs: [], outputs: [['coconut_oil', 1]] },
+        ],
+        coin_items: [
+            { facility: 'Phonolfactory Table', item_name: 'orange_flower_incense', status: 'producing',
+                facility_count: 1, busy_units: 0.378, cycle_time: 270, electric_level: null,
+                aniimo: { ability: 'Perfumery', level: 1 }, aniimo_tasks: [{ ability: 'Perfumery', level: 1, busy: 0.378 }] },
+            { facility: 'Carousel Mill', item_name: 'coconut_oil', status: 'producing',
+                facility_count: 1, busy_units: 0.18, cycle_time: 22.5, electric_level: null,
+                aniimo: { ability: 'Wind', level: 4 }, aniimo_tasks: [{ ability: 'Wind', level: 4, busy: 0.18 }] },
+        ],
+    };
+    const problem = {
+        variable_keys: [
+            'rate:orange_flower_incense#0',
+            'rate:orange_flower_incense__electric6#0',
+            'rate:coconut_oil#0',
+            'rate:coconut_oil__electric7#0',
+        ],
+        recipe_options: [
+            [0, 'orange_flower_incense', 'Phonolfactory Table', false, false, 112.5],
+            [1, 'orange_flower_incense', 'Phonolfactory Table', false, true, 135],
+            [2, 'coconut_oil', 'Carousel Mill', false, false, 22.5],
+            [3, 'coconut_oil', 'Carousel Mill', false, true, 45],
+        ],
+    };
+    const recipes = [
+        { name: 'orange_flower_incense', facility: 'Phonolfactory Table', facility_level: 6, aniimo: ['Perfumery', 1] },
+        { name: 'coconut_oil', facility: 'Carousel Mill', facility_level: 7, aniimo: ['Wind', 3] },
+    ];
+    const input = {
+        always_running: true, e_mode_rv: 21,
+        facilities: { 'Phonolfactory Table': [{ level: 6, count: 1 }], 'Carousel Mill': [{ level: 7, count: 1 }] },
+    };
+    const candidates = [...powerTeamCandidates(plan, input, problem, recipes)];
+    assert.ok(candidates.some(c => c.schedule_sources.some(s => s.id === 'coconut_oil__electric7')));
+    assert.ok(candidates.every(c => c.schedule_sources.every(s => s.item !== 'orange_flower_incense' || s.id === 'orange_flower_incense__dewy')),
+        'faster electric or manual modes must not replace a slowed always_running perfumer');
+});

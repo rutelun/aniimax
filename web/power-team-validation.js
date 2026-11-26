@@ -73,7 +73,13 @@ export function createPowerTeamValidator(pkg, highs, plan, input) {
     const fixed = (v, value) => ' hold_' + v + ': x' + v + ' = ' + value;
     const retainedEntries = keys.flatMap((key, v) => /^(environment:|pair:|crop_variety#|lower_level_plots#|sold:)/.test(key)
         ? [[v, prior.get(key) ?? 0]] : []);
-    const retained = retainedEntries.map(([v, value]) => fixed(v, value));
+    // Preserve exact solved pace so the LP's 1e-4 floor slack cannot slow level-up.
+    const paceEntries = keys.flatMap((key, v) => /^(pace#|material_pace#)/.test(key) && (prior.get(key) ?? 0) > 0
+        ? [[v, prior.get(key)]] : []);
+    const retained = [
+        ...retainedEntries.map(([v, value]) => fixed(v, value)),
+        ...paceEntries.map(([v, value]) => ' hold_' + v + ': x' + v + ' >= ' + value),
+    ];
 
     // Reuse one native HiGHS model across all candidate validations by updating
     // only generator, recipe-rate and non-turning unit column bounds instead of reparsing the LP.
@@ -96,6 +102,13 @@ export function createPowerTeamValidator(pkg, highs, plan, input) {
                     const lo = Math.max(lpData.colLower[ni], val), hi = Math.min(lpData.colUpper[ni], val);
                     if (lo > hi + 1e-12) { nativeRetainedInfeasible = true; break; }
                     retIdx.push(ni); retLo.push(Math.min(lo, hi)); retHi.push(Math.max(lo, hi));
+                }
+                if (!nativeRetainedInfeasible) for (const [v, val] of paceEntries) {
+                    const ni = map.get(v);
+                    if (ni == null) continue;
+                    const lo = Math.max(lpData.colLower[ni], val), hi = lpData.colUpper[ni];
+                    if (lo > hi + 1e-12) { nativeRetainedInfeasible = true; break; }
+                    retIdx.push(ni); retLo.push(Math.min(lo, hi)); retHi.push(hi);
                 }
                 if (!nativeRetainedInfeasible && retIdx.length) {
                     const order = retIdx.map((_, k) => k).sort((a, b) => retIdx[a] - retIdx[b]);
@@ -271,7 +284,11 @@ export function cropProtectionPlans(pkg,highs,{plan,input,targets,referenceIncom
     const active=new Map(sources.map(s=>[s.id,s.rate]));
     const prior=new Map(plan.comparison_seed.keys.map((key,i)=>[key,plan.comparison_seed.values[i]]));
     const changes=new Map();
-    const fixed=keys.flatMap((key,v)=>/^(environment:|pair:)/.test(key)?['x'+v+' = '+(prior.get(key)??0)]:[]);
+    const fixed=keys.flatMap((key,v)=>{
+        if (/^(environment:|pair:)/.test(key)) return ['x'+v+' = '+(prior.get(key)??0)];
+        if (/^(pace#|material_pace#)/.test(key) && (prior.get(key)??0)>0) return ['x'+v+' >= '+prior.get(key)];
+        return [];
+    });
     for (const [v,item,facility,,electric] of model.recipe_options) {
         const id=keys[v].slice(5,-2),unit=indices.get('units:'+id+'#0');
         if (scheduled.has(facility)) {

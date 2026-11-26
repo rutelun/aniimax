@@ -136,3 +136,50 @@ test('E-mode covers a temporary second raw lane at the same pace as an extra man
         assert.equal(Math.ceil(peak-1e-8),powered?1:3);
     }
 });
+
+test('workshop capacity E-mode refinement upgrades automatic generators when physical schedule power crosses a generator boundary',
+    {skip:!fs.existsSync(wasmPath)},async()=>{
+    const {pkg,highs,items}=await workshopSolver();
+    const rv=21, setup=simpleSetup(rv);
+    const keep=new Set([
+        ...materialChains['Woodworking Bench'],
+        ...materialChains['Chimney Kiln'],
+        'silver_ore','gem','shell','fresh_water','quick_fresh_water','natural_mineral_spring_water','quick_natural_mineral_spring_water',
+        'agave','quick_agave','orange_flower','coconut','quick_coconut','magic_pumpkin','memory_lanternfruit','rose',
+        'aromathyst','quick_aromathyst','wool','quick_wool','gold_speck_cap','pearl','quick_pearl','scales','quick_scales',
+        'aniipod_mega','growth_fruit','agave_drink','coconut_oil','pearl_powder','agave_fiber',
+        'sisal_plush_mat','woolen_yarn','magic_pumpkin_lantern','advanced_gemstone_dust','pearl_face_cream',
+        'lotion','orange_flower_incense','agave_syrup','orange_flower_syrup',
+    ]);
+    const input={
+        currency:'coins', aniimo:'best', always_running:true, e_mode_rv:rv,
+        priorities:['aniipods','aniimo_exp','level_up','coins'],
+        season:'magical_wonder_night', season_crop_minimums:{magic_pumpkin:6,memory_lanternfruit:6},
+        facilities:setup.facilities, modules:setup.modules,
+        aniimo_levels:{Earth:4,Water:4,Leisure:4,Wind:4,Artisanship:4,Fire:4,Dark:4,Perfumery:3,Lightning:4},
+        exclude:items.map(i=>i.name).filter(n=>!keep.has(n)),
+        level_up_preview:{cost:[['coins',52600000],['densified_timber_component',1190],['microcrystalline_ore_plate',1320]],stock:[]},
+    };
+    // Solve ordinary baseline directly on the compact recipe set.
+    const {tryPriorityPlan}=await import('../web/continuous-priority-plan.js');
+    const solveModel=async(model,opts={})=>{
+        const {mipIterations,...hiOpts}=opts;
+        const res=highs.solve(model.lp,{mip_rel_gap:0,mip_abs_gap:0,...hiOpts});
+        if(res.Status!=='Optimal'||!res.Columns)return null;
+        return {objective:res.ObjectiveValue,values:Array.from({length:model.variables},(_,i)=>res.Columns['x'+i]?.Primal??0),proven:true};
+    };
+    const baseline=await tryPriorityPlan(pkg,input,{highs,solveModel});
+    assert.ok(baseline?.success);
+    const validate=(t,p,b)=>validateWorkshopCapacity(t,p,b,m=>highs.solve(m.lp,{mip_rel_gap:0}));
+    const selected=await searchWorkshopCapacity(pkg,highs,input,baseline,{validate});
+    assert.ok(selected.recipe_schedule, 'should select a verified switching schedule');
+    assert.equal(selected.power_generators, 2, 'should upgrade to 2 automatic generators so physical schedule + light workshops fit on E-mode');
+    assert.ok(selected.power_used > 1500 && selected.power_used <= selected.power_generated + 1e-6);
+    for (const item of ['coconut_oil','pearl_powder','agave_fiber','sisal_plush_mat','magic_pumpkin_lantern']) {
+        const rows=selected.coin_items.filter(r=>r.status==='producing'&&r.item_name===item);
+        assert.ok(rows.length && rows.every(r=>r.electric_level!=null), `${item} should stay electrified instead of falling back to manual`);
+    }
+    const {shortlistPowerTeams}=await import('../web/power-team-search.js');
+    const families=await shortlistPowerTeams(pkg,highs,selected,input);
+    assert.ok(families.length>0, 'shortlistPowerTeams must validate candidates on switched level_up plans with slowed perfumers');
+});

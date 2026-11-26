@@ -1,6 +1,7 @@
 // Refit only the production decisions affected by the requested throughput.
 // Each fit retains the exact crew, power, hauling and continuous-site rows.
 import {materialChains,switchingWorkshops} from './material-flow-schedule.js';
+import {generatorLimit} from './facility-config.js';
 import {optimizeWorkshopSources,workshopDemand} from './workshop-demand.js';
 import {prefersWorkshopPlan} from './recipe-switch-search.js';
 import {priorityCeiling} from './priority-ceilings.js';
@@ -14,6 +15,34 @@ const options={mip_rel_gap:0,mip_abs_gap:0,mip_feasibility_tolerance:1e-7,primal
 const asMap=seed=>new Map(seed.keys.map((key,i)=>[key,seed.values[i]]));
 const expression=terms=>terms.map(([v,c])=>(c<0?'- ':'+ ')+Math.abs(c)+' x'+v).join(' ');
 const addRows=(lp,rows)=>lp.replace('\nBounds\n','\n'+rows.join('\n')+'\nBounds\n');
+
+// Size automatic Crackle Generators to cover physical switching power draw,
+// matching `GeneratorLimits::staffing` in `src/power.rs`.
+function sizeAutomaticGenerators(plan, input, minGenerators = 0, minWatts = 0) {
+    if (input.roster) return plan;
+    const tiers = plan.generator_tiers_by_lightning;
+    const lightning = input.aniimo_levels?.Lightning ?? (input.aniimo?.startsWith('best3') ? 3 : 4);
+    const outputs = plan.generator_watts_by_lightning?.slice(0, lightning);
+    if (!outputs?.length || !tiers?.length) return plan;
+    const maxTier = Math.max(...tiers);
+    const operators = outputs.flatMap((watts, i) => watts > 0 && tiers[i] === maxTier && maxTier > 0
+        ? [{ tier: maxTier, level: i + 1, watts }] : []);
+    if (!operators.length) return plan;
+    const maxWatts = operators.at(-1).watts;
+    const cap = input.e_mode_rv >= 12 ? generatorLimit(input.e_mode_rv) : Infinity;
+    const wattsNeeded = Math.max(0, minWatts, plan.power_used ?? 0);
+    const count = Math.max(minGenerators, wattsNeeded > 1e-6 ? Math.ceil((wattsNeeded - 1e-6) / maxWatts) : 0);
+    if (count > cap) return plan;
+    let remaining = wattsNeeded;
+    const levels = [];
+    for (let others = count - 1; others >= 0; others--) {
+        const picked = operators.find(op => op.watts + others * maxWatts + 1e-6 >= remaining) ?? operators.at(-1);
+        levels.push([picked.tier, picked.level]);
+        remaining -= picked.watts;
+    }
+    const power_generated = levels.reduce((sum, [, lv]) => sum + (outputs[lv - 1] ?? 0), 0);
+    return { ...plan, power_generators: count, power_generator_levels: levels, power_generated };
+}
 
 function checkedRecipes(plan) {
     // An occupied site can be starved for its ingredient. Preserve its
@@ -377,14 +406,22 @@ export async function searchWorkshopCapacity(pkg,highs,input,baseline,{validate,
                 for(const [v,name] of problem.recipe_variables)if(problem.variable_keys[v].startsWith('continuous_site:'))
                     counts[name]=(counts[name]??0)+Math.round(values[v]);
                 const pace=problem.variable_keys.indexOf('pace#0');
+                const genCol=problem.variable_keys.indexOf('generators#0');
+                const plannedGens=!trial.roster && genCol>=0 ? Math.round(values[genCol]??0) : 0;
                 const currency=trial.currency??'coins',priorities=trial.priorities??[];
-                const candidate={...rebuilt,upper_bound:null,proven_optimal:false,continuous_production_checked:!!trial.always_running,
+                let candidate={...rebuilt,upper_bound:null,proven_optimal:false,continuous_production_checked:!!trial.always_running,
                     active_continuous_recipes:active,continuous_checked_recipes:trial.always_running_recipes,continuous_site_counts:counts,
                     comparison_seed:{keys:problem.variable_keys,values},comparison_scores:{crop_variety:stage.crop_variety},
                     comparison_goals:{currency,currency_value:rebuilt.rate_per_second,crop_variety:stage.crop_variety,
                         pace:priorities.includes('level_up')&&pace>=0?values[pace]:null,
                         floors:(rebuilt.priorities??[]).filter(p=>p.target!=='level_up').map(p=>[p.target,p.per_second])}};
-                const verified=await validate(trial,candidate,baseline);
+                if(plannedGens>(candidate.power_generators??0)){
+                    candidate=sizeAutomaticGenerators(candidate,trial,plannedGens,candidate.power_used??0);
+                }
+                let verified=await validate(trial,candidate,baseline);
+                if(verified && !trial.roster && verified.power_used!=null && verified.generator_watts_by_lightning?.length){
+                    verified=sizeAutomaticGenerators(verified,trial,0,verified.power_used);
+                }
                 if(verified && keepsProduction(best,verified)
                     && (verified.recipe_schedule?.switches?.length??0)<=(best.recipe_schedule?.switches?.length??0)){
                     best=verified;
@@ -405,16 +442,18 @@ export async function searchWorkshopCapacity(pkg,highs,input,baseline,{validate,
                     const kept=new Set([...(best.active_continuous_recipes??[]),...(fixedRecipes??[]),
                         ...(problem.recipe_variables??[]).filter(([v])=>Math.abs(seedValues[v]??0)>1e-12).map(([,name])=>name)]);
                     const off=new Set((problem.recipe_variables??[]).filter(([,name])=>!kept.has(name)).map(([v])=>v));
-                    const report=values=>JSON.parse(pkg.exact_plan(payload,stageJson,
+                    const rawReport=values=>JSON.parse(pkg.exact_plan(payload,stageJson,
                         JSON.stringify({values,proven:false,bound:0,verify_only:true,summary_only:true})));
                     let refinedLp=off.size ? problem.lp.replace(/^ (?:0 <= x(\d+) <= [^\n]+|x(\d+) >= 0)$/gm,
                         (line,a,b)=>off.has(Number(a??b))?` 0 <= x${a??b} <= 0`:line) : problem.lp;
+                    let extraWatts=0;
+                    const genCol=problem.variable_keys.indexOf('generators#0');
                     if(best.recipe_schedule){
                         // Physical switching sites draw whole-building watts while the LP
                         // prices fractional site shares. Reserve that exact watt overhead
                         // so background E-mode switches never exceed the physical grid.
-                        const lpPower=report(seedValues)?.power_used??0;
-                        const extraWatts=Math.max(0,(best.power_used??lpPower)-lpPower);
+                        const lpPower=rawReport(seedValues)?.power_used??0;
+                        extraWatts=Math.max(0,(best.power_used??lpPower)-lpPower);
                         if(extraWatts>1e-6){
                             const genCols=problem.variable_keys.flatMap((k,v)=>
                                 k==='generators#0'||k.startsWith('staff:Crackle Generator:')?[v]:[]);
@@ -439,6 +478,14 @@ export async function searchWorkshopCapacity(pkg,highs,input,baseline,{validate,
                             }
                         }
                     }
+                    const report=extraWatts>1e-6 && !trial.roster && genCol>=0
+                        ? values=>{
+                            const rep=rawReport(values);
+                            if(!rep?.success)return rep;
+                            const planned=Math.max(Math.round(values[genCol]??0), values===seedValues ? (best.power_generators??0) : 0);
+                            return planned>(rep.power_generators??0) ? {...rep,power_generators:planned} : rep;
+                        }
+                        : rawReport;
                     const restricted=refinedLp!==problem.lp ? {...problem,lp:refinedLp} : problem;
                     const refined=await refineElectricStaffing(restricted,{values:best.comparison_seed.values},solve,
                         {pkg,input:trial,report,fixedRecipes});
