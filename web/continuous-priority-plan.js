@@ -23,6 +23,8 @@ const expression = terms => terms.map(([v,c])=>(c<0?'- ':'+ ')+Math.abs(c)+' x'+
 
 function align(problem,seed) {
     if (!seed?.keys || seed.keys.length!==seed.values?.length) return;
+    if (seed.keys===problem.variable_keys || (seed.keys.length===problem.variable_keys.length
+        && seed.keys.every((key,i)=>key===problem.variable_keys[i]))) return seed.values.slice();
     const previous = new Map(seed.keys.map((key,i)=>[key,seed.values[i]]));
     return problem.variable_keys.map(key=>key.startsWith('extra#')?0:previous.get(key)??0);
 }
@@ -527,7 +529,8 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
         for (;;) {
             const targetIncome=witness ? earned : initialScope && jointFirst ? oldCurrency : 0;
             const incomeTarget=targetIncome>0 ? targetIncome*CURRENCY_GAP_FACTOR : undefined;
-            const floorCertify=(retryFloorCertify || !relaxedBound) && Boolean(witness && earned>0 && incomeTarget>0);
+            const floorCertify=(retryFloorCertify || !relaxedBound || bestBoundUpper<=incomeTarget*1.002)
+                && Boolean(witness && earned>0 && incomeTarget>0);
             retryFloorCertify=false;
             let extraLimits=null;
             if(witness && earned>0 && incomeTarget>0 && proofScope.size){
@@ -1143,7 +1146,7 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
                 };
                 const beforeLift=climateCount(scopedP.variable_keys,sRefined.values);
                 const afterLift=climateCount(local.variable_keys,refined.values);
-                if(afterLift.b>beforeLift.b || (afterLift.b===beforeLift.b && afterLift.p>beforeLift.p)){
+                if(afterLift.b>beforeLift.b || afterLift.p>0){
                     const cleaned=await refineClimate(local,refined,solveModel);
                     if(cleaned!==refined && keepsProduction(audit(refined.values,true),audit(cleaned.values,true)))
                         refined=cleaned;

@@ -80,7 +80,7 @@ async function buildLayout(event) {
     const storage = { w: 2, h: 2 };
     // A failed grouped layout explicitly falls back to Shortest delivery.
     const accountForWorkers = !grouped && style !== 'delivery';
-    let incompleteRegularSeed;
+    let incompleteRegularSeed, fastRefine = null;
     if(!accountForWorkers&&storageCount>0&&cells.length) {
         try {
             const [refineJSON,{fastLayoutSeed,refineFastLayout,polishFastLayout},{layoutKeepsIncome}]=await Promise.all([
@@ -88,15 +88,24 @@ async function buildLayout(event) {
                 import('./group-layout.js'),
             ]);
             if(refineJSON) {
-                const seed=fastLayoutSeed({pieces,cells,storageCount,poleLimit});
+                fastRefine = { refineJSON, refineFastLayout, polishFastLayout, layoutKeepsIncome };
+                let seed=fastLayoutSeed({pieces,cells,storageCount,poleLimit});
+                if(!seed.unplaced.length && seed.power.disconnected) {
+                    const networked=optimizePowerNetworks(seed,cells,poleLimit);
+                    if(!networked.power.disconnected)seed=networked;
+                }
                 if(seed.unplaced.length || seed.power.disconnected)incompleteRegularSeed=seed;
                 else {
-                    const broad=refineFastLayout(seed,cells,refineJSON);
-                    const polished=polishFastLayout(broad,seed,cells,refineJSON);
-                    const candidate=layoutKeepsIncome(polished,staffing,recipes||[])?polished:broad;
-                    if(layoutKeepsIncome(candidate,staffing,recipes||[])) {
-                        deliver(grouped?{...candidate,groupFallback:groupFailure}:candidate);
-                        return;
+                    try {
+                        const broad=refineFastLayout(seed,cells,refineJSON);
+                        const polished=polishFastLayout(broad,seed,cells,refineJSON);
+                        const candidate=layoutKeepsIncome(polished,staffing,recipes||[])?polished:broad;
+                        if(layoutKeepsIncome(candidate,staffing,recipes||[])) {
+                            deliver(grouped?{...candidate,groupFallback:groupFailure}:candidate);
+                            return;
+                        }
+                    } catch {
+                        incompleteRegularSeed=seed;
                     }
                 }
             }
@@ -140,6 +149,27 @@ async function buildLayout(event) {
             if (fewerProblems(supplied, best)) {
                 best = supplied;
             }
+        }
+    }
+    if (!complete(best)) {
+        for (const candidate of incompleteRegularSeed && incompleteRegularSeed !== best ? [best, incompleteRegularSeed] : [best]) {
+            const networked = optimizePowerNetworks(candidate, cells, poleLimit);
+            if (complete(networked)) { best = networked; break; }
+            if (fewerProblems(networked, best)) best = networked;
+        }
+    }
+    if (complete(best) && fastRefine) {
+        try {
+            const { refineJSON, refineFastLayout, polishFastLayout, layoutKeepsIncome } = fastRefine;
+            const broad = refineFastLayout(best, cells, refineJSON);
+            const polished = polishFastLayout(broad, best, cells, refineJSON);
+            const candidate = layoutKeepsIncome(polished, staffing, recipes || []) ? polished : broad;
+            if (layoutKeepsIncome(candidate, staffing, recipes || [])) {
+                deliver(grouped ? { ...candidate, groupFallback: groupFailure } : candidate);
+                return;
+            }
+        } catch (error) {
+            console.warn('Fast layout refinement failed on fallback seed; continuing with JS search.', error);
         }
     }
     if (!accountForWorkers && !usedCentered && complete(best) && storageCount > 1) {

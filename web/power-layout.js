@@ -245,6 +245,10 @@ export function connectPower(layout, cells, maximum, repack = true, canRelocate 
     };
     if(islands)return analyzePowerNetworks(layout);
     if (repack && layout.power.disconnected && generators.length && consumers.length) {
+        if (!preferCoverage) {
+            const covered = connectPower(structuredClone(layout), cells, maximum, false, canRelocate, canPlacePole, true, false);
+            if (!covered.power.disconnected) return covered;
+        }
         return repackPower(layout, cells, maximum, { canRelocate, canPlacePole });
     }
     return layout;
@@ -252,14 +256,15 @@ export function connectPower(layout, cells, maximum, repack = true, canRelocate 
 
 // Reuse the same feasible placement search to repair a disconnected grid or to
 // compare a compact alternative for an already connected grid.
-export function repackPower(layout, cells, maximum, { canRelocate = null, canPlacePole = null, attempts = 8, accept = null } = {}) {
+export function repackPower(layout, cells, maximum, { canRelocate = null, canPlacePole = null, attempts = null, accept = null } = {}) {
     const inside = createInsideTest(cells);
     const electricMembers = layout.pieces.flatMap(p => p.members).filter(m => m.generator || m.electric_level != null);
     if (!layout.power.generators || !layout.power.consumers) return layout;
     const mx = electricMembers.reduce((sum, m) => sum + center(m).x, 0) / electricMembers.length;
     const my = electricMembers.reduce((sum, m) => sum + center(m).y, 0) / electricMembers.length;
+    const limit = attempts ?? (accept ? 8 : cells.length);
     const anchors = cells.map(c => ({ x: c.x + c.w / 2, y: c.y + c.h / 2 }))
-        .sort((a, b) => Math.hypot(a.x - mx, a.y - my) - Math.hypot(b.x - mx, b.y - my)).slice(0, attempts);
+        .sort((a, b) => Math.hypot(a.x - mx, a.y - my) - Math.hypot(b.x - mx, b.y - my)).slice(0, limit);
     // Every anchor moves the same electric buildings. Exclude immutable
     // obstacles once before ordering sites for any of those trials.
     const stationary = [...layout.storages, ...layout.pieces.flatMap(p => p.members)
@@ -315,6 +320,9 @@ export function repackPower(layout, cells, maximum, { canRelocate = null, canPla
         }
         if (!fits) continue;
         connectPower(trial, cells, maximum, false, canRelocate, canPlacePole);
+        if (trial.power.disconnected) {
+            connectPower(trial, cells, maximum, false, canRelocate, canPlacePole, true);
+        }
         if (trial.power.disconnected < best.power.disconnected || (trial.power.disconnected === best.power.disconnected
             && trial.power.poles.length < best.power.poles.length && (!accept || accept(trial)))) best = trial;
         if (!best.power.disconnected && (!accept || best !== layout)) break;

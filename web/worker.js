@@ -75,7 +75,7 @@ const SOLVE_OPTIONS = { mip_rel_gap: 0, time_limit: EXACT_TIME_LIMIT };
 // making something from nothing (seen at RV 9 with Coins then Aniimo EXP). It isn't the default
 // because on a big model it can have HiGHS call a perfectly feasible plan infeasible (seen on the
 // RV 17 level-up).
-const STRICT_OPTIONS = { ...SOLVE_OPTIONS, mip_feasibility_tolerance: 1e-9 };
+const STRICT_OPTIONS = { ...SOLVE_OPTIONS, mip_abs_gap: 0, mip_feasibility_tolerance: 1e-9 };
 
 // Solves one exact-planner model with HiGHS: `{ values, proven, objective }`, or null if HiGHS
 // found no plan at all. `objective` leaves out the model's tie-break (see `BUILDING_TIE_BREAK` in
@@ -89,7 +89,12 @@ async function solveModel(problem, options = SOLVE_OPTIONS, infeasibleMessage, i
         result = run(highs, problem, options, incumbent);
         if (result.Status === 'Infeasible') {
             // Presolve can call a tightly constrained model infeasible when it isn't.
-            result = run(highs, problem, { ...options, presolve: 'off' }, incumbent);
+            // Keep 1-node heuristic retries bounded so genuinely infeasible local models
+            // cannot stall in unpresolved root cuts without an incumbent.
+            const retryOptions = options.mip_max_nodes <= 1 && options.mipIterations == null
+                ? { ...options, presolve: 'off', mipIterations: options.incumbentIterations ?? 6000 }
+                : { ...options, presolve: 'off' };
+            result = run(highs, problem, retryOptions, incumbent);
         }
     } catch (error) {
         // A WASM trap must not poison subsequent requests handled by this worker.
@@ -795,9 +800,15 @@ async function exactPlanJsonOnce(pkg, payload, step = () => {}, first = () => {}
         // rounding noise it may have leaned on.
         const strict = await runModel(problem, { ...STRICT_OPTIONS, time_limit: options.time_limit }, undefined, solved.values);
         if (strict) {
-            json = exact_plan(payload, stageJson, JSON.stringify({ values: strict.values, proven: strict.proven && allProven, bound, summary_only:!!comparison }));
+            let checkedStrict = strict;
+            if (!discoveryPass && !comparison && deadline == null) {
+                checkedStrict = input.always_running
+                    ? await verifiedStaffing(pkg,payload,stageJson,problem,strict)
+                    : await verifiedClimate(pkg,payload,stageJson,problem,strict);
+            }
+            json = exact_plan(payload, stageJson, JSON.stringify({ values: checkedStrict.values, proven: strict.proven && allProven, bound, summary_only:!!comparison }));
             plan = JSON.parse(json);
-            if (plan.success) solved = strict;
+            if (plan.success) solved = checkedStrict;
         }
     }
     if (!plan.success) throw new Error(plan.error || 'the plan failed its check');

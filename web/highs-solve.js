@@ -64,8 +64,39 @@ export function solveWithIncumbent(highs, problem, options, incumbent, reuseMode
         const {mipIterations,incumbentIterations,primaryCeiling,...nativeOptions} = options;
         applyOptions(model,nativeOptions);
         if (incumbent?.length === problem.variables) {
-            const values = names.map(name => incumbent[Number(name.slice(1))] ?? 0);
-            if (values.every(Number.isFinite)) model.setSolution({ colValue: values });
+            const keys = problem.variable_keys;
+            let hasExtra = false, allExtraZero = true;
+            if (integerModel && keys?.length === problem.variables) {
+                for (let v = 0; v < keys.length; v++) {
+                    if (!keys[v]?.startsWith('extra#')) continue;
+                    hasExtra = true;
+                    if (Math.abs(incumbent[v] ?? 0) > 1e-12) { allExtraZero = false; break; }
+                }
+            }
+            if (hasExtra && allExtraZero) {
+                // Aligned incumbents from another model zero out extra# binaries,
+                // which is infeasible as a full start. For bounded primal heuristics,
+                // supply only non-extra# integers so HiGHS completes extra# itself;
+                // skip on exact proofs where HiGHS 1.15.1 can misreport partial starts.
+                if ((options.mip_max_nodes ?? Infinity) <= 64) {
+                    const sec = problem.lp.match(/\nGeneral\n([\s\S]*?)\nEnd/)?.[1] ?? '';
+                    const ints = new Set(Array.from(sec.matchAll(/\bx(\d+)\b/g), m => Number(m[1])));
+                    const warm = { indices: [], values: [] };
+                    for (let i = 0; i < names.length; i++) {
+                        const v = Number(names[i].slice(1));
+                        const val = incumbent[v];
+                        if (ints.has(v) && !keys[v]?.startsWith('extra#') && Number.isFinite(val)
+                            && Math.abs(val - Math.round(val)) < 1e-6) {
+                            warm.indices.push(i);
+                            warm.values.push(Math.round(val));
+                        }
+                    }
+                    if (warm.indices.length) model.setSolution(warm);
+                }
+            } else {
+                const values = names.map(name => incumbent[Number(name.slice(1))] ?? 0);
+                if (values.every(Number.isFinite)) model.setSolution({ colValue: values });
+            }
         }
         let reachesCeiling, primaryAttained=false;
         if(Number.isFinite(primaryCeiling) && problem.primary_objective?.length && integerModel){
