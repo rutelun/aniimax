@@ -1322,9 +1322,11 @@ function opportunityDescription(candidate) {
         + (candidate.description ? `<p class="hint small">${candidate.description}</p>` : '');
 }
 
+const HIDE_OPPORTUNITIES = true;
+
 function renderImprovements(rebuild = true) {
     const card = document.getElementById('improve-card');
-    if (!ranking || !lastPlan?.success) { card.style.display = 'none'; return; }
+    if (HIDE_OPPORTUNITIES || !ranking || !lastPlan?.success) { card.style.display = 'none'; card.hidden = true; return; }
     card.style.display = 'block';
     const { tab, candidates, results, reports, running, paused, activeIndex } = ranking;
     const matching = kind => candidates.flatMap((candidate, i) => candidate.kind === kind ? [i] : []);
@@ -2601,7 +2603,7 @@ function renderHomelandLayout(plan, keepLayout = false) {
         }
         if (!setupSolve && !mainSolve) {
             resetPlanButton();
-            rankImprovementsFor(selectedAniimoSetup());
+            if (!HIDE_OPPORTUNITIES) rankImprovementsFor(selectedAniimoSetup());
             void updateRosterSwaps(plan,layout,selectedAniimoSetup());
         }
     };
@@ -2663,7 +2665,7 @@ function renderHomelandLayout(plan, keepLayout = false) {
         }
         if (!setupSolve && !mainSolve) resetPlanButton();
         if (selectedSetupTab() === 'best') renderBestTeam(plan, translate('Unavailable'));
-        if (!setupSolve && !mainSolve) rankImprovementsFor(selectedAniimoSetup());
+        if (!setupSolve && !mainSolve && !HIDE_OPPORTUNITIES) rankImprovementsFor(selectedAniimoSetup());
     };
     solver.postMessage({ pieces, ...layoutOptions });
 }
@@ -7475,7 +7477,7 @@ async function initApp() {
     document.getElementById('improve-stop-btn').addEventListener('click', () => { stopRanking(); renderImprovements(); });
     const opportunities = document.getElementById('improve-card');
     new IntersectionObserver(([entry]) => {
-        if (!entry.isIntersecting || !ranking || ranking.running || ranking.autoChecked || ranking.tab !== 'Aniimo'
+        if (HIDE_OPPORTUNITIES || !entry.isIntersecting || !ranking || ranking.running || ranking.autoChecked || ranking.tab !== 'Aniimo'
             || !ranking.candidates.some(candidate => candidate.kind === 'Aniimo')) return;
         ranking.autoChecked = true;
         const shortlist = ranking.candidates.flatMap((candidate, index) => candidate.kind === 'Aniimo' && !ranking.results[index] ? [index] : []);
