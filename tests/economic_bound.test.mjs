@@ -138,3 +138,37 @@ test('relax_min_reasons drops selector binaries while keeping a valid upper boun
     assert.ok(relaxedSol.ObjectiveValue >= exactSol.ObjectiveValue - 1e-7,
         `relaxed bound ${relaxedSol.ObjectiveValue} must be >= exact ${exactSol.ObjectiveValue}`);
 });
+
+test('solveEconomicBound retries 1e-7 with presolve enabled before falling back to presolve off', () => {
+    const problem = {
+        production_only: true,
+        variables: 2,
+        variable_keys: ['rate:a#0', 'units:a#0'],
+        primary_objective: [[0, 1]],
+        lp: 'Maximize\n obj: x0\nEnd',
+        recipe_options: [[0, 'a', 'Workshop', false, false, 2]],
+    };
+    const runtime = {
+        constants: { modelStatus: { optimal: 7, infeasible: 8, interrupted: 17 }, solutionStatus: { feasible: 2 },
+            callbackType: { mipInterrupt: 'interrupt', mipImprovingSolution: 'improving' } },
+    };
+    const optionLog = [];
+    let runs = 0;
+    const retryNative = {
+        getDimensions: () => ({ numCols: 2 }),
+        getColName: i => `x${i}`,
+        clearSolver() {},
+        options: { set(o) { optionLog.push(o); } },
+        run() { runs++; },
+        getModelStatus: () => runs === 1 ? 8 : 7,
+        getObjectiveValue: () => 10,
+        getSolution: () => ({ colValue: [0.5, 1] }),
+        dispose() {},
+        info: { get: name => ({ mip_dual_bound: 10, primal_solution_status: 2, mip_gap: 0 })[name] },
+    };
+    const retryRes = solveEconomicBound({ ...runtime, createModel: () => retryNative }, problem, { exact: true });
+    assert.equal(runs, 2);
+    assert.equal(retryRes.upper, 10);
+    assert.equal(optionLog.some(o => o.primal_feasibility_tolerance === 1e-7 && !('presolve' in o)), true);
+    assert.equal(optionLog.some(o => o.presolve === 'off'), false);
+});

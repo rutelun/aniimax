@@ -143,4 +143,14 @@ test('the source solve activates idle gathering and shares the same worker acros
         level_up_preview:{seconds:exactSeconds/(1-1e-4),requirements:expResult.plan.level_up_preview?.requirements??[]},
         comparison_goals:{pace:86400/exactSeconds,floors:[['aniimo_exp',expRate],['coins',expResult.plan.rate_per_second]]}};
     assert.equal(optimizeWorkshopSources(pkg,highs,expInput,slackBase,recipes),null);
+
+    // proveBound: false preserves the source shift and still supports lazy bound tightening.
+    const lazyResult=optimizeWorkshopSources(pkg,highs,expInput,idle,recipes,{proveBound:false});
+    assert.ok(lazyResult?.plan?.success);
+    assert.ok(lazyResult.plan.source_pace > 0);
+    assert.ok(Math.abs(lazyResult.plan.rate_per_second - expResult.plan.rate_per_second) < 1e-6);
+    if (lazyResult.proveSourceBound) {
+        const tightened=lazyResult.proveSourceBound(lazyResult.plan.rate_per_second);
+        assert.ok(Number.isFinite(tightened) && tightened >= lazyResult.plan.rate_per_second - 1e-6);
+    }
 });

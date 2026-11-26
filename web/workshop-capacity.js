@@ -202,7 +202,7 @@ function fitCapacity(pkg,highs,trial,baseline,background,demand,moving,mode,stag
 // priority floors. For an unlimited generated team and income before RV pace,
 // dropping optional workshop jobs preserves every economic recipe and its
 // ingredients. Check the catalogue before transferring that proof to switching.
-function incomeBound(pkg,highs,input,base,plan,catalog,facilities,sourcePlan=null) {
+function incomeBound(pkg,highs,input,base,plan,catalog,facilities,source=null) {
     const currency=input.currency??'coins',priorities=input.priorities??[];
     const pos=priorities.indexOf(currency),prefix=pos<0?priorities:priorities.slice(0,pos);
     const previous=new Map(base.comparison_goals.floors),achieved=new Map(plan.comparison_goals.floors);
@@ -219,13 +219,23 @@ function incomeBound(pkg,highs,input,base,plan,catalog,facilities,sourcePlan=nul
     // When the workshop-free source solve proved a tighter MIP dual bound at
     // this exact pace and higher-priority floors, it also bounds every valid
     // physical switching schedule that matches or beats those goals.
+    const sourcePlan=source?.plan??source;
     let bestUpper=null;
-    if(Number.isFinite(sourcePlan?.source_upper_bound) && sourcePlan.source_upper_bound>=plan.rate_per_second-1e-7){
+    if(sourcePlan){
         const sourceFloors=new Map((sourcePlan.priorities??[]).map(p=>[p.target,p.per_second]));
         const matchesSource=prefix.every(goal=>goal==='level_up'
             ? Number.isFinite(sourcePlan.source_pace) && plan.comparison_goals.pace>=sourcePlan.source_pace*(1-1e-5)
             : (achieved.get(goal)??0)>=(sourceFloors.get(goal)??0)*(1-1e-5));
-        if(matchesSource)bestUpper=Math.max(sourcePlan.source_upper_bound,plan.rate_per_second);
+        if(matchesSource){
+            let sourceUpper=sourcePlan.source_upper_bound;
+            if(source?.proveSourceBound && (!Number.isFinite(sourceUpper) || sourceUpper>plan.rate_per_second*1.001+1e-7)){
+                const tightened=source.proveSourceBound(plan.rate_per_second);
+                if(Number.isFinite(tightened))sourceUpper=Number.isFinite(sourceUpper)?Math.min(sourceUpper,tightened):tightened;
+            }
+            if(Number.isFinite(sourceUpper) && sourceUpper>=plan.rate_per_second-1e-7){
+                bestUpper=Math.max(sourceUpper,plan.rate_per_second);
+            }
+        }
     }
 
     // Switching can change the feasible economic shifts. Price the entire
@@ -319,72 +329,89 @@ export async function searchWorkshopCapacity(pkg,highs,input,baseline,{validate,
             objective:r.ObjectiveValue,proven:true};
     };
     progress('recipe_switching','start');
-    let best=baseline, source=null, bestContext=null;
-    try{
-        source=optimizeWorkshopSources(pkg,highs,input,baseline,catalog);
-        if(source?.plan?.comparison_seed?.values && source.problem && source.payload && source.stage){
-            try{
-                // The tiebreak-free source solve can split plots across redundant climate buildings.
-                // Consolidate climate before fitCapacity freezes climate posts and their workers.
-                const refined=await minimizeClimate(pkg,solve,source.problem,source.payload,JSON.stringify(source.stage),
-                    source.plan,source.plan.comparison_seed.values,{relaxPairs:source.relaxPairs});
-                if(refined.changed){
-                    const nextPlan={...refined.plan,
-                        comparison_seed:{keys:refined.problem.variable_keys,values:refined.values},
-                        active_continuous_recipes:source.plan.active_continuous_recipes};
-                    for(const key of ['source_upper_bound','source_pace','upper_bound']){
-                        if(Object.hasOwn(source.plan,key))nextPlan[key]=source.plan[key];
-                    }
-                    source={...source,plan:nextPlan,problem:refined.problem,payload:refined.payload};
+    let best=baseline, source=null, bestContext=null, bestFromSource=false;
+    const consolidateSource=async(src)=>{
+        if(!src?.plan?.comparison_seed?.values || !src.problem || !src.payload || !src.stage)return src;
+        try{
+            // The tiebreak-free source solve can split plots across redundant climate buildings.
+            // Consolidate climate before fitCapacity freezes climate posts and their workers.
+            const refined=await minimizeClimate(pkg,solve,src.problem,src.payload,JSON.stringify(src.stage),
+                src.plan,src.plan.comparison_seed.values,{relaxPairs:src.relaxPairs});
+            if(refined.changed){
+                const nextPlan={...refined.plan,
+                    comparison_seed:{keys:refined.problem.variable_keys,values:refined.values},
+                    active_continuous_recipes:src.plan.active_continuous_recipes};
+                for(const key of ['source_upper_bound','source_pace','upper_bound']){
+                    if(Object.hasOwn(src.plan,key))nextPlan[key]=src.plan[key];
                 }
-            }catch{
-                // Keep the verified source shift if climate consolidation fails.
+                return {...src,plan:nextPlan,problem:refined.problem,payload:refined.payload};
             }
+        }catch{
+            // Keep the verified source shift if climate consolidation fails.
         }
-        const backgrounds=source?[source.plan,baseline]:[baseline];
-        for(const background of backgrounds){
-            const demand=workshopDemand(input,background,catalog);
-            if(!demand || !demand.chains.some(c=>c.jobs.some(j=>j.rate>0)))continue;
-            const before=best.level_up_preview?.seconds;
-            if(background===baseline && Number.isFinite(before) && before<demand.seconds*(1-1e-5))continue;
-            const active=demand.chains.filter(c=>facilities.includes(c.facility)&&c.jobs.some(j=>j.rate>0));
-            if(!active.length)continue;
-            const recipes=[...new Set([...checkedRecipes(baseline),...checkedRecipes(background),...active.flatMap(c=>c.jobs.map(j=>j.recipe))])];
-            const fixed={...input,always_running_recipes:recipes,restrict_to_checked_recipes:false,recipe_switching_relaxation:false};
-            const priorities=input.priorities??[],rv=priorities.indexOf('level_up');
-            const earlier=new Set(rv<0?priorities:priorities.slice(0,rv));
-            // A zero floor keeps the secondary currency's sale columns in the
-            // report while leaving a higher-ranked improvement free to win.
-            const stage={pace:0,crop_variety:baseline.comparison_scores?.crop_variety??null,
-                floors:(baseline.comparison_goals?.floors??[]).map(([name,n])=>[name,earlier.has(name)?n:0])};
-            const fixedProblem=JSON.parse(pkg.exact_problem(JSON.stringify(fixed),JSON.stringify(stage)));
-            const moving=active.map(c=>c.facility);
-            const consider=async(trial,facilities,mode,problem)=>{
-                const draft=fitCapacity(pkg,highs,trial,baseline,background,demand,facilities,mode,stage,catalog,problem);
-                if(!draft)return;
-                const verified=await validate(trial,draft,baseline);
-                if(verified && prefersWorkshopPlan(verified,best)){
-                    best=verified;
-                    bestContext={trial,stage,problem,moving:facilities};
+        return src;
+    };
+    const evaluateBackground=async(background,fromSource)=>{
+        const demand=workshopDemand(input,background,catalog);
+        if(!demand || !demand.chains.some(c=>c.jobs.some(j=>j.rate>0)))return;
+        const before=best.level_up_preview?.seconds;
+        if(!fromSource && Number.isFinite(before) && before<demand.seconds*(1-1e-5))return;
+        const active=demand.chains.filter(c=>facilities.includes(c.facility)&&c.jobs.some(j=>j.rate>0));
+        if(!active.length)return;
+        const recipes=[...new Set([...checkedRecipes(baseline),...checkedRecipes(background),...active.flatMap(c=>c.jobs.map(j=>j.recipe))])];
+        const fixed={...input,always_running_recipes:recipes,restrict_to_checked_recipes:false,recipe_switching_relaxation:false};
+        const priorities=input.priorities??[],rv=priorities.indexOf('level_up');
+        const earlier=new Set(rv<0?priorities:priorities.slice(0,rv));
+        // A zero floor keeps the secondary currency's sale columns in the
+        // report while leaving a higher-ranked improvement free to win.
+        const stage={pace:0,crop_variety:baseline.comparison_scores?.crop_variety??null,
+            floors:(baseline.comparison_goals?.floors??[]).map(([name,n])=>[name,earlier.has(name)?n:0])};
+        const fixedProblem=JSON.parse(pkg.exact_problem(JSON.stringify(fixed),JSON.stringify(stage)));
+        const moving=active.map(c=>c.facility);
+        const consider=async(trial,facilities,mode,problem)=>{
+            const draft=fitCapacity(pkg,highs,trial,baseline,background,demand,facilities,mode,stage,catalog,problem);
+            if(!draft)return;
+            const verified=await validate(trial,draft,baseline);
+            if(verified && prefersWorkshopPlan(verified,best)){
+                best=verified;
+                bestContext={trial,stage,problem,moving:facilities};
+                bestFromSource=fromSource;
+            }
+            return verified;
+        };
+        await consider(fixed,moving,'fixed',fixedProblem);
+        if(Number.isFinite(best.level_up_preview?.seconds) && best.level_up_preview.seconds<=demand.seconds*(1+1e-5))return;
+        const required=active.filter(c=>needsSharedSite(input,c,fixedProblem,catalog)).map(c=>c.facility);
+        // A shared worker or power constraint can make dedicated recipes
+        // too slow even when the building count alone permits the shift.
+        const groups=required.length && required.length<moving.length ? [required,moving] : [moving];
+        for(const shared of groups){
+            const trial={...fixed,recipe_switching_relaxation:true,recipe_switching_facilities:shared};
+            const problem=JSON.parse(pkg.exact_problem(JSON.stringify(trial),JSON.stringify(stage)));
+            await consider(trial,shared,'manual',problem);
+            if(problem.recipe_options?.some(([,name,f,,electric])=>electric&&shared.includes(f)&&materialChains[f].includes(name))){
+                const powered=await consider(trial,shared,'electric',problem);
+                if(!Number.isFinite(powered?.level_up_preview?.seconds) || powered.level_up_preview.seconds>demand.seconds*(1+1e-5))
+                    await consider(trial,shared,'mixed',problem);
+            }
+            if(Number.isFinite(best.level_up_preview?.seconds) && best.level_up_preview.seconds<=demand.seconds*(1+1e-5))break;
+        }
+    };
+    try{
+        source=await consolidateSource(optimizeWorkshopSources(pkg,highs,input,baseline,catalog,{proveBound:false}));
+        if(source)await evaluateBackground(source.plan,true);
+        await evaluateBackground(baseline,false);
+        // If a custom-roster switching plan actually beat baseline using the
+        // lightweight source pass, run the full source recipe-discovery pass
+        // so newly unlocked secondary-income recipes are never missed.
+        if(best!==baseline && bestFromSource && input.roster && source?.proveSourceBound){
+            const fullSource=await consolidateSource(optimizeWorkshopSources(pkg,highs,input,baseline,catalog,{proveBound:true}));
+            if(fullSource){
+                const prevCoins=source.plan.rate_per_second??0;
+                source=fullSource;
+                if((fullSource.plan.rate_per_second??0)>prevCoins+1e-6){
+                    await evaluateBackground(fullSource.plan,true);
                 }
-                return verified;
-            };
-            await consider(fixed,moving,'fixed',fixedProblem);
-            if(Number.isFinite(best.level_up_preview?.seconds) && best.level_up_preview.seconds<=demand.seconds*(1+1e-5))continue;
-            const required=active.filter(c=>needsSharedSite(input,c,fixedProblem,catalog)).map(c=>c.facility);
-            // A shared worker or power constraint can make dedicated recipes
-            // too slow even when the building count alone permits the shift.
-            const groups=required.length && required.length<moving.length ? [required,moving] : [moving];
-            for(const shared of groups){
-                const trial={...fixed,recipe_switching_relaxation:true,recipe_switching_facilities:shared};
-                const problem=JSON.parse(pkg.exact_problem(JSON.stringify(trial),JSON.stringify(stage)));
-                await consider(trial,shared,'manual',problem);
-                if(problem.recipe_options?.some(([,name,f,,electric])=>electric&&shared.includes(f)&&materialChains[f].includes(name))){
-                    const powered=await consider(trial,shared,'electric',problem);
-                    if(!Number.isFinite(powered?.level_up_preview?.seconds) || powered.level_up_preview.seconds>demand.seconds*(1+1e-5))
-                        await consider(trial,shared,'mixed',problem);
-                }
-                if(Number.isFinite(best.level_up_preview?.seconds) && best.level_up_preview.seconds<=demand.seconds*(1+1e-5))break;
             }
         }
     }finally{progress('recipe_switching','done',false);}
@@ -503,7 +530,7 @@ export async function searchWorkshopCapacity(pkg,highs,input,baseline,{validate,
                 }
             }
         }
-        best.upper_bound=incomeBound(pkg,highs,input,baseline,best,catalog,facilities,source?.plan??null);
+        best.upper_bound=incomeBound(pkg,highs,input,baseline,best,catalog,facilities,source);
         if(Number.isFinite(best.upper_bound) && best.upper_bound<=best.rate_per_second*(1+1e-7))
             best.proven_optimal=true;
     }

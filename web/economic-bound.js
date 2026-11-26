@@ -83,11 +83,20 @@ export function solveEconomicBound(highs, problem, {seed, scope = [], timeLimit 
             return {upper:incomeTarget, proven:true, scope:[...scope]};
         }
         // Tight priority floors and measured worker shares can make presolve
-        // declare a feasible model infeasible. Verify on its original rows.
+        // declare a feasible model infeasible at 1e-9. First retry at 1e-7
+        // (still a valid upper-bound relaxation) with presolve enabled before
+        // falling back to presolve:'off'.
         if(!useFloor && model.getModelStatus()===statuses.infeasible){
-            model.clearSolver();
-            model.options.set({presolve:'off'});
-            run();
+            if(!discovery){
+                model.clearSolver();
+                model.options.set({primal_feasibility_tolerance:1e-7, mip_feasibility_tolerance:1e-7});
+                run();
+            }
+            if(model.getModelStatus()===statuses.infeasible){
+                model.clearSolver();
+                model.options.set({presolve:'off'});
+                run();
+            }
         }
         // A native gap stop can leave the physical target between the
         // incumbent and its upper bound. Resume that case at full precision.
