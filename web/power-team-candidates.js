@@ -43,7 +43,7 @@ function productionRow(base, source, definitions, input) {
         const [ability, required] = definitions.get(item)?.aniimo ?? [];
         const defaultLevel = input.aniimo?.startsWith('best3') ? 3 : input.aniimo?.startsWith('best') ? 4 : required;
         role = base.aniimo ?? (ability && {ability, level: input.aniimo_levels?.[ability] ?? defaultLevel,
-            personality_bonus: !!facilities.get(facility)?.personality});
+            personality_bonus: input.aniimo !== 'minimum' && !!facilities.get(facility)?.personality});
         if (!role) return null;
     }
     const next = {...base, electric_level, cycle_time: cycle, busy_units: busy, facility_count: sitesNeeded(busy),

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { sharedJobs } from '../web/roster-swap-model.js';
 import { fixedPosts, addPostConstraints } from '../web/roster-fixed-posts.js';
-import { allowedForm, neededSwapTraits, replacementTraits, swappedTeam } from '../web/roster-swaps.js';
+import { allowedForm, neededSwapTraits, replacementTraits, swapProposals, swappedTeam } from '../web/roster-swaps.js';
 import { renderRosterSwaps } from '../web/roster-swap-cards.js';
 
 const station = (facility, item_name, busy_units, crew = null, electric_level = null) => ({
@@ -205,7 +205,36 @@ test('renderRosterSwaps renders flat hex tiles with concise needed trait letters
         assert.equal(second.children[3].textContent, 'FP');
         assert.equal(second.children[3].title, 'Верный (F), Игривый (P)');
         assert.equal(second.children[4].textContent, '+97');
+
+        // Unassigning / benching a worker (to: null) renders cleanly without a target portrait
+        renderRosterSwaps(section, { rows: [{ from: 0, to: null, gain: 250, hour: 298000, traits: [] }] }, members, tr, n => String(n));
+        assert.equal(grid.children.length, 1);
+        assert.equal(grid.children[0].children[2].className, 'roster-swap-remove');
+        assert.equal(grid.children[0].children[3].textContent, '+250');
     } finally {
         globalThis.document = previousDocument;
     }
+});
+
+test('swapProposals includes unassigning (to: null) and multi-copy workers, and swappedTeam preserves indices', () => {
+    const members = [
+        { count: 1, abilities: { Fire: 4 }, personalities: [] },
+        { count: 2, abilities: { Fire: 2 }, personalities: [] },
+        { count: 1, abilities: { Dark: 4 }, personalities: [] },
+    ];
+    const swapInput = { roster: { members } };
+    const finalPlan = { rate_per_second: 1, coin_items: [], roster_routes: [], staffing: [], assumed_aniimo: [[3, 'Wind', 3, 1, null]] };
+    const rows = [{ key: 'Kiln|ore|Production', member: 0, fits: { current: { status: 'Optimal', hour: 4000 } } }];
+    const recipes = [{ facility: 'Kiln', name: 'ore', aniimo: ['Fire', 2] }];
+    const proposals = swapProposals(rows, swapInput, finalPlan, recipes, [false, false, false]);
+    assert.ok(proposals.some(p => p.from === 1 && p.to === null));
+    assert.ok(proposals.some(p => p.from === 1 && p.to === 2));
+
+    const benched = swappedTeam(swapInput, finalPlan, [{ from: 1, to: null }]);
+    assert.equal(benched.members[1].count, 1);
+    assert.equal(benched.expanded[3].assumed, true);
+    const shifted = swappedTeam(swapInput, finalPlan, [{ from: 1, to: 2 }]);
+    assert.equal(shifted.members[1].count, 1);
+    assert.equal(shifted.members[2].count, 2);
+    assert.equal(shifted.expanded[3].assumed, true);
 });

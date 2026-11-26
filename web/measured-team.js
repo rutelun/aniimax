@@ -21,11 +21,18 @@ function workshopJobs(context){
 
 function retirementSets(context,jobs,delivery){
     const processing=new Set(jobs.flatMap(j=>j.routes));
+    const totalLoad=id=>context.busy[id]+(delivery.get(id)||0);
+    const hasCourierRoom=(exclude)=>context.members.some((m,i)=>!exclude.has(i) && (m.abilities?.Hauling||0)>=1
+        && m.count>(context.permanent[i]||0) && totalLoad(i)<slots(totalLoad(i))-1e-6);
     const candidates=context.members.flatMap((m,id)=>{
         const work=context.routes.filter(r=>r.member===id&&r.job_rate>0);
-        if(context.permanent[id]||delivery.get(id)>EPS||!work.length||!work.every(r=>processing.has(r)))return [];
+        const deliv=delivery.get(id)||0;
+        if(context.permanent[id]||(!work.length && deliv<=EPS)||!work.every(r=>processing.has(r)))return [];
+        if(deliv>EPS && !hasCourierRoom(new Set([id])))return [];
         return [id];
-    }).sort((a,b)=>Number(!!context.members[b].assumed)-Number(!!context.members[a].assumed)||context.busy[a]-context.busy[b]);
+    }).sort((a,b)=>Number(!!context.members[b].assumed)-Number(!!context.members[a].assumed)
+        || Number((delivery.get(a)||0)>EPS)-Number((delivery.get(b)||0)>EPS)
+        || totalLoad(a)-totalLoad(b));
     const activeAbilities=context.members.map((_,id)=>new Set(jobs.filter(job=>job.routes.some(r=>r.member===id))
         .map(job=>job.recipe.aniimo[0])));
     const removed=new Set();
@@ -33,15 +40,16 @@ function retirementSets(context,jobs,delivery){
         if(!routes.some(r=>removed.has(r.member)))return true;
         const [ability,level]=recipe.aniimo;
         return context.members.some((m,i)=>!removed.has(i) && activeAbilities[i].has(ability)
-            && m.abilities[ability]>=level && context.busy[i]<slots(context.busy[i])-1e-6);
+            && m.abilities[ability]>=level && totalLoad(i)<slots(totalLoad(i))-1e-6);
     }
+    const haulingCovered=()=>![...removed].some(id=>(delivery.get(id)||0)>EPS) || hasCourierRoom(removed);
     for(const id of candidates){
         removed.add(id);
-        if(!jobs.every(stillStaffed))removed.delete(id);
+        if(!jobs.every(stillStaffed) || !haulingCovered())removed.delete(id);
     }
     const all=[...removed];
     return [all,all.filter(id=>context.members[id].assumed),...candidates.map(id=>[id])].filter((a,i,sets)=>
-        a.length&&sets.findIndex(b=>String(a)===String(b))===i).slice(0,5);
+        a.length&&sets.findIndex(b=>String(a)===String(b))===i).slice(0,8);
 }
 
 function redistribute(context,jobs,removed,previous,delivery,cycleTimes,copies){
@@ -50,7 +58,9 @@ function redistribute(context,jobs,removed,previous,delivery,cycleTimes,copies){
     const routes=context.routes.filter(r=>!original.has(r));
     const loads=context.busy.map((n,i)=>n+(delivery.get(i)||0));
     for(const r of original)loads[r.member]-=r.jobs.reduce((s,[,w])=>s+w,0)+r.walking;
-    const policies=Object.fromEntries(Object.entries(previous).map(([key,entries])=>[key,entries.filter(e=>!removed.has(e.member))]));
+    const policies=Object.fromEntries(Object.entries(previous)
+        .map(([key,entries])=>[key,entries.filter(e=>!removed.has(e.member))])
+        .filter(([,entries])=>entries.length>0));
     const shifts=[];
     for(const {key,recipe,routes:old} of changed){
         const total=old.reduce((s,r)=>s+r.job_rate,0),[ability,level]=recipe.aniimo;
@@ -181,8 +191,8 @@ export function compactMeasuredTeam(pkg,highs,{plan,context,input,limit}){
         const peaks=selectCropPeakTeam(cropPeakInput({...nextContext,delivery:measured.delivery,limit}));
         if(!keepsGrowerAvailability(peaks.growerOutsideLoad,old.growerOutsideLoad))continue;
         if(!(peaks.completion<old.targetSeconds||peaks.completion<=old.completion+EPS))continue;
-        const saved=old.counts.reduce((n,count,i)=>n+count-peaks.counts[i],0);
-        const reservesSaved=old.counts.reduce((n,count,i)=>n+(context.members[i].assumed?count-peaks.counts[i]:0),0);
+        const saved=old.counts.reduce((n,count,i)=>n+count-(peaks.counts[i]??0),0);
+        const reservesSaved=old.counts.reduce((n,count,i)=>n+(context.members[i]?.assumed?count-(peaks.counts[i]??0):0),0);
         if(saved<0 || reservesSaved<0 || (!saved && !reservesSaved))continue;
         // Releasing an owned operator can leave a suggested worker doing its
         // compatible workshop jobs. Keep the owned shift in that case.

@@ -32,7 +32,7 @@ fn capacity_product(model: &mut Model, bits: &[(usize, f64)], factor: usize) -> 
 // A rate/allocation can never exceed its physical building's natural rate.
 // Prove abundant worker pools cannot saturate, before creating depletion binaries.
 fn workload_upper(model: &Model, terms: &[(usize,f64)], counts: &FacilityCounts) -> f64 {
-    let mut recipes=HashMap::<&str,(&str,f64)>::new();
+    let mut recipes=HashMap::<&str,(&str,&str,f64,u32)>::new();
     let mut independent=0.0;
     for &(v,c) in terms {
         let recipe=match &model.kinds[v] {
@@ -41,17 +41,38 @@ fn workload_upper(model: &Model, terms: &[(usize,f64)], counts: &FacilityCounts)
             _=>None,
         };
         if let Some((r,load))=recipe {
-            recipes.entry(&r.name).or_insert((&r.facility,0.0)).1+=load;
+            let base = crate::models::base_item_name(&r.name);
+            let limit = counts.recipe_site_limit(r);
+            let entry = recipes.entry(&r.name).or_insert((&r.facility, base, 0.0, limit));
+            entry.2 += load;
+            entry.3 = entry.3.max(limit);
         } else { independent+=c*model.bounds[v].1; }
     }
-    let mut facilities=HashMap::<&str,f64>::new();
-    for (_, (facility,load)) in recipes { let value=facilities.entry(facility).or_default();*value=value.max(load); }
-    independent+facilities.into_iter().map(|(f,load)|load*counts.get_count(f) as f64).sum::<f64>()
+    let mut by_facility=HashMap::<&str,HashMap<&str,(f64,u32)>>::new();
+    for (_, (facility,base,load,limit)) in recipes {
+        if limit == 0 { continue; }
+        let entry = by_facility.entry(facility).or_default().entry(base).or_insert((0.0, limit));
+        if load > entry.0 { entry.0 = load; }
+        entry.1 = entry.1.max(limit);
+    }
+    let mut total = independent;
+    for (facility, map) in by_facility {
+        let mut items: Vec<(f64, u32)> = map.into_values().collect();
+        items.sort_by(|a, b| b.0.total_cmp(&a.0));
+        let mut rem = counts.get_count(facility);
+        for (load, limit) in items {
+            if rem == 0 { break; }
+            let take = rem.min(limit);
+            total += load * f64::from(take);
+            rem -= take;
+        }
+    }
+    total
 }
 
 // Any free eligible worker can take an unassigned support job. Fixed dispatch
 // shares instead require every participating worker to sustain its share.
-fn pool_availability(model: &mut Model, mut factors: Vec<usize>) -> usize {
+fn pool_availability(model: &mut Model, mut factors: Vec<usize>, relax_reasons: bool) -> usize {
     factors.sort_unstable(); factors.dedup();
     if let Some(&factor)=factors.iter().find(|&&v|model.bounds[v].0==1.0) { return factor; }
     if factors.len()==1 { return factors[0]; }
@@ -64,8 +85,10 @@ fn pool_availability(model: &mut Model, mut factors: Vec<usize>) -> usize {
     let mut reasons=Vec::new();
     for factor in factors {
         model.constrain(vec![(maximum,1.0),(factor,-1.0)],ComparisonOp::Ge,0.0);
-        let chosen=variable(model,true,1.0);reasons.push((chosen,1.0));
-        model.constrain(vec![(maximum,1.0),(factor,-1.0),(chosen,1.0)],ComparisonOp::Le,1.0);
+        if !relax_reasons {
+            let chosen=variable(model,true,1.0);reasons.push((chosen,1.0));
+            model.constrain(vec![(maximum,1.0),(factor,-1.0),(chosen,1.0)],ComparisonOp::Le,1.0);
+        }
     }
     if !reasons.is_empty() { model.constrain(reasons,ComparisonOp::Eq,1.0); }
     maximum
@@ -90,16 +113,36 @@ pub(super) fn constrain<'a>(model: &mut Model<'a>, rates: &[(&'a ProductionItem,
     for name in ingredients {
         let terms = balances.get(name).cloned().unwrap_or_default();
         let income = counts.quest_income().get(name).copied().unwrap_or(0.0);
-        // Worker/electric variants share the same physical buildings. Summing
-        // their independent maxima makes big-M needlessly loose by 10-100x.
-        let mut capacity = HashMap::<&str,f64>::new();
+        // Worker/electric variants share the same physical buildings, and OBBT
+        // may tighten per-recipe site limits below the total facility count.
+        // Bound each facility's max production by greedily packing its highest
+        // rate-per-site recipes up to the facility count.
+        let mut by_facility = HashMap::<&str, HashMap<&str, (f64, u32)>>::new();
         for (v,c) in terms.iter().filter(|(_,c)|*c>0.0) {
             if let Some(recipe)=recipes.get(v) {
-                let best=capacity.entry(&recipe.facility).or_default();
-                *best=best.max(c / recipe.production_time * counts.get_count(&recipe.facility) as f64);
+                let limit = counts.recipe_site_limit(recipe);
+                if limit == 0 { continue; }
+                let rate_per_site = c / recipe.production_time;
+                let base = crate::models::base_item_name(&recipe.name);
+                let entry = by_facility.entry(&recipe.facility).or_default()
+                    .entry(base).or_insert((0.0, limit));
+                if rate_per_site > entry.0 { entry.0 = rate_per_site; }
+                entry.1 = entry.1.max(limit);
             }
         }
-        let maximum = income + capacity.values().sum::<f64>();
+        let mut max_prod = 0.0;
+        for (facility, recipes_map) in by_facility {
+            let mut items: Vec<(f64, u32)> = recipes_map.into_values().collect();
+            items.sort_by(|a, b| b.0.total_cmp(&a.0));
+            let mut rem = counts.get_count(facility);
+            for (rate, limit) in items {
+                if rem == 0 { break; }
+                let take = rem.min(limit);
+                max_prod += rate * f64::from(take);
+                rem -= take;
+            }
+        }
+        let maximum = income + max_prod;
         resources.insert(name, availability(model, terms, income, maximum.max(1e-9)));
     }
     let uses_seeds = checked_sites.iter().any(|(r,_)| r.season.is_some_and(|s| s.seed_cost > 0.0));
@@ -207,11 +250,12 @@ pub(super) fn constrain<'a>(model: &mut Model<'a>, rates: &[(&'a ProductionItem,
                 }
             }
         }
+        let relax_reasons = counts.relax_min_reasons();
         for (ability,mut pool) in support {
             if counts.dispatch(recipe,&ability).is_some() { factors.extend(pool); }
             else {
                 pool.sort_unstable();pool.dedup();
-                let factor=*support_factors.entry(pool.clone()).or_insert_with(||pool_availability(model,pool));
+                let factor=*support_factors.entry(pool.clone()).or_insert_with(||pool_availability(model,pool,relax_reasons));
                 factors.push(factor);
             }
         }
@@ -226,7 +270,6 @@ pub(super) fn constrain<'a>(model: &mut Model<'a>, rates: &[(&'a ProductionItem,
         for &factor in &factors {
             shared_loads.entry((&recipe.facility,factor)).or_default().extend_from_slice(&load);
         }
-        let relax_reasons = counts.relax_min_reasons();
         // A single physical building already supplies the activation binary.
         // Avoid introducing a product column and three product constraints for
         // each ingredient when conditional bounds express the same minimum.
@@ -258,11 +301,6 @@ pub(super) fn constrain<'a>(model: &mut Model<'a>, rates: &[(&'a ProductionItem,
             }
             continue;
         }
-        let mut bits=Vec::new();
-        let mut weight=1.0;
-        while weight <= max { bits.push((variable(model,true,1.0),weight)); weight*=2.0; }
-        let mut capacity=bits.clone();capacity.push((units,-1.0));
-        model.constrain(capacity,ComparisonOp::Eq,0.0);
         let minimum=if factors.len()==1 { factors[0] } else {
             *minimum_factors.entry(factors.clone()).or_insert_with(|| {
                 let minimum=variable(model,false,1.0);
@@ -283,16 +321,37 @@ pub(super) fn constrain<'a>(model: &mut Model<'a>, rates: &[(&'a ProductionItem,
                 minimum
             })
         };
-        // The binary weights can sum to more than the physical maximum (e.g.
-        // 1+2+4 for four buildings). Use the actual bound in the relaxation.
-        if weight - 1.0 > max {
+        if relax_reasons && max > 4.0 {
+            // For high-cardinality sites (e.g. Farmland/Woodland crops) during
+            // relaxed economic bound proofs, use the valid linear McCormick
+            // envelope instead of 4-5 binary expansion bits per recipe.
             let mut lower = load.clone();
             lower.extend([(units,-1.0),(minimum,-max)]);
             model.constrain(lower,ComparisonOp::Ge,-max);
-            let mut upper = load.clone();
+            let mut upper = load;
             upper.push((minimum,-max));
             model.constrain(upper,ComparisonOp::Le,0.0);
+            continue;
         }
+        // Bounded binary decomposition: bit weights sum to exactly `max` instead
+        // of overshooting up to 2*max-1, tightening the LP relaxation.
+        let mut bits=Vec::new();
+        let mut rem=max.round() as u32;
+        let mut weight=1u32;
+        while rem > 0 {
+            let w = weight.min(rem);
+            bits.push((variable(model,true,1.0), f64::from(w)));
+            rem -= w;
+            weight = weight.saturating_mul(2);
+        }
+        bits.sort_by(|a, b| a.1.total_cmp(&b.1));
+        for pair in bits.windows(2) {
+            if (pair[0].1 - pair[1].1).abs() < 1e-9 {
+                model.constrain(vec![(pair[0].0, 1.0), (pair[1].0, -1.0)], ComparisonOp::Ge, 0.0);
+            }
+        }
+        let mut capacity=bits.clone();capacity.push((units,-1.0));
+        model.constrain(capacity,ComparisonOp::Eq,0.0);
         let mut terms=load;
         terms.extend(capacity_product(model,&bits,minimum).into_iter().map(|(v,c)|(v,-c)));
         model.constrain(terms,ComparisonOp::Eq,0.0);

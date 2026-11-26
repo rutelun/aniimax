@@ -39,9 +39,57 @@ async function solveDraftShift(model, settings, solve, warm, counts, workload, h
         || Math.abs(sum(counts, work.values) - team) > 1e-7) return null;
     const target = -headWeight * team + work.objective;
     const tolerance = 64 * Number.EPSILON * Math.max(1, Math.abs(target));
+    // First check whether the relaxed-selector optimum is already feasible with
+    // exact integer extra# selectors (takes ~25 ms and certifies optimality).
+    const generalSection = model.lp.match(/\nGeneral\n([\s\S]*?)\nEnd/)?.[1] ?? '';
+    const fixNonExtra = [];
+    for (const match of generalSection.matchAll(/\bx(\d+)\b/g)) {
+        const v = Number(match[1]);
+        if (model.variable_keys[v]?.startsWith('extra#')) continue;
+        fixNonExtra.push(` draft_work_fix_${v}: x${v} = ${Math.round(work.values[v] ?? 0)}`);
+    }
+    if (fixNonExtra.length >= 16) {
+        const verified = await solve(
+            {...model, lp: model.lp.replace('\nBounds\n', '\n' + fixNonExtra.join('\n') + '\nBounds\n')},
+            {...settings, objective_target: target - tolerance}, undefined, work.values);
+        if (verified?.values && sum(model.primary_objective, verified.values) >= target - tolerance) {
+            return verified;
+        }
+    }
+    // Fix binary capacity-decomposition extra# variables whose non-extra
+    // site variables are already fixed by power_shift_ / zero bounds.
+    const fixedVars = new Map();
+    for (const m of model.lp.matchAll(/^\s*power_shift_\d+:\s*[+-]?\s*1\s+x(\d+)\s*=\s*([+-]?[\deE.-]+)\s*$/gm)) {
+        fixedVars.set(Number(m[1]), Number(m[2]));
+    }
+    for (const m of model.lp.matchAll(/^\s*0 <= x(\d+) <= 0\s*$/gm)) fixedVars.set(Number(m[1]), 0);
+    const intVars = new Set([...generalSection.matchAll(/\bx(\d+)\b/g)].map(m => Number(m[1])));
+    const stStart = model.lp.indexOf('\nSubject To\n'), bStart = model.lp.indexOf('\nBounds\n');
+    const staticBitRows = [];
+    if (stStart >= 0 && bStart > stStart) {
+        for (const line of model.lp.slice(stStart + 12, bStart).split('\n')) {
+            const m = line.match(/^\s*[^:]+:\s*(.+?)\s*=\s*([+-]?[\deE.-]+)\s*$/);
+            if (!m) continue;
+            const vars = [...m[1].matchAll(/\bx(\d+)\b/g)].map(t => Number(t[1]));
+            const extras = vars.filter(v => model.variable_keys[v]?.startsWith('extra#'));
+            const others = vars.filter(v => !model.variable_keys[v]?.startsWith('extra#'));
+            if (!extras.length || !others.length) continue;
+            if (others.every(v => fixedVars.has(v)) && extras.every(v => intVars.has(v))) {
+                for (const v of extras) {
+                    if (fixedVars.has(v)) continue;
+                    const val = Math.round(warm[v] ?? 0);
+                    fixedVars.set(v, val);
+                    staticBitRows.push(` static_bit_${v}: x${v} = ${val}`);
+                }
+            }
+        }
+    }
+    const replayModel = staticBitRows.length
+        ? {...model, lp: model.lp.replace('\nBounds\n', '\n' + staticBitRows.join('\n') + '\nBounds\n')}
+        : model;
     // Replay the original search to preserve its choice between equally scoring
     // physical layouts. That choice affects the next pass's measured routes.
-    const replay = await solve(model, {...settings, objective_target: target - tolerance}, undefined, warm);
+    const replay = await solve(replayModel, {...settings, objective_target: target - tolerance}, undefined, warm);
     // A feasible shift below the relaxed target has already used the original
     // model's search budget. Pass it to the same production and staffing checks.
     return replay?.values ? replay : null;
@@ -80,24 +128,42 @@ function contestedShifts(plan,catalog,roster){
 function minimumWorkers(jobs){
     const groups=new Map();
     for(const job of jobs){
-        const key=[job.ability,job.level,job.personality,job.family].join('|');
+        const key=[job.ability,job.level,job.personality,job.family,Boolean(job.fixed)].join('|');
         const group=groups.get(key);
         if(group)group.busy+=job.busy;
         else groups.set(key,{...job,key});
     }
     const hosts=[];
     let count=0;
-    for(const job of [...groups.values()].sort((a,b)=>b.level-a.level
+    const compatible=(h,job)=>!h.fixed && !job.fixed && h.ability===job.ability && h.family===job.family
+        && h.level>=job.level && (!job.personality||!h.traits.has(opposedPersonality(job.personality)));
+    for(const job of [...groups.values()].sort((a,b)=>Number(!!b.fixed)-Number(!!a.fixed) || b.level-a.level
         || Number(!!b.personality)-Number(!!a.personality) || a.key.localeCompare(b.key))){
-        const host=hosts.find(h=>h.ability===job.ability && h.family===job.family && h.level>=job.level
-            && h.spare>=job.busy-1e-6 && (!job.personality||!h.traits.has(opposedPersonality(job.personality))));
-        if(host){
-            host.spare-=job.busy;
-            if(job.personality)host.traits.add(job.personality);
-        }else{
+        if(job.fixed){
             const copies=Math.max(1,Math.ceil(job.busy-1e-6));
             count+=copies;
-            hosts.push({...job,spare:copies-job.busy,traits:new Set(job.personality?[job.personality]:[])});
+            hosts.push({...job,spare:0,traits:new Set(job.personality?[job.personality]:[])});
+            continue;
+        }
+        const whole=hosts.find(h=>compatible(h,job) && h.spare>=job.busy-1e-6);
+        if(whole){
+            whole.spare-=job.busy;
+            if(job.personality)whole.traits.add(job.personality);
+            continue;
+        }
+        let remaining=job.busy;
+        for(const h of hosts){
+            if(remaining<=1e-6)break;
+            if(!compatible(h,job) || h.spare<=1e-6)continue;
+            const take=Math.min(remaining,h.spare);
+            h.spare-=take;
+            remaining-=take;
+            if(job.personality)h.traits.add(job.personality);
+        }
+        if(remaining>1e-6){
+            const copies=Math.max(1,Math.ceil(remaining-1e-6));
+            count+=copies;
+            hosts.push({...job,spare:copies-remaining,traits:new Set(job.personality?[job.personality]:[])});
         }
     }
     return count;

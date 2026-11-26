@@ -9,7 +9,6 @@ const expression = terms => terms.map(([v, c]) => `${c < 0 ? '-' : '+'} ${Math.a
 // a kiln runs, provided its input availability and every competing job remain feasible.
 export async function refineStaffing(problem, incumbent, solve, context) {
     const input=context?.input;
-    const measured=Object.keys(input?.roster?.dispatch??{}).length>0;
     const report=context?.report ? (() => {
         const reports=new Map();
         return values=>{
@@ -17,22 +16,15 @@ export async function refineStaffing(problem, incumbent, solve, context) {
             return reports.get(values);
         };
     })() : null;
-    // Crop travel and workshop phase loads depend on the placed buildings.
-    // Keep the audited production shift for layout, then staff the measured map;
-    // still minimize growing-environment buildings so the layout gets a clean footprint.
-    if(input?.map_dispatch_pending && input.roster && !measured && input.always_running
-        && input.priorities?.[0]==='level_up' && Object.values(input.season_crop_minimums??{}).some(n=>n>0)){
-        let candidate=await refineClimate(problem,incumbent,solve);
-        if(report && candidate!==incumbent && !keepsProduction(report(incumbent.values),report(candidate.values)))
-            candidate=incumbent;
-        return candidate;
-    }
     if(!report){
-        let candidate=await refineShift(problem,incumbent,solve,context);
+        let candidate=await refineClimate(problem,incumbent,solve);
+        candidate=await refineShift(problem,candidate,solve,context);
         return refineClimate(problem,candidate,solve);
     }
-    let candidate=await refineShift(problem,incumbent,solve,{...context,report});
+    let candidate=await refineClimate(problem,incumbent,solve);
     if(candidate!==incumbent && !keepsProduction(report(incumbent.values),report(candidate.values)))candidate=incumbent;
+    const shifted=await refineShift(problem,candidate,solve,{...context,report});
+    if(shifted!==candidate && keepsProduction(report(candidate.values),report(shifted.values)))candidate=shifted;
     const climate=await refineClimate(problem,candidate,solve);
     if(climate!==candidate && keepsProduction(report(candidate.values),report(climate.values)))candidate=climate;
     return input?.roster ? preferOwnedPostWorkers(problem,candidate,context.input,report) : candidate;
@@ -509,7 +501,14 @@ export async function refineClimate(problem, incumbent, solve) {
         const compactWarm = warm ? freeList.map(v => warm[v] ?? 0) : undefined;
         let res;
         try {
-            res = await solve(sub, { mip_max_nodes: 2048, mipIterations: 40000, mip_rel_gap: 0, mip_abs_gap: 0 }, undefined, compactWarm);
+            res = await solve(sub, {
+                mip_max_nodes: 2048,
+                mipIterations: 40000,
+                mip_rel_gap: 0,
+                mip_abs_gap: 0,
+                mip_feasibility_tolerance: 1e-9,
+                primal_feasibility_tolerance: 1e-9,
+            }, undefined, compactWarm);
         } catch (error) {
             console.warn('Keeping the checked climate layout after a climate solve error.', error);
             return null;
@@ -585,57 +584,382 @@ async function refineShift(problem, incumbent, solve, context) {
         console.warn('Keeping the checked power settings after a staffing solve error.',error);
     }
     const pools = problem.staffing_pools, groups = problem.staffing_groups;
-    if (!pools?.length || !groups?.length || incumbent?.values?.length !== problem.variables) return incumbent;
+    if (!pools?.length || !groups?.length || incumbent?.values?.length !== problem.variables || !problem.lp) return incumbent;
     const work = pools.flatMap(pool => pool.work);
     if (!work.length) return incumbent;
     const original = incumbent.values;
+    const keys = problem.variable_keys;
+    const isClimateStaff = v => Boolean(keys?.[v]?.startsWith('staff:') && !keys[v].startsWith('staff:Crackle Generator:'));
     const retained = groups.map(group => group.reduce((sum, v) => sum + original[v], 0));
-    const rows = groups.map((group, i) => ` retain_shift_${i}: ${group.map(v => 'x'+v).join(' + ')} = ${retained[i]}`);
     const reserves = pools.filter(pool => pool.reserve);
-    const reserve = reserves.flatMap(pool => pool.work);
-    const reserveTime = total(reserve, original);
-    if (reserve.length) rows.push(` retain_owned_team: ${expression(reserve)} <= ${reserveTime + 1e-9}`);
-    const growers = pools.filter(pool => pool.crop.some(v => original[v] > 1e-9));
-    growers.forEach((pool,i) => rows.push(` retain_harvest_${i}: ${expression(pool.work)} <= ${total(pool.work,original)+1e-9}`));
-    const headcount = (team, values) => team.reduce((sum, pool) => sum + Math.max(0,
+    const poolHeadcount = (pool, values) => Math.max(0,
         Math.ceil(total(pool.work, values) - 1e-6),
-        Math.round(pool.anchors.reduce((n,v) => n+values[v], 0))), 0);
+        Math.round(pool.anchors.reduce((n, v) => n + values[v], 0)));
+    const poolNonClimate = pool => ({
+        work: pool.work.filter(([v]) => !isClimateStaff(v)),
+        anchors: pool.anchors.filter(v => !isClimateStaff(v)),
+    });
+    const nonClimateByReserve = reserves.map(poolNonClimate);
+    const poolNonClimateHeadcount = (nc, values) => Math.max(0,
+        Math.ceil(total(nc.work, values) - 1e-6),
+        Math.round(nc.anchors.reduce((n, v) => n + values[v], 0)));
+    const headcount = (team, values) => team.reduce((sum, pool) => sum + poolHeadcount(pool, values), 0);
+    const nonClimateReserveCount = values => nonClimateByReserve.reduce((sum, nc) => sum + poolNonClimateHeadcount(nc, values), 0);
+    const nonClimateReserveWork = nonClimateByReserve.flatMap(nc => nc.work);
+    const nonClimateReserveTime = total(nonClimateReserveWork, original);
+    const growers = pools.filter(pool => !pool.reserve && pool.crop.some(v => original[v] > 1e-9));
     const people = headcount(pools, original), extra = headcount(reserves, original);
-    for (const [name, team, limit] of [['team', pools, people], ['reserves', reserves, extra]]) {
-        const active = team.filter(pool => pool.active != null).map(pool => [pool.active, 1]);
-        if (active.length) rows.push(` retain_people_${name}: ${expression(active)} <= ${limit}`);
-    }
-    const climate = problem.climate_skills || [];
-    const costs = new Map();
-    // Before routes are measured, the model can still move work between all
-    // eligible operators. Prefer an owned shift before measuring a reserve's route.
+    const origNonClimateReserves = nonClimateReserveCount(original);
     const workDays = total(work, original);
-    for (const pool of reserves) {
-        if (pool.active != null) costs.set(pool.active, -(1 + Math.ceil(workDays)));
-        for (const [v, days] of pool.work) costs.set(v, (costs.get(v) || 0) - days);
+    const climate = problem.climate_skills || [];
+
+    const generalSection = problem.lp.match(/\nGeneral\n([\s\S]*?)\nEnd/);
+    const integers = new Set([...(generalSection?.[1] ?? '').matchAll(/\bx(\d+)\b/g)].map(m => Number(m[1])));
+    const fixedVal = v => {
+        const raw = original[v] ?? 0;
+        return integers.has(v) ? Math.round(raw) : Math.max(0, raw);
+    };
+
+    // Exact variable fixing: singleton groups, zero-sum groups, and inactive
+    // route/post/haul columns cannot change while holding every recipe total fixed.
+    const fixed = new Map();
+    const activeGroups = [];
+    for (let i = 0; i < groups.length; i++) {
+        const group = groups[i];
+        if (group.length === 1) {
+            fixed.set(group[0], fixedVal(group[0]));
+        } else if (retained[i] <= 1e-12) {
+            for (const v of group) fixed.set(v, 0);
+        } else {
+            activeGroups.push([i, group, retained[i]]);
+        }
     }
-    for (const [v, days] of work) costs.set(v, (costs.get(v) || 0) - days);
-    for (const [v, skills] of climate) costs.set(v, (costs.get(v) || 0) - 1e-6 * skills);
-    const lp = problem.lp.replace(/^Maximize\n[^\n]+/, 'Maximize\n obj: '+expression([...costs]))
-        .replace('\nBounds\n', '\n'+rows.join('\n')+'\nBounds\n');
-    const staffing = {...problem, lp, primary_objective:[...costs], tiebreak:[]};
+    if (keys?.length === problem.variables) {
+        const byKey = new Map(keys.map((k, v) => [k, v]));
+        for (let v = 0; v < keys.length; v++) {
+            if (fixed.has(v) || (original[v] ?? 0) > 1e-12) continue;
+            const key = keys[v];
+            if (!key.startsWith('route:') && !key.startsWith('post:') && !key.startsWith('haul:')) continue;
+            const m = /^(?:route|post|haul):(.+?):(?:owned|reserve):/.exec(key);
+            if (!m) continue;
+            const rateVar = byKey.get(`rate:${m[1]}#0`);
+            if (rateVar !== undefined && fixed.get(rateVar) === 0) fixed.set(v, 0);
+        }
+    }
+
+    // Parse bounds and LP rows once so fixed variables can be substituted out,
+    // shrinking multi-thousand-variable shift models to only the active staffing core.
+    const origBounds = new Map();
+    const boundsMatch = problem.lp.match(/\nBounds\n([\s\S]*?)(?:\nGeneral\n|\nEnd)/);
+    for (const line of (boundsMatch?.[1] ?? '').split('\n')) {
+        const mRange = /^ ([^\s]+) <= x(\d+) <= ([^\s]+)$/.exec(line);
+        if (mRange) {
+            origBounds.set(Number(mRange[2]), [Number(mRange[1]), Number(mRange[3])]);
+            continue;
+        }
+        const mLower = /^ x(\d+) >= ([^\s]+)$/.exec(line);
+        if (mLower) origBounds.set(Number(mLower[1]), [Number(mLower[2]), Infinity]);
+    }
+    const subjMatch = problem.lp.match(/\nSubject To\n([\s\S]*?)\nBounds\n/);
+    const subjLines = subjMatch ? subjMatch[1].split('\n') : [];
+    const termRe = /([+-]?)\s*(?:(\d+(?:\.\d*)?|\.\d+)(?:([eE][+-]?\d+))?\s+)?x(\d+)/g;
+    const opRe = /\s(<=|>=|=)\s([^\s]+)\s*$/;
+    let parsedRows = [];
+    for (const line of subjLines) {
+        const colon = line.indexOf(':');
+        if (colon < 0) continue;
+        const rest = line.slice(colon + 1);
+        const opMatch = opRe.exec(rest);
+        if (!opMatch) continue;
+        const lhsStr = rest.slice(0, opMatch.index);
+        const terms = [];
+        for (const t of lhsStr.matchAll(termRe)) {
+            const v = Number(t[4]);
+            const c = (t[1] === '-' ? -1 : 1) * Number((t[2] || '1') + (t[3] || ''));
+            terms.push([v, c]);
+        }
+        if (terms.length) parsedRows.push({ name: line.slice(0, colon).trim(), terms, op: opMatch[1], rhs: Number(opMatch[2]) });
+    }
+    for (const [i, group, rhs] of activeGroups) {
+        parsedRows.push({ name: `retain_shift_${i}`, terms: group.map(v => [v, 1]), op: '=', rhs });
+    }
+
+    // Substitute fixed variables and propagate forced equalities / zero rows.
+    const substituteRows = rows => {
+        const kept = [];
+        for (const row of rows) {
+            const terms = [];
+            let rhs = row.rhs;
+            for (const [v, c] of row.terms) {
+                const fv = fixed.get(v);
+                if (fv !== undefined) rhs -= c * fv;
+                else terms.push([v, c]);
+            }
+            if (terms.length) kept.push({ name: row.name, terms, op: row.op, rhs });
+        }
+        return kept;
+    };
+    for (let pass = 0; pass < 4; pass++) {
+        parsedRows = substituteRows(parsedRows);
+        let newlyFixed = 0;
+        for (const row of parsedRows) {
+            if (row.terms.length === 1 && row.op === '=') {
+                const [v, c] = row.terms[0];
+                if (!fixed.has(v) && Math.abs(c) > 1e-12) {
+                    const val = row.rhs / c;
+                    if (Number.isFinite(val) && Math.abs(val - fixedVal(v)) < 1e-5) {
+                        fixed.set(v, integers.has(v) ? Math.round(val) : Math.max(0, val));
+                        newlyFixed++;
+                    }
+                }
+            } else if (row.op === '<=' && row.rhs <= 1e-12
+                && row.terms.every(([v, c]) => c > 0 && (origBounds.get(v)?.[0] ?? 0) >= 0)) {
+                for (const [v] of row.terms) {
+                    if (!fixed.has(v) && (original[v] ?? 0) <= 1e-6) {
+                        fixed.set(v, 0);
+                        newlyFixed++;
+                    }
+                }
+            } else if (row.op === '>=' && row.rhs >= -1e-12
+                && row.terms.every(([v, c]) => c < 0 && (origBounds.get(v)?.[0] ?? 0) >= 0)) {
+                for (const [v] of row.terms) {
+                    if (!fixed.has(v) && (original[v] ?? 0) <= 1e-6) {
+                        fixed.set(v, 0);
+                        newlyFixed++;
+                    }
+                }
+            }
+        }
+        if (!newlyFixed) break;
+    }
+    parsedRows = substituteRows(parsedRows);
+
+    // Fix auxiliary extra# variables that live in components disconnected from
+    // every free non-extra variable (e.g., inactive always_running recipes).
+    if (keys?.length === problem.variables) {
+        const adj = new Map();
+        const seeds = new Set();
+        const addEdge = (a, b) => {
+            if (!adj.has(a)) adj.set(a, []);
+            adj.get(a).push(b);
+        };
+        for (const row of parsedRows) {
+            for (const [v] of row.terms) {
+                if (!keys[v].startsWith('extra#')) seeds.add(v);
+            }
+            const first = row.terms[0][0];
+            for (let j = 1; j < row.terms.length; j++) {
+                const other = row.terms[j][0];
+                addEdge(first, other);
+                addEdge(other, first);
+            }
+        }
+        const reachable = new Set(seeds);
+        const queue = [...seeds];
+        while (queue.length) {
+            const cur = queue.pop();
+            for (const nxt of (adj.get(cur) ?? [])) {
+                if (!reachable.has(nxt)) {
+                    reachable.add(nxt);
+                    queue.push(nxt);
+                }
+            }
+        }
+        let prunedExtra = false;
+        for (const row of parsedRows) {
+            for (const [v] of row.terms) {
+                if (keys[v].startsWith('extra#') && !reachable.has(v) && !fixed.has(v)) {
+                    fixed.set(v, fixedVal(v));
+                    prunedExtra = true;
+                }
+            }
+        }
+        if (prunedExtra) parsedRows = substituteRows(parsedRows);
+    }
+
+    // Collect every remaining free original variable.
+    const freeSet = new Set();
+    for (const row of parsedRows) for (const [v] of row.terms) freeSet.add(v);
+    for (const pool of pools) {
+        if (pool.active != null && !fixed.has(pool.active)) freeSet.add(pool.active);
+        for (const [v] of pool.work) if (!fixed.has(v)) freeSet.add(v);
+        for (const v of pool.anchors) if (!fixed.has(v)) freeSet.add(v);
+    }
+    if (!freeSet.size) return incumbent;
+    const freeList = [...freeSet].sort((a, b) => a - b);
+    const compactIdx = new Map(freeList.map((v, i) => [v, i]));
+    const compactWarm = freeList.map(v => original[v] ?? 0);
+    const compactBounds = freeList.map(v => origBounds.get(v) ?? [0, Infinity]);
+    const compactInts = new Set(freeList.flatMap((v, i) => integers.has(v) ? [i] : []));
+    const compactRows = [];
+    const addCompactRow = (name, origTerms, op, rhs, extraCompactTerms = []) => {
+        const terms = [...extraCompactTerms];
+        let adjRhs = rhs;
+        for (const [v, c] of origTerms) {
+            const ci = compactIdx.get(v);
+            if (ci !== undefined) terms.push([ci, c]);
+            else adjRhs -= c * (fixed.get(v) ?? fixedVal(v));
+        }
+        if (terms.length) compactRows.push(` ${name}: ${expression(terms)} ${op} ${adjRhs}`);
+    };
+    for (const row of parsedRows) {
+        const terms = row.terms.map(([v, c]) => [compactIdx.get(v), c]);
+        compactRows.push(` ${row.name}: ${expression(terms)} ${row.op} ${row.rhs}`);
+    }
+
+    // Track exact integer headcounts (total, reserves, and non-climate reserves)
+    // even when max_working_aniimo is unset and pool.active is absent.
+    const addAuxInt = warmVal => {
+        const idx = compactWarm.length;
+        compactWarm.push(warmVal);
+        compactBounds.push([0, Infinity]);
+        compactInts.add(idx);
+        return idx;
+    };
+    const allActiveCompact = [];
+    const reserveActiveCompact = [];
+    const nonClimateReserveActiveCompact = [];
+    for (let pIdx = 0; pIdx < pools.length; pIdx++) {
+        const pool = pools[pIdx];
+        const hasFree = pool.work.some(([v]) => compactIdx.has(v)) || pool.anchors.some(v => compactIdx.has(v));
+        let actIdx = pool.active != null ? compactIdx.get(pool.active) : undefined;
+        if (actIdx === undefined && hasFree) {
+            actIdx = addAuxInt(poolHeadcount(pool, original));
+            addCompactRow(`aux_act_w_${pIdx}`, pool.work, '<=', 0, [[actIdx, -1]]);
+            if (pool.anchors.length) {
+                addCompactRow(`aux_act_a_${pIdx}`, pool.anchors.map(v => [v, 1]), '<=', 0, [[actIdx, -1]]);
+            }
+        }
+        if (actIdx !== undefined) {
+            allActiveCompact.push([actIdx, 1]);
+            if (pool.reserve) reserveActiveCompact.push([actIdx, 1]);
+        }
+        if (pool.reserve) {
+            const nc = poolNonClimate(pool);
+            const hasNcFree = nc.work.some(([v]) => compactIdx.has(v)) || nc.anchors.some(v => compactIdx.has(v));
+            if (hasNcFree) {
+                const ncIdx = addAuxInt(poolNonClimateHeadcount(nc, original));
+                if (nc.work.length) addCompactRow(`aux_nc_w_${pIdx}`, nc.work, '<=', 0, [[ncIdx, -1]]);
+                if (nc.anchors.length) addCompactRow(`aux_nc_a_${pIdx}`, nc.anchors.map(v => [v, 1]), '<=', 0, [[ncIdx, -1]]);
+                nonClimateReserveActiveCompact.push([ncIdx, 1]);
+            }
+        }
+    }
+
+    // Hold non-climate reserve load and grower workloads so swapping a versatile
+    // owned worker off a static climate post onto workshops (placing an assumed
+    // worker on climate instead) is permitted and rewarded, without degrading harvests.
+    if (nonClimateReserveWork.length) {
+        addCompactRow('retain_non_climate_reserve', nonClimateReserveWork, '<=', nonClimateReserveTime + 1e-9);
+    }
+    growers.forEach((pool, i) => addCompactRow(`retain_harvest_${i}`, pool.work, '<=', total(pool.work, original) + 1e-9));
+    if (reserveActiveCompact.length) {
+        const fixedReserveHeadcount = reserves.reduce((s, pool) =>
+            s + (pool.work.some(([v]) => compactIdx.has(v)) || pool.anchors.some(v => compactIdx.has(v)) || (pool.active != null && compactIdx.has(pool.active))
+                ? 0 : poolHeadcount(pool, original)), 0);
+        compactRows.push(` retain_people_reserves: ${expression(reserveActiveCompact)} <= ${Math.max(0, extra - fixedReserveHeadcount)}`);
+    }
+    if (extra === 0 && allActiveCompact.length) {
+        const fixedHeadcount = pools.reduce((s, pool) =>
+            s + (pool.work.some(([v]) => compactIdx.has(v)) || pool.anchors.some(v => compactIdx.has(v)) || (pool.active != null && compactIdx.has(pool.active))
+                ? 0 : poolHeadcount(pool, original)), 0);
+        compactRows.push(` retain_people_team: ${expression(allActiveCompact)} <= ${Math.max(0, people - fixedHeadcount)}`);
+    }
+
+    // Lexicographic staffing objective (Maximize):
+    // 1. Minimize total assumed reserves headcount
+    // 2. Minimize total active team headcount
+    // 3. Minimize non-climate assumed reserves headcount (prefer assumed on static climate posts over workshops)
+    // 4. Minimize non-climate reserve work and total work-days (prefer faster owned Lv.4/trait workers)
+    // 5. Minimize climate_skills on owned climate/generator posts
+    // 6. Prefer focused growers (no Hauling, fewer unrelated abilities) on crop work
+    const W = 2 + Math.ceil(Math.max(workDays, people, 1));
+    const compactCosts = new Map();
+    const addCost = (ci, delta) => {
+        if (ci !== undefined && delta) compactCosts.set(ci, (compactCosts.get(ci) || 0) + delta);
+    };
+    for (const [ci] of reserveActiveCompact) addCost(ci, -10 * W);
+    for (const [ci] of allActiveCompact) addCost(ci, -3 * W);
+    for (const [ci] of nonClimateReserveActiveCompact) addCost(ci, -W);
+    for (const [v, days] of nonClimateReserveWork) addCost(compactIdx.get(v), -2 * days);
+    for (const [v, days] of work) addCost(compactIdx.get(v), -days);
+    for (const [v, skills] of climate) addCost(compactIdx.get(v), -1e-3 * skills);
+    const cropDistractionTerms = [];
+    const members = context?.input?.roster?.members;
+    if (members?.length) {
+        for (const [member, pool] of pools.entries()) {
+            if (pool.reserve || !pool.crop?.length || !members[member]?.abilities) continue;
+            const abilities = members[member].abilities;
+            const hauling = Math.min(4, abilities.Hauling || 0);
+            const skillCount = Object.values(abilities).filter(lv => lv > 0).length;
+            const penalty = hauling * 4 + skillCount;
+            if (penalty <= 1) continue;
+            const cropSet = new Set(pool.crop);
+            for (const [v, days] of pool.work) {
+                if (!cropSet.has(v)) continue;
+                addCost(compactIdx.get(v), -1e-4 * penalty * days);
+                cropDistractionTerms.push([v, penalty * days]);
+            }
+        }
+    }
+
+    const boundLines = compactBounds.map(([lo, hi], i) =>
+        Number.isFinite(hi) ? ` ${lo} <= x${i} <= ${hi}` : ` x${i} >= ${lo}`);
+    const genLines = [...compactInts].sort((a, b) => a - b).map(i => ` x${i}`);
+    const objTerms = [...compactCosts];
+    const lp = `Maximize\n obj: ${objTerms.length ? expression(objTerms) : '0'}\nSubject To\n${compactRows.join('\n')}\nBounds\n${boundLines.join('\n')}\n${genLines.length ? 'General\n' + genLines.join('\n') + '\n' : ''}End\n`;
+    const staffing = {
+        variables: compactWarm.length,
+        variable_keys: [
+            ...freeList.map(v => keys?.[v] ?? `v${v}`),
+            ...Array.from({ length: compactWarm.length - freeList.length }, (_, i) => `aux_staff#${i}`),
+        ],
+        lp,
+        primary_objective: objTerms,
+        tiebreak: [],
+    };
     let result;
     try {
-        result = await solve(staffing, {mip_max_nodes:256, mipIterations:12000, mip_rel_gap:0, mip_abs_gap:0}, undefined, original);
+        result = await solve(staffing, {
+            mip_max_nodes: 2048,
+            mipIterations: 40000,
+            mip_rel_gap: 0,
+            mip_abs_gap: 0,
+            mip_feasibility_tolerance: 1e-9,
+            primal_feasibility_tolerance: 1e-9,
+        }, undefined, compactWarm);
     } catch (error) {
         console.warn('Keeping the checked production shift after a staffing solve error.',error);
         return incumbent;
     }
-    const values = result?.values;
-    if (values?.length !== original.length || !values.every(Number.isFinite)) return incumbent;
+    if (!result?.values || result.values.length < freeList.length || !result.values.slice(0, freeList.length).every(Number.isFinite)) return incumbent;
+    const values = original.slice();
+    for (const [v, fv] of fixed) values[v] = fv;
+    for (let i = 0; i < freeList.length; i++) {
+        const v = freeList[i];
+        values[v] = integers.has(v) ? Math.round(result.values[i]) : Math.max(0, result.values[i]);
+    }
     const sameShift = groups.every((group, i) =>
         Math.abs(group.reduce((sum, v) => sum + values[v], 0) - retained[i]) <= 1e-9 * Math.max(1, Math.abs(retained[i])));
-    if (!sameShift || total(reserve, values) > reserveTime + 1e-8) return incumbent;
-    if (headcount(pools, values) > people || headcount(reserves, values) > extra
+    if (!sameShift || total(nonClimateReserveWork, values) > nonClimateReserveTime + 1e-8) return incumbent;
+    const newReserves = headcount(reserves, values);
+    const newPeople = headcount(pools, values);
+    const newNonClimateReserves = nonClimateReserveCount(values);
+    if (newReserves > extra || (newReserves === extra && newPeople > people)
         || growers.some(pool => total(pool.work, values) > total(pool.work, original) + 1e-8)) return incumbent;
     const saved = workDays - total(work, values);
-    if (headcount(reserves, values) < extra || saved > 1e-8 || (saved >= -1e-9 &&
-        (total(reserve, values) < reserveTime - 1e-8 || total(climate, original) - total(climate, values) > 0.5))) {
+    const nonClimateWorkSaved = nonClimateReserveTime - total(nonClimateReserveWork, values);
+    const cropFocusImproved = cropDistractionTerms.length > 0
+        && total(cropDistractionTerms, original) - total(cropDistractionTerms, values) > 1e-6;
+    const improved = newReserves < extra
+        || (newReserves === extra && newPeople < people)
+        || (newReserves === extra && newPeople === people && newNonClimateReserves < origNonClimateReserves)
+        || (newReserves === extra && newPeople === people && newNonClimateReserves === origNonClimateReserves && (
+            nonClimateWorkSaved > 1e-8
+            || saved > 1e-8
+            || (saved >= -1e-9 && (total(climate, original) - total(climate, values) > 0.5 || cropFocusImproved))
+        ));
+    if (improved) {
         // The secondary solve's score and bound concern staffing. Retain the production proof.
         return {...incumbent, values};
     }

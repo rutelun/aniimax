@@ -40,7 +40,7 @@ import { placeRosterCopy, ROSTER_ROW_SIZE, rosterSlotsFor, swapRosterSlots } fro
 import { scheduleRosterCopies } from './roster-work.js?v=measured-walking';
 import { buildDispatch, rosterJobSwitching, TASK_SWITCHING } from './task-switching.js?v=base-travel';
 import { measureRosterDispatch, buildReactiveDispatch, permanentWorkers, measuredDispatchWork, routeDispatchKey, attachDeliveryFlows } from './reactive-dispatch.js';
-import { recommendBestTeam, cropWorkshopItems } from './best-team.js?v=team-support';
+import { recommendBestTeam, cropWorkshopItems, pickCatalogEntry } from './best-team.js?v=team-support';
 import { groupAniimoAssignments, groupRosterAssignments } from './aniimo-assignment-groups.js?v=roster-assignments';
 import facilityIcons from './facility-icons.json' with { type: 'json' };
 import { abilityGlyph, gameAbilityIcon } from './ability-icons.js?v=game-heads';
@@ -2122,9 +2122,11 @@ function measurePowerTeam(plan,layout,input,recipes=recipeIndex) {
     const grid=analyzePowerNetworks(layout).power;
     if (grid.disconnected || grid.generators !== (plan.power_generators || 0)) return null;
     const placed=bestTeamLayouts.get(plan);
+    const minimum = input?.aniimo === 'minimum';
+    const haulingLevel = minimum ? 1 : 4;
     const hauling=placed?.layout===layout ? placed.hauling :
-        haulingWorkload(layout,plan.coin_items,haulingRouteBound(true),recipes,input.facilities,true,4);
-    return mappedTeamScore(bestPlanTeam(plan,hauling.busy,layout,hauling),grid,ANIIMO_MAX[layoutHomeLevel()-1],plan.rate_per_second);
+        haulingWorkload(layout,plan.coin_items,haulingRouteBound(true),recipes,input.facilities,true,haulingLevel);
+    return mappedTeamScore(bestPlanTeam(plan,hauling.busy,layout,hauling,{preferMinimum:minimum}),grid,ANIIMO_MAX[layoutHomeLevel()-1],plan.rate_per_second);
 }
 
 function runMapWorker(url,message,signal) {
@@ -2200,9 +2202,11 @@ async function refineMappedPowerTeam(plan,layout,input,signal,onMeasured,isCurre
     const best=await measure(plan,layout,families);
     if (!isCurrent() || signal?.aborted || !input.e_mode_rv || input.roster || input.fixed_homeland || best.currency!=='coins') return best;
     const bestMap=bestTeamLayouts.get(best)?.layout ?? layout;
+    const minimum = input?.aniimo === 'minimum';
+    const haulingLevel = minimum ? 1 : 4;
     const hauling=bestTeamLayouts.get(best)?.hauling ??
-        haulingWorkload(bestMap,best.coin_items,haulingRouteBound(true),recipeIndex,input.facilities,true,4);
-    const targets=cropWorkshopItems(bestPlanTeam(best,hauling.busy,bestMap,hauling));
+        haulingWorkload(bestMap,best.coin_items,haulingRouteBound(true),recipeIndex,input.facilities,true,haulingLevel);
+    const targets=cropWorkshopItems(bestPlanTeam(best,hauling.busy,bestMap,hauling,{preferMinimum:minimum}));
     if (!targets.length) return best;
     const referenceIncome=Math.max(seed.rate_per_second,best.rate_per_second,plan.crop_protection_reference_income??0);
     try {
@@ -2221,7 +2225,9 @@ async function measureMappedPowerTeams(plan,layout,input,families,seed,signal,on
     const {selectPowerTeam}=await import('./power-team-search.js');
     const baselineScore=measurePowerTeam(plan,layout,input);
     const homeLevel=layoutHomeLevel();
-    const {key,cells,poleLimit}=layoutOptionsFor(plan,homeLevel,'best');
+    const minimum = input?.aniimo === 'minimum';
+    const haulingLevel = minimum ? 1 : 4;
+    const {key,cells,poleLimit}=layoutOptionsFor(plan,homeLevel,minimum ? 'minimum' : 'best');
     const candidates=[];
     const lanes=comparisonConcurrency(globalThis.navigator,families.length);
     const batches=Array.from({length:lanes},()=>[]);
@@ -2241,6 +2247,7 @@ async function measureMappedPowerTeams(plan,layout,input,families,seed,signal,on
         const {winner}=await runMapWorker(WORKER_URL.replace('worker.js','power-team-map-worker.js'),{
             candidates:batch,baseLayout:layout,cells,poleLimit,facilities:input.facilities,
             recipes:recipeIndex,limit:ANIIMO_MAX[homeLevel-1],haulingBound:haulingRouteBound(true),baselineScore,
+            haulingLevel,preferMinimum:minimum,
         },signal);
         completed+=batch.length;
         if(isCurrent() && !signal?.aborted)onMeasured?.(completed,total);
@@ -2559,7 +2566,7 @@ function renderHomelandLayout(plan, keepLayout = false) {
             if (assignLayoutHauling(layout, plan)) return;
         }
         const setup=selectedAniimoSetup();
-        if (setup.startsWith('best') && lastPlanInput.e_mode_rv>=12 && !lastPlanInput.fixed_homeland
+        if ((setup.startsWith('best') || setup === 'minimum') && lastPlanInput.e_mode_rv>=12 && !lastPlanInput.fixed_homeland
             && plan.schedule_sources?.length && plan.comparison_seed && measuredPowerPlans.get(plan)!==layoutKey) {
             const controller=new AbortController();
             powerTeamController=controller;
@@ -2628,7 +2635,7 @@ function renderHomelandLayout(plan, keepLayout = false) {
         return;
     }
     const prefetchSetup = selectedAniimoSetup();
-    if (prefetchSetup.startsWith('best') && lastPlanInput.e_mode_rv >= 12 && !lastPlanInput.fixed_homeland
+    if ((prefetchSetup.startsWith('best') || prefetchSetup === 'minimum') && lastPlanInput.e_mode_rv >= 12 && !lastPlanInput.fixed_homeland
         && plan.schedule_sources?.length && plan.comparison_seed && measuredPowerPlans.get(plan) !== layoutKey) {
         startPowerTeamPrefetch(plan, { ...lastPlanInput, ...aniimoInput(prefetchSetup) });
     } else {
@@ -3824,13 +3831,14 @@ async function fillRosterFrom(setup) {
         const current=()=>runId===planRunId && version===rosterFillVersion;
         let layout = await sourceTeamLayout(plan, sourceInput, setup.split(':')[0]);
         if (!current()) return;
-        if (sourceInput.e_mode_rv>=12 && setup.startsWith('best') && !sourceInput.fixed_homeland
+        if (sourceInput.e_mode_rv>=12 && (setup.startsWith('best') || setup === 'minimum') && !sourceInput.fixed_homeland
             && plan.comparison_seed && plan.schedule_sources?.length) {
-            const {key}=layoutOptionsFor(plan,layoutHomeLevel(),'best');
+            const tab = setup === 'minimum' ? 'minimum' : 'best';
+            const {key}=layoutOptionsFor(plan,layoutHomeLevel(),tab);
             if (measuredPowerPlans.get(plan)!==key) {
                 const selected=await refineMappedPowerTeam(plan,layout,sourceInput,undefined,undefined,current);
                 if (!current()) return;
-                if (selected!==plan) layout=await sourceTeamLayout(selected,sourceInput,'best');
+                if (selected!==plan) layout=await sourceTeamLayout(selected,sourceInput,tab);
                 if (!current()) return;
                 plan=selected;
                 measuredPowerPlans.set(plan,key);
@@ -4349,9 +4357,7 @@ function renderRosterSummary(plan) {
     const portraits = members.map(member => {
         if (!member.assumed) return member;
         const [ability, level] = Object.entries(member.abilities)[0];
-        const eligible = entry => !member.family || entry.family === member.family;
-        const entry = aniimoCatalog.entries.find(entry => eligible(entry) && entry.abilities[ability] === level)
-            ?? aniimoCatalog.entries.find(entry => eligible(entry) && entry.abilities[ability] > level);
+        const entry = pickCatalogEntry(aniimoCatalog.entries, ability, level, member.family);
         return entry ? { ...member, catalogId: entry.id, name: rosterFormName(entry), abilities: entry.abilities } : member;
     });
     const renderTile = ({ member: i, copy, suggested, cropSuggestion, beyondLimit }) => {
@@ -5829,17 +5835,25 @@ function jobsForBestPlan(plan) {
 }
 
 function bestPlanTeam(plan, haulingBusy = plan.hauling_busy || 0,
-    layout = bestTeamLayouts.get(plan)?.layout ?? null, hauling = bestTeamLayouts.get(plan)?.hauling) {
+    layout = bestTeamLayouts.get(plan)?.layout ?? null, hauling = bestTeamLayouts.get(plan)?.hauling,
+    options = {}) {
+    const preferMinimum = Boolean(options.preferMinimum ?? (selectedSetupTab() === 'minimum'));
     const jobs=jobsForBestPlan(plan);
     const cached=bestTeamCache.get(plan);
-    if (!layout && !haulingBusy) return cached.baseline ??= recommendBestTeam(jobs,0,[],{
-        phaseDurations:plan.recipe_schedule?.phases.map(p=>p.duration),
-    });
-    if (cached.layout !== layout || cached.haulingBusy !== haulingBusy || cached.hauling !== hauling) {
+    if (!layout && !haulingBusy) {
+        const key = preferMinimum ? 'baselineMin' : 'baseline';
+        return cached[key] ??= recommendBestTeam(jobs,0,[],{
+            phaseDurations:plan.recipe_schedule?.phases.map(p=>p.duration),
+            haulingLevel: preferMinimum ? 1 : 4,
+            preferMinimum,
+        });
+    }
+    if (cached.layout !== layout || cached.haulingBusy !== haulingBusy || cached.hauling !== hauling || cached.preferMinimum !== preferMinimum) {
         cached.layout = layout;
         cached.haulingBusy = haulingBusy;
         cached.hauling = hauling;
-        cached.result = packMappedTeam(plan,jobs,layout,hauling,haulingBusy,recipeIndex);
+        cached.preferMinimum = preferMinimum;
+        cached.result = packMappedTeam(plan,jobs,layout,hauling,haulingBusy,recipeIndex,{preferMinimum});
         if(layout)addHarvestHelpers(cached.result,layout,recipeIndex,ANIIMO_MAX[layoutHomeLevel()-1]);
     }
     return cached.result;
@@ -5974,30 +5988,57 @@ function aniimoTeam(plan) {
     // every personality it has to have.
     const assign = () => {
         const rows = [...groups.values()]
-            .map(g => ({ ...g, where: new Map(g.where), jobs: new Map([...g.jobs].map(([job, at]) => [job, new Set(at)])) }))
-            .sort((a, b) => b.level - a.level || Number(b.bonus) - Number(a.bonus) || a.label.localeCompare(b.label));
+            .map(g => ({
+                ...g,
+                fixed: Boolean(g.environment) || (g.allocations?.length > 0 && g.allocations.every(a => a.fixed)),
+                where: new Map(g.where),
+                jobs: new Map([...g.jobs].map(([job, at]) => [job, new Set(at)])),
+            }))
+            .sort((a, b) => Number(b.fixed) - Number(a.fixed) || b.level - a.level || Number(b.bonus) - Number(a.bonus) || a.label.localeCompare(b.label));
         const kept = [];
         // One Aniimo can take another row's work when it has the ability at a high enough level,
         // hours to spare, and nothing on it already wanting the opposite personality.
-        const holds = (host, g) => host.ability === g.ability && (host.family || null) === (g.family || null) && host.level >= g.level && host.spare >= g.busy - 1e-6
+        const compatible = (host, g) => !host.fixed && !g.fixed
+            && host.ability === g.ability && (host.family || null) === (g.family || null)
+            && host.level >= g.level
             && (!g.personality || !host.personalities.has(opposedPersonality(g.personality)));
+        const mergeInto = (host, g, share) => {
+            const fraction = g.busy > 1e-9 ? share / g.busy : 1;
+            host.allocations = [...(host.allocations || []), ...(g.allocations || []).map(a => ({ ...a, busy: a.busy * fraction }))];
+            host.spare -= share;
+            host.busy += share;
+            if (g.personality) host.personalities.add(g.personality);
+            g.where.forEach((n, place) => host.where.set(place, (host.where.get(place) || 0) + n));
+            g.jobs.forEach((at, job) => {
+                if (!host.jobs.has(job)) host.jobs.set(job, new Set());
+                at.forEach(facility => host.jobs.get(job).add(facility));
+            });
+        };
         rows.forEach(g => {
-            // A facility with a resident Aniimo keeps it to itself.
-            const host = g.environment ? null : kept.find(k => holds(k, g));
-            if (host) {
-                host.allocations = [...(host.allocations || []), ...(g.allocations || [])];
-                host.spare -= g.busy;
-                host.busy += g.busy;
-                if (g.personality) host.personalities.add(g.personality);
-                g.where.forEach((n, place) => host.where.set(place, (host.where.get(place) || 0) + n));
-                g.jobs.forEach((at, job) => {
-                    if (!host.jobs.has(job)) host.jobs.set(job, new Set());
-                    at.forEach(facility => host.jobs.get(job).add(facility));
-                });
-                return;
+            // A facility with a resident or environment Aniimo keeps it to itself.
+            if (!g.fixed) {
+                const whole = kept.find(k => compatible(k, g) && k.spare >= g.busy - 1e-6);
+                if (whole) {
+                    mergeInto(whole, g, g.busy);
+                    return;
+                }
+                let remaining = g.busy;
+                for (const host of kept) {
+                    if (remaining <= 1e-6) break;
+                    if (!compatible(host, g) || host.spare <= 1e-6) continue;
+                    const take = Math.min(remaining, host.spare);
+                    mergeInto(host, g, take);
+                    remaining -= take;
+                }
+                if (remaining <= 1e-6) return;
+                if (remaining < g.busy - 1e-6) {
+                    const fraction = remaining / g.busy;
+                    g.allocations = (g.allocations || []).map(a => ({ ...a, busy: a.busy * fraction }));
+                    g.busy = remaining;
+                }
             }
             g.count = Math.max(1, Math.ceil(g.busy - 1e-6));
-            g.spare = g.count - g.busy;
+            g.spare = g.fixed ? 0 : g.count - g.busy;
             g.personalities = new Set(g.personality ? [g.personality] : []);
             kept.push(g);
         });

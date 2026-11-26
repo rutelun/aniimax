@@ -405,15 +405,15 @@ test('an idle Royalby takes both reserve loom jobs before and after their routes
     assert.deepEqual(plan.roster_routes.map(r=>r.member),[2,2]);
     Object.assign(plan,{continuous_production_checked:true,continuous_checked_recipes:names,comparison_seed:{keys:model.variable_keys,values},
         comparison_goals:{floors:[],currency:'coins'},continuous_upper_bounds:[[JSON.stringify(['coins',{floors:[]}]),plan.rate_per_second]],
-        crop_peaks:{counts:[0,1,1,0],targetSeconds:21,completion:0},reactive_dispatch:dispatch});
+        crop_peaks:{counts:[0,1,1],targetSeconds:21,completion:0},reactive_dispatch:dispatch});
     const sites=plan.roster_routes.map((r,i)=>({facility:r.facility,crop:r.item,x:i*4,y:0,w:2,h:2,batchWeight:r.job_rate*3600}));
     const pools=[...members];
     for(const [id,ability,level,count,family] of plan.assumed_aniimo)pools[id]={count,family,abilities:{[ability]:level},assumed:true};
     const context={members:pools,busy:plan.roster_workload,
-        permanent:[0,1,0,0],routes:plan.roster_routes,recipes,layout:{pieces:[{members:sites}],storages:[]}};
+        permanent:[0,1,0],routes:plan.roster_routes,recipes,layout:{pieces:[{members:sites}],storages:[]}};
     const after=compactMeasuredTeam(pkg,highs,{input,plan,context,limit:2});
     assert.ok(after,'replace the reserve while keeping the same number of workers');
-    assert.deepEqual(after.crop_peaks.counts,[1,1,0,0]);
+    assert.deepEqual(after.crop_peaks.counts,[1,1,0]);
     assert.deepEqual(after.roster_routes.map(r=>[r.item,r.member]),plan.roster_routes.map(r=>[r.item,0]));
     assert.ok(Math.abs(after.rate_per_second-plan.rate_per_second)<1e-9);
 });
@@ -451,4 +451,93 @@ test('the native plan verifies Sparki at the furnace with the same mine output',
     assert.deepEqual(after.staffing,[['Heat Furnace',1,1]]);
     assert.deepEqual(after.roster_workload,[0,1,before.roster_workload[2]]);
     assert.equal(after.rate_per_second,before.rate_per_second);
+});
+
+test('always_running omits dominated crop WorkPosts and prioritizes freeing Hauling couriers from climate posts', {skip:!fs.existsSync(wasm)}, async()=>{
+    const pkg=await import('../web/pkg/aniimax.js');
+    pkg.initSync({module:fs.readFileSync(wasm)});
+    const input={currency:'coins',aniimo:'roster',always_running:true,
+        facilities:{'Farmland':[{count:4,level:1}],'Heat Furnace':[{count:1,level:1}]},
+        roster:{members:[
+            {count:1,abilities:{Fire:3,Hauling:4}},
+            {count:1,abilities:{Fire:3,Wind:4}},
+            {count:1,abilities:{Grass:3,Dark:3,Water:3}},
+        ],environment:{'Heat Furnace':'Fire'},residents:[],movement_seconds:15}};
+    const model=JSON.parse(pkg.exact_problem(JSON.stringify(input),'{}'));
+    // No crop WorkPost integers should be created under always_running when mobile work dominates.
+    assert.equal(model.variable_keys.filter(k=>k.startsWith('post:wheat:')).length, 0);
+    // Equal skill-sum workers on Heat Furnace: the Hauling 4 courier gets a higher climate_skills penalty.
+    const idxCourier=model.variable_keys.indexOf('staff:Heat Furnace:owned:0#0');
+    const idxWind=model.variable_keys.indexOf('staff:Heat Furnace:owned:1#0');
+    const skills=new Map(model.climate_skills);
+    assert.ok(skills.get(idxCourier) > skills.get(idxWind), `expected courier penalty (${skills.get(idxCourier)}) > non-courier (${skills.get(idxWind)})`);
+});
+
+test('prefers putting an assumed worker on a static climate post over using an assumed workshop worker when owned Aniimo is more effective on workshops', async()=>{
+    const highs=await highsModule({wasmBinary:fs.readFileSync(new URL('../web/vendor/highs/highs.wasm',import.meta.url)),print(){},printErr(){}});
+    // Owned Royalby {Wind:4, Light:3, Artisanship:4} is initially stuck on Sunlamp (x0=1),
+    // while ASSUMED Wind Lv.3 runs a Wind workshop (x3=1, load 0.35). Swapping Royalby onto
+    // the workshop (x2=1, load 0.22) and placing ASSUMED Light on Sunlamp (x1=1) keeps reserve
+    // headcount = 1, eliminates non-climate reserves, and reduces total work-days.
+    const keys=[
+        'staff:Sunlamp:owned:0#0',
+        'staff:Sunlamp:reserve:{"Light": 3}:None#0',
+        'rate:milled_rice__byowned:0#0',
+        'rate:milled_rice__byreserve:{"Wind": 3}:None#0',
+    ];
+    const lp=[
+        'Maximize',
+        ' obj: + 1 x2 + 1 x3',
+        'Subject To',
+        ' sunlamp: + 1 x0 + 1 x1 = 1',
+        ' royalby_cap: + 1 x0 + 0.22 x2 <= 1',
+        ' workshop: + 1 x2 + 1 x3 = 1',
+        'Bounds',
+        ' 0 <= x0 <= 1',
+        ' 0 <= x1 <= 1',
+        ' 0 <= x2 <= 1',
+        ' 0 <= x3 <= 1',
+        'General',
+        ' x0',
+        ' x1',
+        'End',
+    ].join('\n');
+    const problem={
+        variables:4,
+        variable_keys:keys,
+        lp,
+        staffing_groups:[[2,3]],
+        climate_skills:[[0,41],[1,9]],
+        staffing_pools:[
+            {work:[[0,1],[2,0.22]],anchors:[0],crop:[],reserve:false,active:null},
+            {work:[[1,1]],anchors:[1],crop:[],reserve:true,active:null},
+            {work:[[3,0.35]],anchors:[],crop:[],reserve:true,active:null},
+        ],
+    };
+    const solve=async model=>{
+        const res=highs.solve(model.lp);
+        assert.equal(res.Status,'Optimal');
+        return {values:model.variable_keys.map((_,v)=>res.Columns['x'+v]?.Primal??0)};
+    };
+    const after=await refineStaffing(problem,{values:[1,0,0,1]},solve);
+    const expected=[0,1,1,0];
+    assert.equal(after.values.length,expected.length);
+    for(let i=0;i<expected.length;i++)assert.ok(Math.abs(after.values[i]-expected[i])<1e-9,`x${i}=${after.values[i]} expected ${expected[i]}`);
+});
+
+test('Lunara (Light 3, Hauling 3) gets a lower Sunlamp climate_skills penalty than Royalby (Wind 4, Light 3, Artisanship 4)', {skip:!fs.existsSync(wasm)}, async()=>{
+    const pkg=await import('../web/pkg/aniimax.js');
+    pkg.initSync({module:fs.readFileSync(wasm)});
+    const input={currency:'coins',aniimo:'roster',always_running:true,
+        facilities:{'Farmland':[{count:4,level:1}],'Sunlamp':[{count:1,level:1}]},
+        roster:{members:[
+            {count:1,abilities:{Wind:4,Light:3,Artisanship:4}},
+            {count:1,abilities:{Light:3,Hauling:3}},
+        ],environment:{'Sunlamp':'Light'},residents:[],movement_seconds:15}};
+    const model=JSON.parse(pkg.exact_problem(JSON.stringify(input),'{}'));
+    const skills=new Map(model.climate_skills);
+    const idxRoyalby=model.variable_keys.indexOf('staff:Sunlamp:owned:0#0');
+    const idxLunara=model.variable_keys.indexOf('staff:Sunlamp:owned:1#0');
+    assert.ok(skills.get(idxLunara) < skills.get(idxRoyalby),
+        `expected Lunara (${skills.get(idxLunara)}) < Royalby (${skills.get(idxRoyalby)})`);
 });

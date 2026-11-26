@@ -159,10 +159,11 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
     const oldGoals=initialWitness?.goals??initialWitness?.comparison_goals;
     const oldScores=initialWitness?.scores??initialWitness?.comparison_scores;
     const witnessNames=initialWitness?.recipes??initialWitness?.continuous_checked_recipes??[];
-    const payloadFor=(scope,restricted=false,counts)=>JSON.stringify({...input,always_running_recipes:[...scope],
+    let activeInput=input;
+    let payloadFor=(scope,restricted=false,counts)=>JSON.stringify({...activeInput,always_running_recipes:[...scope],
         recipe_site_limits:counts && Object.fromEntries(counts),
         restrict_to_checked_recipes:restricted});
-    const relaxed=payloadFor([]);
+    let relaxed=payloadFor([]);
     const notePairRelax=(keys,values)=>{
         if(!meta || !input.relax_pair_coverage || meta.usedPairRelax || !keys || !values)return;
         for(let i=0;i<keys.length;i++){
@@ -381,7 +382,7 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
         remember(p.variable_keys,polished.values,objective);
         return true;
     };
-    const fullPayload=JSON.stringify({...input,always_running_recipes:undefined,restrict_to_checked_recipes:false});
+    let fullPayload=JSON.stringify({...input,always_running_recipes:undefined,restrict_to_checked_recipes:false});
     const localBound = (p,o)=>solveEconomicBound(highs,p,o);
     const bound = (p,o)=>cachedEconomicBound(p,o,evaluateBound ?? localBound);
     let fullIncome;
@@ -452,9 +453,10 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
         // Try the recipes from both shifts together. Reuse the fitted shift
         // across thresholds rather than re-solving the identical restricted model.
         let joint;
-        const priceJoint=(parent,recipes,minimum=0)=>{
-            const payload=payloadFor(recipes,true);
-            if(joint?.payload===payload)return;
+        const jointCache=new Map();
+        const priceJoint=(parent,recipes,minimum=0,warmSeed=null)=>{
+            const payload=payloadFor([...recipes].sort(),true);
+            if(jointCache.has(payload)){joint=jointCache.get(payload);return;}
             const compact=priority(payload,currencyStage,currency);
             const result={payload};
             if(compact.variables<parent.variables){
@@ -464,8 +466,21 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
                         const {numCols}=model.getDimensions();
                         const indices=Array.from({length:numCols},(_,i)=>Number(model.getColName(i).slice(1)));
                         const {incumbentIterations,...nativeOpts}=planSearchOptions({
-                            time_limit:4,mip_rel_gap:CURRENCY_RELATIVE_GAP,mip_abs_gap:0,mip_feasibility_tolerance:1e-9});
+                            time_limit:4,mip_max_nodes:8,mip_rel_gap:CURRENCY_RELATIVE_GAP,mip_abs_gap:0,mip_feasibility_tolerance:1e-9});
                         model.options.set(nativeOpts);
+                        if(warmSeed?.keys?.length===warmSeed?.values?.length){
+                            const previous=new Map(warmSeed.keys.map((k,i)=>[k,warmSeed.values[i]]));
+                            const section=compact.lp.match(/\nGeneral\n([\s\S]*?)\nEnd/);
+                            const integers=new Set(Array.from((section?.[1]??'').matchAll(/\bx(\d+)\b/g),m=>Number(m[1])));
+                            const warm={indices:[],values:[]};
+                            indices.forEach((v,i)=>{
+                                const key=compact.variable_keys[v],val=previous.get(key);
+                                if(integers.has(v) && !key.startsWith('extra#') && Number.isFinite(val) && Math.abs(val-Math.round(val))<1e-6){
+                                    warm.indices.push(i);warm.values.push(Math.round(val));
+                                }
+                            });
+                            if(warm.indices.length)model.setSolution(warm);
+                        }
                         runPlanModel(model,highs,undefined,undefined,incumbentIterations);
                         if(model.info.get('primal_solution_status')===highs.constants.solutionStatus.feasible){
                             const obj=model.getObjectiveValue();
@@ -488,10 +503,12 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
                     }
                 }
             }
+            jointCache.set(payload,result);
             joint=result;
         };
         const fitJoint=async(parent,proposal,priorValues,minimum)=>{
-            priceJoint(parent,new Set([...proposal.activeRecipes,...active(fullIncome,priorValues)]),minimum);
+            const warmSeed=priorValues?{keys:fullIncome.variable_keys,values:priorValues}:witnessSeed;
+            priceJoint(parent,new Set([...proposal.activeRecipes,...active(fullIncome,priorValues)]),minimum,warmSeed);
             if(!joint.seed || !(joint.value>minimum))return null;
             joint.checked??=restoreCatalogue(highs,solveModel,fullIncome,joint.seed);
             return joint.checked;
@@ -505,9 +522,13 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
         let initialScope=true;
         let round=0;
         let firstProposal;
+        let bestBoundUpper=Infinity;
+        let prevBoundObj=null, flatRelaxedRounds=0, retryFloorCertify=false;
         for (;;) {
             const targetIncome=witness ? earned : initialScope && jointFirst ? oldCurrency : 0;
             const incomeTarget=targetIncome>0 ? targetIncome*CURRENCY_GAP_FACTOR : undefined;
+            const floorCertify=(retryFloorCertify || !relaxedBound) && Boolean(witness && earned>0 && incomeTarget>0);
+            retryFloorCertify=false;
             let extraLimits=null;
             if(witness && earned>0 && incomeTarget>0 && proofScope.size){
                 const tightened=obbtSiteLimits(highs,raw,proofScope,incomeTarget,siteCapacity?.limits??{});
@@ -528,7 +549,8 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
             // Previous-map income only steers the bound search. Closing this
             // map always requires a physically checked shift at its own prices.
             const proofOptions={scope:[...proofScope],exact:true,seed:proofSeed,
-                relativeGap:CURRENCY_RELATIVE_GAP, incomeTarget};
+                relativeGap:CURRENCY_RELATIVE_GAP, incomeTarget,
+                ...(floorCertify ? {floorCertify:true} : {})};
             if(initialScope && jointFirst && evaluateBound){
                 const prior=align(fullIncome,witnessSeed);
                 const retained=prior && active(fullIncome,prior);
@@ -553,11 +575,13 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
             let bound=await exactBound(model,proofOptions);
             if(bound?.values)notePairRelax(bound.keys,bound.values);
             if(!Number.isFinite(bound?.upper))break;
-            if(witness && earned > 0 && !bound.values && bound.upper <= earned*CURRENCY_GAP_FACTOR){
+            ceilings.push(bound.upper);
+            bestBoundUpper=Math.min(bestBoundUpper,bound.upper);
+            if(witness && earned > 0 && !bound.values && bestBoundUpper <= earned*CURRENCY_GAP_FACTOR){
                 for(const name of active(fullIncome,witness.values))names.add(name);
                 remember(fullIncome.variable_keys,witness.values,earned);
                 verifiedIncomeValues=witness.values;
-                upper=Math.max(earned,bound.upper);
+                upper=Math.max(earned,bestBoundUpper);
                 ceilings.push(upper);
                 siteSearch={best,upper};
                 break;
@@ -568,10 +592,10 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
             let jointCloses=false;
             if(initialScope && jointFirst){
                 const priorValues=align(fullIncome,witnessSeed);
-                if(priorValues && bound.upper>oldCurrency*CURRENCY_GAP_FACTOR){
-                    const fit=await fitJoint(model,bound,priorValues,bound.upper/CURRENCY_GAP_FACTOR-1e-8);
+                if(priorValues){
+                    const fit=await fitJoint(model,bound,priorValues,bestBoundUpper/CURRENCY_GAP_FACTOR-1e-8);
                     const value=fit?.polished && sum(fullIncome.primary_objective,fit.values);
-                    if(value>0 && value<=bound.upper+1e-7 && value*CURRENCY_GAP_FACTOR>=bound.upper){
+                    if(value>0 && value<=bestBoundUpper+1e-7 && value*CURRENCY_GAP_FACTOR>=bestBoundUpper){
                         witness=fit;earned=value;jointCloses=true;
                     }
                 }
@@ -632,40 +656,79 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
                 }
             }
             // Refitting the physical shift can raise the income we need to
-            // certify. If that target now lies inside the narrow master's open
-            // gap, close that same model before adding more recipe constraints.
+            // certify. If that target now lies inside this model's open gap,
+            // retry this same smaller scope at the higher target before adding
+            // more recipe constraints.
             const target=earned*CURRENCY_GAP_FACTOR;
-            if(initialScope && witness && earned>0 && bound.objective<=target && target<bound.upper
+            if(witness && earned>0 && bound.objective<=target && target<bestBoundUpper
                 && (proofOptions.incomeTarget==null || target>proofOptions.incomeTarget+1e-7)){
-                const precise=await exactBound(model,{scope:[...proofScope],exact:true});
-                if(Number.isFinite(precise?.upper) && precise.upper>=Math.max(earned,bound.objective)-1e-7 && precise.upper<bound.upper)
-                    bound={...bound,upper:precise.upper};
+                if(initialScope){
+                    const precise=await exactBound(model,{scope:[...proofScope],exact:true});
+                    if(Number.isFinite(precise?.upper) && precise.upper>=Math.max(earned,bound.objective)-1e-7 && precise.upper<bound.upper){
+                        bound={...bound,upper:precise.upper};
+                        ceilings.push(precise.upper);
+                        bestBoundUpper=Math.min(bestBoundUpper,precise.upper);
+                    }
+                }else{
+                    retryFloorCertify=true;
+                    continue;
+                }
             }
-            if(witness && earned > 0 && bound.upper >= earned - 1e-7 && bound.upper <= earned*CURRENCY_GAP_FACTOR){
+            if(witness && earned > 0 && bestBoundUpper >= earned - 1e-7 && bestBoundUpper <= earned*CURRENCY_GAP_FACTOR){
                 for(const name of active(fullIncome,witness.values))names.add(name);
                 remember(fullIncome.variable_keys,witness.values,earned);
                 verifiedIncomeValues=witness.values;
-                upper=Math.max(earned,bound.upper);
+                upper=Math.max(earned,bestBoundUpper);
                 ceilings.push(upper);
                 siteSearch={best,upper};
                 break;
             }
             // Enforce work conservation only on throttled recipes first to
             // avoid flooding the bound with high-cardinality full-load sites.
+            // From an empty initial scope, start with the unexplained recipes
+            // from suggestEconomicScope when strictly smaller.
             let next=(bound.throttledRecipes??[]).filter(n=>!proofScope.has(n));
+            let usedCompactSuggestion=false;
+            if(initialScope && proofScope.size<=2 && next.length){
+                const suggested=suggestEconomicScope(model,bound.values,proofScope).filter(n=>!proofScope.has(n));
+                if(suggested.length && suggested.length<next.length){
+                    next=suggested;
+                    usedCompactSuggestion=true;
+                }
+            }
             if(round>=2){
                 const extra=suggestEconomicScope(model,bound.values,proofScope).filter(n=>!proofScope.has(n));
                 if(extra.length)next=[...new Set([...next,...extra])];
             }
             if(!next.length && initialScope)next=suggestEconomicScope(model,bound.values,proofScope).filter(n=>!proofScope.has(n));
             if(!next.length)next=[...new Set([...bound.occupiedRecipes,...bound.activeRecipes])].filter(n=>!proofScope.has(n));
+            // If widening proofScope under relax_min_reasons fails to lower the
+            // relaxed objective, switch to the exact availability formulation.
+            if(relaxedBound && Number.isFinite(bound.objective) && prevBoundObj!=null
+                && bound.objective>=prevBoundObj-1e-6*Math.max(1,Math.abs(bound.objective))){
+                flatRelaxedRounds++;
+            }else{
+                flatRelaxedRounds=0;
+            }
+            prevBoundObj=bound.objective;
             initialScope=false;
             round++;
+            if(relaxedBound && flatRelaxedRounds>=1){
+                relaxedBound=false;
+                flatRelaxedRounds=0;
+                continue;
+            }
             if(!next.length){
                 if(relaxedBound){relaxedBound=false;continue;}
                 break;
             }
             for(const name of next)proofScope.add(name);
+            // A small compact suggestion from the initial scope (e.g. 5-9
+            // unexplained recipes) stays flat under relax_min_reasons; enforce
+            // exact availability on it directly instead of burning a flat round.
+            if(relaxedBound && usedCompactSuggestion && proofScope.size<=12){
+                relaxedBound=false;
+            }
         }
     }
     const generatedSites = !input.roster && !witnessSeed;
@@ -831,10 +894,11 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
     }
     if(!best || !Number.isFinite(upper))return null;
     fullIncome ??= priority(fullPayload,currencyStage,currency);
+    const usesPairRelax=(keys,values)=>Boolean(activeInput.relax_pair_coverage && keys?.some((key,i)=>key.startsWith('pair_relax:') && values[i]>0.5));
     let restored=null;
     for(const candidate of contenders.sort((a,b)=>b.objective-a.objective)){
-        const actual=verifiedIncomeValues && candidate.values===verifiedIncomeValues ? candidate :
-            await restoreCatalogue(highs,solveModel,fullIncome,candidate);
+        const actual=verifiedIncomeValues && candidate.values===verifiedIncomeValues && !usesPairRelax(fullIncome.variable_keys,candidate.values)
+            ? candidate : await restoreCatalogue(highs,solveModel,fullIncome,candidate);
         if(!actual?.values)continue;
         const objective=sum(fullIncome.primary_objective,actual.values);
         const compatible=ceilings.filter(ceiling=>ceiling>=objective-1e-7);
@@ -845,7 +909,29 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
     }
     if(!restored)return null;
     notePairRelax(restored.keys,restored.values);
-    if(input.relax_pair_coverage && restored.keys.some((key,i)=>key.startsWith('pair_relax:') && restored.values[i]>0.5))return null;
+    if(usesPairRelax(restored.keys,restored.values)){
+        // Pass 1's dual bound from relax_pair_coverage=true is a valid global
+        // upper bound for exact pair coverage. Lift the primal shift directly
+        // onto the exact pair model to avoid repeating the bound loop.
+        const exactInput={...activeInput,relax_pair_coverage:false};
+        const exactFullPayload=JSON.stringify({...exactInput,always_running_recipes:undefined,restrict_to_checked_recipes:false});
+        const exactFullIncome=priority(exactFullPayload,currencyStage,currency);
+        const exactActual=exactFullIncome?.lp ? await restoreCatalogue(highs,solveModel,exactFullIncome,restored) : null;
+        if(!exactActual?.values)return null;
+        const exactObj=sum(exactFullIncome.primary_objective,exactActual.values);
+        const compatible=ceilings.filter(ceiling=>ceiling>=exactObj-1e-7);
+        if(!compatible.length)return null;
+        const exactUpper=Math.max(exactObj,Math.min(...compatible));
+        if(exactUpper>exactObj*CURRENCY_GAP_FACTOR)return null;
+        activeInput=exactInput;
+        payloadFor=(scope,restricted=false,counts)=>JSON.stringify({...activeInput,always_running_recipes:[...scope],
+            recipe_site_limits:counts && Object.fromEntries(counts),restrict_to_checked_recipes:restricted});
+        relaxed=payloadFor([]);
+        fullPayload=exactFullPayload;
+        fullIncome=exactFullIncome;
+        upper=exactUpper;
+        restored={keys:exactFullIncome.variable_keys,values:exactActual.values,objective:exactObj};
+    }
     best=restored;
     // The provisional map will be measured and solved again. On the final
     // map, compare the restored shift against this map's own income ceiling.
@@ -1008,10 +1094,9 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
     const local=keepRawIncome(restrict(p,names),fullIncome,minRate);
     if(!local)return null;
     const compactSeed={keys:last.p.variable_keys,values:last.r.values};
-    const scopedPayload=payloadFor(names,false);
-    const scopedP=input.roster ? exact(scopedPayload,request) : null;
-    const scopedLocal=scopedP && scopedP.variables < p.variables
-        ? keepRawIncome(restrict(scopedP,names),fullIncome,minRate) : null;
+    const scopedPayload=payload;
+    const scopedP=input.roster && last.p && last.p.variables < p.variables ? last.p : null;
+    const scopedLocal=scopedP ? last.local : null;
     const liftToFull=async(source)=>{
         let lifted=await restoreCatalogue(highs,solveModel,local,source);
         if(!lifted?.values){
@@ -1028,12 +1113,7 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
     if(scopedLocal){
         const scopedAudit=(values,summaryOnly=false)=>JSON.parse(pkg.exact_plan(scopedPayload,JSON.stringify(request),
             JSON.stringify({values,proven:false,bound:upper,verify_only:true,summary_only:summaryOnly})));
-        let sr=await restoreCatalogue(highs,solveModel,scopedLocal,compactSeed);
-        if(!sr?.values){
-            const warm=align(scopedLocal,compactSeed);
-            sr=await solveModel(fixPhysical(scopedLocal,warm,true),options(2),undefined,warm);
-            if(sr?.values)sr=polishSolution(highs,scopedLocal,sr);
-        }
+        const sr=last.r;
         if(sr?.values){
             const sRefined=await refineStaffing(scopedLocal,sr,solveModel,{pkg,input,report:values=>scopedAudit(values,true)});
             // Preserve the refined staffing choices (posts, climate staff, generators) when lifting to fullPayload.
@@ -1118,7 +1198,7 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
             }
         }
     }
-    if (input.relax_pair_coverage) {
+    if (activeInput.relax_pair_coverage) {
         // Relaxed pair coverage omits exact pair:* columns. When the final plan uses
         // 3+ temperature modes (or a reserve climate worker with an owned opposite),
         // check exact overlapping pairs via the compact climate solver.
@@ -1157,6 +1237,7 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
                         if (checked.success && keepsProduction(plan, checked)
                             && checked.rate_per_second >= minRate - 1e-7 && checked.rate_per_second <= upper + 1e-7) {
                             p = exactP;
+                            payload = JSON.stringify({ ...JSON.parse(payload), relax_pair_coverage: false });
                             final = cleaned;
                             plan = checked;
                         }
@@ -1180,7 +1261,8 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
         if(!close(earned,entry.upper)){
             const checked=restrict(priority(payload,entry.before,key),names);
             const warm=align(checked,{keys:p.variable_keys,values:final.values});
-            const audit=await solveModel(fixPhysical(checked,warm),options(.7),undefined,warm);
+            let audit=await solveModel(fixPhysical(checked,warm),options(.7),undefined,warm);
+            if(!audit?.values)audit=await solveModel(fixPhysical(checked,warm,true),options(.7),undefined,warm);
             if(audit?.values)earned=Math.max(earned??-Infinity,audit.objective);
         }
         if(key==='level_up' && paceProof.refine){

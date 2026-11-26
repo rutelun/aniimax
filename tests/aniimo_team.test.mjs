@@ -51,3 +51,19 @@ test('strong climate jobs reject level-one placeholders while mild modes keep th
         }
     }
 });
+
+test('Minimum packs lower-level fractional jobs across spare capacity of multiple higher-level hosts', () => {
+    const plan = {
+        coin_items: [
+            { facility: 'Mine', item_name: 'a', facility_count: 1, aniimo_tasks: [{ ability: 'Earth', level: 3, busy: 0.6 }] },
+            { facility: 'Mine', item_name: 'b', facility_count: 1, aniimo_tasks: [{ ability: 'Earth', level: 2, busy: 0.6 }] },
+            { facility: 'Mine', item_name: 'c', facility_count: 1, aniimo_tasks: [{ ability: 'Earth', level: 1, busy: 0.6 }] },
+        ],
+        environment_assignments: [],
+        power_generator_levels: [],
+        hauling_busy: 0,
+    };
+    const team = aniimoTeam(plan);
+    assert.equal(team.total, 2);
+    assert.equal(team.kept.reduce((s, g) => s + g.count, 0), 2);
+});

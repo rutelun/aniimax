@@ -388,7 +388,7 @@ export function optimizeWorkshopSources(pkg,highs,input,base,catalog){
                         postRelaxPairs=false;
                         continue;
                     }
-                    // Close the income gap to <= 0.2% on the verified scope when
+                    // Close the income gap to <= 0.1% on the verified scope when
                     // the quick node budget left a wider gap open.
                     if(target===currency && pObj>0 && (!Number.isFinite(currencyUpper) || currencyUpper>pObj*CURRENCY_GAP_FACTOR+1e-7)){
                         const tighter=solvePost(pProblem,pValues,{

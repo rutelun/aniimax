@@ -170,10 +170,10 @@ test('restoring a shift accounts for unsold output left by an earlier priority f
     assert.equal(plan?.rate_per_second,1);
 });
 
-test('a measured shift at the 0.2% income gap is accepted and a 0.22% gap keeps searching',async()=>{
+test('a measured shift at the 0.1% income gap is accepted and a 0.12% gap keeps searching',async()=>{
     const highs=await highsModule({wasmBinary:fs.readFileSync(new URL('../web/vendor/highs/highs.wasm',import.meta.url)),
         print(){},printErr(){}});
-    let ceiling = .5011;
+    let ceiling = .5006;
     const build=payload=>{
         const config=JSON.parse(payload);
         const relaxed=config.always_running_recipes != null && !config.restrict_to_checked_recipes;
@@ -218,7 +218,7 @@ test('a measured shift at the 0.2% income gap is accepted and a 0.22% gap keeps 
     assert.equal(carried,null);
     assert.equal(fallback?.rate_per_second,.5);
     assert.ok(repairFloors.some(floor=>floor<=.5 && floor>=.5-1e-7));
-    ceiling = .501;
+    ceiling = .5005;
     fallback = null;
     const accepted = await search();
     assert.equal(accepted?.rate_per_second,.5);
@@ -386,5 +386,35 @@ test('priorities after currency unlock unused producer recipes and skip duplicat
             evaluateCounts:()=>null,onIncumbent:p=>{inc=p;}});
     assert.equal(gapRes,null);
     assert.equal(inc?.rate_per_second,.5);
+    assert.equal(exactPairCalls,0);
+});
+
+test('relaxed pass clears unnecessary pair_relax via restoreCatalogue instead of retrying full pair pass', async () => {
+    const highs=await highsModule({wasmBinary:fs.readFileSync(new URL('../web/vendor/highs/highs.wasm',import.meta.url)),
+        print(){},printErr(){}});
+    const keys=['rate:crop#0','units:crop#0','pair_relax:("Heat Furnace", "Cooling Unit"):("Warm", "Freeze")#0'];
+    let exactPairCalls=0;
+    const build=payload=>{
+        const cfg=JSON.parse(payload);
+        if(!cfg.relax_pair_coverage)exactPairCalls++;
+        return JSON.stringify({variables:3,variable_keys:keys,primary_objective:[[0,1]],tiebreak:[],
+            integer_groups:[['crop',[[1,1]],1]],recipe_options:[[0,'crop','Farm',false,false,1]],
+            recipe_variables:[[0,'crop'],[1,'crop']],
+            lp:'Maximize\n obj: + 1 x0\nSubject To\n c0: x0 - x1 <= 0\nBounds\n 0 <= x0 <= 1\n 0 <= x1 <= 1\n 0 <= x2 <= 2\nGeneral\n x1\n x2\nEnd'});
+    };
+    const pkg={exact_priority_problem:build,exact_problem:build,
+        exact_plan:(_p,_s,r)=>JSON.stringify({success:true,rate_per_second:JSON.parse(r).values[0]})};
+    const solveModel=(p,o,_,seed)=>{
+        const r=solveWithIncumbent(highs,p,o,seed,false);
+        if(!r.Columns)return null;
+        const values=p.variable_keys.map((_,v)=>r.Columns['x'+v].Primal);
+        // Simulate HiGHS choosing a free pair_relax > 0 when not constrained to 0.
+        if(!p.lp.includes('no_relax_pair_'))values[2]=2;
+        return {values,objective:r.ObjectiveValue,proven:r.Status==='Optimal',upper:r.UpperBound};
+    };
+    const plan=await tryPriorityPlan(pkg,{currency:'coins',always_running:true,roster:{dispatch:{fixed:[1]}}},{
+        highs,solveModel,initialWitness:{recipes:['crop'],counts:{crop:1},seed:{keys,values:[1,1,2]}},
+    });
+    assert.equal(plan?.rate_per_second,1);
     assert.equal(exactPairCalls,0);
 });

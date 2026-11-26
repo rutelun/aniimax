@@ -8,10 +8,13 @@ const byEstimate = (a,b) => a.cropWorkshopDistractions-b.cropWorkshopDistraction
     || a.work-b.work || b.plan.power_generated-a.plan.power_generated || a.plan.power_used-b.plan.power_used;
 const ordinaryModes = p => p.schedule_sources.filter(s=>!s.turns).map(s=>s.id).sort().join('|');
 
-function estimate(plan,recipes) {
+function estimate(plan,recipes,input) {
     const jobs=productionTeamJobs(plan,recipes);
+    const preferMinimum = input?.aniimo === 'minimum';
     const team=recommendBestTeam(jobs,plan.hauling_busy??0,[],{
         phaseDurations:plan.recipe_schedule?.phases.map(p=>p.duration),
+        haulingLevel: preferMinimum ? 1 : 4,
+        preferMinimum,
     });
     const {shifts}=team;
     const open=jobs.filter(j=>!j.fixed && !j.occupied && j.busy>1e-6);
@@ -72,7 +75,7 @@ export async function shortlistPowerTeams(pkg,highs,plan,input,prepared=null) {
             const shared=sites.filter(s=>s.jobs.length>1).map(s=>s.jobs.map(j=>j.item).sort().join('+')).sort().join('|');
             const modes=ordinaryModes(candidate);
             const key=JSON.stringify([modes,sites.map(s=>[s.id,s.electric_level,...s.jobs.map(j=>j.item)])]);
-            score={...estimate(candidate,recipes),shared,key,unchanged:modes===incumbentModes};
+            score={...estimate(candidate,recipes,input),shared,key,unchanged:modes===incumbentModes};
             estimates.set(candidate.coin_items,score);
         }
         const group=groups.get(count);

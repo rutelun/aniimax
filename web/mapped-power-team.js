@@ -6,15 +6,16 @@ import {withCropSupport} from './crop-support.js';
 
 const residents = new Set(FACILITIES.filter(f => f.category === 'Aniimo Materials').map(f => f.name));
 
-export function packMappedTeam(plan, jobs, layout, hauling, haulingBusy, recipes) {
+export function packMappedTeam(plan, jobs, layout, hauling, haulingBusy, recipes, options = {}) {
     const dispatch = layout && buildDispatch(layout, recipes, hauling, residents);
-    const level = hauling?.courierLevel ?? 4;
+    const level = hauling?.courierLevel ?? (options.preferMinimum ? 1 : 4);
     const sameAtThree = level === 4 && hauling?.jobs?.every(j => Math.abs(j.seconds[3]-j.seconds[4]) < 1e-9);
     return recommendBestTeam(placeBestJobs(jobs, layout, dispatch?.locations), haulingBusy,
         dispatch?.opportunities ?? [], {
             phaseDurations:plan.recipe_schedule?.phases.map(p => p.duration),
             haulingLevel:level, sharedHaulingLevel:sameAtThree ? 3 : level,
             haulingProfile:haulingScheduleProfile(plan, hauling, level),
+            preferMinimum: Boolean(options.preferMinimum),
         });
 }
 

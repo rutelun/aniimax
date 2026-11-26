@@ -45,8 +45,8 @@ export function renderRosterSwaps(section, report, members, translate, format, r
     for (const row of report.rows) {
         const { from, to } = row;
         const fromMember = members[from];
-        const toMember = members[to];
-        if (!fromMember || !toMember) continue;
+        const toMember = to == null ? null : members[to];
+        if (!fromMember || (to != null && !toMember)) continue;
         const tile = document.createElement('div');
         tile.className = 'roster-swap';
         const scaledGain = row.gain * scale;
@@ -61,7 +61,8 @@ export function renderRosterSwaps(section, report, members, translate, format, r
             const label = translate(t);
             return letter ? `${label} (${letter})` : label;
         }).join(', ');
-        const summaryText = `${fromMember.name} → ${toMember.name}: ${amount} ${unit} (${formatVal(scaledTotal)} ${unit}${traitNames ? ` · ${traitNames}` : ''})`;
+        const targetLabel = toMember ? toMember.name : translate('Unassign');
+        const summaryText = `${fromMember.name} → ${targetLabel}: ${amount} ${unit} (${formatVal(scaledTotal)} ${unit}${traitNames ? ` · ${traitNames}` : ''})`;
         tile.title = summaryText;
         tile.setAttribute('aria-label', summaryText);
         const arrow = document.createElement('span');
@@ -71,7 +72,16 @@ export function renderRosterSwaps(section, report, members, translate, format, r
         const gain = document.createElement('span');
         gain.className = 'roster-swap-gain';
         gain.textContent = amount;
-        tile.append(portrait(fromMember), arrow, portrait(toMember));
+        if (toMember) {
+            tile.append(portrait(fromMember), arrow, portrait(toMember));
+        } else {
+            const remove = document.createElement('span');
+            remove.className = 'roster-swap-remove';
+            remove.textContent = '✕';
+            remove.title = translate('Unassign');
+            remove.setAttribute('aria-hidden', 'true');
+            tile.append(portrait(fromMember), arrow, remove);
+        }
         if (letters) {
             const badge = document.createElement('span');
             badge.className = 'roster-swap-traits';

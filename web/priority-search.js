@@ -1,4 +1,4 @@
-export const CURRENCY_RELATIVE_GAP = 0.002;
+export const CURRENCY_RELATIVE_GAP = 0.001;
 export const CURRENCY_GAP_FACTOR = 1 + CURRENCY_RELATIVE_GAP;
 
 // Intermediate lexicographic stages need the largest production value, not a preferred

@@ -7,7 +7,7 @@ import {fastLayoutSeed} from './fast-layout.js';
 
 self.onmessage = ({data}) => {
     try {
-        const {baseLayout, candidates, cells, poleLimit, haulingBound, recipes, facilities, limit} = data;
+        const {baseLayout, candidates, cells, poleLimit, haulingBound, recipes, facilities, limit, haulingLevel = 4, preferMinimum = false} = data;
         let best=data.baselineScore, winner=null;
         const wiredByCount=new Map();
         let parent=null;
@@ -27,8 +27,8 @@ self.onmessage = ({data}) => {
             if (grid.disconnected || grid.generators!==plan.power_generators) continue;
             wiredByCount.set(plan.power_generators,layout);
             if (index===parentIndex) parent={index,layout};
-            const hauling=haulingWorkload(layout,plan.coin_items,haulingBound,recipes,facilities,true,4);
-            const team=packMappedTeam(plan,jobs,layout,hauling,hauling.busy,recipes);
+            const hauling=haulingWorkload(layout,plan.coin_items,haulingBound,recipes,facilities,true,haulingLevel);
+            const team=packMappedTeam(plan,jobs,layout,hauling,hauling.busy,recipes,{preferMinimum});
             const lower=mappedTeamScore(team,grid,limit,plan.rate_per_second);
             if (!lower || !improvesMeasuredTeam(lower,best)) continue;
             // The current shifts can still win without help. Once they need

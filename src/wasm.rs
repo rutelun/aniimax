@@ -1938,7 +1938,7 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
     js.recipe_switching_candidate = prepared.input.recipe_switching_relaxation;
     if js.recipe_switching_candidate || (!result.summary_only
         && prepared.input.e_mode_rv.unwrap_or(0) >= 12
-        && prepared.input.aniimo.as_deref().is_some_and(|setup| setup.starts_with("best"))) {
+        && prepared.input.aniimo.as_deref().is_some_and(|setup| setup.starts_with("best") || setup == "minimum")) {
         let all: std::collections::HashMap<_, _> = reporting_items.iter()
             .map(|item| (item.name.as_str(), item)).collect();
         js.schedule_sources = exact.recipe_rates.iter().filter(|(_, rate)| **rate > 1e-9)
@@ -2268,12 +2268,63 @@ impl PreparedInput {
                 let jobs = available.clone().filter_map(|item| requirements.get(&item.name))
                     .chain(available.clone().flat_map(|item| grower_steps.get(&item.name).iter()
                         .map(|job| (job.ability.as_str(), job.min_level))))
-                    .chain(environment.filter(|(building, _)| facility_counts.get_count(building) > 0)
+                    .chain(environment.clone().filter(|(building, _)| facility_counts.get_count(building) > 0)
                         .map(|(_, ability)| (ability.as_str(), 1)))
                     .chain((generators > 0).then_some(("Lightning", 1)));
                 if input.fixed_homeland.is_none() {
-                    crew.add_reserve_workers(jobs, capacity);
-                    crew.add_reserve_families(available.filter_map(|item| requirements.family(&item.name)), capacity);
+                    // Skip adding a Lv.3 reserve when owned single-ability Lv.3+ specialists
+                    // (who cannot be diverted to any other ability) already cover every site
+                    // that could ever use that ability or Leisure family.
+                    let mut ability_sites: std::collections::BTreeMap<&str, std::collections::BTreeSet<&str>> = Default::default();
+                    let mut family_sites: std::collections::BTreeMap<&str, std::collections::BTreeSet<&str>> = Default::default();
+                    for item in available.clone() {
+                        if let Some((ability, _)) = requirements.get(&item.name) {
+                            ability_sites.entry(ability).or_default().insert(item.facility.as_str());
+                        }
+                        if let Some(family) = requirements.family(&item.name) {
+                            family_sites.entry(family).or_default().insert(item.facility.as_str());
+                        }
+                        for job in grower_steps.get(&item.name) {
+                            ability_sites.entry(job.ability.as_str()).or_default().insert(item.facility.as_str());
+                        }
+                    }
+                    for (building, ability) in environment.clone() {
+                        if facility_counts.get_count(building) > 0 {
+                            ability_sites.entry(ability.as_str()).or_default().insert(building.as_str());
+                        }
+                    }
+                    let mut pure_ability: std::collections::BTreeMap<String, u32> = Default::default();
+                    let mut pure_family: std::collections::BTreeMap<String, u32> = Default::default();
+                    for member in &crew.members {
+                        let active_abilities: Vec<(&str, u32)> = member.abilities.iter()
+                            .filter(|(_, &lv)| lv > 0)
+                            .map(|(a, &lv)| (a.as_str(), lv))
+                            .collect();
+                        if active_abilities.len() == 1 && active_abilities[0].1 >= 3 {
+                            let ability = active_abilities[0].0;
+                            if ability == "Leisure" {
+                                if let Some(family) = member.family.as_deref() {
+                                    *pure_family.entry(family.to_owned()).or_default() += member.count;
+                                }
+                            } else {
+                                *pure_ability.entry(ability.to_owned()).or_default() += member.count;
+                            }
+                        }
+                    }
+                    let needed_jobs: Vec<(&str, u32)> = jobs.filter(|&(ability, _)| {
+                        let sites = ability_sites.get(ability).map_or(0, |facs| {
+                            facs.iter().fold(0u32, |s, f| s.saturating_add(facility_counts.get_count(f)))
+                        }).saturating_add(if ability == "Lightning" { generators } else { 0 });
+                        pure_ability.get(ability).copied().unwrap_or(0) < sites
+                    }).collect();
+                    let needed_families: Vec<&str> = available.filter_map(|item| requirements.family(&item.name)).filter(|&family| {
+                        let sites = family_sites.get(family).map_or(0, |facs| {
+                            facs.iter().fold(0u32, |s, f| s.saturating_add(facility_counts.get_count(f)))
+                        });
+                        pure_family.get(family).copied().unwrap_or(0) < sites
+                    }).collect();
+                    crew.add_reserve_workers(needed_jobs, capacity);
+                    crew.add_reserve_families(needed_families, capacity);
                 }
                 let has_hauling = roster.hauling_default_seconds > 0.0
                     || roster.hauling_seconds.values().any(|&s| s > 0.0)

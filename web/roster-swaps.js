@@ -29,7 +29,10 @@ export function swapProposals(rows,input,final,recipes,prismana) {
         if(!recipe?.aniimo)continue;
         const [ability,level]=recipe.aniimo;
         roster.forEach((old,from)=>{
-            if(from===row.member||!can(old,ability,level)||old.count!==1||posts.occupied.get(from))return;
+            const occupied=posts.occupied.get(from)??0;
+            if(from===row.member||!can(old,ability,level)||old.count<=occupied)return;
+            // Leaving a slow/interfering worker off the homeland can directly improve dispatch income.
+            proposals.set(from+'|null',{from,to:null});
             for(const to of replacements(from,roster,ability,level,prismana))
                 proposals.set(from+'|'+to,{from,to});
         });
@@ -60,8 +63,17 @@ export function replacementTraits(input,final,recipes) {
 }
 
 export function swappedTeam(input,final,changes,traits){
-    const members=input.roster.members.slice();
-    for(const {from,to} of changes)members[from]={...input.roster.members[to],count:1,personalities:traits?.[to]??input.roster.members[to].personalities};
+    const members=input.roster.members.map(m=>({...m}));
+    for(const {from,to} of changes){
+        if(to==null){
+            members[from]={...members[from],count:Math.max(0,members[from].count-1)};
+        }else if(members[from].count===1){
+            members[from]={...input.roster.members[to],count:1,personalities:traits?.[to]??input.roster.members[to].personalities};
+        }else{
+            members[from]={...members[from],count:Math.max(0,members[from].count-1)};
+            members[to]={...members[to],count:members[to].count+1};
+        }
+    }
     const expanded=[...members];
     for(const [id,ability,level,count,family] of final.assumed_aniimo??[])
         expanded[id]={count,abilities:{[ability]:level},family,assumed:true,personalities:[]};
@@ -72,14 +84,19 @@ export function swappedTeam(input,final,changes,traits){
 // did not change. Full posts keep their actual operators throughout the refit.
 function newPolicy(scenario,changes,recipes,team,posts,plan){
     const {input,map}=scenario,previous={...input.roster.dispatch};
+    const touched=new Set();
+    for(const {from,to} of changes){
+        touched.add(from);
+        if(to!=null && input.roster.members[from]?.count>1)touched.add(to);
+    }
     for(const r of recipes){
         const jobs=[...(r.aniimo?[['Production',...r.aniimo]]:[]),...(r.jobs??[]).map(([,a,l])=>[a,a,l]),['Hauling','Hauling',1]];
         for(const [role,ability,level] of jobs){
             const key=r.facility+'|'+r.name+'|'+role;
-            if(changes.some(({from})=>{
-                const a=input.roster.members[from],b=team.expanded[from];
+            if([...touched].some(idx=>{
+                const a=input.roster.members[idx],b=team.expanded[idx];
                 return (can(a,ability,level)||can(b,ability,level)) && (
-                    a.abilities[ability]!==b.abilities[ability]||a.family!==b.family||
+                    a.count!==b.count||a.abilities[ability]!==b.abilities[ability]||a.family!==b.family||
                     (a.personalities??[]).includes(input.roster.personalities?.[r.facility])!==
                     (b.personalities??[]).includes(input.roster.personalities?.[r.facility]));
             }))delete previous[key];
@@ -135,11 +152,13 @@ export function scanSwaps(pkg,highs,scenario,rows,onProgress=()=>{}){
     for(const change of proposals){
         const hour=hourlyIncome([change]);
         if(hour!=null && Math.round(hour-baseline)>0){
-            const needed=neededSwapTraits(traits[change.to],trial=>hourlyIncome([change],trial),hour);
+            const needed=change.to!=null && input.roster.members[change.from]?.count===1
+                ? neededSwapTraits(traits[change.to],trial=>hourlyIncome([change],trial),hour)
+                : [];
             results.push({...change,hour,gain:hour-baseline,traits:needed});
         }
         onProgress();
     }
-    results.sort((a,b)=>b.gain-a.gain || a.from-b.from || a.to-b.to);
+    results.sort((a,b)=>b.gain-a.gain || a.from-b.from || (a.to??-1)-(b.to??-1));
     return {rows:results,checked:proposals.length,traits,baseline};
 }

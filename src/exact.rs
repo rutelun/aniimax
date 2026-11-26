@@ -589,6 +589,19 @@ fn add_movement_work<'a>(model: &mut Model<'a>, rates: &[(&'a ProductionItem, us
                     }
                     continue;
                 }
+                let mobile_travel = counts.member_movement_seconds(member) * visits as f64;
+                // Under always_running, skip dedicated WorkPost integers when mobile work is
+                // strictly dominated (zero travel, or a crop where one mobile visit + work uses
+                // less than a full plot cycle so anchoring a whole Aniimo per plot can never win).
+                if counts.always_running()
+                    && (mobile_travel <= 0.0 || (crop.is_some() && seconds + mobile_travel < recipe.production_time))
+                {
+                    let allocation = model.add(0.0, (0.0, f64::INFINITY), false, VarKind::WorkRoute {
+                        recipe, member, crop: crop.clone(), mobile: true, seconds, travel: mobile_travel });
+                    demand.push((allocation, 1.0));
+                    busy[member].push((allocation, seconds + mobile_travel));
+                    continue;
+                }
                 let key = (work_station(recipe), member);
                 let post = *posts.entry(key.clone()).or_insert_with(|| {
                     let post = model.add(0.0, (0.0, counts.get_count(&recipe.facility).min(crew.members[member].count) as f64), true,
@@ -599,7 +612,7 @@ fn add_movement_work<'a>(model: &mut Model<'a>, rates: &[(&'a ProductionItem, us
                     post
                 });
                 for mobile in [false, true] {
-                    let travel = if mobile { counts.member_movement_seconds(member) * visits as f64 } else { 0.0 };
+                    let travel = if mobile { mobile_travel } else { 0.0 };
                     let allocation = model.add(0.0, (0.0, f64::INFINITY), false, VarKind::WorkRoute {
                         recipe, member, crop: crop.clone(), mobile, seconds, travel });
                     demand.push((allocation, 1.0));
@@ -1585,6 +1598,44 @@ fn build_model<'a>(
                 }
             }
         }
+        // Symmetry breaking for functionally identical owned roster cards (e.g., two species
+        // with identical abilities, relevant personalities, family, count and travel cost).
+        if !facility_counts.has_dispatch() && fixed.is_none() {
+            let owned = crew.assumed_from.unwrap_or(crew.members.len());
+            let relevant_traits: std::collections::BTreeSet<&str> = crew.personalities.values().map(String::as_str).collect();
+            let mut identical = BTreeMap::<_, Vec<usize>>::new();
+            for member in 0..owned {
+                let m = &crew.members[member];
+                if m.count == 0 || worker_busy[member].is_empty() { continue; }
+                let mut traits: Vec<&str> = m.personalities.iter()
+                    .map(String::as_str)
+                    .filter(|t| relevant_traits.contains(t))
+                    .collect();
+                traits.sort_unstable();
+                traits.dedup();
+                let travel_bits = facility_counts.member_movement_seconds(member).to_bits();
+                identical.entry((&m.abilities, m.family.as_deref(), traits, travel_bits, m.count))
+                    .or_default().push(member);
+            }
+            for group in identical.into_values() {
+                for pair in group.windows(2) {
+                    let (a, b) = (pair[0], pair[1]);
+                    if let (Some(pa), Some(pb)) = (
+                        model.staffing_pools.get(a).and_then(|p| p.active),
+                        model.staffing_pools.get(b).and_then(|p| p.active),
+                    ) {
+                        model.constrain(vec![(pa, 1.0), (pb, -1.0)], ComparisonOp::Ge, 0.0);
+                    }
+                    let mut diff = BTreeMap::<usize, f64>::new();
+                    for &(v, c) in &worker_busy[a] { *diff.entry(v).or_default() += c; }
+                    for &(v, c) in &worker_busy[b] { *diff.entry(v).or_default() -= c; }
+                    let terms: Vec<_> = diff.into_iter().filter(|&(_, c)| c.abs() > 1e-12).collect();
+                    if !terms.is_empty() {
+                        model.constrain(terms, ComparisonOp::Ge, 0.0);
+                    }
+                }
+            }
+        }
     }
     if facility_counts.always_running() {
         always_running::constrain(&mut model, &rate_of, &physical_units, &production_balance, &worker_busy, facility_counts);
@@ -1626,41 +1677,69 @@ fn build_model<'a>(
         }
     }
     // Prefer the listed crew when it can sustain the same output.
+    // Static climate posts (Heat Furnace, Cooling Unit, Sunlamp) gain no speed
+    // or personality bonus from higher-level owned Aniimo, so give them a lower
+    // reserve tiebreak than production/workshop reserve work.
     for (variable, time) in reserve_work {
         // At this final stage all main priorities and the RV material pace are already
         // constrained. Keep the preference above the external solver's absolute MIP gap.
-        let weight = if material_work.is_some() { 1e-4 } else { 1e-6 } * time;
+        let climate_staff = matches!(&model.kinds[variable], VarKind::Staff { building, .. } if building != crate::power::GENERATOR);
+        let factor = if climate_staff { 0.25 } else { 1.0 };
+        let weight = if material_work.is_some() { 1e-4 } else { 1e-6 } * time * factor;
         model.tiebreak.push((variable, weight));
     }
     if let Some(crew) = facility_counts.crew() {
         let owned = crew.assumed_from.unwrap_or(crew.members.len());
         let mut specialists = HashMap::<&str, std::collections::BTreeSet<u32>>::new();
+        let mut narrowest = HashMap::<(&str, u32), usize>::new();
+        let skill_count = |m: &crate::models::RosterAniimo| m.abilities.values().filter(|&&l| l > 0).count();
         for member in &crew.members[..owned] {
-            if member.count == 0 || member.level("Hauling") > 0 { continue; }
+            if member.count == 0 { continue; }
+            let n_skills = skill_count(member);
             for (ability, &level) in &member.abilities {
-                specialists.entry(ability).or_default().insert(level);
+                if level == 0 { continue; }
+                let entry = narrowest.entry((ability.as_str(), level)).or_insert(usize::MAX);
+                *entry = (*entry).min(n_skills);
+                if member.level("Hauling") == 0 {
+                    specialists.entry(ability.as_str()).or_default().insert(level);
+                }
             }
         }
+        let crop_penalty = |member: usize, ability: &str, seconds: f64| -> f64 {
+            if member >= owned { return 0.0; }
+            let m = &crew.members[member];
+            let level = m.level(ability);
+            let mut weight = 0.0;
+            if m.level("Hauling") > 0
+                && specialists.get(ability).is_some_and(|levels| levels.contains(&level))
+            {
+                weight += 4e-5 * seconds;
+            }
+            if let Some(&min_skills) = narrowest.get(&(ability, level)) {
+                let extra = skill_count(m).saturating_sub(min_skills);
+                if extra > 0 {
+                    weight += 2e-6 * (extra as f64) * seconds;
+                }
+            }
+            weight
+        };
         for (variable, kind) in model.kinds.iter().enumerate() {
             let (member, ability, seconds) = match kind {
-                VarKind::WorkRoute { member, crop: Some((ability, _)), seconds, .. } => (*member, ability, *seconds),
-                VarKind::CropStaff { member, ability, .. } => (*member, ability, 1.0),
+                VarKind::WorkRoute { member, crop: Some((ability, _)), seconds, .. } => (*member, ability.as_str(), *seconds),
+                VarKind::CropStaff { member, ability, .. } => (*member, ability.as_str(), 1.0),
                 _ => continue,
             };
-            if member >= owned || crew.members[member].level("Hauling") == 0
-                || !specialists.get(ability.as_str()).is_some_and(|levels| levels.contains(&crew.members[member].level(ability))) {
-                continue;
+            let weight = crop_penalty(member, ability, seconds);
+            if weight > 0.0 {
+                model.tiebreak.push((variable, weight));
             }
-            let weight = 4e-5 * seconds;
-            model.tiebreak.push((variable, weight));
         }
         for d in &model.dispatched_work_routes {
             let Some((ability, _)) = &d.crop else { continue };
-            if d.member >= owned || crew.members[d.member].level("Hauling") == 0
-                || !specialists.get(ability.as_str()).is_some_and(|levels| levels.contains(&crew.members[d.member].level(ability))) {
-                continue;
+            let weight = crop_penalty(d.member, ability.as_str(), d.share * d.seconds);
+            if weight > 0.0 {
+                model.tiebreak.push((d.rate, weight));
             }
-            model.tiebreak.push((d.rate, 4e-5 * d.share * d.seconds));
         }
     }
     let compare_power_staff = generator_count.is_some() && facility_counts.crew().is_none();
@@ -3371,14 +3450,19 @@ pub fn write_lp(
                 VarKind::Units(r) if model.integer[v] => ("units".into(), r),
                 VarKind::FixedSite { recipe, group } => (format!("site:{group}"), recipe),
                 VarKind::Staff { building, member } => {
-                    if let Some(crew) = facility_counts.crew().filter(|crew| crew.environment.contains_key(building) && building != GENERATOR) {
-                        let skills: u32 = crew.members[*member].abilities.values().sum();
-                        climate_skills.push((v, f64::from(skills)));
+                    if let Some(crew) = facility_counts.crew().filter(|crew| crew.environment.contains_key(building) || building == GENERATOR) {
+                        let m = &crew.members[*member];
+                        let skill_value: u32 = m.abilities.values().map(|&lv| lv * lv).sum();
+                        let hauling = m.level("Hauling").min(4);
+                        let traits: u32 = m.personalities.iter()
+                            .filter(|t| crew.personalities.values().any(|pt| pt == *t))
+                            .count() as u32;
+                        climate_skills.push((v, f64::from(skill_value + 2 * hauling + 4 * traits)));
                     }
                     continue;
                 }
-                VarKind::Units(_) | VarKind::Extra | VarKind::WorkRoute { crop: None, .. } | VarKind::WorkPost { .. }
-                | VarKind::HaulingStaff { .. } | VarKind::ActiveAniimo { .. } => continue,
+                VarKind::Units(_) | VarKind::Extra | VarKind::WorkRoute { .. } | VarKind::CropStaff { .. }
+                | VarKind::WorkPost { .. } | VarKind::HaulingStaff { .. } | VarKind::ActiveAniimo { .. } => continue,
                 _ => {
                     groups.insert(("fixed".into(), v.to_string()), vec![v]);
                     continue;

@@ -4,18 +4,24 @@ import {planSearchOptions,runPlanModel,searchStopped} from './highs-solve.js';
 // physical building and balance. Omitting a recipe's work-conservation rules
 // enlarges its feasible set, so its MIP dual bound also bounds the full model.
 // A primal from this relaxation still needs the caller's full production audit.
-export function solveEconomicBound(highs, problem, {seed, scope = [], timeLimit = 2, discovery = false, exact = false, relativeGap = 0, incomeTarget, onRecipes} = {}) {
+export function solveEconomicBound(highs, problem, {seed, scope = [], timeLimit = 2, discovery = false, exact = false, relativeGap = 0, incomeTarget, onRecipes, floorCertify = false} = {}) {
     const keys = problem.variable_keys;
     if (!problem.production_only || problem.continuousRestricted || !problem.primary_objective?.length
         || keys?.length !== problem.variables || !problem.recipe_options || !(timeLimit > 0)) return null;
-    const model = highs.createModel({format:'lp', data:problem.lp});
+    const certifyIncome = !discovery && relativeGap > 0 && Number.isFinite(incomeTarget) && incomeTarget > 0;
+    const useFloor = Boolean(floorCertify && exact && certifyIncome && problem.lp?.includes('\nBounds\n'));
+    const lpData = useFloor
+        ? problem.lp.replace('\nBounds\n',
+            `\n certify_floor: ${problem.primary_objective.map(([v, c]) => `${c < 0 ? '-' : '+'} ${Math.abs(c)} x${v}`).join(' ')} >= ${incomeTarget - 1e-7}\nBounds\n`)
+        : problem.lp;
+    const model = highs.createModel({format:'lp', data:lpData});
     try {
         const {numCols} = model.getDimensions();
         const indices = Array.from({length:numCols}, (_, i) => Number(model.getColName(i).slice(1)));
         if (indices.some(v => !Number.isInteger(v) || v < 0 || v >= keys.length)) return null;
-        const certifyIncome = !discovery && relativeGap > 0 && Number.isFinite(incomeTarget) && incomeTarget > 0;
         const precision = {mip_abs_gap:0, mip_rel_gap:certifyIncome && !exact ? 0 : relativeGap,
-            primal_feasibility_tolerance:discovery?1e-7:1e-9, mip_feasibility_tolerance:discovery?1e-8:1e-9};
+            primal_feasibility_tolerance:useFloor||discovery?1e-7:1e-9, mip_feasibility_tolerance:useFloor?1e-7:discovery?1e-8:1e-9,
+            ...(useFloor ? {presolve:'off'} : {})};
         const {incumbentIterations,...nativeOptions} = exact ? precision : planSearchOptions({time_limit:timeLimit,...precision});
         if (discovery) nativeOptions.mip_max_nodes = Math.ceil(128*timeLimit);
         model.options.set(nativeOptions);
@@ -72,9 +78,12 @@ export function solveEconomicBound(highs, problem, {seed, scope = [], timeLimit 
         };
         run();
         const statuses = highs.constants.modelStatus;
+        if (useFloor && model.getModelStatus() === statuses.infeasible) {
+            return {upper:incomeTarget, proven:true, scope:[...scope]};
+        }
         // Tight priority floors and measured worker shares can make presolve
         // declare a feasible model infeasible. Verify on its original rows.
-        if(exact && model.getModelStatus()===statuses.infeasible){
+        if(exact && !useFloor && model.getModelStatus()===statuses.infeasible){
             model.clearSolver();
             model.options.set({presolve:'off'});
             run();
@@ -133,7 +142,7 @@ export function obbtSiteLimits(highs, rawProblem, recipes, floor, baseLimits = {
     }
     const candidates = [...groups.entries()].filter(([name, g]) => {
         const current = baseLimits[name] ?? g.cap;
-        return g.cols.size > 0 && current > 1;
+        return g.cols.size > 0 && current >= 1;
     });
     if (!candidates.length) return null;
     const expr = rawProblem.primary_objective.map(([v, c]) => `${c < 0 ? '-' : '+'} ${Math.abs(c)} x${v}`).join(' ');

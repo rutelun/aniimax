@@ -1,7 +1,8 @@
 import {productionTeamJobs} from '../web/production-team-jobs.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { placeBestJobs, recommendBestTeam } from '../web/best-team.js';
+import { placeBestJobs, recommendBestTeam, pickCatalogEntry, isPrismanaEntry } from '../web/best-team.js';
+import catalog from '../web/aniimo-catalog.json' with { type: 'json' };
 import { TASK_SWITCHING } from '../web/task-switching.js';
 
 test('a catalog match shares a shift across different roles and delivery', () => {
@@ -168,4 +169,28 @@ test('a full-day lumber bench and a bench that changes recipes keep distinct ope
         assert.ok(owners[0].allocations.every(a=>a.scheduleId===site.id && a.point[0]===4*i+1));
         assert.deepEqual(owners[0].phaseBusy,[1,1]);
     }
+});
+
+test('pickCatalogEntry and bestForm avoid rare Prismana forms when normal forms tie', () => {
+    for (const [ability, level] of [['Fire', 3], ['Dark', 3], ['Light', 3], ['Grass', 4]]) {
+        const picked = pickCatalogEntry(catalog.entries, ability, level);
+        assert.ok(picked, `${ability} ${level}`);
+        assert.equal(isPrismanaEntry(picked), false, `expected non-Prismana for ${ability} ${level}, got ${picked.id}`);
+        assert.equal(picked.abilities[ability], level);
+    }
+    const { shifts } = recommendBestTeam([
+        { ability: 'Light', level: 3, label: 'Sunlamp', fixed: true, busy: 1 },
+        { ability: 'Dark', level: 3, label: 'Dryer', busy: .5 },
+    ]);
+    assert.ok(shifts.every(s => !isPrismanaEntry(s.entry)), `got Prismana: ${shifts.map(s => s.entry?.id)}`);
+});
+
+test('multi-strategy packing preserves shared hauling instead of spawning an extra courier', () => {
+    const { shifts } = recommendBestTeam([
+        { ability: 'Earth', level: 3, label: 'Mine', busy: .4 },
+        { ability: 'Grass', level: 2, label: 'Herb', busy: .2 },
+        { ability: 'Fire', level: 3, label: 'Kiln', busy: .4 },
+    ], .3);
+    assert.equal(shifts.length, 2);
+    assert.ok(shifts.some(s => s.tasks.has('Hauling to Storage Units')));
 });
