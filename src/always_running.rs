@@ -35,6 +35,7 @@ fn workload_upper(model: &Model, terms: &[(usize,f64)], counts: &FacilityCounts)
     let mut recipes=HashMap::<&str,(&str,&str,f64,u32)>::new();
     let mut independent=0.0;
     for &(v,c) in terms {
+        if model.bounds[v].1 <= 0.0 { continue; }
         let recipe=match &model.kinds[v] {
             VarKind::Rate(r)|VarKind::WorkRoute{recipe:r,..}|VarKind::HaulingStaff{recipe:r,..}=>Some((*r,c/r.production_time)),
             VarKind::Units(r)=>Some((*r,c)),
@@ -118,7 +119,7 @@ pub(super) fn constrain<'a>(model: &mut Model<'a>, rates: &[(&'a ProductionItem,
         // Bound each facility's max production by greedily packing its highest
         // rate-per-site recipes up to the facility count.
         let mut by_facility = HashMap::<&str, HashMap<&str, (f64, u32)>>::new();
-        for (v,c) in terms.iter().filter(|(_,c)|*c>0.0) {
+        for (v,c) in terms.iter().filter(|(v,c)| *c > 0.0 && model.bounds[*v].1 > 0.0) {
             if let Some(recipe)=recipes.get(v) {
                 let limit = counts.recipe_site_limit(recipe);
                 if limit == 0 { continue; }

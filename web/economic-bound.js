@@ -137,6 +137,8 @@ export function solveEconomicBound(highs, problem, {seed, scope = [], timeLimit 
 // these upper bounds, so passing them as recipe_site_limits tightens
 // always_running binary expansions and big-M envelopes without pruning any
 // optimal shift.
+const obbtLpCache = new WeakMap();
+
 export function obbtSiteLimits(highs, rawProblem, recipes, floor, baseLimits = {}) {
     if (!(floor > 0) || !Number.isFinite(floor) || !highs?.createModel
         || !rawProblem?.primary_objective?.length || !rawProblem?.lp) return null;
@@ -163,14 +165,32 @@ export function obbtSiteLimits(highs, rawProblem, recipes, floor, baseLimits = {
         return g.cols.size > 0 && current >= 1;
     });
     if (!candidates.length) return null;
-    const expr = rawProblem.primary_objective.map(([v, c]) => `${c < 0 ? '-' : '+'} ${Math.abs(c)} x${v}`).join(' ');
-    const lp = rawProblem.lp.replace(/\nGeneral\n[\s\S]*?\nEnd/, '\nEnd')
-        .replace('\nBounds\n', `\n obbt_floor: ${expr} >= ${floor - 1e-7 * Math.max(1, Math.abs(floor))}\nBounds\n`);
-    const model = highs.createModel({format:'lp', data:lp});
+    let cached = obbtLpCache.get(rawProblem);
+    if (cached && cached.lp !== rawProblem.lp) cached = null;
+    const model = cached
+        ? highs.createModel(cached.lpData)
+        : highs.createModel({format:'lp', data:rawProblem.lp.replace(/\nGeneral\n[\s\S]*?\nEnd/, '\nEnd')});
     const statuses = highs.constants.modelStatus;
     try {
-        const {numCols} = model.getDimensions();
-        const nativeIndex = new Map(Array.from({length:numCols}, (_, i) => [Number(model.getColName(i).slice(1)), i]));
+        let nativeIndex, numCols;
+        if (cached) {
+            nativeIndex = cached.nativeIndex;
+            numCols = cached.lpData.numCols;
+        } else {
+            const lpData = model.getLp();
+            lpData.integrality.fill(0);
+            numCols = lpData.numCols;
+            nativeIndex = new Map(Array.from({length:numCols}, (_, i) => [Number(model.getColName(i).slice(1)), i]));
+            obbtLpCache.set(rawProblem, {lp:rawProblem.lp, lpData, nativeIndex});
+        }
+        const floorPairs = rawProblem.primary_objective
+            .map(([v, c]) => [nativeIndex.get(v), c])
+            .filter(([i]) => i != null)
+            .sort((a, b) => a[0] - b[0]);
+        model.addRow(floor - 1e-7 * Math.max(1, Math.abs(floor)), Infinity, {
+            indices: floorPairs.map(([i]) => i),
+            values: floorPairs.map(([, c]) => c),
+        });
         model.options.set({primal_feasibility_tolerance:1e-9, dual_feasibility_tolerance:1e-9});
         model.changeColsCost({kind:'range', from:0, to:numCols - 1}, Array(numCols).fill(0));
         model.run();

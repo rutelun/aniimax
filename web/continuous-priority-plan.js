@@ -64,6 +64,8 @@ function siteCounts(problem,values) {
 // Lift the production shift. Recompute sales from its material balances:
 // a prior stage can reserve a rounded amount of an output, while the full
 // model accounts for every remaining unit. Its priority floors still apply.
+const restoreLpCache = new WeakMap();
+
 export async function restoreCatalogue(highs,solveModel,problem,seed,{allowPairRelax=true}={}) {
     const previous=new Map(seed.keys.map((key,v)=>[key,seed.values[v]]));
     const fixedEntries=[];
@@ -77,17 +79,21 @@ export async function restoreCatalogue(highs,solveModel,problem,seed,{allowPairR
     const warm=align(problem,seed);
     if(highs?.createModel && problem.lp && problem.variables>=64){
         const fixedMap=new Map(fixedEntries);
-        const cm=highs.createModel({format:'lp',data:problem.lp});
+        let cached=restoreLpCache.get(problem);
+        if(cached && cached.lp!==problem.lp)cached=null;
+        const cm=cached ? highs.createModel(cached.lpData) : highs.createModel({format:'lp',data:problem.lp});
         const statuses=highs.constants.modelStatus;
         try{
-            const lpData=cm.getLp();
+            const lpData=cached ? cached.lpData : cm.getLp();
             const numCols=lpData.numCols;
-            const idx=Array.from({length:numCols},(_,i)=>Number(cm.getColName(i).slice(1)));
+            const idx=cached ? cached.idx : Array.from({length:numCols},(_,i)=>Number(cm.getColName(i).slice(1)));
             if(idx.some(v=>!Number.isInteger(v)||v<0||v>=problem.variables))return null;
-            const origIntegrality=lpData.integrality.slice();
-            const origLower=lpData.colLower.slice();
-            const origUpper=lpData.colUpper.slice();
+            if(!cached)restoreLpCache.set(problem,{lp:problem.lp,lpData,idx});
+            const origIntegrality=lpData.integrality;
+            const origLower=lpData.colLower;
+            const origUpper=lpData.colUpper;
             const coverCols=[], relaxPairCols=[], freeIntCols=[], allIntCols=[];
+            const boundCols=[], boundLo=[], boundHi=[];
             for(let i=0;i<numCols;i++){
                 const v=idx[i], key=problem.variable_keys[v];
                 if(origIntegrality[i]===1)allIntCols.push(i);
@@ -95,7 +101,7 @@ export async function restoreCatalogue(highs,solveModel,problem,seed,{allowPairR
                     const target=fixedMap.get(v);
                     if(target<origLower[i]-1e-7 || target>origUpper[i]+1e-7)return null;
                     const clamped=Math.min(origUpper[i],Math.max(origLower[i],target));
-                    cm.changeColBounds(i,clamped,clamped);
+                    boundCols.push(i); boundLo.push(clamped); boundHi.push(clamped);
                     continue;
                 }
                 if(origIntegrality[i]===1)freeIntCols.push(i);
@@ -106,10 +112,11 @@ export async function restoreCatalogue(highs,solveModel,problem,seed,{allowPairR
                     }
                 }else if(key.startsWith('pair_relax:')){
                     relaxPairCols.push(i);
+                    if(!allowPairRelax){ boundCols.push(i); boundLo.push(0); boundHi.push(0); }
                 }
             }
-            if(!allowPairRelax){
-                for(const i of relaxPairCols)cm.changeColBounds(i,0,0);
+            if(boundCols.length){
+                cm.changeColsBounds({kind:'set',indices:boundCols},boundLo,boundHi);
             }
             // Cheap LP feasibility pre-check on the most relaxed attempt: if the
             // continuous relaxation is already infeasible, no MIP attempt can succeed.

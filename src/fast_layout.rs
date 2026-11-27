@@ -291,11 +291,18 @@ impl GridRect {
             * (self.bottom.min(other.bottom) - self.top.max(other.top)).max(0)
     }
 }
+#[derive(Clone, Copy)]
+struct BinEntry {
+    id: u16,
+    bin_x: i32,
+    bin_y: i32,
+    rect: GridRect,
+}
 struct Occupancy {
     left: i32,
     top: i32,
     cols: usize,
-    bins: Vec<Vec<usize>>,
+    bins: Vec<Vec<BinEntry>>,
     bounds: Vec<GridRect>,
 }
 
@@ -335,40 +342,60 @@ impl Occupancy {
     }
     fn index(&mut self, i: usize, r: Pose, add: bool) {
         let r = GridRect::from(r);
+        let id = i as u16;
+        let bx0 = r.left >> 4;
+        let by0 = r.top >> 4;
+        let bx1 = (r.right - 1) >> 4;
+        let by1 = (r.bottom - 1) >> 4;
         if add {
             self.bounds[i] = r;
-        }
-        for y in (r.top >> 4)..=((r.bottom - 1) >> 4) {
-            for x in (r.left >> 4)..=((r.right - 1) >> 4) {
-                let bin =
-                    &mut self.bins[(y - self.top) as usize * self.cols + (x - self.left) as usize];
-                if add {
-                    bin.push(i);
-                } else {
-                    let pos = bin.iter().position(|&k| k == i).expect("indexed rectangle");
+            let entry = BinEntry {
+                id,
+                bin_x: bx0,
+                bin_y: by0,
+                rect: r,
+            };
+            for y in by0..=by1 {
+                let row = (y - self.top) as usize * self.cols;
+                for x in bx0..=bx1 {
+                    self.bins[row + (x - self.left) as usize].push(entry);
+                }
+            }
+        } else {
+            for y in by0..=by1 {
+                let row = (y - self.top) as usize * self.cols;
+                for x in bx0..=bx1 {
+                    let bin = &mut self.bins[row + (x - self.left) as usize];
+                    let pos = bin
+                        .iter()
+                        .position(|e| e.id == id)
+                        .expect("indexed rectangle");
                     bin.swap_remove(pos);
                 }
             }
         }
     }
+    #[inline]
     fn nearby(&self, r: GridRect, mut visit: impl FnMut(usize, GridRect)) {
         // Count a shared rectangle in the top-left four-tile bin that both
         // rectangles touch. This avoids building a bitset for every query.
         let first_x = r.left >> 4;
         let first_y = r.top >> 4;
-        for y in first_y..=((r.bottom - 1) >> 4) {
-            for x in first_x..=((r.right - 1) >> 4) {
-                let bin =
-                    &self.bins[(y - self.top) as usize * self.cols + (x - self.left) as usize];
-                for &k in bin {
-                    let b = self.bounds[k];
-                    if (x == first_x || x == (b.left >> 4)) && (y == first_y || y == (b.top >> 4)) {
-                        visit(k, b);
+        let last_x = (r.right - 1) >> 4;
+        let last_y = (r.bottom - 1) >> 4;
+        for y in first_y..=last_y {
+            let row = (y - self.top) as usize * self.cols;
+            for x in first_x..=last_x {
+                let bin = &self.bins[row + (x - self.left) as usize];
+                for e in bin {
+                    if (x == first_x || x == e.bin_x) && (y == first_y || y == e.bin_y) {
+                        visit(e.id as usize, e.rect);
                     }
                 }
             }
         }
     }
+    #[inline]
     fn nearby_area(&self, poses: &[Pose], i: usize, j: usize) -> f64 {
         let r = GridRect::from(poses[i]);
         let mut sum = 0;
@@ -389,6 +416,7 @@ impl Occupancy {
             }
         });
     }
+    #[inline]
     fn changed_area(&mut self, poses: &[Pose], i: usize, j: Option<usize>) -> f64 {
         self.nearby_area(poses, i, j.unwrap_or(usize::MAX))
             + j.map_or(0.0, |j| {
@@ -397,6 +425,10 @@ impl Occupancy {
     }
 }
 
+const FLAG_ELECTRIC: u8 = 1;
+const FLAG_SENSITIVE: u8 = 2;
+const FLAG_HAS_OWNER: u8 = 4;
+
 struct Search {
     input: Input,
     poses: Vec<Pose>,
@@ -404,13 +436,50 @@ struct Search {
     source_owner: Vec<Option<usize>>,
     movable: Vec<usize>,
     relays: Vec<usize>,
+    relay_index: Vec<i32>,
+    relay_cx: Vec<f64>,
+    relay_cy: Vec<f64>,
+    relay_rad: Vec<f64>,
     electric: Vec<usize>,
     radius: Vec<f64>,
+    weights: Vec<f64>,
+    has_shares: Vec<bool>,
+    flat_shares: Vec<f64>,
+    store_cx: Vec<f64>,
+    store_cy: Vec<f64>,
+    meta_flags: Vec<u8>,
+    meta_owner: Vec<i32>,
+    meta_zone: Vec<u8>,
+    climate_boxes: Vec<(i32, Pose)>,
+    climate_ranges: Vec<(usize, usize)>,
+    sensitive_producers: Vec<usize>,
     reached: Vec<bool>,
     queue: Vec<usize>,
     rng: u32,
 }
 impl Search {
+    #[inline]
+    fn sync_rect(&mut self, i: usize) {
+        let p = self.poses[i];
+        let pc = self.input.producer_count;
+        if i >= pc && i < pc + self.input.store_count {
+            let s = i - pc;
+            self.store_cx[s] = p.cx();
+            self.store_cy[s] = p.cy();
+        }
+        let ri = self.relay_index[i];
+        if ri >= 0 {
+            let idx = ri as usize;
+            self.relay_cx[idx] = p.cx();
+            self.relay_cy[idx] = p.cy();
+        }
+    }
+    fn sync_climate_group(&mut self, ci: usize) {
+        let (start, _) = self.climate_ranges[ci];
+        for (offset, &s) in self.input.climates[ci].iter().enumerate() {
+            self.climate_boxes[start + offset].1 = self.poses[s].climate();
+        }
+    }
     #[inline]
     fn random(&mut self) -> f64 {
         self.rng = self.rng.wrapping_mul(1664525).wrapping_add(1013904223);
@@ -418,36 +487,36 @@ impl Search {
     }
     #[inline]
     fn cost(&self, i: usize) -> f64 {
-        let weight = self.input.rectangles[i].weight;
+        let weight = self.weights[i];
         if weight == 0.0 {
             return 0.0;
         }
         let r = self.poses[i];
-        let stores = &self.poses
-            [self.input.producer_count..self.input.producer_count + self.input.store_count];
-        let shares = &self.input.rectangles[i].arrival_weights;
+        let rcx = r.cx();
+        let rcy = r.cy();
+        let sc = self.input.store_count;
         let mut nearest = f64::INFINITY;
-        let mut arrival = 0.0;
-        let squared_distance = |s: Pose| {
-            let dx = r.cx() - s.cx();
-            let dy = r.cy() - s.cy();
-            dx * dx + dy * dy
-        };
-        if shares.is_empty() {
-            for &store in stores {
-                let squared = squared_distance(store);
+        if !self.has_shares[i] {
+            for s in 0..sc {
+                let dx = rcx - self.store_cx[s];
+                let dy = rcy - self.store_cy[s];
+                let squared = dx * dx + dy * dy;
                 if squared < nearest {
                     nearest = squared;
                 }
             }
             return weight * nearest.sqrt();
         }
-        for (&store, &share) in stores.iter().zip(shares) {
-            let squared = squared_distance(store);
+        let base = i * sc;
+        let mut arrival = 0.0;
+        for s in 0..sc {
+            let dx = rcx - self.store_cx[s];
+            let dy = rcy - self.store_cy[s];
+            let squared = dx * dx + dy * dy;
             if squared < nearest {
                 nearest = squared;
             }
-            arrival += share * squared.sqrt();
+            arrival += self.flat_shares[base + s] * squared.sqrt();
         }
         weight * (nearest.sqrt() + arrival) * 0.5
     }
@@ -457,15 +526,26 @@ impl Search {
         }
         (0..self.input.producer_count).map(|i| self.cost(i)).sum()
     }
+    fn total_cost_into(&self, out: &mut [f64]) -> f64 {
+        let mut sum = 0.0;
+        for i in 0..self.input.producer_count {
+            let c = self.cost(i);
+            out[i] = c;
+            sum += c;
+        }
+        sum
+    }
     #[inline]
-    fn covers(&self, a: usize, b: usize) -> bool {
-        let x = self.poses[a];
-        let y = self.poses[b];
-        (x.cx() - y.cx()).abs() <= self.radius[a] + y.w / 2.0 - 0.25 + 1e-7
-            && (x.cy() - y.cy()).abs() <= self.radius[a] + y.h / 2.0 - 0.25 + 1e-7
+    fn relay_covers(&self, ri: usize, target: Pose) -> bool {
+        let rcx = self.relay_cx[ri];
+        let rcy = self.relay_cy[ri];
+        let rad = self.relay_rad[ri];
+        (rcx - target.cx()).abs() <= rad + target.w * 0.5 - 0.25 + 1e-7
+            && (rcy - target.cy()).abs() <= rad + target.h * 0.5 - 0.25 + 1e-7
     }
     fn network_valid(&mut self) -> bool {
-        if self.relays.is_empty() {
+        let rc = self.relays.len();
+        if rc == 0 {
             return self.electric.is_empty();
         }
         self.reached.fill(false);
@@ -474,10 +554,12 @@ impl Search {
         let mut tail = 1;
         let mut head = 0;
         while head < tail {
-            for j in 0..self.relays.len() {
+            let cur = self.queue[head];
+            let cur_pose = self.poses[self.relays[cur]];
+            for j in 0..rc {
                 if !self.reached[j]
-                    && (self.covers(self.relays[self.queue[head]], self.relays[j])
-                        || self.covers(self.relays[j], self.relays[self.queue[head]]))
+                    && (self.relay_covers(cur, self.poses[self.relays[j]])
+                        || self.relay_covers(j, cur_pose))
                 {
                     self.reached[j] = true;
                     self.queue[tail] = j;
@@ -486,29 +568,55 @@ impl Search {
             }
             head += 1;
         }
-        tail == self.relays.len()
-            && self
-                .electric
-                .iter()
-                .all(|&i| self.relays.iter().any(|&r| self.covers(r, i)))
+        if tail != rc {
+            return false;
+        }
+        for &ei in &self.electric {
+            let p = self.poses[ei];
+            let mut covered = false;
+            for ri in 0..rc {
+                if self.relay_covers(ri, p) {
+                    covered = true;
+                    break;
+                }
+            }
+            if !covered {
+                return false;
+            }
+        }
+        true
     }
+    #[inline]
     fn valid_position(&self, i: usize) -> bool {
         let r = self.poses[i];
-        let meta = &self.input.rectangles[i];
         if !self.land.inside(r) {
             return false;
         }
-        if meta.electric && !self.relays.iter().any(|&a| self.covers(a, i)) {
-            return false;
+        let flags = self.meta_flags[i];
+        if flags == 0 {
+            return true;
         }
-        if meta.owner >= 0 {
-            let src = &self.input.climates[meta.owner as usize];
-            let a = r.hits(self.poses[src[0]].climate());
-            let b = src.len() > 1 && r.hits(self.poses[src[1]].climate());
-            let good = if src.len() == 1 {
+        if (flags & FLAG_ELECTRIC) != 0 {
+            let mut covered = false;
+            for ri in 0..self.relays.len() {
+                if self.relay_covers(ri, r) {
+                    covered = true;
+                    break;
+                }
+            }
+            if !covered {
+                return false;
+            }
+        }
+        if (flags & FLAG_HAS_OWNER) != 0 {
+            let owner = self.meta_owner[i] as usize;
+            let (start, len) = self.climate_ranges[owner];
+            let a = r.hits(self.climate_boxes[start].1);
+            let good = if len == 1 {
                 a
             } else {
-                match meta.zone {
+                let b = r.hits(self.climate_boxes[start + 1].1);
+                match self.meta_zone[i] {
                     0 => a && !b,
                     1 => a && b,
                     _ => !a && b,
@@ -518,10 +626,10 @@ impl Search {
                 return false;
             }
         }
-        if meta.owner >= 0 || meta.sensitive {
-            for (k, group) in self.input.climates.iter().enumerate() {
-                if k as i32 != meta.owner && group.iter().any(|&s| r.hits(self.poses[s].climate()))
-                {
+        if (flags & (FLAG_HAS_OWNER | FLAG_SENSITIVE)) != 0 {
+            let owner = self.meta_owner[i];
+            for &(ci, cbox) in &self.climate_boxes {
+                if ci != owner && r.hits(cbox) {
                     return false;
                 }
             }
@@ -532,20 +640,18 @@ impl Search {
         let Some(ci) = self.source_owner[i] else {
             return true;
         };
-        for &s in &self.input.climates[ci] {
-            for (k, group) in self.input.climates.iter().enumerate() {
-                if k != ci
-                    && group
-                        .iter()
-                        .any(|&b| self.poses[s].climate().hits(self.poses[b].climate()))
-                {
+        let (start, len) = self.climate_ranges[ci];
+        let ci_i32 = ci as i32;
+        for idx in start..start + len {
+            let box_a = self.climate_boxes[idx].1;
+            for &(other_ci, box_b) in &self.climate_boxes {
+                if other_ci != ci_i32 && box_a.hits(box_b) {
                     return false;
                 }
             }
         }
-        for k in 0..self.input.producer_count {
-            let m = &self.input.rectangles[k];
-            if (m.owner >= 0 || m.sensitive) && !self.valid_position(k) {
+        for &k in &self.sensitive_producers {
+            if !self.valid_position(k) {
                 return false;
             }
         }
@@ -569,20 +675,24 @@ impl Search {
         // of a tile. Single and paired proposals read their old overlap in O(1).
         let mut collision_totals = vec![0; self.poses.len()];
         let mut cost_cache: Vec<f64> = (0..self.poses.len()).map(|i| self.cost(i)).collect();
+        let mut scratch_costs = vec![0.0; self.poses.len()];
         let producer_count = self.input.producer_count;
         let store_end = producer_count + self.input.store_count;
+        let inv_iters = 1.0 / (iterations.max(1) as f64);
+        let movable_f = self.movable.len() as f64;
+        let relays_f = self.relays.len() as f64;
         let snap = |v: f64| (v + 0.5).floor();
         for step in 0..iterations {
             let i = if self.input.mobile_relays && !self.relays.is_empty() && self.random() < 0.03 {
-                let k = (self.random() * self.relays.len() as f64) as usize;
+                let k = (self.random() * relays_f) as usize;
                 self.relays[k]
             } else {
-                let k = (self.random() * self.movable.len() as f64) as usize;
+                let k = (self.random() * movable_f) as usize;
                 self.movable[k]
             };
             let mut j = None;
             if self.random() < 0.12 {
-                let k = (self.random() * self.movable.len() as f64) as usize;
+                let k = (self.random() * movable_f) as usize;
                 let other = self.movable[k];
                 if i == other
                     || self.radius[i] > 0.0
@@ -620,13 +730,13 @@ impl Search {
             } else {
                 let ordinary = j.is_none()
                     && self.source_owner[i].is_none()
-                    && self.input.rectangles[i].owner < 0
+                    && self.meta_owner[i] < 0
                     && i < producer_count;
                 if ordinary && old.w != old.h && self.random() < 0.12 {
                     self.poses[i].w = old.h;
                     self.poses[i].h = old.w;
                 } else if ordinary && self.random() < 0.08 {
-                    if self.input.rectangles[i].weight == 0.0 {
+                    if self.weights[i] == 0.0 {
                         let ci = (self.random() * self.input.cells.len() as f64) as usize;
                         let c = self.input.cells[ci];
                         self.poses[i].x = 0.25 * snap((c.x + self.random() * (c.w - old.w)) * 4.0);
@@ -655,6 +765,15 @@ impl Search {
                     self.poses[j].y += self.poses[i].y - old.y;
                 }
             }
+            if store_move || self.relay_index[i] >= 0 {
+                self.sync_rect(i);
+                if let Some(j) = j {
+                    self.sync_rect(j);
+                }
+            }
+            if let Some(ci) = self.source_owner[i] {
+                self.sync_climate_group(ci);
+            }
             let mut accepted = false;
             if self.valid_source(i)
                 && self.valid_position(i)
@@ -675,7 +794,7 @@ impl Search {
                 let mut next_i = 0.0;
                 let mut next_j = 0.0;
                 let next_cost = if store_move {
-                    self.total_cost()
+                    self.total_cost_into(&mut scratch_costs)
                 } else {
                     next_i = self.cost(i);
                     next_j = j.map_or(0.0, |j| self.cost(j));
@@ -683,13 +802,14 @@ impl Search {
                 };
                 let dc = next_cost - old_cost;
                 let da = new_overlap - old_overlap;
-                let phase = step as f64 / iterations as f64;
-                let temp = (self.input.temperature * (1.0 - phase).powi(3)).max(0.005);
                 let delta = dc + self.input.penalty * da;
                 let accept = if delta <= 0.0 {
                     true
                 } else {
                     let roll = self.random();
+                    let phase = step as f64 * inv_iters;
+                    let one_minus = 1.0 - phase;
+                    let temp = (self.input.temperature * one_minus * one_minus * one_minus).max(0.005);
                     let scaled = delta / temp;
                     // RNG has 32 bits: probabilities below 2^-32 cannot beat
                     // a positive draw. Preserve the zero draw and RNG stream.
@@ -701,9 +821,7 @@ impl Search {
                 };
                 if accept {
                     if store_move {
-                        for k in 0..self.poses.len() {
-                            cost_cache[k] = self.cost(k);
-                        }
+                        std::mem::swap(&mut cost_cache, &mut scratch_costs);
                     } else {
                         cost_cache[i] = next_i;
                         if let Some(j) = j {
@@ -744,9 +862,28 @@ impl Search {
                 if let Some(j) = j {
                     self.poses[j] = other.unwrap();
                 }
+                if store_move || self.relay_index[i] >= 0 {
+                    self.sync_rect(i);
+                    if let Some(j) = j {
+                        self.sync_rect(j);
+                    }
+                }
+                if let Some(ci) = self.source_owner[i] {
+                    self.sync_climate_group(ci);
+                }
             }
         }
         self.poses = best_poses;
+        for s in producer_count..store_end {
+            self.sync_rect(s);
+        }
+        for ri in 0..self.relays.len() {
+            let r = self.relays[ri];
+            self.sync_rect(r);
+        }
+        for ci in 0..self.input.climates.len() {
+            self.sync_climate_group(ci);
+        }
         self.exchange();
         self.polish();
         self.output(initial, self.total_cost(), iterations)
@@ -1020,6 +1157,7 @@ impl Search {
                         {
                             continue;
                         }
+                        self.sync_rect(i);
                         let cost = self.total_cost();
                         if cost < best_cost - 1e-8 {
                             best = self.poses[i];
@@ -1028,6 +1166,7 @@ impl Search {
                     }
                 }
                 self.poses[i] = best;
+                self.sync_rect(i);
                 if best.x != old.x || best.y != old.y {
                     grid.index(i, old, false);
                     grid.index(i, best, true);
@@ -1227,7 +1366,7 @@ pub fn refine_json(json: &str) -> Result<String, String> {
         .enumerate()
         .filter_map(|(i, r)| r.electric.then_some(i))
         .collect();
-    let radius = input
+    let radius: Vec<f64> = input
         .rectangles
         .iter()
         .map(|r| {
@@ -1241,6 +1380,55 @@ pub fn refine_json(json: &str) -> Result<String, String> {
         })
         .collect();
     let relay_count = relays.len();
+    let mut relay_index = vec![-1i32; n];
+    let mut relay_cx = Vec::with_capacity(relay_count);
+    let mut relay_cy = Vec::with_capacity(relay_count);
+    let mut relay_rad = Vec::with_capacity(relay_count);
+    for (ri, &r) in relays.iter().enumerate() {
+        relay_index[r] = ri as i32;
+        relay_cx.push(poses[r].cx());
+        relay_cy.push(poses[r].cy());
+        relay_rad.push(radius[r]);
+    }
+    let sc = input.store_count;
+    let pc = input.producer_count;
+    let store_cx: Vec<f64> = (pc..pc + sc).map(|s| poses[s].cx()).collect();
+    let store_cy: Vec<f64> = (pc..pc + sc).map(|s| poses[s].cy()).collect();
+    let weights: Vec<f64> = input.rectangles.iter().map(|r| r.weight).collect();
+    let has_shares: Vec<bool> = input
+        .rectangles
+        .iter()
+        .map(|r| !r.arrival_weights.is_empty())
+        .collect();
+    let mut flat_shares = vec![0.0; n * sc];
+    for (i, r) in input.rectangles.iter().enumerate() {
+        if !r.arrival_weights.is_empty() {
+            flat_shares[i * sc..(i + 1) * sc].copy_from_slice(&r.arrival_weights[..sc]);
+        }
+    }
+    let meta_flags: Vec<u8> = input
+        .rectangles
+        .iter()
+        .map(|r| {
+            (if r.electric { FLAG_ELECTRIC } else { 0 })
+                | (if r.sensitive { FLAG_SENSITIVE } else { 0 })
+                | (if r.owner >= 0 { FLAG_HAS_OWNER } else { 0 })
+        })
+        .collect();
+    let meta_owner: Vec<i32> = input.rectangles.iter().map(|r| r.owner).collect();
+    let meta_zone: Vec<u8> = input.rectangles.iter().map(|r| r.zone).collect();
+    let mut climate_boxes = Vec::new();
+    let mut climate_ranges = Vec::with_capacity(input.climates.len());
+    for (ci, group) in input.climates.iter().enumerate() {
+        let start = climate_boxes.len();
+        for &s in group {
+            climate_boxes.push((ci as i32, poses[s].climate()));
+        }
+        climate_ranges.push((start, group.len()));
+    }
+    let sensitive_producers: Vec<usize> = (0..pc)
+        .filter(|&k| (meta_flags[k] & (FLAG_HAS_OWNER | FLAG_SENSITIVE)) != 0)
+        .collect();
     let rng = input.seed;
     let mut search = Search {
         input,
@@ -1249,8 +1437,23 @@ pub fn refine_json(json: &str) -> Result<String, String> {
         source_owner,
         movable,
         relays,
+        relay_index,
+        relay_cx,
+        relay_cy,
+        relay_rad,
         electric,
         radius,
+        weights,
+        has_shares,
+        flat_shares,
+        store_cx,
+        store_cy,
+        meta_flags,
+        meta_owner,
+        meta_zone,
+        climate_boxes,
+        climate_ranges,
+        sensitive_producers,
         reached: vec![false; relay_count],
         queue: vec![0; relay_count],
         rng,

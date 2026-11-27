@@ -37,15 +37,21 @@ function obstacleTest(cells, rectangles) {
 }
 
 function attachTargets(targets, connected, links) {
+    const relays = [];
+    for (const node of connected) if (relaysPower(node)) relays.push(node);
     let changed;
     do {
         changed = false;
         for (const target of targets) {
             if (connected.has(target)) continue;
-            const parent = [...connected].find(node => relaysPower(node) && powerLinked(node, target));
+            let parent = null;
+            for (let i = 0; i < relays.length; i++) {
+                if (powerLinked(relays[i], target)) { parent = relays[i]; break; }
+            }
             if (!parent) continue;
             links.push({ from: center(parent), to: center(target) });
             connected.add(target);
+            if (relaysPower(target)) relays.push(target);
             changed = true;
         }
     } while (changed);
@@ -70,8 +76,8 @@ export function updatePowerConnections(layout) {
     return layout;
 }
 
-export function connectPower(layout, cells, maximum, repack = true, canRelocate = null, canPlacePole = null, preferCoverage = false, islands = false) {
-    const inside = createInsideTest(cells);
+export function connectPower(layout, cells, maximum, repack = true, canRelocate = null, canPlacePole = null, preferCoverage = false, islands = false, inside = null) {
+    inside ??= createInsideTest(cells);
     const members = layout.pieces.flatMap(p => p.members);
     const generators = members.filter(m => m.generator);
     const consumers = members.filter(m => m.electric_level != null);
@@ -123,115 +129,244 @@ export function connectPower(layout, cells, maximum, repack = true, canRelocate 
         const r = { x, y, w: 1.5, h: 1.5, pole: true, facility: 'Crackle Power Pole' };
         if (canPlacePole && !canPlacePole(r)) continue;
         if (!inside(r) || blocked.blocked(r)) continue;
-        if (!rows.has(y)) rows.set(y, []);
-        rows.get(y).push(r);
+        const id = candidates.length;
+        let row = rows.get(y);
+        if (!row) { row = []; rows.set(y, row); }
+        row.push(id);
         candidates.push(r);
     }
+    const candCount = candidates.length;
+    const cx = new Float64Array(candCount);
+    const cy = new Float64Array(candCount);
+    let minBx = Infinity, maxBx = -Infinity, minBy = Infinity, maxBy = -Infinity;
+    for (let i = 0; i < candCount; i++) {
+        const x = candidates[i].x, y = candidates[i].y;
+        cx[i] = x; cy[i] = y;
+        const bx = Math.floor((x + 0.75) / 4), by = Math.floor((y + 0.75) / 4);
+        if (bx < minBx) minBx = bx;
+        if (bx > maxBx) maxBx = bx;
+        if (by < minBy) minBy = by;
+        if (by > maxBy) maxBy = by;
+    }
+    const bw = candCount ? maxBx - minBx + 1 : 0;
+    const bh = candCount ? maxBy - minBy + 1 : 0;
+    const bucketCount = bw * bh;
+    const baseBuckets = Array.from({ length: bucketCount }, () => []);
+    const candBucket = new Int32Array(candCount);
+    for (let i = 0; i < candCount; i++) {
+        const b = (Math.floor((cy[i] + 0.75) / 4) - minBy) * bw + (Math.floor((cx[i] + 0.75) / 4) - minBx);
+        candBucket[i] = b;
+        baseBuckets[b].push(i);
+    }
+    const baseBucketFree = new Int32Array(bucketCount);
+    for (let b = 0; b < bucketCount; b++) baseBucketFree[b] = baseBuckets[b].length;
+
     // Terrain and consumers stay put while this network grows. Query nearby
     // rows once per endpoint and keep the original site order for routing ties.
     const neighbors = new Map();
-    function* adjacentSites(target) {
-        const c = center(target);
-        const horizontal = Math.max(3.5 + target.w / 2, powerRadius(target) + .75);
-        const vertical = Math.max(3.5 + target.h / 2, powerRadius(target) + .75);
+    const linkedSiteIds = target => {
+        let cached = neighbors.get(target);
+        if (cached) return cached;
+        cached = [];
+        const tx = target.x + target.w / 2, ty = target.y + target.h / 2;
+        const rad = powerRadius(target);
+        const horizontal = Math.max(3.5 + target.w / 2, rad + .75);
+        const vertical = Math.max(3.5 + target.h / 2, rad + .75);
         for (const [y, row] of rows) {
-            if (Math.abs(y + .75 - c.y) > vertical + EPS) continue;
-            for (const site of row) {
-                if (Math.abs(site.x + .75 - c.x) <= horizontal + EPS && powerLinked(site, target)) yield site;
+            if (Math.abs(y + .75 - ty) > vertical + EPS) continue;
+            for (let j = 0; j < row.length; j++) {
+                const id = row[j];
+                if (Math.abs(cx[id] + .75 - tx) <= horizontal + EPS && powerLinked(candidates[id], target)) cached.push(id);
             }
         }
-    }
-    const linkedSites = target => {
-        if (!neighbors.has(target)) neighbors.set(target, [...adjacentSites(target)]);
-        return neighbors.get(target);
+        neighbors.set(target, cached);
+        return cached;
     };
-    const order = new Map(candidates.map((site, i) => [site, i]));
-    const occupied = new Set();
+    const occupied = new Uint8Array(candCount);
+    const startMark = new Uint32Array(candCount);
+    const goalMark = new Uint32Array(candCount);
+    const goalScore = new Int32Array(candCount);
+    const visitedMark = new Uint32Array(candCount);
+    const parents = new Int32Array(candCount);
+    const depth = new Int32Array(candCount);
+    const queue = new Int32Array(candCount);
+    const bucketRem = new Int32Array(bucketCount);
+    const goalBucketMark = new Uint32Array(bucketCount);
+    let iterStamp = 0, bfsStamp = 0;
     let indexedPoles = 0;
     // BFS finds a route with the fewest extra poles to one of the remaining targets.
-    // A spatial index bounds each expansion to nearby candidates rather than all land.
-    const bucket = r => { const c = center(r); return [Math.floor(c.x / 4), Math.floor(c.y / 4)]; };
+    // A static spatial index bounds each expansion to nearby candidates rather than all land.
     while (connected.size && targets.some(t => !connected.has(t)) && poles.length < maximum) {
         for (; indexedPoles < poles.length; indexedPoles++) {
             const pole = poles[indexedPoles];
-            for (const site of linkedSites(pole)) if (overlap(site, pole, EPS * 2)) occupied.add(site);
+            const px = pole.x, py = pole.y;
+            if (candCount) {
+                const bx0 = Math.max(0, Math.floor((px + 0.75) / 4) - minBx - 1);
+                const bx1 = Math.min(bw - 1, Math.floor((px + 0.75) / 4) - minBx + 1);
+                const by0 = Math.max(0, Math.floor((py + 0.75) / 4) - minBy - 1);
+                const by1 = Math.min(bh - 1, Math.floor((py + 0.75) / 4) - minBy + 1);
+                for (let by = by0; by <= by1; by++) for (let bx = bx0; bx <= bx1; bx++) {
+                    const b = by * bw + bx;
+                    if (!baseBucketFree[b]) continue;
+                    const bucket = baseBuckets[b];
+                    for (let j = 0; j < bucket.length; j++) {
+                        const id = bucket[j];
+                        if (!occupied[id] && 1.5 - Math.abs(cx[id] - px) >= EPS && 1.5 - Math.abs(cy[id] - py) >= EPS) {
+                            occupied[id] = 1;
+                            baseBucketFree[b]--;
+                        }
+                    }
+                }
+            }
         }
-        const remaining = targets.filter(t => !connected.has(t));
-        const starts = new Set(), goals = new Map();
+        iterStamp++;
+        const startList = [], goalList = [];
         for (const relay of connected) {
-            if (relaysPower(relay)) for (const site of linkedSites(relay)) if (!occupied.has(site)) starts.add(site);
+            if (!relaysPower(relay)) continue;
+            const ids = linkedSiteIds(relay);
+            for (let j = 0; j < ids.length; j++) {
+                const id = ids[j];
+                if (!occupied[id] && startMark[id] !== iterStamp) {
+                    startMark[id] = iterStamp;
+                    startList.push(id);
+                }
+            }
         }
-        let direct = null, directScore = 0;
-        for (const target of remaining) for (const site of linkedSites(target)) {
-            if (occupied.has(site)) continue;
-            const score = preferCoverage ? (goals.get(site) ?? 0) + 1 : 1;
-            goals.set(site, score);
-            if (starts.has(site) && (score > directScore || (score === directScore && order.get(site) < order.get(direct)))) {
-                direct = site;
-                directScore = score;
+        let direct = -1, directScore = 0;
+        for (let t = 0; t < targets.length; t++) {
+            const target = targets[t];
+            if (connected.has(target)) continue;
+            const ids = linkedSiteIds(target);
+            for (let j = 0; j < ids.length; j++) {
+                const id = ids[j];
+                if (occupied[id]) continue;
+                let score;
+                if (goalMark[id] !== iterStamp) {
+                    goalMark[id] = iterStamp;
+                    goalList.push(id);
+                    score = 1;
+                } else {
+                    score = preferCoverage ? goalScore[id] + 1 : 1;
+                }
+                goalScore[id] = score;
+                if (startMark[id] === iterStamp && (score > directScore || (score === directScore && id < direct))) {
+                    direct = id;
+                    directScore = score;
+                }
             }
         }
         // The old breadth-first order checks every one-pole route before
         // extending a route. Preserve its stable coverage and position ties.
-        if (direct) {
-            poles.push(direct);
+        if (direct >= 0) {
+            poles.push(candidates[direct]);
             attach();
             continue;
         }
-        if (!goals.size || !starts.size || maximum - poles.length < 2) break;
+        if (!goalList.length || !startList.length || maximum - poles.length < 2) break;
         // No one-pole route exists here, so the starts and goals are disjoint.
         // Every longer route must cross the boundary of both sets. A pocket
         // of legal sites with no room for an adjacent pole cannot be wired.
-        const edge = goals.size < starts.size ? goals : starts;
+        const useGoals = goalList.length < startList.length;
+        const edgeList = useGoals ? goalList : startList;
+        const edgeMark = useGoals ? goalMark : startMark;
         let canLeave = false;
-        boundary: for (const site of edge.keys()) {
-            for (const next of adjacentSites(site)) {
-                if (!edge.has(next) && !occupied.has(next) && !overlap(site, next, EPS * 2)) {
-                    canLeave = true;
-                    break boundary;
+        boundary: for (let e = 0; e < edgeList.length; e++) {
+            const u = edgeList[e];
+            const ux = cx[u], uy = cy[u];
+            const bx = Math.floor((ux + 0.75) / 4) - minBx;
+            const by = Math.floor((uy + 0.75) / 4) - minBy;
+            const bx0 = bx > 0 ? bx - 1 : 0, bx1 = bx + 1 < bw ? bx + 1 : bw - 1;
+            const by0 = by > 0 ? by - 1 : 0, by1 = by + 1 < bh ? by + 1 : bh - 1;
+            for (let y = by0; y <= by1; y++) for (let x = bx0; x <= bx1; x++) {
+                const b = y * bw + x;
+                if (!baseBucketFree[b]) continue;
+                const bucket = baseBuckets[b];
+                for (let j = 0; j < bucket.length; j++) {
+                    const v = bucket[j];
+                    if (occupied[v] || edgeMark[v] === iterStamp) continue;
+                    const dx = Math.abs(ux - cx[v]), dy = Math.abs(uy - cy[v]);
+                    if (dx <= 4.0 + EPS && dy <= 4.0 + EPS && !(1.5 - dx >= EPS && 1.5 - dy >= EPS)) {
+                        canLeave = true;
+                        break boundary;
+                    }
                 }
             }
         }
         if (!canLeave) break;
-        const available = candidates.filter(site => !occupied.has(site));
-        if (preferCoverage) available.sort((a, b) => (goals.get(b) || 0) - (goals.get(a) || 0));
-        const buckets = new Map();
-        for (const r of available) { const key = bucket(r).join(','); if (!buckets.has(key)) buckets.set(key, new Set()); buckets.get(key).add(r); }
-        const parents = new Map();
-        const depth = new Map();
-        const queue = [];
-        for (const r of available) if (starts.has(r)) {
-            parents.set(r, null); depth.set(r, 1); queue.push(r);
-            buckets.get(bucket(r).join(',')).delete(r);
+
+        let activeBuckets = baseBuckets;
+        if (preferCoverage) {
+            activeBuckets = baseBuckets.slice();
+            for (let g = 0; g < goalList.length; g++) {
+                const b = candBucket[goalList[g]];
+                if (goalBucketMark[b] === iterStamp) continue;
+                goalBucketMark[b] = iterStamp;
+                const copy = baseBuckets[b].slice();
+                copy.sort((a, bId) => ((goalMark[bId] === iterStamp ? goalScore[bId] : 0) - (goalMark[a] === iterStamp ? goalScore[a] : 0)) || (a - bId));
+                activeBuckets[b] = copy;
+            }
+            startList.sort((a, bId) => ((goalMark[bId] === iterStamp ? goalScore[bId] : 0) - (goalMark[a] === iterStamp ? goalScore[a] : 0)) || (a - bId));
+        } else {
+            startList.sort((a, bId) => a - bId);
         }
-        let end = null;
-        routes: for (let head = 0; head < queue.length; head++) {
-            const r = queue[head];
-            if (depth.get(r) >= maximum - poles.length) continue;
-            const [bx, by] = bucket(r);
+
+        bfsStamp++;
+        bucketRem.set(baseBucketFree);
+        let tail = 0;
+        for (let s = 0; s < startList.length; s++) {
+            const id = startList[s];
+            parents[id] = -1;
+            depth[id] = 1;
+            visitedMark[id] = bfsStamp;
+            bucketRem[candBucket[id]]--;
+            queue[tail++] = id;
+        }
+        const maxDepth = maximum - poles.length;
+        let end = -1;
+        routes: for (let head = 0; head < tail; head++) {
+            const u = queue[head];
+            const d = depth[u];
+            if (d >= maxDepth) continue;
+            const ux = cx[u], uy = cy[u];
+            const bx = Math.floor((ux + 0.75) / 4) - minBx;
+            const by = Math.floor((uy + 0.75) / 4) - minBy;
+            const bx0 = bx > 0 ? bx - 1 : 0, bx1 = bx + 1 < bw ? bx + 1 : bw - 1;
+            const by0 = by > 0 ? by - 1 : 0, by1 = by + 1 < bh ? by + 1 : bh - 1;
             // Half-tile pole sites link only within four tiles per axis, one bucket away.
-            for (let y = by - 1; y <= by + 1; y++) for (let x = bx - 1; x <= bx + 1; x++) {
-                const unvisited = buckets.get(`${x},${y}`);
-                if (!unvisited) continue;
-                for (const next of unvisited) {
-                    if (!powerLinked(r, next) || overlap(r, next, EPS * 2)) continue;
+            for (let y = by0; y <= by1; y++) for (let x = bx0; x <= bx1; x++) {
+                const b = y * bw + x;
+                if (bucketRem[b] <= 0) continue;
+                const bucket = activeBuckets[b];
+                for (let j = 0; j < bucket.length; j++) {
+                    const v = bucket[j];
+                    if (visitedMark[v] === bfsStamp || occupied[v]) continue;
+                    const vx = cx[v], vy = cy[v];
+                    const dx = Math.abs(ux - vx), dy = Math.abs(uy - vy);
+                    if (dx > 4.0 + EPS || dy > 4.0 + EPS) continue;
+                    if (1.5 - dx >= EPS && 1.5 - dy >= EPS) continue;
                     let blockedByRoute = false;
-                    for (let previous = parents.get(r); previous; previous = parents.get(previous)) {
-                        if (overlap(previous, next, EPS * 2)) { blockedByRoute = true; break; }
+                    for (let prev = parents[u]; prev !== -1; prev = parents[prev]) {
+                        if (1.5 - Math.abs(cx[prev] - vx) >= EPS && 1.5 - Math.abs(cy[prev] - vy) >= EPS) {
+                            blockedByRoute = true;
+                            break;
+                        }
                     }
                     if (blockedByRoute) continue;
-                    parents.set(next, r);
+                    parents[v] = u;
                     // The first goal enqueued is also the first dequeued.
                     // All one-pole goals were handled above.
-                    if (goals.has(next)) { end = next; break routes; }
-                    depth.set(next, depth.get(r) + 1); queue.push(next);
-                    unvisited.delete(next);
+                    if (goalMark[v] === iterStamp) { end = v; break routes; }
+                    depth[v] = d + 1;
+                    visitedMark[v] = bfsStamp;
+                    bucketRem[b]--;
+                    queue[tail++] = v;
                 }
             }
         }
-        if (!end) break;
+        if (end < 0) break;
         const route = [];
-        for (let r = end; r; r = parents.get(r)) route.unshift(r);
+        for (let id = end; id !== -1; id = parents[id]) route.push(candidates[id]);
+        route.reverse();
         poles.push(...route);
         attach();
     }
@@ -246,7 +381,7 @@ export function connectPower(layout, cells, maximum, repack = true, canRelocate 
     if(islands)return analyzePowerNetworks(layout);
     if (repack && layout.power.disconnected && generators.length && consumers.length) {
         if (!preferCoverage) {
-            const covered = connectPower(structuredClone(layout), cells, maximum, false, canRelocate, canPlacePole, true, false);
+            const covered = connectPower(structuredClone(layout), cells, maximum, false, canRelocate, canPlacePole, true, false, inside);
             if (!covered.power.disconnected) return covered;
         }
         return repackPower(layout, cells, maximum, { canRelocate, canPlacePole });
@@ -319,9 +454,9 @@ export function repackPower(layout, cells, maximum, { canRelocate = null, canPla
             m.x = spot.x; m.y = spot.y; occupied.add(m);
         }
         if (!fits) continue;
-        connectPower(trial, cells, maximum, false, canRelocate, canPlacePole);
+        connectPower(trial, cells, maximum, false, canRelocate, canPlacePole, false, false, inside);
         if (trial.power.disconnected) {
-            connectPower(trial, cells, maximum, false, canRelocate, canPlacePole, true);
+            connectPower(trial, cells, maximum, false, canRelocate, canPlacePole, true, false, inside);
         }
         if (trial.power.disconnected < best.power.disconnected || (trial.power.disconnected === best.power.disconnected
             && trial.power.poles.length < best.power.poles.length && (!accept || accept(trial)))) best = trial;
