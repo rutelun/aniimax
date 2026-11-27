@@ -1243,7 +1243,7 @@ self.onmessage = async (event) => {
                 }
                 const measuredLayout=!!event.data.routeWitness && !switchingInput.map_dispatch_pending;
                 if (ordinary.success && ordinary.continuous_production_checked && (switchingInput.map_dispatch_pending || measuredLayout)
-                    && switchingInput.roster && !switchingInput.fixed_homeland && switchingInput.priorities?.[0]==='level_up'
+                    && switchingInput.roster && !switchingInput.fixed_homeland && switchingInput.priorities?.includes('level_up')
                     && comparisonConcurrency(globalThis.navigator,2)>1) {
                     self.postMessage({id,type:'progress',count:{ordinaryForMap:result,layoutOnly:measuredLayout}});
                 }

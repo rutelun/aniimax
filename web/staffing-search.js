@@ -18,15 +18,17 @@ export async function refineStaffing(problem, incumbent, solve, context) {
     })() : null;
     if(!report){
         let candidate=await refineClimate(problem,incumbent,solve);
-        candidate=await refineShift(problem,candidate,solve,context);
-        return refineClimate(problem,candidate,solve);
+        const shifted=await refineShift(problem,candidate,solve,context);
+        return shifted===candidate ? candidate : refineClimate(problem,shifted,solve);
     }
     let candidate=await refineClimate(problem,incumbent,solve);
     if(candidate!==incumbent && !keepsProduction(report(incumbent.values),report(candidate.values)))candidate=incumbent;
     const shifted=await refineShift(problem,candidate,solve,{...context,report});
-    if(shifted!==candidate && keepsProduction(report(candidate.values),report(shifted.values)))candidate=shifted;
-    const climate=await refineClimate(problem,candidate,solve);
-    if(climate!==candidate && keepsProduction(report(candidate.values),report(climate.values)))candidate=climate;
+    if(shifted!==candidate && keepsProduction(report(candidate.values),report(shifted.values))){
+        candidate=shifted;
+        const climate=await refineClimate(problem,candidate,solve);
+        if(climate!==candidate && keepsProduction(report(candidate.values),report(climate.values)))candidate=climate;
+    }
     return input?.roster ? preferOwnedPostWorkers(problem,candidate,context.input,report) : candidate;
 }
 

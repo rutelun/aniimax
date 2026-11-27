@@ -76,7 +76,7 @@ export function updatePowerConnections(layout) {
     return layout;
 }
 
-export function connectPower(layout, cells, maximum, repack = true, canRelocate = null, canPlacePole = null, preferCoverage = false, islands = false, inside = null) {
+export function connectPower(layout, cells, maximum, repack = true, canRelocate = null, canPlacePole = null, preferCoverage = false, islands = false, inside = null, retryPreferCoverage = false) {
     inside ??= createInsideTest(cells);
     const members = layout.pieces.flatMap(p => p.members);
     const generators = members.filter(m => m.generator);
@@ -104,22 +104,20 @@ export function connectPower(layout, cells, maximum, repack = true, canRelocate 
         }
         if (best) { generator.x = best.x; generator.y = best.y; }
     }
-    const poles = [];
     const targets = [...generators, ...consumers];
-    const connected = new Set();
-    const links = [];
-    for(const generator of islands ? generators : generators.slice(0,1))connected.add(generator);
-    const attach = () => attachTargets([...targets, ...poles], connected, links);
-    attach();
+    const baseConnected = new Set();
+    const baseLinks = [];
+    for (const generator of islands ? generators : generators.slice(0, 1)) baseConnected.add(generator);
+    attachTargets(targets, baseConnected, baseLinks);
     // Free half-tile locations for poles, never on facilities, storage or locked land.
-    const blocked = obstacleTest(cells,[...members, ...layout.storages]);
+    const blocked = obstacleTest(cells, [...members, ...layout.storages]);
     const candidates = [];
     const overlapped = cells.some((cell, i) => cells.some((other, j) => j > i
         && cell.x < other.x + other.w && other.x < cell.x + cell.w
         && cell.y < other.y + other.h && other.y < cell.y + cell.h));
     const seen = overlapped ? new Set() : null;
     const rows = new Map();
-    const needsRoute = connected.size && maximum > 0 && targets.some(t => !connected.has(t));
+    const needsRoute = baseConnected.size && maximum > 0 && targets.some(t => !baseConnected.has(t));
     for (const c of needsRoute ? cells : []) for (let y = c.y; y < c.y + c.h; y += 0.5) for (let x = c.x; x < c.x + c.w; x += 0.5) {
         if (seen) {
             const key = `${x},${y}`;
@@ -193,197 +191,214 @@ export function connectPower(layout, cells, maximum, repack = true, canRelocate 
     const bucketRem = new Int32Array(bucketCount);
     const goalBucketMark = new Uint32Array(bucketCount);
     let iterStamp = 0, bfsStamp = 0;
-    let indexedPoles = 0;
-    // BFS finds a route with the fewest extra poles to one of the remaining targets.
-    // A static spatial index bounds each expansion to nearby candidates rather than all land.
-    while (connected.size && targets.some(t => !connected.has(t)) && poles.length < maximum) {
-        for (; indexedPoles < poles.length; indexedPoles++) {
-            const pole = poles[indexedPoles];
-            const px = pole.x, py = pole.y;
-            if (candCount) {
-                const bx0 = Math.max(0, Math.floor((px + 0.75) / 4) - minBx - 1);
-                const bx1 = Math.min(bw - 1, Math.floor((px + 0.75) / 4) - minBx + 1);
-                const by0 = Math.max(0, Math.floor((py + 0.75) / 4) - minBy - 1);
-                const by1 = Math.min(bh - 1, Math.floor((py + 0.75) / 4) - minBy + 1);
-                for (let by = by0; by <= by1; by++) for (let bx = bx0; bx <= bx1; bx++) {
-                    const b = by * bw + bx;
+
+    const routeWith = usePreferCoverage => {
+        const poles = [];
+        const connected = new Set(baseConnected);
+        const links = baseLinks.slice();
+        const attach = () => attachTargets([...targets, ...poles], connected, links);
+        occupied.fill(0);
+        for (let b = 0; b < bucketCount; b++) baseBucketFree[b] = baseBuckets[b].length;
+        let indexedPoles = 0;
+        // BFS finds a route with the fewest extra poles to one of the remaining targets.
+        // A static spatial index bounds each expansion to nearby candidates rather than all land.
+        while (connected.size && targets.some(t => !connected.has(t)) && poles.length < maximum) {
+            for (; indexedPoles < poles.length; indexedPoles++) {
+                const pole = poles[indexedPoles];
+                const px = pole.x, py = pole.y;
+                if (candCount) {
+                    const bx0 = Math.max(0, Math.floor((px + 0.75) / 4) - minBx - 1);
+                    const bx1 = Math.min(bw - 1, Math.floor((px + 0.75) / 4) - minBx + 1);
+                    const by0 = Math.max(0, Math.floor((py + 0.75) / 4) - minBy - 1);
+                    const by1 = Math.min(bh - 1, Math.floor((py + 0.75) / 4) - minBy + 1);
+                    for (let by = by0; by <= by1; by++) for (let bx = bx0; bx <= bx1; bx++) {
+                        const b = by * bw + bx;
+                        if (!baseBucketFree[b]) continue;
+                        const bucket = baseBuckets[b];
+                        for (let j = 0; j < bucket.length; j++) {
+                            const id = bucket[j];
+                            if (!occupied[id] && 1.5 - Math.abs(cx[id] - px) >= EPS && 1.5 - Math.abs(cy[id] - py) >= EPS) {
+                                occupied[id] = 1;
+                                baseBucketFree[b]--;
+                            }
+                        }
+                    }
+                }
+            }
+            iterStamp++;
+            const startList = [], goalList = [];
+            for (const relay of connected) {
+                if (!relaysPower(relay)) continue;
+                const ids = linkedSiteIds(relay);
+                for (let j = 0; j < ids.length; j++) {
+                    const id = ids[j];
+                    if (!occupied[id] && startMark[id] !== iterStamp) {
+                        startMark[id] = iterStamp;
+                        startList.push(id);
+                    }
+                }
+            }
+            let direct = -1, directScore = 0;
+            for (let t = 0; t < targets.length; t++) {
+                const target = targets[t];
+                if (connected.has(target)) continue;
+                const ids = linkedSiteIds(target);
+                for (let j = 0; j < ids.length; j++) {
+                    const id = ids[j];
+                    if (occupied[id]) continue;
+                    let score;
+                    if (goalMark[id] !== iterStamp) {
+                        goalMark[id] = iterStamp;
+                        goalList.push(id);
+                        score = 1;
+                    } else {
+                        score = usePreferCoverage ? goalScore[id] + 1 : 1;
+                    }
+                    goalScore[id] = score;
+                    if (startMark[id] === iterStamp && (score > directScore || (score === directScore && id < direct))) {
+                        direct = id;
+                        directScore = score;
+                    }
+                }
+            }
+            // The old breadth-first order checks every one-pole route before
+            // extending a route. Preserve its stable coverage and position ties.
+            if (direct >= 0) {
+                poles.push(candidates[direct]);
+                attach();
+                continue;
+            }
+            if (!goalList.length || !startList.length || maximum - poles.length < 2) break;
+            // No one-pole route exists here, so the starts and goals are disjoint.
+            // Every longer route must cross the boundary of both sets. A pocket
+            // of legal sites with no room for an adjacent pole cannot be wired.
+            const useGoals = goalList.length < startList.length;
+            const edgeList = useGoals ? goalList : startList;
+            const edgeMark = useGoals ? goalMark : startMark;
+            let canLeave = false;
+            boundary: for (let e = 0; e < edgeList.length; e++) {
+                const u = edgeList[e];
+                const ux = cx[u], uy = cy[u];
+                const bx = Math.floor((ux + 0.75) / 4) - minBx;
+                const by = Math.floor((uy + 0.75) / 4) - minBy;
+                const bx0 = bx > 0 ? bx - 1 : 0, bx1 = bx + 1 < bw ? bx + 1 : bw - 1;
+                const by0 = by > 0 ? by - 1 : 0, by1 = by + 1 < bh ? by + 1 : bh - 1;
+                for (let y = by0; y <= by1; y++) for (let x = bx0; x <= bx1; x++) {
+                    const b = y * bw + x;
                     if (!baseBucketFree[b]) continue;
                     const bucket = baseBuckets[b];
                     for (let j = 0; j < bucket.length; j++) {
-                        const id = bucket[j];
-                        if (!occupied[id] && 1.5 - Math.abs(cx[id] - px) >= EPS && 1.5 - Math.abs(cy[id] - py) >= EPS) {
-                            occupied[id] = 1;
-                            baseBucketFree[b]--;
+                        const v = bucket[j];
+                        if (occupied[v] || edgeMark[v] === iterStamp) continue;
+                        const dx = Math.abs(ux - cx[v]), dy = Math.abs(uy - cy[v]);
+                        if (dx <= 4.0 + EPS && dy <= 4.0 + EPS && !(1.5 - dx >= EPS && 1.5 - dy >= EPS)) {
+                            canLeave = true;
+                            break boundary;
                         }
                     }
                 }
             }
-        }
-        iterStamp++;
-        const startList = [], goalList = [];
-        for (const relay of connected) {
-            if (!relaysPower(relay)) continue;
-            const ids = linkedSiteIds(relay);
-            for (let j = 0; j < ids.length; j++) {
-                const id = ids[j];
-                if (!occupied[id] && startMark[id] !== iterStamp) {
-                    startMark[id] = iterStamp;
-                    startList.push(id);
+            if (!canLeave) break;
+
+            let activeBuckets = baseBuckets;
+            if (usePreferCoverage) {
+                activeBuckets = baseBuckets.slice();
+                for (let g = 0; g < goalList.length; g++) {
+                    const b = candBucket[goalList[g]];
+                    if (goalBucketMark[b] === iterStamp) continue;
+                    goalBucketMark[b] = iterStamp;
+                    const copy = baseBuckets[b].slice();
+                    copy.sort((a, bId) => ((goalMark[bId] === iterStamp ? goalScore[bId] : 0) - (goalMark[a] === iterStamp ? goalScore[a] : 0)) || (a - bId));
+                    activeBuckets[b] = copy;
+                }
+                startList.sort((a, bId) => ((goalMark[bId] === iterStamp ? goalScore[bId] : 0) - (goalMark[a] === iterStamp ? goalScore[a] : 0)) || (a - bId));
+            } else {
+                startList.sort((a, bId) => a - bId);
+            }
+
+            bfsStamp++;
+            bucketRem.set(baseBucketFree);
+            let tail = 0;
+            for (let s = 0; s < startList.length; s++) {
+                const id = startList[s];
+                parents[id] = -1;
+                depth[id] = 1;
+                visitedMark[id] = bfsStamp;
+                bucketRem[candBucket[id]]--;
+                queue[tail++] = id;
+            }
+            const maxDepth = maximum - poles.length;
+            let end = -1;
+            routes: for (let head = 0; head < tail; head++) {
+                const u = queue[head];
+                const d = depth[u];
+                if (d >= maxDepth) continue;
+                const ux = cx[u], uy = cy[u];
+                const bx = Math.floor((ux + 0.75) / 4) - minBx;
+                const by = Math.floor((uy + 0.75) / 4) - minBy;
+                const bx0 = bx > 0 ? bx - 1 : 0, bx1 = bx + 1 < bw ? bx + 1 : bw - 1;
+                const by0 = by > 0 ? by - 1 : 0, by1 = by + 1 < bh ? by + 1 : bh - 1;
+                // Half-tile pole sites link only within four tiles per axis, one bucket away.
+                for (let y = by0; y <= by1; y++) for (let x = bx0; x <= bx1; x++) {
+                    const b = y * bw + x;
+                    if (bucketRem[b] <= 0) continue;
+                    const bucket = activeBuckets[b];
+                    for (let j = 0; j < bucket.length; j++) {
+                        const v = bucket[j];
+                        if (visitedMark[v] === bfsStamp || occupied[v]) continue;
+                        const vx = cx[v], vy = cy[v];
+                        const dx = Math.abs(ux - vx), dy = Math.abs(uy - vy);
+                        if (dx > 4.0 + EPS || dy > 4.0 + EPS) continue;
+                        if (1.5 - dx >= EPS && 1.5 - dy >= EPS) continue;
+                        let blockedByRoute = false;
+                        for (let prev = parents[u]; prev !== -1; prev = parents[prev]) {
+                            if (1.5 - Math.abs(cx[prev] - vx) >= EPS && 1.5 - Math.abs(cy[prev] - vy) >= EPS) {
+                                blockedByRoute = true;
+                                break;
+                            }
+                        }
+                        if (blockedByRoute) continue;
+                        parents[v] = u;
+                        // The first goal enqueued is also the first dequeued.
+                        // All one-pole goals were handled above.
+                        if (goalMark[v] === iterStamp) { end = v; break routes; }
+                        depth[v] = d + 1;
+                        visitedMark[v] = bfsStamp;
+                        bucketRem[b]--;
+                        queue[tail++] = v;
+                    }
                 }
             }
-        }
-        let direct = -1, directScore = 0;
-        for (let t = 0; t < targets.length; t++) {
-            const target = targets[t];
-            if (connected.has(target)) continue;
-            const ids = linkedSiteIds(target);
-            for (let j = 0; j < ids.length; j++) {
-                const id = ids[j];
-                if (occupied[id]) continue;
-                let score;
-                if (goalMark[id] !== iterStamp) {
-                    goalMark[id] = iterStamp;
-                    goalList.push(id);
-                    score = 1;
-                } else {
-                    score = preferCoverage ? goalScore[id] + 1 : 1;
-                }
-                goalScore[id] = score;
-                if (startMark[id] === iterStamp && (score > directScore || (score === directScore && id < direct))) {
-                    direct = id;
-                    directScore = score;
-                }
-            }
-        }
-        // The old breadth-first order checks every one-pole route before
-        // extending a route. Preserve its stable coverage and position ties.
-        if (direct >= 0) {
-            poles.push(candidates[direct]);
+            if (end < 0) break;
+            const route = [];
+            for (let id = end; id !== -1; id = parents[id]) route.push(candidates[id]);
+            route.reverse();
+            poles.push(...route);
             attach();
-            continue;
         }
-        if (!goalList.length || !startList.length || maximum - poles.length < 2) break;
-        // No one-pole route exists here, so the starts and goals are disjoint.
-        // Every longer route must cross the boundary of both sets. A pocket
-        // of legal sites with no room for an adjacent pole cannot be wired.
-        const useGoals = goalList.length < startList.length;
-        const edgeList = useGoals ? goalList : startList;
-        const edgeMark = useGoals ? goalMark : startMark;
-        let canLeave = false;
-        boundary: for (let e = 0; e < edgeList.length; e++) {
-            const u = edgeList[e];
-            const ux = cx[u], uy = cy[u];
-            const bx = Math.floor((ux + 0.75) / 4) - minBx;
-            const by = Math.floor((uy + 0.75) / 4) - minBy;
-            const bx0 = bx > 0 ? bx - 1 : 0, bx1 = bx + 1 < bw ? bx + 1 : bw - 1;
-            const by0 = by > 0 ? by - 1 : 0, by1 = by + 1 < bh ? by + 1 : bh - 1;
-            for (let y = by0; y <= by1; y++) for (let x = bx0; x <= bx1; x++) {
-                const b = y * bw + x;
-                if (!baseBucketFree[b]) continue;
-                const bucket = baseBuckets[b];
-                for (let j = 0; j < bucket.length; j++) {
-                    const v = bucket[j];
-                    if (occupied[v] || edgeMark[v] === iterStamp) continue;
-                    const dx = Math.abs(ux - cx[v]), dy = Math.abs(uy - cy[v]);
-                    if (dx <= 4.0 + EPS && dy <= 4.0 + EPS && !(1.5 - dx >= EPS && 1.5 - dy >= EPS)) {
-                        canLeave = true;
-                        break boundary;
-                    }
-                }
-            }
-        }
-        if (!canLeave) break;
+        return { poles, links, connected, disconnected: targets.filter(t => !connected.has(t)).length };
+    };
 
-        let activeBuckets = baseBuckets;
-        if (preferCoverage) {
-            activeBuckets = baseBuckets.slice();
-            for (let g = 0; g < goalList.length; g++) {
-                const b = candBucket[goalList[g]];
-                if (goalBucketMark[b] === iterStamp) continue;
-                goalBucketMark[b] = iterStamp;
-                const copy = baseBuckets[b].slice();
-                copy.sort((a, bId) => ((goalMark[bId] === iterStamp ? goalScore[bId] : 0) - (goalMark[a] === iterStamp ? goalScore[a] : 0)) || (a - bId));
-                activeBuckets[b] = copy;
-            }
-            startList.sort((a, bId) => ((goalMark[bId] === iterStamp ? goalScore[bId] : 0) - (goalMark[a] === iterStamp ? goalScore[a] : 0)) || (a - bId));
-        } else {
-            startList.sort((a, bId) => a - bId);
+    let routed = routeWith(preferCoverage);
+    if (!islands && routed.disconnected && !preferCoverage && generators.length && consumers.length) {
+        if (retryPreferCoverage) {
+            routed = routeWith(true);
+        } else if (repack) {
+            const covered = routeWith(true);
+            if (!covered.disconnected) routed = covered;
         }
-
-        bfsStamp++;
-        bucketRem.set(baseBucketFree);
-        let tail = 0;
-        for (let s = 0; s < startList.length; s++) {
-            const id = startList[s];
-            parents[id] = -1;
-            depth[id] = 1;
-            visitedMark[id] = bfsStamp;
-            bucketRem[candBucket[id]]--;
-            queue[tail++] = id;
-        }
-        const maxDepth = maximum - poles.length;
-        let end = -1;
-        routes: for (let head = 0; head < tail; head++) {
-            const u = queue[head];
-            const d = depth[u];
-            if (d >= maxDepth) continue;
-            const ux = cx[u], uy = cy[u];
-            const bx = Math.floor((ux + 0.75) / 4) - minBx;
-            const by = Math.floor((uy + 0.75) / 4) - minBy;
-            const bx0 = bx > 0 ? bx - 1 : 0, bx1 = bx + 1 < bw ? bx + 1 : bw - 1;
-            const by0 = by > 0 ? by - 1 : 0, by1 = by + 1 < bh ? by + 1 : bh - 1;
-            // Half-tile pole sites link only within four tiles per axis, one bucket away.
-            for (let y = by0; y <= by1; y++) for (let x = bx0; x <= bx1; x++) {
-                const b = y * bw + x;
-                if (bucketRem[b] <= 0) continue;
-                const bucket = activeBuckets[b];
-                for (let j = 0; j < bucket.length; j++) {
-                    const v = bucket[j];
-                    if (visitedMark[v] === bfsStamp || occupied[v]) continue;
-                    const vx = cx[v], vy = cy[v];
-                    const dx = Math.abs(ux - vx), dy = Math.abs(uy - vy);
-                    if (dx > 4.0 + EPS || dy > 4.0 + EPS) continue;
-                    if (1.5 - dx >= EPS && 1.5 - dy >= EPS) continue;
-                    let blockedByRoute = false;
-                    for (let prev = parents[u]; prev !== -1; prev = parents[prev]) {
-                        if (1.5 - Math.abs(cx[prev] - vx) >= EPS && 1.5 - Math.abs(cy[prev] - vy) >= EPS) {
-                            blockedByRoute = true;
-                            break;
-                        }
-                    }
-                    if (blockedByRoute) continue;
-                    parents[v] = u;
-                    // The first goal enqueued is also the first dequeued.
-                    // All one-pole goals were handled above.
-                    if (goalMark[v] === iterStamp) { end = v; break routes; }
-                    depth[v] = d + 1;
-                    visitedMark[v] = bfsStamp;
-                    bucketRem[b]--;
-                    queue[tail++] = v;
-                }
-            }
-        }
-        if (end < 0) break;
-        const route = [];
-        for (let id = end; id !== -1; id = parents[id]) route.push(candidates[id]);
-        route.reverse();
-        poles.push(...route);
-        attach();
     }
+    const { poles, links, connected, disconnected } = routed;
     for (const m of consumers) m.power_connected = connected.has(m);
     layout.power = {
         poles, links, maximum,
         generators: generators.length,
         consumers: consumers.length,
-        disconnected: targets.filter(t => !connected.has(t)).length,
+        disconnected,
         coverage: [...generators, ...poles].map(r => ({ ...powerCoverage(r), connected: connected.has(r) })),
     };
-    if(islands)return analyzePowerNetworks(layout);
+    if (islands) return analyzePowerNetworks(layout);
     if (repack && layout.power.disconnected && generators.length && consumers.length) {
-        if (!preferCoverage) {
-            const covered = connectPower(structuredClone(layout), cells, maximum, false, canRelocate, canPlacePole, true, false, inside);
-            if (!covered.power.disconnected) return covered;
-        }
         return repackPower(layout, cells, maximum, { canRelocate, canPlacePole });
     }
     return layout;
@@ -454,10 +469,7 @@ export function repackPower(layout, cells, maximum, { canRelocate = null, canPla
             m.x = spot.x; m.y = spot.y; occupied.add(m);
         }
         if (!fits) continue;
-        connectPower(trial, cells, maximum, false, canRelocate, canPlacePole, false, false, inside);
-        if (trial.power.disconnected) {
-            connectPower(trial, cells, maximum, false, canRelocate, canPlacePole, true, false, inside);
-        }
+        connectPower(trial, cells, maximum, false, canRelocate, canPlacePole, false, false, inside, true);
         if (trial.power.disconnected < best.power.disconnected || (trial.power.disconnected === best.power.disconnected
             && trial.power.poles.length < best.power.poles.length && (!accept || accept(trial)))) best = trial;
         if (!best.power.disconnected && (!accept || best !== layout)) break;

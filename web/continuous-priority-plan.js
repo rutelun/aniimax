@@ -1825,7 +1825,7 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
         const sr=last.r;
         if(sr?.values){
             const sRefined=await refineStaffing(scopedLocal,sr,solveModel,
-                {pkg,input,highs,report:values=>scopedAudit(values,true)});
+                {pkg,input,highs,evaluateSolve,report:values=>scopedAudit(values,true)});
             // Preserve the refined staffing choices (posts, climate staff, generators) when lifting to fullPayload.
             const source={keys:scopedP.variable_keys,values:sRefined.values};
             const prev=new Map(source.keys.map((key,v)=>[key,source.values[v]]));
@@ -1866,7 +1866,7 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
     if(!r?.values){
         r=await liftToFull(compactSeed);
         if(!r?.values)return null;
-        refined=await refineStaffing(local,r,solveModel,{pkg,input,highs,report:values=>audit(values,true)});
+        refined=await refineStaffing(local,r,solveModel,{pkg,input,highs,evaluateSolve,report:values=>audit(values,true)});
     }
     if(request.maximize_material_work && !routeDraft){
         materialWork=sum(p.primary_objective,r.values);

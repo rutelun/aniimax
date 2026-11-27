@@ -4,7 +4,7 @@
 export function economicWorkers(load, {wasmModule = null, createWorker = null, maxWorkers = null} = {}) {
     const hc = globalThis.navigator?.hardwareConcurrency ?? 1;
     const parallel = (typeof createWorker === 'function') || (typeof Worker === 'function' && hc >= 4);
-    const limit = maxWorkers ?? 2;
+    const limit = maxWorkers ?? Math.min(3, Math.max(2, Math.floor(hc / 2)));
     // Each slot tracks `{ worker, initialized, busyId }`.
     const slots = new Set();
     const pending = new Map();

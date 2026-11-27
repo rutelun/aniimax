@@ -11,7 +11,7 @@ const catalogs=new WeakMap();
 // The draft objective charges headWeight per worker plus total workload.
 // At the minimum headcount, each pool works at most its assigned headcount.
 // Once that workload is below headWeight, adding a worker cannot improve the score.
-async function solveDraftShift(model, settings, solve, warm, counts, workload, headWeight, highs) {
+async function solveDraftShift(model, settings, solve, warm, counts, workload, headWeight, highs, evaluateSolve = null) {
     const minimize = terms => {
         const objective = terms.map(([v, cost]) => [v, -cost]);
         return {...model, primary_objective: objective,
@@ -26,43 +26,67 @@ async function solveDraftShift(model, settings, solve, warm, counts, workload, h
         return (kept.length?'\nGeneral\n '+kept.join('\n '):'')+'\nEnd';
     });
     countModel.lp=relaxSelectors(countModel.lp);
+    const makeWorkModel = t => {
+        const wm = minimize(workload);
+        wm.lp = relaxSelectors(wm.lp).replace('\nBounds\n',
+            '\n minimum_team: ' + expression(counts) + ' <= ' + t + '\nBounds\n');
+        return wm;
+    };
     // Counts are integer variables, so ceil(-lpObj) is an exact lower bound on
     // minimum team size. When the incumbent already meets it, skip the count MIP.
     const warmTeam = Math.round(sum(counts, warm));
+    const validWarmTeam = Math.abs(sum(counts, warm) - warmTeam) <= 1e-7 && warmTeam >= 0 && warmTeam < headWeight;
     let team = null, countWarm = warm;
-    if (highs?.solve && Math.abs(sum(counts, warm) - warmTeam) <= 1e-7 && warmTeam >= 0 && warmTeam < headWeight) {
+    if (highs?.solve && validWarmTeam) {
         const lpCount = highs.solve(countModel.lp.replace(/\nGeneral\n[\s\S]*?\nEnd/, '\nEnd'));
         if (lpCount.Status === 'Optimal' && Number.isFinite(lpCount.ObjectiveValue)
             && Math.ceil(-lpCount.ObjectiveValue - 1e-7) >= warmTeam) {
             team = warmTeam;
         }
     }
-    if (team == null) {
-        const minimum = await solve(countModel, settings, undefined, warm);
-        if (!minimum?.proven || !minimum.values) return null;
-        team = Math.round(-minimum.objective);
-        if (!Number.isSafeInteger(team) || team < 0 || team >= headWeight
-            || Math.abs(team + minimum.objective) > 1e-7) return null;
-        countWarm = minimum.values;
-    }
-    const workModel = minimize(workload);
-    workModel.lp = relaxSelectors(workModel.lp).replace('\nBounds\n',
-        '\n minimum_team: ' + expression(counts) + ' <= ' + team + '\nBounds\n');
-    // If the incumbent already has minimum headcount and matches the LP workload
-    // lower bound, it is provably optimal without running work/verify/replay MIPs.
-    if (highs?.solve && Math.abs(sum(counts, warm) - team) <= 1e-7) {
-        const lpWork = highs.solve(workModel.lp.replace(/\nGeneral\n[\s\S]*?\nEnd/, '\nEnd'));
-        if (lpWork.Status === 'Optimal' && Number.isFinite(lpWork.ObjectiveValue)) {
-            const lpTarget = -headWeight * team + lpWork.ObjectiveValue;
-            const lpTol = Math.max(64 * Number.EPSILON * Math.max(1, Math.abs(lpTarget)), 1e-6 * Math.max(1, Math.abs(lpTarget)));
-            if (sum(model.primary_objective, warm) >= lpTarget - lpTol) {
-                return {values: warm, proven: true};
+    let specCtrl = null, specWorkPromise = null;
+    try {
+        if (team == null) {
+            if (evaluateSolve && validWarmTeam) {
+                specCtrl = new AbortController();
+                specWorkPromise = evaluateSolve(makeWorkModel(warmTeam), {...settings, rawOptions:true, warm, signal:specCtrl.signal});
+            }
+            const minimum = await solve(countModel, settings, undefined, warm);
+            if (!minimum?.proven || !minimum.values) return null;
+            team = Math.round(-minimum.objective);
+            if (!Number.isSafeInteger(team) || team < 0 || team >= headWeight
+                || Math.abs(team + minimum.objective) > 1e-7) return null;
+            countWarm = minimum.values;
+            if (specCtrl && team !== warmTeam) {
+                specCtrl.abort();
+                specCtrl = null;
+                specWorkPromise = null;
             }
         }
+        const workModel = makeWorkModel(team);
+        // If the incumbent already has minimum headcount and matches the LP workload
+        // lower bound, it is provably optimal without running work/verify/replay MIPs.
+        if (highs?.solve && Math.abs(sum(counts, warm) - team) <= 1e-7) {
+            const lpWork = highs.solve(workModel.lp.replace(/\nGeneral\n[\s\S]*?\nEnd/, '\nEnd'));
+            if (lpWork.Status === 'Optimal' && Number.isFinite(lpWork.ObjectiveValue)) {
+                const lpTarget = -headWeight * team + lpWork.ObjectiveValue;
+                const lpTol = Math.max(64 * Number.EPSILON * Math.max(1, Math.abs(lpTarget)), 1e-6 * Math.max(1, Math.abs(lpTarget)));
+                if (sum(model.primary_objective, warm) >= lpTarget - lpTol) {
+                    return {values: warm, proven: true};
+                }
+            }
+        }
+        const work = specWorkPromise ? (await specWorkPromise) ?? await solve(workModel, settings, undefined, countWarm)
+            : await solve(workModel, settings, undefined, countWarm);
+        if (!work?.proven || !work.values || !Number.isFinite(work.objective)
+            || Math.abs(sum(counts, work.values) - team) > 1e-7) return null;
+        return await finishDraftShift(model, settings, solve, warm, counts, headWeight, team, work);
+    } finally {
+        if (specCtrl && !specCtrl.signal.aborted) specCtrl.abort();
     }
-    const work = await solve(workModel, settings, undefined, countWarm);
-    if (!work?.proven || !work.values || !Number.isFinite(work.objective)
-        || Math.abs(sum(counts, work.values) - team) > 1e-7) return null;
+}
+
+async function finishDraftShift(model, settings, solve, warm, counts, headWeight, team, work) {
     const target = -headWeight * team + work.objective;
     const tolerance = 64 * Number.EPSILON * Math.max(1, Math.abs(target));
     const verifyTol = Math.max(tolerance, 1e-6 * Math.max(1, Math.abs(target)));
@@ -243,7 +267,7 @@ function generatedScore(plan,input,definitions){
 // Hold every recipe's combined output and every sale exactly at their
 // incumbent values. Whole sites, electric tiers, generators and their staff
 // remain in the native model, including competition for scarce ingredients.
-export async function refineElectricStaffing(problem,incumbent,solve,{pkg,input,report,fixedRecipes,highs}={}){
+export async function refineElectricStaffing(problem,incumbent,solve,{pkg,input,report,fixedRecipes,highs,evaluateSolve}={}){
     const options=problem.recipe_options??[], keys=problem.variable_keys;
     if(!keys || incumbent?.values?.length!==keys.length || !options.length || input?.fixed_homeland
         || (input?.recipe_switching_relaxation && !fixedRecipes?.size))return incumbent;
@@ -432,7 +456,7 @@ export async function refineElectricStaffing(problem,incumbent,solve,{pkg,input,
     }
     const model=buildModel(objective,riskBoundRows);
     const draft=draftProof && !exposedFlags.length && workload.length && workload.every(([,c])=>c>=0)
-        ? await solveDraftShift(model,settings,solve,phase2Warm,counts,workload,headWeight,highs) : null;
+        ? await solveDraftShift(model,settings,solve,phase2Warm,counts,workload,headWeight,highs,evaluateSolve) : null;
     const result=draft ?? await solve(model,settings,undefined,phase2Warm) ?? phase1;
     if(!result?.values)return incumbent;
     const values=result.values.slice(0,original.length);
