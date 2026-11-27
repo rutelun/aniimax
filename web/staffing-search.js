@@ -930,13 +930,15 @@ async function refineShift(problem, incumbent, solve, context) {
             return incumbent;
         }
     }
+    const provisional = Boolean(context?.input?.map_dispatch_pending
+        && context?.input?.roster && !Object.keys(context.input.roster.dispatch ?? {}).length);
     let result;
     try {
         result = await solve(staffing, {
             mip_max_nodes: 2048,
             mipIterations: 40000,
             mip_rel_gap: 0,
-            mip_abs_gap: 0,
+            mip_abs_gap: provisional ? 0.5 : 0,
             mip_feasibility_tolerance: 1e-9,
             primal_feasibility_tolerance: 1e-9,
         }, undefined, compactWarm);

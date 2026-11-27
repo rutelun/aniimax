@@ -275,8 +275,9 @@ export function layOut(pieces, options = {}) {
                     && Number.isInteger(shape.cy / STEP) && member.weight >= 0
                     && (!hasWorkerRoutes || !member.workers?.some(([worker]) => activeWorkerHubs.has(worker)));
                 let offsetIndex=monotone?(firstAvailableOffset.get(footprint)||0):0;
-                for(;offsetIndex<offsets.length;offsetIndex++){
-                    const [ox,oy,distance]=offsets[offsetIndex];
+                const { xs, ys, ds, length: offsetLen } = offsets;
+                for(;offsetIndex<offsetLen;offsetIndex++){
+                    const ox=xs[offsetIndex],oy=ys[offsetIndex],distance=ds[offsetIndex];
                     if(firstFit!==null&&distance>firstFit+shape.spread+STEP+travelRadius)break;
                     const x=snap(ox-shape.cx),y=snap(oy-shape.cy);
                     rectangle.x=member.x+x;rectangle.y=member.y+y;tried++;
@@ -300,10 +301,12 @@ export function layOut(pieces, options = {}) {
                     }
                     if (nearestWins) break;
                 }
-                if(monotone&&firstFit===null)firstAvailableOffset.set(footprint,offsets.length);
+                if(monotone&&firstFit===null)firstAvailableOffset.set(footprint,offsetLen);
                 continue;
             }
-            for (const [ox, oy, distance] of offsets) {
+            const { xs, ys, ds, length: offsetLen } = offsets;
+            for (let oi = 0; oi < offsetLen; oi++) {
+                const ox = xs[oi], oy = ys[oi], distance = ds[oi];
                 if (firstFit !== null && distance > firstFit + shape.spread + STEP
                     + travelRadius) break;
                 const x = snap(ox - shape.cx);
@@ -375,9 +378,11 @@ export function layOut(pieces, options = {}) {
             }
             return known.get(key);
         };
+        const { xs: cxs, ys: cys, length: cLen } = clusterOffsets;
         for (const shape of shapes[i]) {
             let fits = 0;
-            for (const [ox, oy] of clusterOffsets) {
+            for (let ci = 0; ci < cLen; ci++) {
+                const ox = cxs[ci], oy = cys[ci];
                 if (fits >= (options.clusterTries ?? (fast ? 1 : CLUSTER_TRIES))) break;
                 const pack = !fast && fits < CLUSTER_PACKS && shape.plots.length <= CLUSTER_PACK_MOST;
                 const spot = tryCluster(i, shape, Math.round(ox - shape.cx), Math.round(oy - shape.cy), pack, clear, distanceToStorage);
@@ -509,8 +514,10 @@ export function layOut(pieces, options = {}) {
             const previous = placed.get(i), r = previous.rects[0];
             const distance = distanceToStorage(r.x + r.w / 2, r.y + r.h / 2);
             const proposals = [], seenGroups = new Map();
+            const { xs: oxs, ys: oys, ds: ods, length: oLen } = offsets;
             for (const shape of shapes[i]) {
-                for (const [ox, oy, away] of offsets) {
+                for (let oi = 0; oi < oLen; oi++) {
+                    const ox = oxs[oi], oy = oys[oi], away = ods[oi];
                     if (away >= distance - STEP) break;
                     const x = snap(ox - shape.cx), y = snap(oy - shape.cy);
                     const m = shape.members[0], rectangle = { x: m.x + x, y: m.y + y, w: m.w, h: m.h };
@@ -1244,18 +1251,68 @@ function turn(m, turns) {
     return { ...m, x, y, w, h };
 }
 
-// Points `step` tiles apart across `extent` (`{ x, y, x2, y2 }`), nearest the origin first:
-// `[x, y, distance]`.
+// Points `step` tiles apart across `extent` (`{ x, y, x2, y2 }`), nearest the origin first,
+// stored in flat typed arrays `{ xs, ys, ds, length }` with stable tie ordering.
 function latticeByDistance(extent, step, distanceToStorage) {
-    const points = [];
-    for (let i = Math.floor(extent.x / step); i <= Math.ceil(extent.x2 / step); i++) {
-        for (let j = Math.floor(extent.y / step); j <= Math.ceil(extent.y2 / step); j++) {
-            const x = i * step;
+    const i0 = Math.floor(extent.x / step), i1 = Math.ceil(extent.x2 / step);
+    const j0 = Math.floor(extent.y / step), j1 = Math.ceil(extent.y2 / step);
+    const nx = Math.max(0, i1 - i0 + 1), ny = Math.max(0, j1 - j0 + 1);
+    const n = nx * ny;
+    const rawX = new Float64Array(n), rawY = new Float64Array(n), rawD = new Float64Array(n);
+    let idx = 0, maxD = 0;
+    for (let i = i0; i <= i1; i++) {
+        const x = i * step;
+        for (let j = j0; j <= j1; j++) {
             const y = j * step;
-            points.push([x, y, distanceToStorage(x, y)]);
+            const d = distanceToStorage(x, y);
+            rawX[idx] = x; rawY[idx] = y; rawD[idx] = d;
+            if (d > maxD) maxD = d;
+            idx++;
         }
     }
-    return points.sort((a, b) => a[2] - b[2]);
+    const xs = new Float64Array(n), ys = new Float64Array(n), ds = new Float64Array(n);
+    if (n <= 1 || !Number.isFinite(maxD) || maxD <= 0) {
+        return { xs: rawX, ys: rawY, ds: rawD, length: n };
+    }
+    // Stable bucketed sort by quantized distance (4 buckets per tile), preserving
+    // exact (i, j) order on ties without allocating per-point JS arrays.
+    const bucketCount = Math.min(2048, Math.max(64, Math.ceil(maxD * 4) + 1));
+    const scale = (bucketCount - 1) / maxD;
+    const counts = new Int32Array(bucketCount);
+    const bucketOf = new Int32Array(n);
+    for (let k = 0; k < n; k++) {
+        const b = Math.max(0, Math.min(bucketCount - 1, (rawD[k] * scale) | 0));
+        bucketOf[k] = b;
+        counts[b]++;
+    }
+    const starts = new Int32Array(bucketCount);
+    let pos = 0;
+    for (let b = 0; b < bucketCount; b++) { starts[b] = pos; pos += counts[b]; }
+    const order = new Int32Array(n);
+    const writePos = starts.slice();
+    for (let k = 0; k < n; k++) order[writePos[bucketOf[k]]++] = k;
+    for (let b = 0; b < bucketCount; b++) {
+        const s = starts[b], len = counts[b];
+        if (len > 1) {
+            // Insertion sort on tiny bucket (typical len ~25-150) is stable & cache-local.
+            if (len <= 64) {
+                for (let a = s + 1; a < s + len; a++) {
+                    const key = order[a], kd = rawD[key];
+                    let p = a - 1;
+                    while (p >= s && rawD[order[p]] > kd) { order[p + 1] = order[p]; p--; }
+                    order[p + 1] = key;
+                }
+            } else {
+                const sub = order.subarray(s, s + len);
+                sub.sort((a, c) => rawD[a] - rawD[c] || a - c);
+            }
+        }
+    }
+    for (let k = 0; k < n; k++) {
+        const o = order[k];
+        xs[k] = rawX[o]; ys[k] = rawY[o]; ds[k] = rawD[o];
+    }
+    return { xs, ys, ds, length: n };
 }
 
 function overlapArea(a, b) {

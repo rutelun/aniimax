@@ -197,10 +197,30 @@ export function obbtSiteLimits(highs, rawProblem, recipes, floor, baseLimits = {
         if (model.getModelStatus() === statuses.infeasible) return {infeasible:true};
         if (model.getModelStatus() !== statuses.optimal) return null;
         const limits = {...baseLimits};
-        let prev = [], tightened = 0;
-        for (const [name, g] of candidates) {
+        const colLists = candidates.map(([, g]) => {
             const cols = [...g.cols].map(v => nativeIndex.get(v)).filter(i => i != null).sort((a, b) => a - b);
-            if (!cols.length || cols.length !== g.cols.size) continue;
+            return cols.length && cols.length === g.cols.size ? cols : null;
+        });
+        const seenMax = new Float64Array(candidates.length).fill(-Infinity);
+        const observe = start => {
+            const sol = model.getSolution()?.colValue;
+            if (!sol) return;
+            for (let j = start; j < candidates.length; j++) {
+                const cols = colLists[j];
+                if (!cols) continue;
+                let total = 0;
+                for (let t = 0; t < cols.length; t++) total += sol[cols[t]];
+                if (total > seenMax[j]) seenMax[j] = total;
+            }
+        };
+        observe(0);
+        let prev = [], tightened = 0;
+        for (let k = 0; k < candidates.length; k++) {
+            const [name, g] = candidates[k];
+            const cols = colLists[k];
+            if (!cols) continue;
+            const current = limits[name] ?? g.cap;
+            if (seenMax[k] >= current - 1e-5) continue;
             if (prev.length) model.changeColsCost({kind:'set', indices:prev}, prev.map(() => 0));
             prev = cols;
             model.changeColsCost({kind:'set', indices:cols}, cols.map(() => 1));
@@ -209,11 +229,13 @@ export function obbtSiteLimits(highs, rawProblem, recipes, floor, baseLimits = {
             if (st === statuses.infeasible) return {infeasible:true};
             if (st !== statuses.optimal) continue;
             const ub = Math.max(0, Math.floor(model.getObjectiveValue() + 1e-5));
-            const current = limits[name] ?? g.cap;
             if (ub < current) {
                 limits[name] = ub;
                 tightened++;
                 model.addRow(-Infinity, ub, {indices:cols, values:cols.map(() => 1)});
+                for (let j = k + 1; j < candidates.length; j++) seenMax[j] = -Infinity;
+            } else {
+                observe(k + 1);
             }
         }
         return tightened ? {infeasible:false, limits} : null;

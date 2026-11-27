@@ -76,7 +76,7 @@ export function updatePowerConnections(layout) {
     return layout;
 }
 
-export function connectPower(layout, cells, maximum, repack = true, canRelocate = null, canPlacePole = null, preferCoverage = false, islands = false, inside = null, retryPreferCoverage = false) {
+export function connectPower(layout, cells, maximum, repack = true, canRelocate = null, canPlacePole = null, preferCoverage = false, islands = false, inside = null, retryPreferCoverage = false, prefilteredSites = null, staticFixed = null) {
     inside ??= createInsideTest(cells);
     const members = layout.pieces.flatMap(p => p.members);
     const generators = members.filter(m => m.generator);
@@ -85,21 +85,43 @@ export function connectPower(layout, cells, maximum, repack = true, canRelocate 
     // before routing, rather than leaving them at the edge chosen by the hauling layout.
     for (const generator of islands ? [] : generators) {
         const destinations = [...consumers, ...generators.filter(g => g !== generator)];
+        const nDest = destinations.length;
+        if (!nDest) continue;
         const sumX = destinations.reduce((sum, m) => sum + m.x + m.w / 2, 0);
         const sumY = destinations.reduce((sum, m) => sum + m.y + m.h / 2, 0);
-        const obstacles = obstacleTest(cells,[...members.filter(m => m !== generator), ...layout.storages]);
+        const meanX = sumX / nDest, meanY = sumY / nDest;
+        const offsetConst = nDest * (meanX * meanX + meanY * meanY);
+        let isBlocked;
+        if (staticFixed) {
+            const dyn = [...consumers, ...generators.filter(g => g !== generator)];
+            isBlocked = r => {
+                if (staticFixed.blocked(r)) return true;
+                for (let k = 0; k < dyn.length; k++) if (overlap(r, dyn[k], EPS * 2)) return true;
+                return false;
+            };
+        } else {
+            const obstacles = obstacleTest(cells, [...members.filter(m => m !== generator), ...layout.storages]);
+            isBlocked = r => obstacles.blocked(r);
+        }
+        const halfW = generator.w / 2, halfH = generator.h / 2;
         let best = null;
-        for (const cell of destinations.length ? cells : []) {
-            for (let y = cell.y; y < cell.y + cell.h; y += 0.5) for (let x = cell.x; x < cell.x + cell.w; x += 0.5) {
-                const cx = x + generator.w / 2, cy = y + generator.h / 2;
-                const cost = destinations.length * (cx * cx + cy * cy) - 2 * (cx * sumX + cy * sumY);
-                // Once a legal position is known, more expensive checks cannot make
-                // a higher-cost position win. Preserve the original tie ordering.
-                if (best && cost >= best.cost) continue;
-                const r = { x, y, w: generator.w, h: generator.h };
-                if (canRelocate && !canRelocate(generator, r)) continue;
-                if (!inside(r) || obstacles.blocked(r)) continue;
-                if (!best || cost < best.cost) best = { x, y, cost };
+        for (const cell of cells) {
+            for (let y = cell.y; y < cell.y + cell.h; y += 0.5) {
+                const cy = y + halfH;
+                const dy = cy - meanY;
+                // Lower bound over all x on this row: nDest * dy^2 - offsetConst.
+                if (best && nDest * dy * dy - offsetConst >= best.cost + 1e-9) continue;
+                for (let x = cell.x; x < cell.x + cell.w; x += 0.5) {
+                    const cx = x + halfW;
+                    const cost = nDest * (cx * cx + cy * cy) - 2 * (cx * sumX + cy * sumY);
+                    // Once a legal position is known, more expensive checks cannot make
+                    // a higher-cost position win. Preserve the original tie ordering.
+                    if (best && cost >= best.cost) continue;
+                    const r = { x, y, w: generator.w, h: generator.h };
+                    if (canRelocate && !canRelocate(generator, r)) continue;
+                    if (!inside(r) || isBlocked(r)) continue;
+                    if (!best || cost < best.cost) best = { x, y, cost };
+                }
             }
         }
         if (best) { generator.x = best.x; generator.y = best.y; }
@@ -110,28 +132,43 @@ export function connectPower(layout, cells, maximum, repack = true, canRelocate 
     for (const generator of islands ? generators : generators.slice(0, 1)) baseConnected.add(generator);
     attachTargets(targets, baseConnected, baseLinks);
     // Free half-tile locations for poles, never on facilities, storage or locked land.
-    const blocked = obstacleTest(cells, [...members, ...layout.storages]);
     const candidates = [];
-    const overlapped = cells.some((cell, i) => cells.some((other, j) => j > i
-        && cell.x < other.x + other.w && other.x < cell.x + cell.w
-        && cell.y < other.y + other.h && other.y < cell.y + cell.h));
-    const seen = overlapped ? new Set() : null;
     const rows = new Map();
     const needsRoute = baseConnected.size && maximum > 0 && targets.some(t => !baseConnected.has(t));
-    for (const c of needsRoute ? cells : []) for (let y = c.y; y < c.y + c.h; y += 0.5) for (let x = c.x; x < c.x + c.w; x += 0.5) {
-        if (seen) {
-            const key = `${x},${y}`;
-            if (seen.has(key)) continue;
-            seen.add(key);
+    if (needsRoute) {
+        if (prefilteredSites) {
+            const dynamicObstacles = obstacleTest(cells, [...generators, ...consumers]);
+            for (let i = 0; i < prefilteredSites.length; i++) {
+                const r = prefilteredSites[i];
+                if (dynamicObstacles.blocked(r)) continue;
+                const id = candidates.length;
+                let row = rows.get(r.y);
+                if (!row) { row = []; rows.set(r.y, row); }
+                row.push(id);
+                candidates.push(r);
+            }
+        } else {
+            const blocked = obstacleTest(cells, [...members, ...layout.storages]);
+            const overlapped = cells.some((cell, i) => cells.some((other, j) => j > i
+                && cell.x < other.x + other.w && other.x < cell.x + cell.w
+                && cell.y < other.y + other.h && other.y < cell.y + cell.h));
+            const seen = overlapped ? new Set() : null;
+            for (const c of cells) for (let y = c.y; y < c.y + c.h; y += 0.5) for (let x = c.x; x < c.x + c.w; x += 0.5) {
+                if (seen) {
+                    const key = `${x},${y}`;
+                    if (seen.has(key)) continue;
+                    seen.add(key);
+                }
+                const r = { x, y, w: 1.5, h: 1.5, pole: true, facility: 'Crackle Power Pole' };
+                if (canPlacePole && !canPlacePole(r)) continue;
+                if (!inside(r) || blocked.blocked(r)) continue;
+                const id = candidates.length;
+                let row = rows.get(y);
+                if (!row) { row = []; rows.set(y, row); }
+                row.push(id);
+                candidates.push(r);
+            }
         }
-        const r = { x, y, w: 1.5, h: 1.5, pole: true, facility: 'Crackle Power Pole' };
-        if (canPlacePole && !canPlacePole(r)) continue;
-        if (!inside(r) || blocked.blocked(r)) continue;
-        const id = candidates.length;
-        let row = rows.get(y);
-        if (!row) { row = []; rows.set(y, row); }
-        row.push(id);
-        candidates.push(r);
     }
     const candCount = candidates.length;
     const cx = new Float64Array(candCount);
@@ -264,7 +301,7 @@ export function connectPower(layout, cells, maximum, repack = true, canRelocate 
             // The old breadth-first order checks every one-pole route before
             // extending a route. Preserve its stable coverage and position ties.
             if (direct >= 0) {
-                poles.push(candidates[direct]);
+                poles.push({ ...candidates[direct] });
                 attach();
                 continue;
             }
@@ -371,7 +408,7 @@ export function connectPower(layout, cells, maximum, repack = true, canRelocate 
             }
             if (end < 0) break;
             const route = [];
-            for (let id = end; id !== -1; id = parents[id]) route.push(candidates[id]);
+            for (let id = end; id !== -1; id = parents[id]) route.push({ ...candidates[id] });
             route.reverse();
             poles.push(...route);
             attach();
@@ -420,6 +457,23 @@ export function repackPower(layout, cells, maximum, { canRelocate = null, canPla
     const stationary = [...layout.storages, ...layout.pieces.flatMap(p => p.members)
         .filter(m => !m.generator && m.electric_level == null)];
     const fixed = obstacleTest(cells, stationary);
+    // Precompute half-tile pole sites clear of stationary buildings once across all anchors.
+    const staticPoleSites = [];
+    const overlapped = cells.some((cell, i) => cells.some((other, j) => j > i
+        && cell.x < other.x + other.w && other.x < cell.x + cell.w
+        && cell.y < other.y + other.h && other.y < cell.y + cell.h));
+    const seenPole = overlapped ? new Set() : null;
+    for (const c of cells) for (let y = c.y; y < c.y + c.h; y += 0.5) for (let x = c.x; x < c.x + c.w; x += 0.5) {
+        if (seenPole) {
+            const key = `${x},${y}`;
+            if (seenPole.has(key)) continue;
+            seenPole.add(key);
+        }
+        const r = { x, y, w: 1.5, h: 1.5, pole: true, facility: 'Crackle Power Pole' };
+        if (canPlacePole && !canPlacePole(r)) continue;
+        if (!inside(r) || fixed.blocked(r)) continue;
+        staticPoleSites.push(r);
+    }
     const positions = new Map();
     const rowsFor = ({ w, h }) => {
         const key = `${w}|${h}`;
@@ -431,7 +485,7 @@ export function repackPower(layout, cells, maximum, { canRelocate = null, canPla
                     const site = { x, y, w, h };
                     if (inside(site) && !fixed.blocked(site)) row.push(site);
                 }
-                if (row.length) rows.push(row);
+                if (row.length) rows.push({ idx: rows.length, y: row[0].y + h / 2, sites: row });
             }
             positions.set(key, rows);
         }
@@ -443,33 +497,73 @@ export function repackPower(layout, cells, maximum, { canRelocate = null, canPla
         const all = trial.pieces.flatMap(p => p.members);
         const movable = all.filter(m => m.generator || m.electric_level != null)
             .sort((a, b) => Number(!!b.generator) - Number(!!a.generator) || b.w * b.h - a.w * a.h);
-        const occupied = obstacleTest(cells, []);
+        // Only <=30 moved electric rects exist per anchor; direct AABB checks avoid
+        // rebuilding a full quarter-tile obstacle mask on every anchor.
+        const placedX0 = [], placedY0 = [], placedX1 = [], placedY1 = [];
+        const hitsPlaced = s => {
+            const sx0 = s.x, sy0 = s.y, sx1 = sx0 + s.w, sy1 = sy0 + s.h;
+            for (let k = 0; k < placedX0.length; k++) {
+                if (Math.min(sx1, placedX1[k]) - Math.max(sx0, placedX0[k]) >= EPS * 2 - EPS
+                    && Math.min(sy1, placedY1[k]) - Math.max(sy0, placedY0[k]) >= EPS * 2 - EPS) return true;
+            }
+            return false;
+        };
+        const orderedRowsCache = new Map();
+        const orderedRowsFor = m => {
+            const key = `${m.w}|${m.h}`;
+            let ordered = orderedRowsCache.get(key);
+            if (!ordered) {
+                ordered = rowsFor(m).slice().sort((a, b) => Math.abs(a.y - anchor.y) - Math.abs(b.y - anchor.y) || a.idx - b.idx);
+                orderedRowsCache.set(key, ordered);
+            }
+            return ordered;
+        };
         let fits = true;
         for (const m of movable) {
-            let bestDistance = Infinity, spot = null;
-            // Rows retain the original cell and site order for equal distances.
-            for (const row of rowsFor(m)) {
-                const dy = row[0].y + m.h / 2 - anchor.y;
+            let bestDistance = Infinity, bestRowIdx = Infinity, spot = null;
+            const halfW = m.w / 2;
+            const ordered = orderedRowsFor(m);
+            for (let r = 0; r < ordered.length; r++) {
+                const entry = ordered[r];
+                const dy = entry.y - anchor.y;
                 const vertical = dy * dy;
-                if (vertical >= bestDistance) continue;
-                for (const candidate of row) {
-                    const dx = candidate.x + m.w / 2 - anchor.x;
+                if (vertical > bestDistance) break;
+                if (vertical === bestDistance && entry.idx >= bestRowIdx) continue;
+                const sites = entry.sites;
+                // Binary search the first candidate within horizontal range of bestDistance.
+                let start = 0;
+                if (Number.isFinite(bestDistance)) {
+                    const maxDx = Math.sqrt(Math.max(0, bestDistance - vertical));
+                    const minX = anchor.x - halfW - maxDx - 1e-9;
+                    let lo = 0, hi = sites.length;
+                    while (lo < hi) {
+                        const mid = (lo + hi) >>> 1;
+                        if (sites[mid].x < minX) lo = mid + 1;
+                        else hi = mid;
+                    }
+                    start = lo;
+                }
+                for (let j = start; j < sites.length; j++) {
+                    const candidate = sites[j];
+                    const dx = candidate.x + halfW - anchor.x;
                     const distance = dx * dx + vertical;
-                    if (distance >= bestDistance) {
-                        // Farther right, the horizontal distance can only grow.
+                    if (distance > bestDistance || (distance === bestDistance && entry.idx >= bestRowIdx)) {
                         if (dx >= 0) break;
                         continue;
                     }
-                    if (occupied.blocked(candidate) || (canRelocate && !canRelocate(m, candidate))) continue;
+                    if (hitsPlaced(candidate) || (canRelocate && !canRelocate(m, candidate))) continue;
                     spot = candidate;
                     bestDistance = distance;
+                    bestRowIdx = entry.idx;
                 }
             }
             if (!spot) { fits = false; break; }
-            m.x = spot.x; m.y = spot.y; occupied.add(m);
+            m.x = spot.x; m.y = spot.y;
+            placedX0.push(spot.x); placedY0.push(spot.y);
+            placedX1.push(spot.x + m.w); placedY1.push(spot.y + m.h);
         }
         if (!fits) continue;
-        connectPower(trial, cells, maximum, false, canRelocate, canPlacePole, false, false, inside, true);
+        connectPower(trial, cells, maximum, false, canRelocate, canPlacePole, false, false, inside, true, staticPoleSites, fixed);
         if (trial.power.disconnected < best.power.disconnected || (trial.power.disconnected === best.power.disconnected
             && trial.power.poles.length < best.power.poles.length && (!accept || accept(trial)))) best = trial;
         if (!best.power.disconnected && (!accept || best !== layout)) break;
