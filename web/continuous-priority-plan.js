@@ -296,7 +296,7 @@ export async function tryPriorityPlan(pkg,input,options={}) {
 }
 
 async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=()=>{},initialWitness,
-    evaluateBound,evaluateCounts,onIncumbent,workshopProof},paceProof,meta) {
+    evaluateBound,evaluateCounts,evaluateSolve,parallelWorkers=0,onIncumbent,workshopProof},paceProof,meta) {
     const currency=input.currency||'coins', priorities=[...(input.priorities??[])];
     if(!priorities.includes(currency))priorities.push(currency);
     const pos=priorities.indexOf(currency);
@@ -397,9 +397,11 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
     if(!raw.production_only || !raw.recipe_variables?.length)return null;
     // The first roster layout needs both the whole-site proposal and the
     // income ceiling. The proposal depends only on this same completed model.
+    const generatedSitesEarly = !input.roster && !witnessSeed;
     const priceSitesFirst=input.roster && stage.pace && !witnessSeed && !dispatched;
     const countOptions={input,timeLimit:2};
-    let countJob=priceSitesFirst && evaluateCounts ? evaluateCounts(raw,countOptions) : null;
+    const eagerCounts=priceSitesFirst || (generatedSitesEarly && !(workshopProof && compactSwitch && !input.season));
+    let countJob=eagerCounts && evaluateCounts ? evaluateCounts(raw,countOptions) : null;
     const lpCeiling=priorityCeiling(highs,raw,currency,input.relax_pair_coverage && meta ? model=>{
         const sol=model.getSolution()?.colValue;
         if(!sol || meta.usedPairRelax)return;
@@ -485,8 +487,8 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
     };
     const oldCurrency=oldGoals?.currency_value;
     let previousRepair;
-    const repairModes=async (countsHint)=>{
-        if(!best)return;
+    const prepareRepairModes=(countsHint)=>{
+        if(!best)return null;
         const p=checkedIncomeModel();
         const counts=countsHint??siteCounts(p,align(p,best));
         const occupied=new Map(Object.entries(counts).filter(([,n])=>n>0));
@@ -495,29 +497,39 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
         // Keep the incumbent feasible while maximizing income. Requiring a
         // strict gain can make an already optimal shift numerically infeasible.
         const local=economicCountNeighborhood(highs,p,occupied,Math.max(0,best.objective-1e-8));
-        if(!local)return;
-        if(Number.isFinite(local.localIncomeUpper) && local.localIncomeUpper<=best.objective+1e-8)return;
+        if(!local)return null;
+        if(Number.isFinite(local.localIncomeUpper) && local.localIncomeUpper<=best.objective+1e-8)return null;
         // Only the draft uses this local tolerance. The measured map still
         // prices every competing recipe against its own global income bound.
         if(input.map_dispatch_pending && !dispatched && hasSeasonCropMinimums(input)
             && Number.isFinite(local.localIncomeUpper) && local.localIncomeUpper>=best.objective-1e-8
-            && local.localIncomeUpper<=best.objective*CURRENCY_GAP_FACTOR)return;
+            && local.localIncomeUpper<=best.objective*CURRENCY_GAP_FACTOR)return null;
         // Rebuilding an identical neighborhood with the same solver options
         // repeats the same search. Any earlier gain is already in best.
-        if(previousRepair?.lp===local.lp && previousRepair.model===p.lp)return;
-        previousRepair={lp:local.lp,model:p.lp};
-        const result=await solveModel(local,options(1.5));
-        if(!result?.values)return;
-        const polished=polishSolution(highs,p,result);
-        if(!polished.polished)return;
-        const objective=sum(p.primary_objective,polished.values);
-        if(objective>best.objective+1e-8)remember(p.variable_keys,polished.values,objective);
+        if(previousRepair?.lp===local.lp && previousRepair.model===p.lp)return null;
+        return {p,local};
     };
-    const fitIdleWorkshop=async()=>{
+    const applyRepairModes=(prepared,result)=>{
+        if(!prepared)return;
+        previousRepair={lp:prepared.local.lp,model:prepared.p.lp};
+        if(!result?.values)return;
+        const polished=polishSolution(highs,prepared.p,result);
+        if(!polished.polished)return;
+        const objective=sum(prepared.p.primary_objective,polished.values);
+        if(objective>best.objective+1e-8)remember(prepared.p.variable_keys,polished.values,objective);
+    };
+    const repairModes=async (countsHint)=>{
+        const prepared=prepareRepairModes(countsHint);
+        if(!prepared)return;
+        previousRepair={lp:prepared.local.lp,model:prepared.p.lp};
+        const result=await solveModel(prepared.local,options(1.5));
+        applyRepairModes(prepared,result);
+    };
+    const prepareIdleWorkshop=()=>{
         const p=checkedIncomeModel(),counts=siteCounts(p,align(p,best));
         const occupied=new Map(Object.entries(counts).filter(([,n])=>n>0));
         const proposal=priceIdleWorkshop(highs,p,occupied,Math.max(0,best.objective-1e-8));
-        if(!proposal || proposal.estimatedIncome<=best.objective+1e-7)return false;
+        if(!proposal || proposal.estimatedIncome<=best.objective+1e-7)return null;
         // If both the incumbent and the relaxed shift use the same whole
         // post or pairing, keep it in the first fit of this workshop pattern.
         // Other assignments remain available if the fit cannot realize it.
@@ -542,21 +554,31 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
             const n=Math.ceil(pool.work.reduce((n,[v,c])=>n+c*(incumbent.get(p.variable_keys[v])??0),0)-1e-6);
             fixed.push(' within_reserve_'+id+': '+expression(pool.work)+' <= '+n);
         }
-        let result=null;
+        let fixedLocal=null;
         if(fixed.length){
-            const fixedLocal=addRows(local,fixed);
-            const fixedLp=highs.solve(fixedLocal.lp.replace(/\nGeneral\n[\s\S]*?\nEnd/,'\nEnd'));
-            if(fixedLp.Status==='Optimal' && fixedLp.ObjectiveValue>best.objective+1e-7)
-                result=await solveModel(fixedLocal,options(1.5));
+            const candidate=addRows(local,fixed);
+            const fixedLp=highs.solve(candidate.lp.replace(/\nGeneral\n[\s\S]*?\nEnd/,'\nEnd'));
+            if(fixedLp.Status==='Optimal' && fixedLp.ObjectiveValue>best.objective+1e-7)fixedLocal=candidate;
         }
-        if(!result?.values)result=await solveModel(local,options(1.5));
+        return {p,proposal,local,fixedLocal};
+    };
+    const finishIdleWorkshop=async(prepared,firstResult)=>{
+        if(!prepared)return false;
+        let result=firstResult;
+        if(!result?.values && prepared.fixedLocal)result=await solveModel(prepared.local,options(1.5));
         if(!result?.values)return false;
-        const polished=polishSolution(highs,p,result);
+        const polished=polishSolution(highs,prepared.p,result);
         if(!polished.polished)return false;
-        const objective=sum(p.primary_objective,polished.values);
-        if(objective<=best.objective+1e-8 || proposal.estimatedIncome>objective*CURRENCY_GAP_FACTOR)return false;
-        remember(p.variable_keys,polished.values,objective);
+        const objective=sum(prepared.p.primary_objective,polished.values);
+        if(objective<=best.objective+1e-8 || prepared.proposal.estimatedIncome>objective*CURRENCY_GAP_FACTOR)return false;
+        remember(prepared.p.variable_keys,polished.values,objective);
         return true;
+    };
+    const fitIdleWorkshop=async()=>{
+        const prepared=prepareIdleWorkshop();
+        if(!prepared)return false;
+        const firstResult=await solveModel(prepared.fixedLocal??prepared.local,options(1.5));
+        return finishIdleWorkshop(prepared,firstResult);
     };
     let fullPayload=JSON.stringify({...input,always_running_recipes:undefined,restrict_to_checked_recipes:false});
     const localBound = (p,o)=>solveEconomicBound(highs,p,o);
@@ -618,8 +640,7 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
         const exactBound=bound;
         const oldCounts=initialWitness.counts??initialWitness.continuous_site_counts;
         let lastRefitPruned=false;
-        const refitCounts=async(counts,minObj=0)=>{
-            lastRefitPruned=false;
+        const prepareRefitCounts=(counts,minObj=0)=>{
             if(!counts)return null;
             const occupied=new Map(Object.entries(counts).filter(([,n])=>n>0));
             if(!occupied.size)return null;
@@ -627,9 +648,16 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
             const local=economicCountNeighborhood(highs,compact,occupied);
             if(!local)return null;
             if(minObj>0 && Number.isFinite(local.localIncomeUpper) && local.localIncomeUpper<=minObj+1e-8){
-                lastRefitPruned=true;
-                return null;
+                return {pruned:true};
             }
+            return {compact,local};
+        };
+        const refitCounts=async(counts,minObj=0)=>{
+            lastRefitPruned=false;
+            const prepared=prepareRefitCounts(counts,minObj);
+            if(!prepared)return null;
+            if(prepared.pruned){lastRefitPruned=true;return null;}
+            const {compact,local}=prepared;
             let result;
             if(minObj>0 && highs?.createModel){
                 const opts=planSearchOptions({...options(2),minDual:minObj+1e-8});
@@ -772,82 +800,381 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
         let obbtLimits={...(siteCapacity?.limits??{})}, obbtFloor=0;
         const obbtProbed=new Set();
         let forceExactGap=false;
+        const canParallelRefining=Boolean(evaluateBound && evaluateSolve);
+        const liveControllers=new Set();
+        const makeCtrl=()=>{
+            const ctrl=new AbortController();
+            liveControllers.add(ctrl);
+            return ctrl;
+        };
+        const abortCtrl=ctrl=>{
+            if(!ctrl)return;
+            liveControllers.delete(ctrl);
+            if(!ctrl.signal.aborted)ctrl.abort();
+        };
+        const raceBounds=(p1,p2)=>new Promise(resolve=>{
+            let settled=false, done1=false, done2=false, r1=null, r2=null;
+            const finish=(winner,value)=>{
+                if(settled)return;
+                settled=true;
+                resolve({winner,value});
+            };
+            Promise.resolve(p1).then(v=>{
+                done1=true; r1=v;
+                if(Number.isFinite(v?.upper))finish(1,v);
+                else if(done2)finish(2,r2);
+            },()=>{done1=true; if(done2)finish(2,r2);});
+            Promise.resolve(p2).then(v=>{
+                done2=true; r2=v;
+                if(Number.isFinite(v?.upper))finish(2,v);
+                else if(done1)finish(1,r1);
+            },()=>{done2=true; if(done1)finish(1,r1);});
+        });
+        const runObbtFor=(scopeSet,floorVal,targetVal)=>{
+            if(!(floorVal>0) || !(targetVal>0) || !scopeSet.size)return {infeasible:false,changed:false,extraLimits:Object.keys(obbtLimits).length?obbtLimits:null};
+            const needReprobe=floorVal>obbtFloor+1e-7;
+            const toProbe=needReprobe ? [...scopeSet] : [...scopeSet].filter(n=>!obbtProbed.has(n));
+            let changed=false;
+            if(toProbe.length){
+                const tightened=obbtSiteLimits(highs,raw,toProbe,targetVal,obbtLimits);
+                if(tightened?.infeasible)return {infeasible:true,changed:false,extraLimits:null};
+                if(tightened?.limits){
+                    changed=Object.keys(tightened.limits).some(k=>tightened.limits[k]!==obbtLimits[k]);
+                    obbtLimits=tightened.limits;
+                }
+                if(needReprobe){obbtFloor=floorVal;obbtProbed.clear();}
+                for(const n of toProbe)obbtProbed.add(n);
+            }
+            return {infeasible:false,changed,extraLimits:Object.keys(obbtLimits).length?obbtLimits:null};
+        };
+        const computeTransition=(curModel,curBound,curInitial,curRound,curRelaxed,curPrevObj,curFlat,curScope,curEarned,curTarget,curUpper)=>{
+            let next=(curBound.throttledRecipes??[]).filter(n=>!curScope.has(n));
+            let usedCompactSuggestion=false;
+            if(curInitial && curScope.size<=2 && next.length){
+                const suggested=suggestEconomicScope(curModel,curBound.values,curScope).filter(n=>!curScope.has(n));
+                if(suggested.length && suggested.length<next.length){
+                    next=suggested;
+                    usedCompactSuggestion=true;
+                }
+            }
+            if(curRound>=2){
+                const extra=suggestEconomicScope(curModel,curBound.values,curScope).filter(n=>!curScope.has(n));
+                if(extra.length)next=[...new Set([...next,...extra])];
+            }
+            if(!next.length && curInitial)next=suggestEconomicScope(curModel,curBound.values,curScope).filter(n=>!curScope.has(n));
+            if(!next.length)next=[...new Set([...curBound.occupiedRecipes,...curBound.activeRecipes])].filter(n=>!curScope.has(n));
+            let nextFlat=curFlat;
+            if(curRelaxed && Number.isFinite(curBound.objective) && curPrevObj!=null
+                && curBound.objective>=curPrevObj-5e-4*Math.max(1,Math.abs(curPrevObj))){
+                nextFlat++;
+            }else{
+                nextFlat=0;
+            }
+            const nextScope=new Set(curScope);
+            for(const name of next)nextScope.add(name);
+            let nextRelaxed=curRelaxed;
+            let flatSwitch=false;
+            if(nextRelaxed && (nextFlat>=1
+                || (curEarned>0 && curTarget>0 && curUpper<=curTarget*1.003))){
+                nextRelaxed=false;
+                nextFlat=0;
+                flatSwitch=true;
+            }else if(!next.length){
+                if(nextRelaxed){nextRelaxed=false;flatSwitch=true;}
+                else return {shouldStop:true};
+            }else if(nextRelaxed && usedCompactSuggestion && nextScope.size<=12){
+                nextRelaxed=false;
+            }
+            return {shouldStop:false,next,nextScope,nextRelaxed,nextFlat,nextPrevObj:curBound.objective,flatSwitch};
+        };
+        const closeWithWitness=(boundUpper)=>{
+            for(const name of active(fullIncome,witness.values))names.add(name);
+            remember(fullIncome.variable_keys,witness.values,earned);
+            verifiedIncomeValues=witness.values;
+            upper=Math.max(earned,boundUpper);
+            ceilings.push(upper);
+            siteSearch={best,upper};
+        };
+        const startWorkerRefit=(counts,minObj=0)=>{
+            const prepared=prepareRefitCounts(counts,minObj);
+            if(!prepared)return null;
+            if(prepared.pruned)return {pruned:true};
+            const ctrl=makeCtrl();
+            const opts={...options(2),...(minObj>0?{minDual:minObj+1e-8}:{}),polish:true,signal:ctrl.signal};
+            const job={...prepared,ctrl,minObj,done:false,result:null,promise:null};
+            job.promise=evaluateSolve(prepared.local,opts).then(res=>{job.done=true;job.result=res;return res;},()=>{job.done=true;return null;});
+            return job;
+        };
+        const finishWorkerRefit=async(job)=>{
+            if(!job)return null;
+            if(job.pruned){lastRefitPruned=true;return null;}
+            const res=job.done ? job.result : await job.promise;
+            liveControllers.delete(job.ctrl);
+            if(!res?.values || !res.polished){
+                if(job.minObj>0)lastRefitPruned=true;
+                return null;
+            }
+            if(job.minObj>0 && Number.isFinite(res.upper) && res.upper<=job.minObj+1e-8)lastRefitPruned=true;
+            return restoreCatalogue(highs,solveModel,fullIncome,{keys:job.compact.variable_keys,values:res.values});
+        };
+        const launchRaceCompanion=(curModel,curProofOptions,curRelaxed,curExactGap)=>{
+            if(!canParallelRefining || initialScope || proofScope.size<4 || curExactGap || curRelaxed)return null;
+            const raceCtrl=makeCtrl();
+            const raceOpts={...curProofOptions,deferExactGap:false,exactGap:true};
+            return {kind:'exactGap',model:curModel,proofOptions:raceOpts,ctrl:raceCtrl,
+                promise:evaluateBound(curModel,{...raceOpts,signal:raceCtrl.signal})};
+        };
+        let pendingBound=null;
+        try{
         for (;;) {
             const targetIncome=witness ? earned : initialScope && jointFirst ? oldCurrency : 0;
             const incomeTarget=targetIncome>0 ? targetIncome*CURRENCY_GAP_FACTOR : undefined;
-            const useExactGap=forceExactGap;
+            let useExactGap=forceExactGap;
             forceExactGap=false;
-            let extraLimits=Object.keys(obbtLimits).length ? obbtLimits : null;
-            if(witness && earned>0 && incomeTarget>0 && proofScope.size){
-                const needReprobe=earned>obbtFloor+1e-7;
-                const toProbe=needReprobe ? [...proofScope] : [...proofScope].filter(n=>!obbtProbed.has(n));
-                if(toProbe.length){
-                    const tightened=obbtSiteLimits(highs,raw,toProbe,incomeTarget,obbtLimits);
-                    if(tightened?.infeasible){
-                        for(const name of active(fullIncome,witness.values))names.add(name);
-                        remember(fullIncome.variable_keys,witness.values,earned);
-                        verifiedIncomeValues=witness.values;
-                        upper=Math.max(earned,incomeTarget);
-                        ceilings.push(upper);
-                        siteSearch={best,upper};
+            let model, proofOptions, primaryCtrl=null, primaryPromise, raceJob=null;
+            let priorRefitJob=null, extraLimits=Object.keys(obbtLimits).length ? obbtLimits : null;
+            if(pendingBound){
+                ({model,proofOptions,ctrl:primaryCtrl,promise:primaryPromise,extraLimits,companion:raceJob}=pendingBound);
+                pendingBound=null;
+                raceJob??=launchRaceCompanion(model,proofOptions,relaxedBound,useExactGap);
+            }else{
+                if(witness && earned>0 && incomeTarget>0 && proofScope.size){
+                    const obbt=runObbtFor(proofScope,earned,incomeTarget);
+                    if(obbt.infeasible){
+                        closeWithWitness(incomeTarget);
                         break;
                     }
-                    if(tightened?.limits){
-                        obbtLimits=tightened.limits;
-                        extraLimits=obbtLimits;
+                    extraLimits=obbt.extraLimits;
+                }
+                model=scopedModel([...proofScope],extraLimits,relaxedBound);
+                // HiGHS presolve can incorrectly declare a smaller optimum when a
+                // redundant currency floor duplicates the objective on a dispatch model.
+                // Previous-map income only steers the bound search. Closing this
+                // map always requires a physically checked shift at its own prices.
+                proofOptions={scope:[...proofScope],exact:true,seed:proofSeed,
+                    relativeGap:CURRENCY_RELATIVE_GAP, exactGap:useExactGap, deferExactGap:!useExactGap, incomeTarget};
+                if(initialScope && jointFirst && evaluateBound){
+                    const prior=align(fullIncome,witnessSeed);
+                    const retained=prior && active(fullIncome,prior);
+                    let previous;
+                    if(retained)proofOptions.onRecipes=items=>{
+                        if(joint)return;
+                        const recipes=new Set([...items,...retained]);
+                        // An improving incumbent that needs fewer recipes can be
+                        // fitted while the other worker finishes its income proof.
+                        // fitJoint reuses it only for the identical final model.
+                        if(previous && recipes.size<previous.size && [...recipes].every(k=>previous.has(k))){
+                            try {
+                                const minHint=earned>0 ? earned : (oldCurrency>0 ? oldCurrency/CURRENCY_GAP_FACTOR-1e-8 : 0);
+                                const warmHint=prior ? {keys:fullIncome.variable_keys,values:prior} : witnessSeed;
+                                priceJoint(model,recipes,minHint,warmHint);
+                                if(!joint?.seed)joint=null;
+                            } catch {
+                                joint=null;
+                            }
+                        }
+                        previous=recipes;
+                    };
+                }
+                if(canParallelRefining){
+                    primaryCtrl=makeCtrl();
+                    primaryPromise=exactBound(model,{...proofOptions,signal:primaryCtrl.signal});
+                    if(initialScope && jointFirst && !witness){
+                        priorRefitJob=startWorkerRefit(oldCounts,0);
                     }
-                    if(needReprobe){obbtFloor=earned;obbtProbed.clear();}
-                    for(const n of toProbe)obbtProbed.add(n);
+                    raceJob=launchRaceCompanion(model,proofOptions,relaxedBound,useExactGap);
+                }else{
+                    primaryPromise=exactBound(model,proofOptions);
                 }
             }
-            const model=scopedModel([...proofScope],extraLimits,relaxedBound);
-            // HiGHS presolve can incorrectly declare a smaller optimum when a
-            // redundant currency floor duplicates the objective on a dispatch model.
-            // Previous-map income only steers the bound search. Closing this
-            // map always requires a physically checked shift at its own prices.
-            const proofOptions={scope:[...proofScope],exact:true,seed:proofSeed,
-                relativeGap:CURRENCY_RELATIVE_GAP, exactGap:useExactGap, deferExactGap:!useExactGap, incomeTarget};
-            if(initialScope && jointFirst && evaluateBound){
-                const prior=align(fullIncome,witnessSeed);
-                const retained=prior && active(fullIncome,prior);
-                let previous;
-                if(retained)proofOptions.onRecipes=items=>{
-                    if(joint)return;
-                    const recipes=new Set([...items,...retained]);
-                    // An improving incumbent that needs fewer recipes can be
-                    // fitted while the other worker finishes its income proof.
-                    // fitJoint reuses it only for the identical final model.
-                    if(previous && recipes.size<previous.size && [...recipes].every(k=>previous.has(k))){
-                        try {
-                            const minHint=earned>0 ? earned : (oldCurrency>0 ? oldCurrency/CURRENCY_GAP_FACTOR-1e-8 : 0);
-                            const warmHint=prior ? {keys:fullIncome.variable_keys,values:prior} : witnessSeed;
-                            priceJoint(model,recipes,minHint,warmHint);
-                            if(!joint?.seed)joint=null;
-                        } catch {
-                            joint=null;
-                        }
+            let bound;
+            if(raceJob){
+                const {winner,value}=await raceBounds(primaryPromise,raceJob.promise);
+                if(winner===2){
+                    abortCtrl(primaryCtrl);
+                    liveControllers.delete(raceJob.ctrl);
+                    bound=value;
+                    if(raceJob.kind==='exactGap'){
+                        useExactGap=true;
+                        proofOptions=raceJob.proofOptions;
                     }
-                    previous=recipes;
-                };
+                    raceJob=null;
+                }else{
+                    liveControllers.delete(primaryCtrl);
+                    bound=value;
+                    const keepRace=Boolean(bound?.values && Number.isFinite(bound?.upper)
+                        && raceJob.kind==='exactGap' && bound.needsExactGap);
+                    if(!keepRace){
+                        abortCtrl(raceJob.ctrl);
+                        raceJob=null;
+                    }
+                }
+            }else{
+                bound=await primaryPromise;
+                liveControllers.delete(primaryCtrl);
             }
-            let bound=await exactBound(model,proofOptions);
             if(bound?.values)notePairRelax(bound.keys,bound.values);
             if(!Number.isFinite(bound?.upper))break;
             ceilings.push(bound.upper);
             bestBoundUpper=Math.min(bestBoundUpper,bound.upper);
             if(witness && earned > 0 && !bound.values && bestBoundUpper <= earned*CURRENCY_GAP_FACTOR){
-                for(const name of active(fullIncome,witness.values))names.add(name);
-                remember(fullIncome.variable_keys,witness.values,earned);
-                verifiedIncomeValues=witness.values;
-                upper=Math.max(earned,bestBoundUpper);
-                ceilings.push(upper);
-                siteSearch={best,upper};
+                closeWithWitness(bestBoundUpper);
                 break;
             }
             if(!bound.values)break;
             if(initialScope)firstProposal=bound;
             proofSeed={keys:bound.keys,values:bound.values};
             let jointCloses=false;
+            let specJob=null;
+            if(canParallelRefining){
+                // Pick up an already-finished Round 0 prior refit before fitJoint so
+                // both fitJoint and speculative OBBT start with a verified income floor.
+                let priorHandled=false;
+                if(priorRefitJob?.done){
+                    priorHandled=true;
+                    const prior=await finishWorkerRefit(priorRefitJob);
+                    const priorVal=prior ? sum(fullIncome.primary_objective,prior.values) : -Infinity;
+                    if(prior && priorVal>earned){witness=prior;earned=priorVal;}
+                }
+                let restoredFit=null, restoredObj=0, restoredClosed=false;
+                if(!witness || !close(earned,bound.upper)){
+                    restoredFit=await restoreCatalogue(highs,solveModel,fullIncome,bound);
+                    if(restoredFit?.polished){
+                        restoredObj=sum(fullIncome.primary_objective,restoredFit.values);
+                        if(restoredObj>earned){witness=restoredFit;earned=restoredObj;}
+                        if(close(restoredObj,bound.upper))restoredClosed=true;
+                    }
+                }
+                if(witness && earned>0 && bestBoundUpper>=earned-1e-7 && bestBoundUpper<=earned*CURRENCY_GAP_FACTOR){
+                    closeWithWitness(bestBoundUpper);
+                    break;
+                }
+                const willRunJoint=initialScope && jointFirst
+                    ? Boolean(align(fullIncome,witnessSeed))
+                    : Boolean(witness && earned>0 && bound.upper>earned*CURRENCY_GAP_FACTOR && !bound.needsExactGap);
+                const willRunBoundRefit=!restoredClosed && (!witness || !close(earned,bound.upper));
+                // Launch speculative next-round bound (Worker 1) and its exactGap
+                // companion (Worker 2) BEFORE running refitCounts + fitJoint on Main
+                // worker: worker.postMessage fires synchronously, so both workers
+                // overlap with refitCounts AND fitJoint, while refitCounts can still
+                // close early and skip fitJoint (and abort specJob in 0 ms).
+                if(!raceJob && !bound.needsExactGap && (willRunJoint || willRunBoundRefit) && witness && earned>0){
+                    const specEarned=earned;
+                    const curTarget=specEarned*CURRENCY_GAP_FACTOR;
+                    const transition=computeTransition(model,bound,initialScope,round,relaxedBound,prevBoundObj,
+                        flatRelaxedRounds,proofScope,specEarned,curTarget,bestBoundUpper);
+                    if(!transition.shouldStop){
+                        const specObbt=runObbtFor(transition.nextScope,specEarned,curTarget);
+                        if(specObbt.infeasible){
+                            closeWithWitness(curTarget);
+                            break;
+                        }
+                        const specModel=scopedModel([...transition.nextScope],specObbt.extraLimits,transition.nextRelaxed);
+                        const specOpts={scope:[...transition.nextScope],exact:true,seed:proofSeed,
+                            relativeGap:CURRENCY_RELATIVE_GAP,exactGap:false,deferExactGap:true,incomeTarget:curTarget};
+                        const specCtrl=makeCtrl();
+                        const specPromise=evaluateBound(specModel,{...specOpts,signal:specCtrl.signal});
+                        let specCompanion=null;
+                        if(!transition.nextRelaxed && transition.nextScope.size>=4 && parallelWorkers>=2){
+                            const compCtrl=makeCtrl();
+                            const compOpts={...specOpts,deferExactGap:false,exactGap:true};
+                            specCompanion={kind:'exactGap',model:specModel,proofOptions:compOpts,ctrl:compCtrl,
+                                promise:evaluateBound(specModel,{...compOpts,signal:compCtrl.signal})};
+                        }
+                        specJob={earned:specEarned,transition,model:specModel,proofOptions:specOpts,
+                            extraLimits:specObbt.extraLimits,ctrl:specCtrl,promise:specPromise,companion:specCompanion};
+                    }
+                }
+                if(initialScope && jointFirst){
+                    const priorValues=align(fullIncome,witnessSeed);
+                    if(priorValues){
+                        const fit=await fitJoint(model,bound,priorValues,bestBoundUpper/CURRENCY_GAP_FACTOR-1e-8,bestBoundUpper/CURRENCY_GAP_FACTOR+1e-7,true);
+                        const value=fit?.polished && sum(fullIncome.primary_objective,fit.values);
+                        if(value>0){
+                            if(value>earned){witness=fit;earned=value;}
+                            if(earned<=bestBoundUpper+1e-7 && earned*CURRENCY_GAP_FACTOR>=bestBoundUpper)jointCloses=true;
+                        }
+                    }
+                    if(!jointCloses){
+                        let prior=null;
+                        if(!priorHandled && priorRefitJob){
+                            prior=await finishWorkerRefit(priorRefitJob);
+                        }else if(!priorHandled){
+                            prior=await refitCounts(oldCounts,Math.max(0,earned));
+                        }
+                        if(!prior && !witness)prior=await restoreCatalogue(highs,solveModel,fullIncome,witnessSeed);
+                        const priorVal=prior ? sum(fullIncome.primary_objective,prior.values) : -Infinity;
+                        if(prior && priorVal>earned){witness=prior;earned=priorVal;}
+                    }else if(priorRefitJob){
+                        abortCtrl(priorRefitJob.ctrl);
+                    }
+                    if(!jointCloses && willRunBoundRefit && (!witness || !close(earned,bound.upper))){
+                        const alt=await refitCounts(siteCounts(model,bound.values),Math.max(earned>0?earned:0,restoredObj));
+                        const altVal=alt && sum(fullIncome.primary_objective,alt.values);
+                        if(alt && altVal>earned){witness=alt;earned=altVal;}
+                    }
+                }else{
+                    if(willRunBoundRefit){
+                        let fit=restoredFit;
+                        const alt=await refitCounts(siteCounts(model,bound.values),Math.max(earned>0?earned:0,restoredObj));
+                        if(alt && (!fit?.polished || sum(fullIncome.primary_objective,alt.values)>restoredObj))fit=alt;
+                        if(!fit && !initialScope && bound.upper>0 && !lastRefitPruned){
+                            const counts=new Map(Object.entries(siteCounts(model,bound.values)).filter(([,n])=>n>0));
+                            const fixed=economicCountNeighborhood(highs,fullIncome,counts,bound.upper-1e-8);
+                            if(fixed){
+                                const shifted=await solveModel(fixed,options(2),undefined,align(fullIncome,bound));
+                                if(shifted?.values){
+                                    const polished=polishSolution(highs,fullIncome,shifted);
+                                    if(polished.polished)fit=polished;
+                                }
+                            }
+                        }
+                        if(!fit && !initialScope && !witness && firstProposal){
+                            for(const name of firstProposal.activeRecipes)names.add(name);
+                            await checkedCandidate(firstProposal);
+                            if(best && bound.upper>best.objective*CURRENCY_GAP_FACTOR){
+                                await repairModes(initialWitness.counts??initialWitness.continuous_site_counts);
+                            }
+                            firstProposal=null;
+                            const repaired=best && await restoreCatalogue(highs,solveModel,fullIncome,best);
+                            if(repaired)fit=repaired;
+                        }
+                        const value=fit && sum(fullIncome.primary_objective,fit.values);
+                        if(fit && value>earned){witness=fit;earned=value;}
+                    }
+                    if(witness && earned>0 && bestBoundUpper>=earned-1e-7 && bestBoundUpper<=earned*CURRENCY_GAP_FACTOR){
+                        closeWithWitness(bestBoundUpper);
+                        break;
+                    }
+                    if(witness && earned>0 && bound.upper>earned*CURRENCY_GAP_FACTOR && !bound.needsExactGap){
+                        const checked=await fitJoint(model,bound,witness.values,earned+1e-8,bestBoundUpper/CURRENCY_GAP_FACTOR+1e-7);
+                        if(checked?.polished){
+                            const income=sum(fullIncome.primary_objective,checked.values);
+                            if(income>earned){witness=checked;earned=income;}
+                        }
+                    }
+                }
+                if(priorRefitJob?.ctrl)abortCtrl(priorRefitJob.ctrl);
+                if(witness && earned>0 && bestBoundUpper>=earned-1e-7 && bestBoundUpper<=earned*CURRENCY_GAP_FACTOR){
+                    closeWithWitness(bestBoundUpper);
+                    break;
+                }
+                // If fitJoint or refitCounts raised earned, re-check OBBT at the new
+                // floor: discard the speculative bound only when OBBT actually tightened
+                // a site limit (otherwise specJob's LP model is byte-for-byte identical).
+                if(specJob && earned>specJob.earned+1e-7){
+                    const checkObbt=runObbtFor(specJob.transition.nextScope,earned,earned*CURRENCY_GAP_FACTOR);
+                    if(checkObbt.infeasible){
+                        closeWithWitness(earned*CURRENCY_GAP_FACTOR);
+                        break;
+                    }
+                    if(checkObbt.changed){
+                        abortCtrl(specJob.ctrl);
+                        if(specJob.companion)abortCtrl(specJob.companion.ctrl);
+                        specJob=null;
+                    }
+                }
+            }else{
             if(initialScope && jointFirst){
                 const priorValues=align(fullIncome,witnessSeed);
                 if(priorValues){
@@ -919,14 +1246,23 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
                     if(income>earned){witness=checked;earned=income;}
                 }
             }
+            }
             // Refitting the physical shift can raise the income we need to
             // certify. If that target now lies inside this model's open gap,
             // retry this same smaller scope at the higher target before adding
             // more recipe constraints.
+            const abortSpec=()=>{
+                if(!specJob)return;
+                abortCtrl(specJob.ctrl);
+                if(specJob.companion)abortCtrl(specJob.companion.ctrl);
+                specJob=null;
+            };
             const target=earned*CURRENCY_GAP_FACTOR;
             if(witness && earned>0 && bound.objective<=target && target<bestBoundUpper
                 && (proofOptions.incomeTarget==null || target>proofOptions.incomeTarget+1e-7)){
                 if(initialScope){
+                    abortSpec();
+                    if(raceJob){abortCtrl(raceJob.ctrl);raceJob=null;}
                     const precise=await exactBound(model,{scope:[...proofScope],exact:true});
                     if(Number.isFinite(precise?.upper) && precise.upper>=Math.max(earned,bound.objective)-1e-7 && precise.upper<bound.upper){
                         bound={...bound,upper:precise.upper};
@@ -934,70 +1270,61 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
                         bestBoundUpper=Math.min(bestBoundUpper,precise.upper);
                     }
                 }else{
+                    abortSpec();
+                    if(raceJob?.kind==='exactGap'){
+                        forceExactGap=true;
+                        pendingBound={model:raceJob.model,proofOptions:raceJob.proofOptions,extraLimits,
+                            ctrl:raceJob.ctrl,promise:raceJob.promise};
+                        raceJob=null;
+                    }else if(raceJob){
+                        abortCtrl(raceJob.ctrl);raceJob=null;
+                    }
                     continue;
                 }
             }
             if(witness && earned > 0 && bestBoundUpper >= earned - 1e-7 && bestBoundUpper <= earned*CURRENCY_GAP_FACTOR){
-                for(const name of active(fullIncome,witness.values))names.add(name);
-                remember(fullIncome.variable_keys,witness.values,earned);
-                verifiedIncomeValues=witness.values;
-                upper=Math.max(earned,bestBoundUpper);
-                ceilings.push(upper);
-                siteSearch={best,upper};
+                closeWithWitness(bestBoundUpper);
                 break;
             }
             if(bound.needsExactGap && !useExactGap){
+                abortSpec();
                 forceExactGap=true;
+                if(raceJob?.kind==='exactGap'){
+                    pendingBound={model:raceJob.model,proofOptions:raceJob.proofOptions,extraLimits,
+                        ctrl:raceJob.ctrl,promise:raceJob.promise};
+                    raceJob=null;
+                }else if(raceJob){
+                    abortCtrl(raceJob.ctrl);raceJob=null;
+                }
                 continue;
             }
-            // Enforce work conservation only on throttled recipes first to
-            // avoid flooding the bound with high-cardinality full-load sites.
-            // From an empty initial scope, start with the unexplained recipes
-            // from suggestEconomicScope when strictly smaller.
-            let next=(bound.throttledRecipes??[]).filter(n=>!proofScope.has(n));
-            let usedCompactSuggestion=false;
-            if(initialScope && proofScope.size<=2 && next.length){
-                const suggested=suggestEconomicScope(model,bound.values,proofScope).filter(n=>!proofScope.has(n));
-                if(suggested.length && suggested.length<next.length){
-                    next=suggested;
-                    usedCompactSuggestion=true;
-                }
+            if(raceJob){abortCtrl(raceJob.ctrl);raceJob=null;}
+            if(specJob){
+                const tr=specJob.transition;
+                proofScope.clear();
+                for(const name of tr.nextScope)proofScope.add(name);
+                relaxedBound=tr.nextRelaxed;
+                flatRelaxedRounds=tr.nextFlat;
+                prevBoundObj=tr.nextPrevObj;
+                initialScope=false;
+                round++;
+                pendingBound={model:specJob.model,proofOptions:specJob.proofOptions,extraLimits:specJob.extraLimits,
+                    ctrl:specJob.ctrl,promise:specJob.promise,companion:specJob.companion};
+                continue;
             }
-            if(round>=2){
-                const extra=suggestEconomicScope(model,bound.values,proofScope).filter(n=>!proofScope.has(n));
-                if(extra.length)next=[...new Set([...next,...extra])];
-            }
-            if(!next.length && initialScope)next=suggestEconomicScope(model,bound.values,proofScope).filter(n=>!proofScope.has(n));
-            if(!next.length)next=[...new Set([...bound.occupiedRecipes,...bound.activeRecipes])].filter(n=>!proofScope.has(n));
-            // If widening proofScope under relax_min_reasons stalls or is
-            // already within 0.3% of closing, switch to the exact availability
-            // formulation immediately while keeping newly discovered recipes.
-            if(relaxedBound && Number.isFinite(bound.objective) && prevBoundObj!=null
-                && bound.objective>=prevBoundObj-5e-4*Math.max(1,Math.abs(prevBoundObj))){
-                flatRelaxedRounds++;
-            }else{
-                flatRelaxedRounds=0;
-            }
-            prevBoundObj=bound.objective;
+            const transition=computeTransition(model,bound,initialScope,round,relaxedBound,prevBoundObj,
+                flatRelaxedRounds,proofScope,earned,incomeTarget,bestBoundUpper);
+            if(transition.shouldStop)break;
+            proofScope.clear();
+            for(const name of transition.nextScope)proofScope.add(name);
+            relaxedBound=transition.nextRelaxed;
+            flatRelaxedRounds=transition.nextFlat;
+            prevBoundObj=transition.nextPrevObj;
             initialScope=false;
             round++;
-            for(const name of next)proofScope.add(name);
-            if(relaxedBound && (flatRelaxedRounds>=1
-                || (witness && earned>0 && incomeTarget>0 && bestBoundUpper<=incomeTarget*1.003))){
-                relaxedBound=false;
-                flatRelaxedRounds=0;
-                continue;
-            }
-            if(!next.length){
-                if(relaxedBound){relaxedBound=false;continue;}
-                break;
-            }
-            // A small compact suggestion from the initial scope (e.g. 5-9
-            // unexplained recipes) stays flat under relax_min_reasons; enforce
-            // exact availability on it directly instead of burning a flat round.
-            if(relaxedBound && usedCompactSuggestion && proofScope.size<=12){
-                relaxedBound=false;
-            }
+        }
+        }finally{
+            for(const ctrl of [...liveControllers])abortCtrl(ctrl);
         }
     }
     const generatedSites = !input.roster && !witnessSeed;
@@ -1036,7 +1363,7 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
         const initialModel=scope.length ? priority(payloadFor(scope),currencyStage,currency) : raw;
         const discovery=scope.length>0 && !witnessSeed;
         const masterOptions={seed:witnessSeed,scope,timeLimit:discovery?3:2,discovery};
-        let pending=!priceSitesFirst && evaluateBound?{model:initialModel,result:bound(initialModel,masterOptions)}:null;
+        let pending=!priceSitesFirst && !generatedSites && evaluateBound?{model:initialModel,result:bound(initialModel,masterOptions)}:null;
         const startCounts=()=>{countJob??=evaluateCounts(raw,countOptions);};
         // With measured shares the strict master can settle the income stage on
         // its first solve. Try its actual staffing before searching alternative
@@ -1090,15 +1417,36 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
                 // This dual bound prices all building patterns. When this
                 // particular pattern falls short, still test its feasible income.
                 const target=(counts.upper??0)/CURRENCY_GAP_FACTOR;
-                for(const floor of target>0 ? [target,0] : [0]){
+                const floors=target>0 ? [target,0] : [0];
+                const locals=[];
+                for(const floor of floors){
                     const local=economicCountNeighborhood(highs,compact,counts,floor);
                     if(!local || (floor>0 && excludesIncomeFloor(highs,local,floor)))continue;
                     if(best && Number.isFinite(local.localIncomeUpper) && local.localIncomeUpper<=best.objective+1e-8)continue;
-                    const found=await solveModel(local,{time_limit:2,mip_rel_gap:0});
-                    if(!found?.values)continue;
-                    const fit=polishSolution(highs,local,found);
+                    locals.push({floor,local});
+                }
+                let found=null, foundLocal=null;
+                if(locals.length===2 && evaluateSolve){
+                    const zeroCtrl=new AbortController();
+                    const zeroJob=evaluateSolve(locals[1].local,{time_limit:2,mip_rel_gap:0,signal:zeroCtrl.signal});
+                    const targetFound=await solveModel(locals[0].local,{time_limit:2,mip_rel_gap:0});
+                    if(targetFound?.values){
+                        zeroCtrl.abort();
+                        found=targetFound;
+                        foundLocal=locals[0].local;
+                    }else{
+                        const zeroFound=await zeroJob;
+                        if(zeroFound?.values){found=zeroFound;foundLocal=locals[1].local;}
+                    }
+                }else{
+                    for(const entry of locals){
+                        const attempt=await solveModel(entry.local,{time_limit:2,mip_rel_gap:0});
+                        if(attempt?.values){found=attempt;foundLocal=entry.local;break;}
+                    }
+                }
+                if(found?.values){
+                    const fit=polishSolution(highs,foundLocal,found);
                     await checkedCandidate({keys:compact.variable_keys,values:fit.values},true,compact);
-                    break;
                 }
                 if(Number.isFinite(counts.upper)){ceilings.push(counts.upper);upper=Math.min(upper,counts.upper);}
             }
@@ -1113,13 +1461,56 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
         // Seasonal plots reserve crew time across workshops. Try moving the
         // existing crew between recipes before changing their building counts.
         const crewSeed=preparingMap && hasSeasonCropMinimums(input) && upper>best.objective*CURRENCY_GAP_FACTOR ? best : null;
-        if(crewSeed)await checkedCandidate(crewSeed,false);
-        const shortFit=preparingMap && upper>best.objective*CURRENCY_GAP_FACTOR && await fitIdleWorkshop();
+        let shortFit=false;
         let repairedPreparing=false;
-        if(!shortFit && preparingMap && (!crewSeed || best===crewSeed) && upper>best.objective*CURRENCY_GAP_FACTOR){
-            await repairModes();
-            repairedPreparing=true;
-            if(best!==crewSeed)await checkedCandidate(best,false);
+        if(crewSeed && evaluateSolve){
+            const idlePrep=prepareIdleWorkshop();
+            const repairPrep=prepareRepairModes();
+            const idleCtrl=idlePrep ? new AbortController() : null;
+            const repairCtrl=repairPrep ? new AbortController() : null;
+            const idleJob=idlePrep ? evaluateSolve(idlePrep.fixedLocal??idlePrep.local,{...options(1.5),signal:idleCtrl.signal}) : null;
+            const repairJob=repairPrep && (!idlePrep || parallelWorkers>=2)
+                ? evaluateSolve(repairPrep.local,{...options(1.5),signal:repairCtrl.signal}) : null;
+            try{
+                await checkedCandidate(crewSeed,false);
+                if(best!==crewSeed){
+                    idleCtrl?.abort();
+                    repairCtrl?.abort();
+                    shortFit=preparingMap && upper>best.objective*CURRENCY_GAP_FACTOR && await fitIdleWorkshop();
+                }else if(upper<=best.objective*CURRENCY_GAP_FACTOR){
+                    idleCtrl?.abort();
+                    repairCtrl?.abort();
+                }else{
+                    if(idleJob){
+                        const idleFirst=await idleJob;
+                        shortFit=await finishIdleWorkshop(idlePrep,idleFirst);
+                    }
+                    if(shortFit){
+                        repairCtrl?.abort();
+                    }else if(upper>best.objective*CURRENCY_GAP_FACTOR){
+                        if(repairJob){
+                            applyRepairModes(repairPrep,await repairJob);
+                        }else if(repairPrep){
+                            await repairModes();
+                        }
+                        repairedPreparing=true;
+                        if(best!==crewSeed)await checkedCandidate(best,false);
+                    }else{
+                        repairCtrl?.abort();
+                    }
+                }
+            }finally{
+                if(idleCtrl && !idleCtrl.signal.aborted)idleCtrl.abort();
+                if(repairCtrl && !repairCtrl.signal.aborted)repairCtrl.abort();
+            }
+        }else{
+            if(crewSeed)await checkedCandidate(crewSeed,false);
+            shortFit=preparingMap && upper>best.objective*CURRENCY_GAP_FACTOR && await fitIdleWorkshop();
+            if(!shortFit && preparingMap && (!crewSeed || best===crewSeed) && upper>best.objective*CURRENCY_GAP_FACTOR){
+                await repairModes();
+                repairedPreparing=true;
+                if(best!==crewSeed)await checkedCandidate(best,false);
+            }
         }
         const pricedWithinGap = (priceSitesFirst || generatedSites) && best && upper >= best.objective-1e-7
             && upper <= best.objective*CURRENCY_GAP_FACTOR;

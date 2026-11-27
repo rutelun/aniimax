@@ -64,7 +64,8 @@ export async function cachedEconomicBound(problem,options,solve) {
     if (options.discovery || !globalThis.crypto?.subtle) return solve(problem,options);
     // A certification solve uses seed presence only to select its iteration
     // budget. Candidate values themselves never enter this solve.
-    const settings = {...options,seed:!!options.seed};
+    const {signal: _signal, onRecipes: _onRecipes, ...cacheable} = options;
+    const settings = {...cacheable,seed:!!options.seed};
     const bytes = new TextEncoder().encode(JSON.stringify([2,import.meta.url,problem,settings]));
     let digest;
     try { digest = await crypto.subtle.digest('SHA-256',bytes); }

@@ -85,3 +85,46 @@ test('a large measured model can reuse its dual bound at the requested gap', asy
     await cachedEconomicBound(problem,{...options,relativeGap:.0001,incomeTarget:100.01},solve);
     assert.equal(calls,3);
 });
+
+test('economicWorkers pools idle workers, forwards wasmModule once, and terminates aborted jobs',async t=>{
+    const {economicWorkers}=await import('../web/economic-parallel.js');
+    const created=[];
+    const fakeWasm={tag:'compiled-wasm'};
+    const createWorker=()=>{
+        const w={messages:[],terminated:false,onmessage:null,onerror:null,onmessageerror:null,
+            postMessage(m){this.messages.push(m);},
+            terminate(){this.terminated=true;}};
+        created.push(w);
+        return w;
+    };
+    const pool=economicWorkers('',{wasmModule:fakeWasm,createWorker,maxWorkers:2});
+    try{
+        // First request spawns slot 0 and receives wasmModule once.
+        const p1=pool.callbacks.evaluateBound({lp:'a'},{});
+        assert.equal(created.length,1);
+        assert.equal(created[0].messages[0].wasmModule,fakeWasm);
+        created[0].onmessage({data:{id:created[0].messages[0].id,result:{upper:10}}});
+        assert.deepEqual(await p1,{upper:10});
+
+        // Next sequential request reuses idle slot 0 without resending wasmModule.
+        const p2=pool.callbacks.evaluateSolve({lp:'b'},{polish:true});
+        assert.equal(created.length,1);
+        assert.equal(created[0].messages[1].kind,'solve');
+        assert.equal(created[0].messages[1].wasmModule,undefined);
+        created[0].onmessage({data:{id:created[0].messages[1].id,result:{values:[1],objective:1,proven:true,polished:true}}});
+        assert.equal((await p2).objective,1);
+
+        // Concurrent request with AbortSignal spawns slot 1 and terminates it immediately on abort.
+        const ctrl=new AbortController();
+        const p3=pool.callbacks.evaluateBound({lp:'c'},{});
+        const p4=pool.callbacks.evaluateBound({lp:'d'},{signal:ctrl.signal});
+        assert.equal(created.length,2);
+        ctrl.abort();
+        assert.equal(await p4,null);
+        assert.equal(created[1].terminated,true);
+        assert.equal(created[0].terminated,false);
+        created[0].onmessage({data:{id:created[0].messages[2].id,result:{upper:9}}});
+        assert.deepEqual(await p3,{upper:9});
+    }finally{pool.close();}
+    assert.equal(created[0].terminated,true);
+});

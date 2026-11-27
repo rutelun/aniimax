@@ -44,14 +44,27 @@ const HANDLER_NAMES = ['time_to_reach', 'get_version', 'get_all_items'];
 // model and frees its LP file and allocations in finally, so consecutive solves stay isolated
 // without repeatedly instantiating WASM and allocating another linear memory.
 let highsBytes = null;
+let highsCompiled = null;
 let highsRuntime = null;
-async function newHighs() {
+function loadHighsBytes() {
     if (!highsBytes) {
         highsBytes = fetch(new URL('./vendor/highs/highs.wasm', import.meta.url)).then(r => {
             if (!r.ok) throw new Error(`Could not load HiGHS (${r.status})`);
             return r.arrayBuffer();
         });
     }
+    return highsBytes;
+}
+function loadHighsModule() {
+    if (!highsCompiled && typeof WebAssembly?.compile === 'function') {
+        highsCompiled = loadHighsBytes()
+            .then(bytes => WebAssembly.compile(bytes))
+            .catch(() => null);
+    }
+    return highsCompiled ?? Promise.resolve(null);
+}
+async function newHighs() {
+    loadHighsBytes();
     if (!highsRuntime) {
         highsRuntime = (async () => {
             const { default: highsModule } = await import(new URL('./vendor/highs/highs.mjs' + load, import.meta.url).href);
@@ -166,7 +179,8 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}, co
     // for the same jobs. Price site counts for both the starting and measured maps.
     if (deadline == null) {
         let accelerated;
-        const workers = economicWorkers(load);
+        const wasmModule = await loadHighsModule();
+        const workers = economicWorkers(load, {wasmModule});
         try {
             const {tryPriorityPlan} = await loadPriorityPlanner();
             accelerated = await tryPriorityPlan(pkg,input,{
