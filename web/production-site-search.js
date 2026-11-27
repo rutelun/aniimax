@@ -1,7 +1,7 @@
 import {parseLinearLp} from './highs-reuse.js';
 import {obbtSiteLimits, solveEconomicBound, suggestEconomicScope} from './economic-bound.js';
 
-function recipesWithoutInputs(problem) {
+export function recipesWithoutInputs(problem) {
     const rows = parseLinearLp(problem.lp, problem.variables)?.rows;
     if (!rows) return null;
     const recipes = new Map(problem.recipe_options.map(([column, name]) => [column, name]));
@@ -54,7 +54,7 @@ function fixRecipeRates(full, proposal) {
 // continuous-operation constraints for competing recipes as their rates reveal
 // contention. Each relaxation bounds income; only the full model can earn it.
 export async function searchProductionSites(highs, raw, full, scopedModel, solve = (p,o)=>solveEconomicBound(highs,p,o),
-    {relativeGap = 0, initialFloor = 0, initialUpper = Infinity} = {}) {
+    {relativeGap = 0, initialFloor = 0, initialUpper = Infinity, initialRound0 = null} = {}) {
     let scope = recipesWithoutInputs(raw);
     if (!scope) return null;
     const gapFactor = 1 + relativeGap;
@@ -75,31 +75,40 @@ export async function searchProductionSites(highs, raw, full, scopedModel, solve
         const floor = bestFloor();
         const target = floor > 0 ? floor * gapFactor : undefined;
         let extraLimits = Object.keys(obbtLimits).length ? obbtLimits : null;
-        if (target > 0 && scope.length) {
-            const needReprobe = floor > obbtFloor + 1e-7;
-            const toProbe = needReprobe ? scope : scope.filter(n => !obbtProbed.has(n));
-            if (toProbe.length) {
-                const tightened = obbtSiteLimits(highs, raw, toProbe, target, obbtLimits);
-                if (tightened?.infeasible) {
-                    upper = Math.min(upper, target);
-                    break;
+        const canUseRound0 = round === 0 && initialRound0 && relaxReasons
+            && initialRound0.scope?.length === scope.length
+            && initialRound0.scope.every((n, i) => n === scope[i]);
+        let model, proposal;
+        if (canUseRound0) {
+            model = initialRound0.model;
+            proposal = await initialRound0.promise;
+        } else {
+            if (target > 0 && scope.length) {
+                const needReprobe = floor > obbtFloor + 1e-7;
+                const toProbe = needReprobe ? scope : scope.filter(n => !obbtProbed.has(n));
+                if (toProbe.length) {
+                    const tightened = obbtSiteLimits(highs, raw, toProbe, target, obbtLimits);
+                    if (tightened?.infeasible) {
+                        upper = Math.min(upper, target);
+                        break;
+                    }
+                    if (tightened?.limits) {
+                        obbtLimits = tightened.limits;
+                        extraLimits = obbtLimits;
+                    }
+                    if (needReprobe) { obbtFloor = floor; obbtProbed.clear(); }
+                    for (const n of toProbe) obbtProbed.add(n);
                 }
-                if (tightened?.limits) {
-                    obbtLimits = tightened.limits;
-                    extraLimits = obbtLimits;
-                }
-                if (needReprobe) { obbtFloor = floor; obbtProbed.clear(); }
-                for (const n of toProbe) obbtProbed.add(n);
             }
+            model = scope.length ? scopedModel(scope, extraLimits, relaxReasons) : raw;
+            // When a physically checked incumbent exists and relativeGap > 0, keep
+            // the standard node budget while stopping early as soon as the dual
+            // bound certifies the incumbent within tolerance.
+            const solveOpts = target > 0 && relativeGap > 0
+                ? {seed, scope, timeLimit:30, relativeGap, incomeTarget:target}
+                : {seed, scope, timeLimit:30};
+            proposal = await solve(model, solveOpts);
         }
-        const model = scope.length ? scopedModel(scope, extraLimits, relaxReasons) : raw;
-        // When a physically checked incumbent exists and relativeGap > 0, keep
-        // the standard node budget while stopping early as soon as the dual
-        // bound certifies the incumbent within tolerance.
-        const solveOpts = target > 0 && relativeGap > 0
-            ? {seed, scope, timeLimit:30, relativeGap, incomeTarget:target}
-            : {seed, scope, timeLimit:30};
-        const proposal = await solve(model, solveOpts);
         if (Number.isFinite(proposal?.upper)) upper = Math.min(upper, proposal.upper);
         if (!proposal?.values) break;
         let checked = null;

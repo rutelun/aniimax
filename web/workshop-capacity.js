@@ -2,7 +2,7 @@
 // Each fit retains the exact crew, power, hauling and continuous-site rows.
 import {materialChains,switchingWorkshops} from './material-flow-schedule.js';
 import {generatorLimit} from './facility-config.js';
-import {optimizeWorkshopSources,workshopDemand} from './workshop-demand.js';
+import {optimizeWorkshopSources,optimizeWorkshopSourcesAsync,workshopDemand} from './workshop-demand.js';
 import {prefersWorkshopPlan} from './recipe-switch-search.js';
 import {priorityCeiling} from './priority-ceilings.js';
 import {productionObjective} from './priority-search.js';
@@ -88,7 +88,7 @@ function sharedElectricRecipe(chain,rateColumns) {
     return selected;
 }
 
-function fitCapacity(pkg,highs,trial,baseline,background,demand,moving,mode,stage,catalog,problem) {
+function prepareFitCapacity(pkg,trial,baseline,background,demand,moving,mode,stage,catalog,problem) {
     const payload=JSON.stringify(trial),stageJson=JSON.stringify(stage);
     problem??=JSON.parse(pkg.exact_problem(payload,stageJson));
     if(!problem.lp)return null;
@@ -152,16 +152,21 @@ function fitCapacity(pkg,highs,trial,baseline,background,demand,moving,mode,stag
     const currency=trial.currency??'coins',priorities=trial.priorities??[];
     const lp=addRows(problem.lp,rows);
     const fastest=lp.replace(/Maximize\n[\s\S]*?\nSubject To\n/,'Maximize\n obj: x'+pace+'\nSubject To\n');
-    const run=(lp,seed)=>{
-        let result=solveWithIncumbent(highs,{...problem,lp},options,seed,false);
+    return {payload,stageJson,problem,pace,rateColumns,lp,fastest,currency,priorities};
+}
+
+function finishFitCapacity(pkg,highs,prep,speedValues,trial,background,demand,mode,stage,catalog) {
+    if(!prep || !speedValues)return null;
+    const {payload,stageJson,problem,pace,rateColumns,lp,currency,priorities}=prep;
+    const run=(lpStr,seed)=>{
+        let result=solveWithIncumbent(highs,{...problem,lp:lpStr},options,seed,false);
         if(result.Status==='Infeasible')
-            result=solveWithIncumbent(highs,{...problem,lp},{...options,presolve:'off'},seed,false);
+            result=solveWithIncumbent(highs,{...problem,lp:lpStr},{...options,presolve:'off'},seed,false);
         return result;
     };
-    const speed=run(fastest);
-    if(speed.Status!=='Optimal'||!(speed.ObjectiveValue>0))return null;
     const read=solution=>problem.variable_keys.map((_,v)=>solution.Columns['x'+v]?.Primal??0);
-    const seed=read(speed);
+    const seed=speedValues;
+    if(!(seed[pace]>0))return null;
     const finishing=[' reached_pace: x'+pace+' >= '+seed[pace]];
     // If sites or staffing set a later ETA, recalculate every chain at that
     // horizon with the same one-off stocks and recurring background inputs.
@@ -176,9 +181,11 @@ function fitCapacity(pkg,highs,trial,baseline,background,demand,moving,mode,stag
     }
     const finalLp=addRows(lp,finishing);
     const second=run(finalLp,seed);
-    for(const result of [second,speed]){
-        if(result.Status!=='Optimal')continue;
-        const values=polishSolution(highs,{...problem,lp:finalLp},{values:read(result)}).values;
+    const candidates=[];
+    if(second.Status==='Optimal')candidates.push(read(second));
+    candidates.push(seed);
+    for(const rawValues of candidates){
+        const values=polishSolution(highs,{...problem,lp:finalLp},{values:rawValues}).values;
         const plan=JSON.parse(pkg.exact_plan(payload,stageJson,JSON.stringify({values,proven:false,bound:0,verify_only:true})));
         if(!plan.success)continue;
         const active=[...new Set(problem.recipe_variables.filter(([v])=>values[v]>1e-8).map(([,name])=>name))];
@@ -196,6 +203,17 @@ function fitCapacity(pkg,highs,trial,baseline,background,demand,moving,mode,stag
                 floors:(plan.priorities??[]).filter(p=>p.target!=='level_up').map(p=>[p.target,p.per_second])}};
     }
     return null;
+}
+
+function fitCapacity(pkg,highs,trial,baseline,background,demand,moving,mode,stage,catalog,problem) {
+    const prep=prepareFitCapacity(pkg,trial,baseline,background,demand,moving,mode,stage,catalog,problem);
+    if(!prep)return null;
+    let speed=solveWithIncumbent(highs,{...prep.problem,lp:prep.fastest},options,undefined,false);
+    if(speed.Status==='Infeasible')
+        speed=solveWithIncumbent(highs,{...prep.problem,lp:prep.fastest},{...options,presolve:'off'},undefined,false);
+    if(speed.Status!=='Optimal'||!(speed.ObjectiveValue>0))return null;
+    const seed=prep.problem.variable_keys.map((_,v)=>speed.Columns['x'+v]?.Primal??0);
+    return finishFitCapacity(pkg,highs,prep,seed,trial,background,demand,mode,stage,catalog);
 }
 
 // A fixed-recipe income bound carries across a stronger set of earlier
@@ -314,7 +332,7 @@ async function minimizeClimate(pkg,solve,problem,payload,stageJson,plan,values,{
     return {plan:curPlan,problem:curProblem,payload:curPayload,values:curValues,changed};
 }
 
-export async function searchWorkshopCapacity(pkg,highs,input,baseline,{validate,progress=()=>{}}) {
+export async function searchWorkshopCapacity(pkg,highs,input,baseline,{validate,progress=()=>{},evaluateBound,evaluateSolve}={}) {
     const facilities=switchingWorkshops(input);
     // Upgrades are the only selected goal that consumes these unsold products.
     // With no upgrade the ordinary shift already optimizes the actual goals.
@@ -351,6 +369,9 @@ export async function searchWorkshopCapacity(pkg,highs,input,baseline,{validate,
         }
         return src;
     };
+    const workerSpeed=(prep,signal)=>evaluateSolve({...prep.problem,lp:prep.fastest},{
+        ...options,rawOptions:true,retryPresolveOff:true,polish:false,signal,
+    });
     const evaluateBackground=async(background,fromSource)=>{
         const demand=workshopDemand(input,background,catalog);
         if(!demand || !demand.chains.some(c=>c.jobs.some(j=>j.rate>0)))return;
@@ -368,16 +389,19 @@ export async function searchWorkshopCapacity(pkg,highs,input,baseline,{validate,
             floors:(baseline.comparison_goals?.floors??[]).map(([name,n])=>[name,earlier.has(name)?n:0])};
         const fixedProblem=JSON.parse(pkg.exact_problem(JSON.stringify(fixed),JSON.stringify(stage)));
         const moving=active.map(c=>c.facility);
-        const consider=async(trial,facilities,mode,problem)=>{
-            const draft=fitCapacity(pkg,highs,trial,baseline,background,demand,facilities,mode,stage,catalog,problem);
-            if(!draft)return;
+        const accept=async(draft,trial,facs,problem)=>{
+            if(!draft)return null;
             const verified=await validate(trial,draft,baseline);
             if(verified && prefersWorkshopPlan(verified,best)){
                 best=verified;
-                bestContext={trial,stage,problem,moving:facilities};
+                bestContext={trial,stage,problem,moving:facs};
                 bestFromSource=fromSource;
             }
             return verified;
+        };
+        const consider=async(trial,facs,mode,problem)=>{
+            const draft=fitCapacity(pkg,highs,trial,baseline,background,demand,facs,mode,stage,catalog,problem);
+            return accept(draft,trial,facs,problem);
         };
         await consider(fixed,moving,'fixed',fixedProblem);
         if(Number.isFinite(best.level_up_preview?.seconds) && best.level_up_preview.seconds<=demand.seconds*(1+1e-5))return;
@@ -388,24 +412,60 @@ export async function searchWorkshopCapacity(pkg,highs,input,baseline,{validate,
         for(const shared of groups){
             const trial={...fixed,recipe_switching_relaxation:true,recipe_switching_facilities:shared};
             const problem=JSON.parse(pkg.exact_problem(JSON.stringify(trial),JSON.stringify(stage)));
-            await consider(trial,shared,'manual',problem);
-            if(problem.recipe_options?.some(([,name,f,,electric])=>electric&&shared.includes(f)&&materialChains[f].includes(name))){
-                const powered=await consider(trial,shared,'electric',problem);
-                if(!Number.isFinite(powered?.level_up_preview?.seconds) || powered.level_up_preview.seconds>demand.seconds*(1+1e-5))
-                    await consider(trial,shared,'mixed',problem);
+            const hasElectric=problem.recipe_options?.some(([,name,f,,electric])=>electric&&shared.includes(f)&&materialChains[f].includes(name));
+            if(evaluateSolve && hasElectric){
+                const electricPrep=prepareFitCapacity(pkg,trial,baseline,background,demand,shared,'electric',stage,catalog,problem);
+                const mixedPrep=prepareFitCapacity(pkg,trial,baseline,background,demand,shared,'mixed',stage,catalog,problem);
+                const eCtrl=electricPrep ? new AbortController() : null;
+                const mCtrl=mixedPrep ? new AbortController() : null;
+                const eJob=electricPrep ? workerSpeed(electricPrep,eCtrl.signal) : null;
+                const mJob=mixedPrep ? workerSpeed(mixedPrep,mCtrl.signal) : null;
+                try{
+                    await consider(trial,shared,'manual',problem);
+                    let powered=null;
+                    if(eJob){
+                        const eRes=await eJob;
+                        if(eRes?.proven && eRes.objective>0 && eRes.values){
+                            const draft=finishFitCapacity(pkg,highs,electricPrep,eRes.values,trial,background,demand,'electric',stage,catalog);
+                            powered=await accept(draft,trial,shared,problem);
+                        }
+                    }
+                    if(Number.isFinite(powered?.level_up_preview?.seconds) && powered.level_up_preview.seconds<=demand.seconds*(1+1e-5)){
+                        mCtrl?.abort();
+                    }else if(mJob){
+                        const mRes=await mJob;
+                        if(mRes?.proven && mRes.objective>0 && mRes.values){
+                            const draft=finishFitCapacity(pkg,highs,mixedPrep,mRes.values,trial,background,demand,'mixed',stage,catalog);
+                            await accept(draft,trial,shared,problem);
+                        }
+                    }
+                }finally{
+                    if(eCtrl && !eCtrl.signal.aborted)eCtrl.abort();
+                    if(mCtrl && !mCtrl.signal.aborted)mCtrl.abort();
+                }
+            }else{
+                await consider(trial,shared,'manual',problem);
+                if(hasElectric){
+                    const powered=await consider(trial,shared,'electric',problem);
+                    if(!Number.isFinite(powered?.level_up_preview?.seconds) || powered.level_up_preview.seconds>demand.seconds*(1+1e-5))
+                        await consider(trial,shared,'mixed',problem);
+                }
             }
             if(Number.isFinite(best.level_up_preview?.seconds) && best.level_up_preview.seconds<=demand.seconds*(1+1e-5))break;
         }
     };
     try{
-        source=await consolidateSource(optimizeWorkshopSources(pkg,highs,input,baseline,catalog,{proveBound:false}));
+        const runSource=(proveBound)=>evaluateBound || evaluateSolve
+            ? optimizeWorkshopSourcesAsync(pkg,highs,input,baseline,catalog,{proveBound,evaluateBound,evaluateSolve})
+            : optimizeWorkshopSources(pkg,highs,input,baseline,catalog,{proveBound});
+        source=await consolidateSource(await runSource(false));
         if(source)await evaluateBackground(source.plan,true);
         await evaluateBackground(baseline,false);
         // If a custom-roster switching plan actually beat baseline using the
         // lightweight source pass, run the full source recipe-discovery pass
         // so newly unlocked secondary-income recipes are never missed.
         if(best!==baseline && bestFromSource && input.roster && source?.proveSourceBound){
-            const fullSource=await consolidateSource(optimizeWorkshopSources(pkg,highs,input,baseline,catalog,{proveBound:true}));
+            const fullSource=await consolidateSource(await runSource(true));
             if(fullSource){
                 const prevCoins=source.plan.rate_per_second??0;
                 source=fullSource;

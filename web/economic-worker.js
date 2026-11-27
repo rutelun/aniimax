@@ -39,12 +39,12 @@ async function evaluate({id, kind, problem, options, reportRecipes, wasmModule})
         const {planSearchOptions, polishSolution, solveWithIncumbent} = await import('./highs-solve.js');
         const {warm, polish = false, retryPresolveOff = true, rawOptions = false, ...rest} = options ?? {};
         const opts = rawOptions ? rest : planSearchOptions(rest);
-        let result = solveWithIncumbent(highs, problem, opts, warm);
+        let result = solveWithIncumbent(highs, problem, opts, warm, !rawOptions);
         if (retryPresolveOff && result.Status === 'Infeasible') {
-            const retryOpts = opts.mip_max_nodes <= 1 && opts.mipIterations == null
+            const retryOpts = !rawOptions && opts.mip_max_nodes <= 1 && opts.mipIterations == null
                 ? {...opts, presolve:'off', mipIterations:opts.incumbentIterations ?? 6000}
                 : {...opts, presolve:'off'};
-            result = solveWithIncumbent(highs, problem, retryOpts, warm);
+            result = solveWithIncumbent(highs, problem, retryOpts, warm, !rawOptions);
         }
         const proven = result.Status === 'Optimal';
         if (!proven && !['Objective target reached', 'Gap target reached', 'Time limit reached', 'Search limit reached'].includes(result.Status)) {

@@ -1028,17 +1028,21 @@ function usesWorkshopCapacitySearch(input) {
 
 async function withRecipeSwitches(pkg,input,baseline,progress=()=>{},timed=false,workshopProof) {
     if(!timed && baseline.success && usesWorkshopCapacitySearch(input)){
+        const wasmModule=await loadHighsModule();
+        const workers=economicWorkers(load,{wasmModule});
         try{
             const {searchWorkshopCapacity}=await import('./workshop-capacity.js');
             const highs=await newHighs();
             const validate=(trial,plan,previous)=>validateWorkshopCapacity(trial,plan,previous,model=>highs.solve(model.lp,{mip_rel_gap:0}));
-            const selected=await searchWorkshopCapacity(pkg,highs,input,baseline,{validate,progress});
+            const selected=await searchWorkshopCapacity(pkg,highs,input,baseline,{validate,progress,...workers.callbacks});
             if(input.roster && selected!==baseline)return {...selected,workshop_route_fallback:baseline};
             return selected;
         }catch(error){
             console.warn('Keeping the ordinary workshop plan after a capacity fit failed.',error);
             return {...baseline,recipe_switching_note:'Keeping the verified ordinary workshop plan.',
                 recipe_switching_detail:String(error.message||error)};
+        }finally{
+            workers.close();
         }
     }
     const deadline=timed ? performance.now()+10000 : null;

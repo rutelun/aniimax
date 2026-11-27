@@ -11,7 +11,7 @@ import {keepsProduction} from './electric-staffing.js';
 import {continuousNeighborhood} from './continuous-neighborhood.js';
 import {economicRecipeCounts,economicCountNeighborhood,priceIdleWorkshop} from './economic-recipe-counts.js';
 import {switchingWorkshops} from './material-flow-schedule.js';
-import {searchProductionSites,fitWorkshopIncome} from './production-site-search.js';
+import {searchProductionSites,fitWorkshopIncome,recipesWithoutInputs} from './production-site-search.js';
 import {hasSeasonCropMinimums,reservedSeasonScore} from './season-planning.js';
 import {measuredProductionShift} from './measured-production.js';
 
@@ -402,6 +402,22 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
     const countOptions={input,timeLimit:2};
     const eagerCounts=priceSitesFirst || (generatedSitesEarly && !(workshopProof && compactSwitch && !input.season));
     let countJob=eagerCounts && evaluateCounts ? evaluateCounts(raw,countOptions) : null;
+    // For generated teams (Best Aniimo), pre-launch searchProductionSites Round 0
+    // on Worker 1 while priorityCeiling + economicRecipeCounts + neighborhood run.
+    let siteRound0Job=null;
+    if(generatedSitesEarly && evaluateBound && evaluateSolve && highs?.createModel
+        && !(workshopProof && compactSwitch && !input.season)){
+        const s0=recipesWithoutInputs(raw);
+        if(s0?.length){
+            const s0Model=priority(JSON.stringify({...input,always_running_recipes:s0,
+                restrict_to_checked_recipes:false,relax_min_reasons:true}),currencyStage,currency);
+            if(s0Model?.lp){
+                const s0Ctrl=new AbortController();
+                siteRound0Job={scope:s0,model:s0Model,ctrl:s0Ctrl,
+                    promise:evaluateBound(s0Model,{scope:s0,timeLimit:30,signal:s0Ctrl.signal})};
+            }
+        }
+    }
     const lpCeiling=priorityCeiling(highs,raw,currency,input.relax_pair_coverage && meta ? model=>{
         const sol=model.getSolution()?.colValue;
         if(!sol || meta.usedPairRelax)return;
@@ -1345,8 +1361,12 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
                 shared=await fitWorkshopIncome(highs,workshopProof,fullIncome,modelFor,solve);
             }
         }
+        const r0=siteRound0Job;
+        siteRound0Job=null;
         siteSearch=shared ?? await searchProductionSites(highs,raw,fullIncome,scopedModel,solve,
-            {relativeGap:CURRENCY_RELATIVE_GAP, initialFloor:best?.objective??0, initialUpper:upper});
+            {relativeGap:CURRENCY_RELATIVE_GAP, initialFloor:best?.objective??0, initialUpper:upper,
+                initialRound0:r0});
+        if(r0 && !r0.ctrl.signal.aborted)r0.ctrl.abort();
         if (siteSearch) {
             if (siteSearch.best) {
                 const candidate=siteSearch.best;
@@ -1409,7 +1429,10 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
             // economicRecipeCounts is a valid relaxation of the whole-site model.
             // If it proves infeasible while an unrefined LP pace ceiling is active,
             // bail immediately so tryPriorityPlanOnce refines the integer pace.
-            if(counts?.infeasible && paceProof.refine)return null;
+            if(counts?.infeasible && paceProof.refine){
+                if(siteRound0Job && !siteRound0Job.ctrl.signal.aborted)siteRound0Job.ctrl.abort();
+                return null;
+            }
             if(counts?.size&&economicCountNeighborhood){
                 const allowed=new Set(counts.keys());
                 for(const name of allowed)names.add(name);
@@ -1457,6 +1480,10 @@ async function searchPriorityPlan(pkg,input,{highs,solveModel,step=()=>{},first=
         // If crop reservations leave the proposed building counts infeasible,
         // search alternative site patterns before repairing the relaxed rates.
         if(generatedSites && (!best || upper>best.objective*CURRENCY_GAP_FACTOR) && !sitesAttempted) await priceSitePatterns();
+        if(siteRound0Job){
+            if(!siteRound0Job.ctrl.signal.aborted)siteRound0Job.ctrl.abort();
+            siteRound0Job=null;
+        }
         const preparingMap=priceSitesFirst && input.map_dispatch_pending && best;
         // Seasonal plots reserve crew time across workshops. Try moving the
         // existing crew between recipes before changing their building counts.
